@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import '../styles/task-system.css';
-import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
 
 interface TaskSystemProps {
   isOpen: boolean;
@@ -79,6 +77,9 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
   const [planSteps, setPlanSteps] = useState<TaskStep[]>([]);
   
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  
+  // Add state for objective
+  const [objective, setObjective] = useState<string>('');
   
   // Function declarations at the top level, before they are used
   const extractTitleFromPlan = (planContent: string): string => {
@@ -179,6 +180,21 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
     ];
   };
   
+  // Function to extract objective from plan content
+  const extractObjectiveFromPlan = (planContent: string): string => {
+    if (!planContent) return '';
+    
+    // Find the Objective section in the plan
+    const objectiveRegex = /## Objective\s*([^#]*)/;
+    const match = planContent.match(objectiveRegex);
+    
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+    
+    return '';
+  };
+  
   // Wrap extractPlanFromMessages in useCallback to memoize it
   const extractPlanFromMessages = useCallback((messages: TaskMessage[]): string | null => {
     // Look for a markdown-formatted plan in the messages
@@ -217,6 +233,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
               setTaskTitle(extractedTitle);
             }
             
+            // Extract objective from the plan
+            const extractedObjective = extractObjectiveFromPlan(planContent);
+            setObjective(extractedObjective);
+            
             // Return the plan content
             return planContent;
           }
@@ -225,7 +245,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
     }
     
     return null;
-  }, [setTaskTitle]);
+  }, [setTaskTitle, setObjective]);
   
   // Function to fetch task data from the backend
   const fetchTaskData = useCallback(async (id: string) => {
@@ -263,6 +283,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
           if (planContent) {
             console.log("Task plan extracted successfully:", planContent.substring(0, 100) + "...");
             setPlan(planContent);
+            
+            // Extract objective from the plan
+            const extractedObjective = extractObjectiveFromPlan(planContent);
+            setObjective(extractedObjective);
             
             // Also try to extract steps from the plan
             const extractedSteps = extractStepsFromPlan(planContent);
@@ -633,6 +657,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     // Update immediately if enough time has passed
                     setPlan(partialPlan);
                     
+                    // Extract objective from the plan
+                    const extractedObjective = extractObjectiveFromPlan(partialPlan);
+                    setObjective(extractedObjective);
+                    
                     // Extract title from the plan
                     const extractedTitle = extractTitleFromPlan(partialPlan);
                     if (extractedTitle) {
@@ -654,6 +682,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     // Schedule a throttled update
                     planUpdateTimeout = setTimeout(() => {
                       setPlan(partialPlan);
+                      
+                      // Extract objective from the plan
+                      const extractedObjective = extractObjectiveFromPlan(partialPlan);
+                      setObjective(extractedObjective);
                       
                       // Extract title from the plan
                       const extractedTitle = extractTitleFromPlan(partialPlan);
@@ -691,6 +723,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     // Update immediately if enough time has passed
                     setPlan(partialPlan);
                     
+                    // Extract objective from the plan
+                    const extractedObjective = extractObjectiveFromPlan(partialPlan);
+                    setObjective(extractedObjective);
+                    
                     // Extract title from the updated plan
                     const extractedTitle = extractTitleFromPlan(partialPlan);
                     if (extractedTitle) {
@@ -712,6 +748,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     // Schedule a throttled update
                     planUpdateTimeout = setTimeout(() => {
                       setPlan(partialPlan);
+                      
+                      // Extract objective from the plan
+                      const extractedObjective = extractObjectiveFromPlan(partialPlan);
+                      setObjective(extractedObjective);
                       
                       // Extract title from the updated plan
                       const extractedTitle = extractTitleFromPlan(partialPlan);
@@ -745,6 +785,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                 // Set the complete plan
                 if (completePlan.trim()) {
                   setPlan(completePlan);
+                  
+                  // Extract objective from the complete plan
+                  const extractedObjective = extractObjectiveFromPlan(completePlan);
+                  setObjective(extractedObjective);
                   
                   // Extract title from the complete plan
                   const extractedTitle = extractTitleFromPlan(completePlan);
@@ -826,7 +870,6 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
       
       // Force a final decoder flush to ensure we get all data
       if (chunks.length > 0) {
-        // Ensure we have the complete content
         console.log("Applying final message update to chat");
         
         // IMPORTANT: Update only the thinking message, not the entire chat history
@@ -932,6 +975,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
         if (completePlan) {
           setPlan(completePlan);
           
+          // Extract objective from the complete plan
+          const extractedObjective = extractObjectiveFromPlan(completePlan);
+          setObjective(extractedObjective);
+          
           // Extract title from the complete plan
           const extractedTitle = extractTitleFromPlan(completePlan);
           if (extractedTitle) {
@@ -957,6 +1004,10 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
         if (planContent) {
           // Set the plan
           setPlan(planContent);
+          
+          // Extract objective from the plan
+          const extractedObjective = extractObjectiveFromPlan(planContent);
+          setObjective(extractedObjective);
           
           // Extract title
           const extractedTitle = extractTitleFromPlan(planContent);
@@ -1253,7 +1304,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     <line x1="16" y1="17" x2="8" y2="17"></line>
                     <polyline points="10 9 9 9 8 9"></polyline>
                   </svg>
-                  {taskTitle || "Task Plan"}
+                  Task Info
                 </h3>
                 <button className="collapse-button" onClick={toggleSidebar}>
                   {sidebarCollapsed ? (
@@ -1285,27 +1336,24 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     ))}
                   </div>
                 ) : (
-                  <div className="markdown-display">
-                    <ReactMarkdown 
-                      rehypePlugins={[rehypeRaw]} 
-                      components={{
-                        // Add custom styling for markdown components
-                        h1: ({children, ...props}) => <h1 style={{borderBottom: '1px solid #ddd', paddingBottom: '8px', marginBottom: '16px'}} {...props}>{children}</h1>,
-                        h2: ({children, ...props}) => <h2 style={{fontSize: '1.2em', margin: '16px 0 8px'}} {...props}>{children}</h2>,
-                        p: ({children, ...props}) => <p style={{margin: '8px 0', lineHeight: '1.5'}} {...props}>{children}</p>,
-                        ul: ({children, ...props}) => <ul style={{paddingLeft: '20px', margin: '8px 0'}} {...props}>{children}</ul>,
-                        ol: ({children, ...props}) => <ol style={{paddingLeft: '20px', margin: '8px 0'}} {...props}>{children}</ol>,
-                        li: ({children, ...props}) => <li style={{margin: '4px 0'}} {...props}>{children}</li>,
-                        code: ({children, className, ...props}) => {
-                          const isInline = !className;
-                          return isInline 
-                            ? <code style={{background: '#f0f0f0', padding: '2px 4px', borderRadius: '3px'}} {...props}>{children}</code>
-                            : <code style={{display: 'block', background: '#f0f0f0', padding: '8px', borderRadius: '4px', overflowX: 'auto'}} {...props}>{children}</code>;
-                        }
-                      }}
-                    >
-                      {plan}
-                    </ReactMarkdown>
+                  <div className="task-info-container">
+                    {objective && (
+                      <div className="objective-section">
+                        <h4 className="info-section-title">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="16"></line>
+                            <line x1="8" y1="12" x2="16" y2="12"></line>
+                          </svg>
+                          Objective
+                        </h4>
+                        <div className="objective-content">
+                          <p>{objective}</p>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* We could add additional sections here like attached files, URLs, etc. */}
                   </div>
                 )}
               </div>

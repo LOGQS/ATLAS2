@@ -2438,4 +2438,71 @@ body.task-mode {
   .chat-messages-container {
     max-height: calc(100vh - 250px);
   }
+}
+
+/* Task Info Container Styles */
+.task-info-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.info-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--task-text);
+}
+
+.info-section-title svg {
+  color: var(--task-primary);
+}
+
+.objective-section {
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(17, 24, 39, 0.6));
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  overflow: hidden;
+}
+
+.objective-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(to right, var(--task-primary), transparent);
+}
+
+.objective-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--task-text);
+}
+
+.objective-content p {
+  margin: 8px 0;
+}
+
+.empty-objective {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100px;
+  color: var(--task-text-secondary);
+  font-style: italic;
+  text-align: center;
+  background: rgba(30, 41, 59, 0.3);
+  border-radius: 8px;
+  padding: 16px;
 } 
