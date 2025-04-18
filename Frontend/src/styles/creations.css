@@ -1,0 +1,2022 @@
+/* CreationViewer styles */
+
+/* Creation blocks within chat messages */
+.creation-block {
+  border: 1px solid #3a3f44;
+  border-left: 4px solid #4e73ed;
+  background-color: rgba(78, 115, 237, 0.05);
+  border-radius: 6px;
+  position: relative;
+}
+
+.creation-block .code-block-actions {
+  background-color: rgba(0, 0, 0, 0.2);
+  justify-content: space-between;
+}
+
+/* New creation actions container */
+.creation-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Creation footer with big view button */
+.creation-footer {
+  padding: 10px;
+  display: flex;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-top: 1px dashed rgba(78, 115, 237, 0.3);
+}
+
+.creation-view-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: #4e73ed;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  width: 100%;
+  max-width: 300px;
+}
+
+.creation-view-button:hover {
+  background-color: #3a5dda;
+}
+
+.creation-view-button svg {
+  stroke: white;
+}
+
+.creation-type-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background-color: rgba(78, 115, 237, 0.15);
+  color: #9aadff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.creation-icon {
+  display: flex;
+  align-items: center;
+}
+
+.creation-icon svg {
+  stroke: #9aadff;
+}
+
+.view-creation-button {
+  background-color: #4e73ed !important;
+  color: white !important;
+  font-weight: 500;
+}
+
+.view-creation-button:hover {
+  background-color: #5e82fd !important;
+}
+
+.view-creation-button svg {
+  stroke: white;
+}
+
+/* Color variants for different creation types */
+.creation-type-code {
+  border-left-color: #4e73ed;
+}
+
+.creation-type-markdown {
+  border-left-color: #28a745;
+}
+
+.creation-type-html {
+  border-left-color: #e83e8c;
+}
+
+.creation-type-svg {
+  border-left-color: #fd7e14;
+}
+
+.creation-type-mermaid {
+  border-left-color: #17a2b8;
+}
+
+.creation-type-react {
+  border-left-color: #61dafb;
+}
+
+.creation-type-placeholder {
+  border-left-color: #6f42c1;
+}
+
+/* Type-specific indicator colors */
+.creation-type-code .creation-type-indicator {
+  background-color: rgba(78, 115, 237, 0.15);
+  color: #9aadff;
+}
+
+.creation-type-markdown .creation-type-indicator {
+  background-color: rgba(40, 167, 69, 0.15);
+  color: #8eda9f;
+}
+
+.creation-type-html .creation-type-indicator {
+  background-color: rgba(232, 62, 140, 0.15);
+  color: #f8a8cc;
+}
+
+.creation-type-svg .creation-type-indicator {
+  background-color: rgba(253, 126, 20, 0.15);
+  color: #ffb680;
+}
+
+.creation-type-mermaid .creation-type-indicator {
+  background-color: rgba(23, 162, 184, 0.15);
+  color: #8ddbe6;
+}
+
+.creation-type-react .creation-type-indicator {
+  background-color: rgba(97, 218, 251, 0.15);
+  color: #a5e8fe;
+}
+
+.creation-type-placeholder .creation-type-indicator {
+  background-color: rgba(111, 66, 193, 0.15);
+  color: #c6a8f8;
+}
+
+/* Type-specific icons */
+.creation-type-code .creation-icon svg {
+  stroke: #9aadff;
+}
+
+.creation-type-markdown .creation-icon svg {
+  stroke: #8eda9f;
+}
+
+.creation-type-html .creation-icon svg {
+  stroke: #f8a8cc;
+}
+
+.creation-type-svg .creation-icon svg {
+  stroke: #ffb680;
+}
+
+.creation-type-mermaid .creation-icon svg {
+  stroke: #8ddbe6;
+}
+
+.creation-type-react .creation-icon svg {
+  stroke: #a5e8fe;
+}
+
+.creation-type-placeholder .creation-icon svg {
+  stroke: #c6a8f8;
+}
+
+/* Modal overlay */
+.creation-viewer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(3px);
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 0.3s ease-in-out;
+}
+
+.creation-viewer-overlay.visible {
+  opacity: 1;
+}
+
+.creation-viewer-overlay.entering {
+  opacity: 0;
+}
+
+.creation-viewer-overlay.exiting {
+  opacity: 0;
+}
+
+/* Creation container */
+.creation-viewer-container {
+  background-color: #1a1a1a;
+  border-radius: 10px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 85vh;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(20px) scale(0.97);
+  transition: transform 0.3s ease-out;
+  border: 1px solid #333;
+}
+
+.creation-viewer-container.visible {
+  transform: translateY(0) scale(1);
+}
+
+.creation-viewer-container.entering {
+  transform: translateY(20px) scale(0.97);
+}
+
+.creation-viewer-container.exiting {
+  transform: translateY(20px) scale(0.97);
+}
+
+/* Header */
+.creation-viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  background-color: #222;
+  border-bottom: 1px solid #333;
+}
+
+.creation-viewer-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.creation-viewer-title h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.creation-language {
+  background-color: #2d2d2d;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #aaa;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+}
+
+.creation-viewer-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.creation-viewer-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background-color: #333;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 10px;
+  color: #ddd;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color 0.2s;
+}
+
+.creation-viewer-button:hover {
+  background-color: #444;
+}
+
+.creation-viewer-button.close-button {
+  color: #999;
+  padding: 6px;
+}
+
+.creation-viewer-button.close-button:hover {
+  background-color: #444;
+  color: #fff;
+}
+
+/* Content area */
+.creation-viewer-content {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+  position: relative;
+  max-height: calc(85vh - 60px);
+}
+
+/* Code container */
+.creation-viewer-content pre {
+  margin: 0;
+  border-radius: 5px;
+  max-width: 100%;
+  overflow: auto !important;
+}
+
+/* SVG container */
+.svg-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #222;
+  padding: 20px;
+  border-radius: 5px;
+  overflow: auto;
+}
+
+.svg-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid container */
+.mermaid-container {
+  background-color: var(--color-bg-secondary);
+  padding: 20px;
+  border-radius: 5px;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.mermaid {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto !important;
+}
+
+.mermaid-error {
+  padding: 15px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  width: 100%;
+}
+
+.mermaid-error .error-message {
+  color: #ff5555;
+  font-weight: bold;
+  margin-bottom: 10px;
+}
+
+.mermaid-error pre {
+  margin: 0;
+  padding: 10px;
+  background-color: var(--color-bg-secondary);
+  border-radius: 4px;
+  overflow: auto;
+}
+
+/* React component preview */
+.react-component-warning {
+  background-color: #332b00;
+  border: 1px solid #665500;
+  border-radius: 5px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.react-component-warning p {
+  color: #ffcc00;
+  margin: 0 0 10px 0;
+}
+
+.react-component-warning pre {
+  background-color: #222;
+  padding: 10px;
+  border-radius: 5px;
+  overflow: auto;
+  color: #ddd;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+}
+
+/* Placeholder image */
+.placeholder-image {
+  background-color: #2d2d2d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  margin: 0 auto;
+}
+
+.placeholder-text {
+  color: #777;
+  font-size: 16px;
+  font-family: monospace;
+}
+
+/* HTML Preview inside CreationViewer */
+.html-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  height: 100%;
+}
+
+.html-preview-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #272727;
+  padding: 10px 15px;
+  border-radius: 6px;
+}
+
+.html-preview-info p {
+  margin: 0;
+  font-size: 14px;
+  color: #aaa;
+}
+
+.html-preview-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: #4e73ed;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.html-preview-button:hover {
+  background-color: #5e82fd;
+}
+
+.html-preview-frame {
+  flex: 1;
+  min-height: 300px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: white;
+}
+
+.html-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background-color: white;
+}
+
+/* React Component Styles */
+.react-component-container {
+  height: 100%;
+  min-height: 500px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.react-component-header {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background-color: #272727;
+  padding: 10px 15px;
+  border-radius: 6px;
+}
+
+.react-component-header h4 {
+  margin: 0;
+  font-size: 16px;
+  color: #eee;
+}
+
+.react-component-warning-note {
+  font-size: 12px;
+  color: #aaa;
+}
+
+.react-component-sandbox {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  border-radius: 6px;
+  background-color: white;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.react-component-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+  border: none;
+  background-color: white;
+}
+
+.react-component-error {
+  background-color: #332b00;
+  border: 1px solid #665500;
+  border-radius: 5px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.react-component-error h4 {
+  color: #ffcc00;
+  margin: 0 0 10px 0;
+}
+
+.react-component-error p {
+  color: #ffcc00;
+  margin: 0 0 10px 0;
+}
+
+.react-component-error pre {
+  background-color: #222;
+  padding: 10px;
+  border-radius: 5px;
+  overflow: auto;
+  color: #ddd;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+}
+
+/* Copy feedback animation */
+.copy-feedback {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 5px;
+  animation: fadeInOut 1.5s ease-in-out;
+  pointer-events: none;
+  z-index: 10;
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+  15% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  85% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+}
+
+/* Markdown Content Styling */
+.markdown-content {
+  padding: 20px;
+  line-height: 1.6;
+  overflow-x: auto;
+  background-color: var(--color-bg);
+  border-radius: 8px;
+  max-width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child,
+.markdown-content h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-content h1 {
+  font-size: 2em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.3em;
+}
+
+.markdown-content h2 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.3em;
+}
+
+.markdown-content h3 {
+  font-size: 1.25em;
+}
+
+.markdown-content p {
+  margin: 1em 0;
+}
+
+.markdown-content a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 1em 0;
+  padding-left: 2em;
+}
+
+.markdown-content li {
+  margin: 0.5em 0;
+}
+
+.markdown-content blockquote {
+  margin: 1em 0;
+  padding: 0 1em;
+  color: var(--color-text-secondary);
+  border-left: 4px solid var(--color-border);
+}
+
+.markdown-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5em auto;
+  border-radius: 6px;
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+
+.markdown-content table,
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--color-border);
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.markdown-content th {
+  background-color: var(--color-bg-secondary);
+  font-weight: 600;
+}
+
+.markdown-content code:not([class*="language-"]) {
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  background-color: var(--color-bg-secondary);
+  border-radius: 3px;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .creation-viewer-container {
+    width: 95%;
+    max-height: 90vh;
+  }
+  
+  .creation-viewer-header {
+    padding: 12px 15px;
+  }
+  
+  .creation-viewer-title h3 {
+    font-size: 16px;
+  }
+  
+  .creation-viewer-button span {
+    display: none;
+  }
+  
+  .creation-viewer-content {
+    padding: 15px;
+  }
+}
+
+/* Direct View Modal Styles */
+.direct-view-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  backdrop-filter: blur(3px);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.direct-view-container {
+  background-color: var(--color-bg);
+  border-radius: 8px;
+  width: 95%;
+  max-width: 1200px;
+  max-height: 95vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  animation: slideUp 0.3s ease-out;
+  border: 1px solid var(--color-border);
+}
+
+.direct-view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.direct-view-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.direct-view-content {
+  padding: 20px;
+  flex: 1;
+  overflow-y: auto;
+  max-height: calc(95vh - 120px);
+  display: flex;
+  justify-content: center;
+}
+
+.direct-view-footer {
+  padding: 12px 24px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border);
+}
+
+.view-in-gallery-button {
+  background-color: var(--color-accent);
+  color: white;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.view-in-gallery-button:hover {
+  background-color: var(--color-accent-hover);
+}
+
+.view-modal-button {
+  margin-right: 8px;
+}
+
+.html-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+}
+
+/* Toolbar styling */
+.creation-content-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.toolbar-controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.toolbar-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-label {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-right: 4px;
+}
+
+.toolbar-button {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.toolbar-button:hover {
+  background-color: var(--color-bg-hover);
+  border-color: var(--color-border-hover);
+}
+
+.toolbar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.theme-toggle {
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.font-size-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.font-size-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.font-size-value {
+  width: 45px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.toolbar-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toolbar-checkbox {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Specific styles for react-vis charts */
+.rv-xy-plot {
+  background-color: white !important;
+  color: #333 !important;
+  overflow: visible !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  display: block !important;
+}
+
+.rv-xy-plot__grid-lines__line {
+  stroke: rgba(0, 0, 0, 0.1) !important;
+}
+
+.rv-xy-plot__axis__tick__line {
+  stroke: #333 !important;
+}
+
+.rv-xy-plot__axis__tick__text {
+  fill: #333 !important;
+  font-size: 12px !important;
+}
+
+.rv-xy-plot__axis__title text {
+  fill: #333 !important;
+  font-weight: normal !important;
+}
+
+.rv-discrete-color-legend {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  color: #333 !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+  display: inline-block !important;
+  margin: 10px auto !important;
+}
+
+/* Fix any element that might be causing overflow in react-vis charts */
+.rv-xy-plot,
+.rv-xy-plot__inner,
+.rv-xy-plot__grid-lines,
+.rv-xy-plot__axis,
+.rv-xy-plot__series {
+  overflow: visible !important;
+}
+
+/* Ensure the chart container in preview modes has enough space */
+.sandpack-preview-view .rv-xy-plot-container,
+.sandpack-split-view .rv-xy-plot-container {
+  width: 100% !important;
+  max-width: 100% !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  overflow: visible !important;
+  padding: 20px !important;
+  box-sizing: border-box !important;
+}
+
+/* Error display in sandbox */
+.react-sandbox-error {
+  background-color: #fee;
+  border: 1px solid #f66;
+  border-radius: 4px;
+  padding: 15px;
+  margin: 15px;
+  color: #d00;
+  font-family: monospace;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 200px;
+}
+
+/* 
+ * Styles for Sandpack Integration 
+ */
+.custom-wrapper {
+  border-radius: 8px;
+  overflow: hidden;
+  height: 100%;
+  border: 1px solid var(--border-color);
+}
+
+.custom-layout {
+  height: 100%;
+}
+
+.custom-tab {
+  font-size: 14px;
+}
+
+/* Fix the white bar issue by ensuring components use full height */
+.sp-wrapper {
+  --sp-colors-surface1: var(--bg-color) !important;
+  --sp-colors-surface2: var(--bg-color-secondary) !important;
+  --sp-colors-clickable: var(--text-color-secondary) !important;
+  --sp-colors-base: var(--text-color) !important;
+  --sp-colors-hover: var(--hover-color) !important;
+  --sp-colors-accent: var(--primary-color) !important;
+  height: 100% !important;
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Remove extra padding and margins */
+.sp-layout {
+  height: 100% !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+}
+
+/* Make sure preview takes full height and shows content */
+.sp-preview-container {
+  height: 100% !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.sp-preview {
+  height: 100% !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
+}
+
+/* Remove white space from the iframe */
+.sp-preview-iframe {
+  height: 100% !important;
+  width: 100% !important;
+  display: block !important;
+  background: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  flex: 1 !important;
+}
+
+/* Add styles for view toggle buttons */
+.view-toggle-buttons {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.view-toggle-buttons button {
+  padding: 4px 12px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  background-color: transparent;
+  color: var(--text-color-secondary, #888);
+  border: 1px solid var(--border-color, #333);
+  transition: all 0.2s ease;
+}
+
+/* Explicitly reset any blue backgrounds on all buttons first */
+.view-toggle-buttons button:nth-child(1),
+.view-toggle-buttons button:nth-child(2),
+.view-toggle-buttons button:nth-child(3) {
+  background-color: transparent;
+  color: var(--text-color-secondary, #888);
+  border-color: var(--border-color, #333);
+  font-weight: normal;
+}
+
+.view-toggle-buttons button:hover {
+  background-color: var(--hover-color, #333);
+}
+
+/* Active states for buttons with increased specificity */
+.sandpack-code-view .view-toggle-buttons button:nth-child(1),
+.sandpack-preview-view .view-toggle-buttons button:nth-child(2),
+.sandpack-split-view .view-toggle-buttons button:nth-child(3) {
+  background-color: var(--primary-color, #4e73ed) !important;
+  color: white !important;
+  border-color: var(--primary-color, #4e73ed) !important;
+  font-weight: 500 !important;
+}
+
+/* Download button */
+.sandpack-actions > button:last-child {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+}
+
+/* Define view mode styles for Sandpack */
+/* Code-only view */
+.sandpack-code-view .sp-preview-container {
+  display: none !important;
+}
+
+.sandpack-code-view .sp-stack {
+  width: 100% !important;
+  flex: 1 !important;
+  height: auto !important;
+}
+
+.sandpack-code-view .sp-layout {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+}
+
+/* Force editor to take full screen in code view */
+.sandpack-code-view .sp-editor,
+.sandpack-code-view .sp-code-editor {
+  height: 100% !important;
+  flex: 1 !important;
+  width: 100% !important;
+}
+
+/* Remove any potential spacing elements in code view */
+.sandpack-code-view .sp-layout > div:nth-child(2) {
+  display: none !important;
+}
+
+/* Completely hide any preview elements in code view */
+.sandpack-code-view [data-preview] {
+  display: none !important;
+}
+
+/* Make sure there are no spacing issues in code view */
+.sandpack-code-view .sp-layout {
+  flex-direction: column !important;
+  overflow: hidden !important;
+  width: 100% !important;
+}
+
+/* Preview-only view - Force everything to full width */
+.sandpack-preview-view {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.sandpack-preview-view .sp-stack {
+  display: none !important;
+}
+
+.sandpack-preview-view .sp-preview-container {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  flex: 1 1 auto !important;
+  min-width: 100% !important; /* Ensure it takes full width */
+  max-width: 100% !important; /* Ensure it takes full width */
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.sandpack-preview-view .sp-preview {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  flex: 1 1 auto !important;
+  min-width: 100% !important; /* Ensure it takes full width */
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.sandpack-preview-view .sp-preview-iframe {
+  flex: 1 1 auto !important;
+  display: block !important;
+  width: 100% !important;
+  min-width: 100% !important; /* Ensure it takes full width */
+  height: 100% !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+/* Make the layout container take full width in preview mode */
+.sandpack-preview-view .sp-layout {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Ensure the preview content container takes full width */
+.sandpack-preview-view .sp-layout > div:nth-child(2) {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+}
+
+/* Additional fixes for preview container in preview view to ensure it takes full width */
+.sandpack-preview-view .sp-preview-container > div {
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+}
+
+/* Split view (default) */
+.sandpack-split-view .sp-stack,
+.sandpack-split-view .sp-preview-container {
+  display: block !important;
+  width: 100% !important; /* Ensure proper width in container */
+}
+
+/* Fix layout for all view modes */
+.sandpack-code-view .sp-layout,
+.sandpack-preview-view .sp-layout,
+.sandpack-split-view .sp-layout {
+  height: 100% !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+}
+
+/* Fix flex layout for the actions row to prevent button jumping */
+.sandpack-actions {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px;
+  background-color: var(--bg-color-secondary);
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+  border-bottom: 1px solid var(--border-color);
+  /* Make the header static height */
+  height: 48px !important;
+  min-height: 48px !important;
+  max-height: 48px !important;
+  box-sizing: border-box !important;
+}
+
+.view-toggle-buttons {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  /* Ensure the buttons don't wrap or resize */
+  white-space: nowrap !important;
+}
+
+/* Ensure download button stays fixed in place */
+.sandpack-actions > button:last-child {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  /* Fix width to prevent resizing */
+  min-width: 120px !important;
+  width: 120px !important;
+  text-align: center !important;
+  justify-content: center !important;
+  padding: 6px 12px !important;
+  font-size: 13px !important;
+  border-radius: 4px !important;
+}
+
+/* Make sure the download button styling doesn't affect view toggle buttons */
+.view-toggle-buttons button:last-child {
+  background-color: transparent;
+  color: var(--text-color-secondary, #888);
+  border: 1px solid var(--border-color, #333);
+}
+
+/* Only Split button in split view gets the blue styling */
+.sandpack-split-view .view-toggle-buttons button:last-child {
+  background-color: var(--primary-color, #4e73ed);
+  color: white;
+  border-color: var(--primary-color, #4e73ed);
+  font-weight: 500;
+}
+
+/* Only Code button in code view gets the blue styling */
+.sandpack-code-view .view-toggle-buttons button:first-child {
+  background-color: var(--primary-color, #4e73ed);
+  color: white;
+  border-color: var(--primary-color, #4e73ed);
+  font-weight: 500;
+}
+
+/* Only Preview button in preview view gets the blue styling */
+.sandpack-preview-view .view-toggle-buttons button:nth-child(2) {
+  background-color: var(--primary-color, #4e73ed);
+  color: white;
+  border-color: var(--primary-color, #4e73ed);
+  font-weight: 500;
+}
+
+/* Add fixed height for tab bar to prevent layout shifts */
+.sp-tabs {
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  box-sizing: border-box !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  flex-shrink: 0 !important;
+  border-bottom: 1px solid var(--border-color, #333) !important;
+  background-color: var(--bg-color, #1e1e1e) !important; /* Match dark theme background */
+}
+
+/* Make the tabs scrollable container have the correct background */
+.sp-tabs-scrollable-container {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  scrollbar-width: thin !important;
+  background-color: var(--bg-color, #1e1e1e) !important; /* Match dark theme background */
+}
+
+.sp-tab-button {
+  flex: 0 0 auto !important;
+  min-width: 120px !important;
+  max-width: 200px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding: 0 16px !important;
+  height: 36px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* More aggressive overrides to remove white boxes in tabs */
+.sp-tabs button,
+.sp-tab-button {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.sp-tabs [data-active],
+.sp-tabs [aria-selected="true"],
+.sp-tab-button[data-active],
+.sp-tab-button[aria-selected="true"],
+.sp-tabs-scrollable-container [data-active],
+.sp-tabs-scrollable-container [aria-selected="true"] {
+  background-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  outline: none !important;
+}
+
+/* Override any hover effects */
+.sp-tab-button:hover,
+.sp-tabs button:hover {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Fix the white area around tab content */
+.sp-tab-button span, 
+.sp-tabs button span {
+  background-color: transparent !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Remove white box when clicking/holding mouse button down */
+.sp-tab-button:active,
+.sp-tabs button:active,
+.sp-tab-button:focus-within,
+.sp-tabs button:focus-within {
+  background-color: transparent !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+/* Also remove white box from inner elements when clicking */
+.sp-tab-button:active span,
+.sp-tabs button:active span,
+.sp-tab-button:active *,
+.sp-tabs button:active * {
+  background-color: transparent !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Stronger selectors to override any built-in Sandpack active state styling */
+.sp-wrapper .sp-tabs .sp-tab-button:active,
+.sp-wrapper .sp-tabs .sp-tab-button:focus,
+.sp-wrapper .sp-tabs-scrollable-container .sp-tab-button:active,
+.sp-wrapper .sp-tabs-scrollable-container .sp-tab-button:focus,
+.sp-wrapper .sp-tabs button:active,
+.sp-wrapper .sp-tabs button:focus {
+  background-color: rgba(0, 0, 0, 0) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  border: none !important;
+  outline: none !important;
+}
+
+/* Target mouse-down state with both hover and active to ensure it's captured */
+.sp-tab-button:hover:active,
+.sp-tabs button:hover:active {
+  background-color: rgba(255, 255, 255, 0.05) !important; /* Only slight hover effect, not white */
+  box-shadow: none !important;
+  border: none !important;
+  outline: none !important;
+}
+
+/* Target any element inside the tab that might show white background */
+.sp-wrapper .sp-tabs *:active,
+.sp-wrapper .sp-tabs-scrollable-container *:active,
+.sp-tab-button *:active {
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Ensure parent elements are also properly styled to prevent white box when clicking */
+.sp-tabs-scrollable-container:active {
+  background-color: var(--bg-color, #1e1e1e) !important;
+}
+
+/* Additional specific selectors to catch all possible cases for clicking state */
+button.sp-tab-button:active,
+.sp-tabs > button:active,
+[role="tab"]:active,
+.sp-tab-button[role="tab"]:active,
+.sp-tab-button:focus,
+.sp-tab-button:focus-visible {
+  background-color: transparent !important;
+  background: transparent !important;
+  -webkit-tap-highlight-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Override any existing active tab styling */
+.sp-tab-button[data-active] *,
+.sp-tab-button[aria-selected="true"] *,
+.sp-tabs button[data-active] *,
+.sp-tabs button[aria-selected="true"] * {
+  background-color: transparent !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Completely clear all backgrounds */
+.sp-tab-button::before,
+.sp-tab-button::after,
+.sp-tabs button::before,
+.sp-tabs button::after {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Add our own subtle bottom border indicator */
+.sp-tab-button[data-active="true"]::after,
+.sp-tab-button[aria-selected="true"]::after,
+.sp-tabs button[data-active="true"]::after,
+.sp-tabs button[aria-selected="true"]::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute !important;
+  bottom: 0 !important;
+  left: 10px !important;
+  right: 10px !important;
+  height: 2px !important;
+  background-color: var(--primary-color, #4e73ed) !important;
+}
+
+/* Make active tab text more visible */
+.sp-tab-button[data-active="true"],
+.sp-tab-button[aria-selected="true"],
+.sp-tabs button[data-active="true"],
+.sp-tabs button[aria-selected="true"] {
+  color: var(--primary-color, #4e73ed) !important;
+  font-weight: 500 !important;
+  position: relative !important;
+}
+
+/* Ensure proper positioning for tab indicator */
+.sp-tab-button,
+.sp-tabs button {
+  position: relative !important;
+}
+
+/* Make sure the editor content section takes all remaining space */
+.sp-editor-container {
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Ensure Monaco editor maintains fixed height calculation based on container */
+.cm-editor {
+  height: 100% !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+.cm-scroller {
+  height: 100% !important;
+}
+
+/* Download button styles - make them more static */
+.sandpack-actions > button:last-child {
+  background-color: var(--primary-color, #4e73ed);
+  color: white;
+  border: none;
+  padding: 6px 12px !important;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+  /* Fix width to prevent resizing */
+  min-width: 120px !important;
+  width: 120px !important;
+  text-align: center !important;
+  justify-content: center !important;
+}
+
+/* Fix the file system navigator if present */
+.sp-file-explorer {
+  width: 200px !important;
+  min-width: 200px !important;
+  max-width: 200px !important;
+  flex: 0 0 200px !important;
+  overflow-y: auto !important;
+  border-right: 1px solid var(--border-color, #333) !important;
+}
+
+/* Fix the layout regardless of which file is open */
+.sp-wrapper > div {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+}
+
+/* Prevent tabs from pushing down content */
+.sp-tabs + div {
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Make sure the console doesn't change layout */
+.sp-console-wrapper {
+  max-height: 200px !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+/* Make sure the error overlay doesn't shift layout */
+.sp-overlay {
+  position: absolute !important;
+  z-index: 10 !important;
+}
+
+/* Override any dynamic sizing that might be happening */
+.sp-stack-column {
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+/* Fix tab container overflow behavior */
+.sp-tabs > * {
+  flex-shrink: 0 !important;
+}
+
+/* Improve preview section in split view */
+.sandpack-split-view .sp-preview-container {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important; /* Allow container to shrink properly */
+}
+
+/* Make the preview section take full space */
+.sandpack-split-view .sp-preview {
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Ensure the iframe takes full space */
+.sandpack-split-view .sp-preview-iframe {
+  height: 100% !important;
+  width: 100% !important;
+  min-height: 100% !important;
+  flex: 1 1 auto !important;
+}
+
+/* Fix preview actions toolbar to have fixed height and not shift layout */
+.sp-preview-actions {
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  border-bottom: 1px solid var(--border-color, #333) !important;
+  padding: 0 8px !important;
+}
+
+/* Make sure the split view has properly sized panels */
+.sandpack-split-view [data-orientation="horizontal"] > [data-panel] {
+  min-width: 0 !important; /* Allow panels to shrink below min-content */
+}
+
+/* Ensure split view panels take full height */
+.sandpack-split-view [data-orientation="horizontal"] {
+  height: 100% !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+/* Make sure panel resizer doesn't affect layout */
+.sandpack-split-view [data-panel-resizer] {
+  flex: 0 0 auto !important;
+}
+
+/* Preview tab should show as full tab in preview and split view */
+.sp-tab-button[data-tabs-id="/App.tsx"],
+.sp-tab-button[data-tabs-id="/index.tsx"],
+.sp-tab-button[data-tabs-id="*"] {
+  max-width: none !important;
+  min-width: 120px !important;
+  font-size: 14px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Override preview container styling for preview view */
+.sandpack-preview-view .sp-preview-container {
+  overflow: hidden !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 auto !important;
+}
+
+/* Make sure the preview content doesn't have margin/padding inconsistencies */
+.sp-preview-container > div {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  min-height: 0 !important;
+}
+
+/* Fix preview mode tabs display - HIDE the entire bar */
+.sandpack-preview-view .sp-preview-actions {
+  display: none !important; /* Hide the entire actions bar */
+}
+
+/* Keep styles for buttons in case they appear elsewhere, but remove preview-specific ones */
+
+/* Style specifically the refresh button in preview-only view - NO LONGER NEEDED
+.sandpack-preview-view .sp-preview-actions button[title*="Refresh"] {
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  padding: 4px !important;
+  font-size: 0 !important;
+} */
+
+/* Hide the 'Open Sandbox' button in preview-only view - NO LONGER NEEDED
+.sandpack-preview-view .sp-preview-actions button[title*="Open"],
+.sandpack-preview-view .sp-preview-actions button[title*="sandbox"],
+.sandpack-preview-view .sp-preview-actions a[href*="codesandbox"] {
+  display: none !important;
+} */
+
+/* Ensure icon inside refresh button is sized correctly - NO LONGER NEEDED
+.sandpack-preview-view .sp-preview-actions button[title*="Refresh"] svg {
+  width: 16px !important;
+  height: 16px !important;
+} */
+
+/* Hover state for buttons in preview actions - NO LONGER NEEDED
+.sandpack-preview-view .sp-preview-actions button:hover {
+  background-color: var(--color-bg-hover) !important;
+} */
+
+/* Highlight active tab in preview mode - NO LONGER NEEDED
+.sandpack-preview-view .sp-preview-actions button.active {
+  color: var(--primary-color) !important;
+  font-weight: 500 !important;
+  border-bottom: 2px solid var(--primary-color) !important;
+} */
+
+/* Force preview iframe to take full height/width */
+.sandpack-preview-view .sp-preview-iframe {
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+/* Ensure no space is wasted in preview mode */
+.sandpack-preview-view .sp-preview > div {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Fix the preview container when in preview mode */
+.sandpack-preview-view .sp-layout > div:nth-child(2) {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Apply styles specifically to the preview panel in split view */
+.sandpack-split-view [data-orientation="horizontal"] > [data-panel]:nth-child(3) {
+  min-width: 0 !important;
+  width: 50% !important;
+  flex: 0 0 50% !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Ensure the preview container in split view is sized correctly */
+.sandpack-split-view .sp-preview-container {
+  height: 100% !important;
+  width: 100% !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+/* Make sure all preview tabs have consistent size */
+.sp-preview-actions button,
+.sp-preview-container [data-preview-tab] {
+  min-width: 120px !important;
+  max-width: 200px !important;
+  height: 36px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  padding: 0 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  font-size: 14px !important;
+}
+
+/* Fix preview header height to be consistent */
+.sp-preview-actions,
+.sp-preview-container .sp-tabs {
+  height: 36px !important;
+  min-height: 36px !important;
+  max-height: 36px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  flex: 0 0 36px !important;
+  box-sizing: border-box !important;
+  border-bottom: 1px solid var(--border-color, #333) !important;
+}
+
+/* Fix iframe container in split view to maintain static sizing */
+.sandpack-split-view .sp-preview-iframe {
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  background-color: transparent !important;
+  border: none !important;
+}
+
+/* Fix the split view panel widths to be static and predefined - prevent ANY resizing */
+.sandpack-split-view [data-orientation="horizontal"] > [data-panel]:nth-child(1) {
+  width: 50% !important;
+  min-width: 50% !important; 
+  max-width: 50% !important;
+  flex: 0 0 50% !important;
+  overflow: hidden !important; /* Ensure content doesn't push panel width */
+  height: 100% !important;
+  position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.sandpack-split-view [data-orientation="horizontal"] > [data-panel]:nth-child(3) {
+  width: 50% !important;
+  min-width: 50% !important;
+  max-width: 50% !important;
+  flex: 0 0 50% !important;
+  overflow: hidden !important; /* Ensure content doesn't push panel width */
+  height: 100% !important;
+  position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Completely disable the resize handle */
+.sandpack-split-view [data-orientation="horizontal"] > [data-panel-resizer] {
+  display: none !important;
+  width: 0 !important; /* Ensure no width is taken by the resizer */
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* Additional fix for horizontal layout */
+.sandpack-split-view [data-orientation="horizontal"] {
+  display: flex !important;
+  flex-direction: row !important;
+  width: 100% !important;
+  cursor: default !important;
+  gap: 0 !important; /* Remove any gap between panels */
+  align-items: stretch !important;
+  justify-content: space-between !important;
+  overflow: hidden !important;
+  height: 100% !important;
+}
+
+/* Ensure each panel in split view contains its content */
+.sandpack-split-view [data-panel] > * {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  flex: 1 1 auto !important;
+  position: relative !important;
+}
+
+/* Fix content inside panels to ensure they're properly sized */
+.sandpack-split-view [data-panel]:nth-child(1) .sp-stack,
+.sandpack-split-view [data-panel]:nth-child(3) .sp-preview-container {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  flex: 1 1 auto !important;
+}
+
+/* Force consistent full-width for all react-vis charts in split view */
+.sandpack-split-view .rv-xy-plot {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+  background-color: white !important;
+}
+
+/* Ensure consistent widths for all types of content */
+.sandpack-code-view .sp-code-editor,
+.sandpack-preview-view .sp-preview,
+.sandpack-split-view .sp-code-editor,
+.sandpack-split-view .sp-preview {
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+/* Ensure all content is properly contained and doesn't overflow */
+.sp-wrapper, 
+.sp-layout,
+.sp-stack, 
+.sp-preview-container,
+.sp-code-editor {
+  overflow: hidden !important;
+}
+
+/* Fix any issues with react-vis charts in preview */
+.sandpack-preview-view .rv-xy-plot {
+  overflow: visible !important; /* Allow charts to render properly */
+  width: 100% !important;
+  height: 100% !important;
+  background-color: white !important;
+}
+
+/* Ensure preview iframe takes full space in both preview and split view */
+.sandpack-preview-view .sp-preview-iframe,
+.sandpack-split-view .sp-preview-iframe {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 100% !important;
+  flex: 1 1 auto !important;
+  border: none !important;
+  background: transparent !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Additional specific selectors to catch all possible cases for clicking state */
+button.sp-tab-button:active,
+.sp-tabs > button:active,
+[role="tab"]:active,
+.sp-tab-button[role="tab"]:active,
+.sp-tab-button:focus,
+.sp-tab-button:focus-visible {
+  background-color: transparent !important;
+  background: transparent !important;
+  -webkit-tap-highlight-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Universal selector to disable all active/focus styles in tab area */
+.sp-tabs * {
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+/* Direct targeting of the white background issue */
+.sp-tab-button::-moz-focus-inner,
+.sp-tabs button::-moz-focus-inner {
+  border: 0 !important;
+}
+
+/* Ensure there's no white background on any interaction state */
+.sp-tab-button,
+.sp-tabs button {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  touch-action: manipulation !important;
+}
+
+/* Reset any browser default styles that might be causing white background */
+.sp-tab-button:active,
+.sp-tabs button:active {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  transition: none !important;
+}
+
+/* Override any existing active tab styling */
+.sp-tab-button[data-active] *,
+.sp-tab-button[aria-selected="true"] *,
+.sp-tabs button[data-active] *,
+.sp-tabs button[aria-selected="true"] * {
+  background-color: transparent !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Styling for the 'View In Browser' button */
+.open-browser-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--primary-color);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.open-browser-button:hover {
+  background-color: var(--primary-hover);
+}
+
+.open-browser-button svg {
+  width: 16px;
+  height: 16px;
+}

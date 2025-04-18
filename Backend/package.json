@@ -1,0 +1,8 @@
+{
+  "name": "gemini-chat-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "python app.py"
+  }
+} 

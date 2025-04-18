@@ -1,0 +1,563 @@
+/* Add the missing primary-color-rgb definition - can be placed near the top */
+:root {
+  --primary-color-rgb: 74, 110, 224; /* RGB values for #4a6ee0 */
+}
+
+.creation-window {
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 45%;
+  max-width: 700px;
+  min-width: 400px;
+  height: 100vh;
+  background-color: var(--bg-secondary);
+  border-left: 1px solid var(--border-color);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -5px 0 15px rgba(0, 0, 0, 0.1);
+  transform: translateX(100%);
+  transition: transform 0.3s ease-in-out;
+}
+
+.creation-window.entering {
+  transform: translateX(100%);
+}
+
+.creation-window.visible {
+  transform: translateX(0);
+}
+
+.creation-window.exiting {
+  transform: translateX(100%);
+}
+
+.creation-window-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+}
+
+.creation-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  background-color: var(--primary-color);
+  color: white;
+  margin-right: 10px;
+}
+
+.creation-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0;
+}
+
+/* Add styles for view toggle buttons */
+.creation-view-toggle {
+  display: flex;
+  gap: 5px;
+  margin-right: 10px;
+}
+
+.view-toggle-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none; /* Remove default focus outline */
+}
+
+.view-toggle-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.view-toggle-button:focus {
+  outline: none; /* Remove focus outline */
+}
+
+.view-toggle-button.active {
+  background-color: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+}
+
+.view-toggle-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.creation-window-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 50%;
+  margin-left: 8px;
+}
+
+.creation-window-close:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.creation-window-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  position: relative; /* Add position relative for child positioning */
+}
+
+/* View transition animation styles */
+.view-transitioning {
+  position: relative;
+  overflow: hidden;
+}
+
+.view-container {
+  width: 100%;
+  height: 100%;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.view-transitioning .view-container {
+  animation: fade-zoom 0.3s ease;
+}
+
+@keyframes fade-zoom {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Add styles for code view container */
+.creation-code-view {
+  height: 100%;
+  overflow: auto;
+  border-radius: 4px;
+  margin: -16px; /* Offset parent padding */
+}
+
+.creation-code-view pre {
+  margin: 0 !important;
+  height: 100%;
+}
+
+/* Responsive behavior */
+@media (max-width: 1024px) {
+  .creation-window {
+    width: 60%;
+  }
+}
+
+@media (max-width: 768px) {
+  .creation-window {
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .creation-view-toggle span {
+    display: none; /* Hide text on small screens, show only icons */
+  }
+}
+
+/* Creation type specific colors */
+.creation-type-badge {
+  background-color: #4a6ee0; /* Default blue */
+}
+
+.creation-type-badge[data-type="html"] {
+  background-color: #e34c26; /* HTML orange */
+}
+
+.creation-type-badge[data-type="code"] {
+  background-color: #4a6ee0; /* Code blue */
+}
+
+.creation-type-badge[data-type="markdown"] {
+  background-color: #1d70b8; /* Markdown blue */
+}
+
+.creation-type-badge[data-type="svg"] {
+  background-color: #ff9a00; /* SVG orange */
+}
+
+.creation-type-badge[data-type="mermaid"] {
+  background-color: #1a9f60; /* Mermaid green */
+}
+
+.creation-type-badge[data-type="react"] {
+  background-color: #61dafb; /* React blue */
+  color: #282c34; /* Dark text for light background */
+}
+
+/* Creation notification in messages */
+.creation-notification {
+  display: flex;
+  align-items: center;
+  margin: 10px 0;
+  padding: 8px 12px;
+  background-color: var(--bg-tertiary);
+  border-left: 3px solid var(--primary-color);
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.creation-notification-icon {
+  margin-right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-color);
+}
+
+.creation-notification-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.creation-notification-text strong {
+  color: var(--text-primary);
+  margin-right: 5px;
+}
+
+/* Add streaming indicator styling */
+.streaming-indicator {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  background-color: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  animation: pulse 1.5s infinite;
+  z-index: 10;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  border-left: 3px solid #4caf50;
+}
+
+.streaming-indicator:before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background-color: #4caf50;
+  border-radius: 50%;
+  margin-right: 8px;
+  animation: blink 1s infinite;
+}
+
+.streaming-indicator:after {
+  content: '- Please do not close';
+  color: #ff9800;
+  font-weight: 500;
+  margin-left: 5px;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.8;
+  }
+}
+
+@keyframes blink {
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
+/* Creation indicator box styles */
+.creation-indicators {
+  display: flex;
+  gap: 10px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+  width: 100%;
+  position: relative;
+}
+
+.creation-indicator-box {
+  display: flex;
+  align-items: center;
+  padding: 12px 24px;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  max-width: 240px;
+  min-width: 120px;
+}
+
+.creation-indicator-box:hover {
+  transform: translateY(-3px); /* Increased from -2px */
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.15);
+  background-color: var(--bg-hover);
+}
+
+.creation-indicator-box:active {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.creation-indicator-icon {
+  margin-right: 12px; /* Increased from 8px */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-color);
+}
+
+.creation-indicator-icon svg {
+  width: 20px; /* Increased from default 14px */
+  height: 20px; /* Increased from default 14px */
+}
+
+.creation-indicator-type {
+  font-size: 14px; /* Increased from 12px */
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Streaming creation container */
+.streaming-creation-container {
+  border-top-color: var(--primary-color);
+  margin-top: 15px;
+  opacity: 0.9;
+}
+
+/* Streaming creation indicator */
+.creation-indicator-box.streaming {
+  cursor: not-allowed;
+  animation: subtle-pulse 2s infinite;
+  opacity: 0.9;
+  padding: 12px 24px; /* Match the doubled size */
+  background-color: rgba(var(--primary-color-rgb, 74, 110, 224), 0.1);
+  border-color: var(--primary-color);
+}
+
+/* Wave animation for streaming indicator */
+.streaming-wave {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px; /* Increased from 3px */
+  width: 100%;
+  background: linear-gradient(90deg, transparent, var(--primary-color), transparent);
+  animation: wave 2s ease-in-out infinite;
+}
+
+@keyframes subtle-pulse {
+  0% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes wave {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+/* Add styles for React preview-only mode */
+.react-preview .react-component-container {
+  max-height: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.react-preview .react-component-container.sandpack-preview-view {
+  height: 100%;
+}
+
+.react-preview .sandpack-actions {
+  justify-content: flex-end;
+  padding: 8px 12px;
+  background-color: transparent;
+  border-bottom: none;
+}
+
+/* Make the Sandpack editor take full height in preview mode */
+.react-preview .sp-wrapper {
+  height: 100%;
+}
+
+.react-preview .sp-layout {
+  height: 100% !important;
+  overflow: hidden;
+}
+
+.react-preview .sp-preview-container {
+  height: 100% !important;
+  flex: 1;
+  overflow: auto;
+}
+
+/* Hide code editor in react-preview mode */
+.react-preview .sp-editor {
+  display: none !important;
+}
+
+/* Override the preview container styles for react-preview mode */
+.react-preview .creation-content-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Streaming close warning notification */
+.streaming-close-warning {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(255, 59, 48, 0.9);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 2000;
+  animation: fade-in 0.3s ease;
+  text-align: center;
+  max-width: 90%;
+}
+
+.streaming-close-warning.fade-out {
+  animation: fade-out 0.3s ease forwards;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+}
+
+/* Disabled state for view toggle buttons */
+.view-toggle-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--bg-secondary);
+  border-color: var(--border-color);
+  color: var(--text-secondary);
+}
+
+.view-toggle-button.disabled:hover {
+  background-color: var(--bg-secondary);
+  transform: none;
+  box-shadow: none;
+}
+
+.view-toggle-button.disabled.active {
+  background-color: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+/* Disabled close button during streaming */
+.creation-window-close.streaming-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--bg-secondary);
+  animation: pulse-faint 2s infinite;
+}
+
+.creation-window-close.streaming-disabled:hover {
+  background-color: var(--bg-secondary);
+  opacity: 0.5;
+}
+
+@keyframes pulse-faint {
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0.4;
+  }
+} 

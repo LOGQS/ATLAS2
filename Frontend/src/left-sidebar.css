@@ -1,0 +1,135 @@
+/* Chat History styles */
+.chat-history-list {
+  margin-bottom: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.chat-history-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  transition: all 0.2s ease;
+  border-left: 3px solid transparent;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  position: relative;
+}
+
+.chat-history-item svg {
+  margin-right: 10px;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.chat-history-item .chat-item-details {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+}
+
+.chat-history-item .chat-item-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.chat-history-item .chat-item-date {
+  font-size: 12px;
+  color: var(--text-color-secondary, rgba(255, 255, 255, 0.6));
+  margin-top: 2px;
+}
+
+.chat-history-item:hover {
+  background-color: rgba(78, 115, 237, 0.1);
+  border-left-color: rgba(78, 115, 237, 0.5);
+}
+
+.chat-history-item.active {
+  background-color: rgba(78, 115, 237, 0.15);
+  border-left: 3px solid #4e73ed;
+}
+
+.chat-item-delete {
+  opacity: 0;
+  background: none;
+  border: none;
+  padding: 5px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.5);
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-history-item:hover .chat-item-delete {
+  opacity: 0.7;
+}
+
+.chat-item-delete:hover {
+  opacity: 1 !important;
+  background-color: rgba(255, 0, 0, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.chat-history-actions {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.new-chat-button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  background-color: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-weight: 400;
+  transition: all 0.2s ease;
+}
+
+.new-chat-button:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.new-chat-button svg {
+  margin-right: 8px;
+}
+
+/* Empty history message */
+.empty-history-message {
+  padding: 12px 8px;
+  text-align: center;
+}
+
+.empty-history-message .sidebar-text {
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* Task section styling */
+.sidebar-section {
+  margin-bottom: 16px;
+}
+
+.sidebar-section .sidebar-heading {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  padding: 0 12px;
+} 

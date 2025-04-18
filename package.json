@@ -1,0 +1,19 @@
+{
+  "name": "gemini-chat",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "install": "cd Frontend && npm install && cd ../Backend && pip install -r requirements.txt",
+    "frontend": "cd Frontend && npm run dev",
+    "backend": "cd Backend && python app.py",
+    "start": "npx concurrently \"npm run backend\" \"npm run frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.5.0",
+    "rehype-raw": "^7.0.0"
+  }
+}
