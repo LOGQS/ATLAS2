@@ -1514,6 +1514,27 @@ body.task-mode {
   transform: translateX(-50%) translateY(0);
 }
 
+/* Fix for first node tooltip overflowing left */
+.journey-node:first-child .node-details {
+  left: 0;
+  transform: translateX(0) translateY(10px);
+}
+
+.journey-node:first-child:hover .node-details {
+  transform: translateX(0) translateY(0);
+}
+
+/* Fix for last node tooltip overflowing right */
+.journey-node:last-child .node-details {
+  left: auto;
+  right: 0;
+  transform: translateX(0) translateY(10px);
+}
+
+.journey-node:last-child:hover .node-details {
+  transform: translateX(0) translateY(0);
+}
+
 .node-details::before {
   content: '';
   position: absolute;
@@ -1527,6 +1548,16 @@ body.task-mode {
   border-top: 8px solid var(--task-secondary);
 }
 
+/* Adjust triangle position for first and last nodes */
+.journey-node:first-child .node-details::before {
+  left: 20px;
+}
+
+.journey-node:last-child .node-details::before {
+  left: auto;
+  right: 20px;
+}
+
 .node-details h4 {
   margin: 0 0 8px;
   font-size: 14px;
@@ -1538,6 +1569,9 @@ body.task-mode {
   font-size: 12px;
   color: var(--task-text-secondary);
   line-height: 1.4;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
 }
 
 /* Enhanced Plan Summary */
