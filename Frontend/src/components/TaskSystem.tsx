@@ -56,7 +56,6 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
   const [fileAttachments, setFileAttachments] = useState<File[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [activeView, setActiveView] = useState<'chat' | 'context'>('chat');
   
   // New state variables for backend integration
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -1233,22 +1232,6 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
               )}
             </h2>
             <div className="task-header-actions">
-              <button 
-                className="task-view-toggle"
-                onClick={() => setActiveView(activeView === 'chat' ? 'context' : 'chat')}
-                title={activeView === 'chat' ? 'Show Task Context' : 'Show Chat'}
-              >
-                {activeView === 'chat' ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                  </svg>
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                  </svg>
-                )}
-              </button>
               <button className="close-button" onClick={onClose}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1328,288 +1311,53 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
               </div>
             </div>
             
-            {/* Main content area with tabs for chat and context */}
+            {/* Main content area */}
             <div className="task-main-area">
-              {activeView === 'chat' ? (
-                <div className="task-chat-container">
-                  {/* New control icons for panels */}
-                  <div className="panel-controls">
-                    <button 
-                      className={`panel-toggle ${isPlanVisible ? 'active' : ''}`}
-                      onClick={togglePlanView}
-                      title="Task Steps"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <path d="M9 3v18" />
-                        <path d="M14 8h.01" />
-                        <path d="M14 12h.01" />
-                        <path d="M14 16h.01" />
-                      </svg>
-                      Steps
-                    </button>
-                    <button 
-                      className={`panel-toggle ${isScreenshotVisible ? 'active' : ''}`}
-                      onClick={toggleScreenshotView}
-                      title="Timeline"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <circle cx="8.5" cy="8.5" r="1.5"/>
-                        <polyline points="21 15 16 10 5 21"/>
-                      </svg>
-                      Timeline
-                    </button>
-                  </div>
-                  
-                  {/* Task Journey Panel - Shown when toggled */}
-                  {isPlanVisible && (
-                    <div className="dropdown-panel journey-panel" style={{ userSelect: 'none' }}>
-                      <div className="panel-header">
-                        <h3>
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
-                            <line x1="4" y1="22" x2="4" y2="15"></line>
-                          </svg>
-                          Task Steps
-                        </h3>
-                        <button className="panel-close" onClick={togglePlanView} title="Close panel">
-                          X
-                        </button>
-                      </div>
-                      
-                      <div className="journey-path">
-                        <div 
-                          className="journey-path-line" 
-                          style={{ '--journey-progress': journeyProgress } as React.CSSProperties}
-                        ></div>
-                        <div className="journey-nodes">
-                          {planSteps.map((step, index) => (
-                            <div 
-                              key={step.id}
-                              className="journey-node"
-                            >
-                              <div className={`node-indicator ${step.status}`}>
-                                {index + 1}
-                                <div className={`node-status ${step.status}`}>
-                                  {step.status === 'completed' && '✓ Completed'}
-                                  {step.status === 'in-progress' && '► In Progress'}
-                                  {step.status === 'error' && '✗ Error'}
-                                  {step.status === 'planned' && '○ Planned'}
-                                </div>
-                              </div>
-                              <div className="node-label">{step.title}</div>
-                              <div className="node-details">
-                                <p>{step.description}</p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                      
-                      <div className="plan-summary">
-                        <h4>Task Plan Progress</h4>
-                        <div className="plan-progress">
-                          <div className="progress-bar-container">
-                            <div 
-                              className="progress-bar" 
-                              style={{ width: `${calculateProgress()}%` }}
-                            ></div>
-                          </div>
-                          <div className="progress-text">
-                            {calculateProgress()}% Complete
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Timeline Panel with Screenshots - Shown when toggled */}
-                  {isScreenshotVisible && (
-                    <div className="dropdown-panel screenshot-panel">
-                      <div className="panel-header">
-                        <h3>
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                            <circle cx="8.5" cy="8.5" r="1.5"/>
-                            <polyline points="21 15 16 10 5 21"/>
-                          </svg>
-                          Timeline
-                          <div className="tv-screen-status-badge">
-                            {planSteps[currentStepIndex]?.status === 'completed' && 'Completed'}
-                            {planSteps[currentStepIndex]?.status === 'in-progress' && 'In Progress'}
-                            {planSteps[currentStepIndex]?.status === 'planned' && 'Planned'}
-                            {planSteps[currentStepIndex]?.status === 'error' && 'Error'}
-                          </div>
-                        </h3>
-                        <button className="panel-close" onClick={toggleScreenshotView} title="Close panel">
-                          X
-                        </button>
-                      </div>
-                      
-                      <div className="tv-screen-container">
-                        <div className="tv-screen-content">
-                          {planSteps[currentStepIndex]?.screenshot ? (
-                            <img 
-                              src={planSteps[currentStepIndex].screenshot} 
-                              alt={planSteps[currentStepIndex].title} 
-                              className="tv-screen-image"
-                            />
-                          ) : (
-                            <div className="tv-content-placeholder">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
-                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                                <circle cx="8.5" cy="8.5" r="1.5"/>
-                                <polyline points="21 15 16 10 5 21"/>
-                              </svg>
-                              <p>No screenshot available for this step</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      
-                      {/* Add the timeline component directly below the screenshot */}
-                      <div className="timeline-container">
-                        <div className="task-timeline-slider-container">
-                          <input 
-                            type="range" 
-                            min="0" 
-                            max={planSteps.length - 1} 
-                            value={currentStepIndex} 
-                            onChange={(e) => setCurrentStepIndex(parseInt(e.target.value))}
-                            className="task-timeline-slider"
-                            aria-label="Timeline Progress"
-                          />
-                          
-                          {/* Hide the markers by setting display: none */}
-                          <div className="task-timeline-markers" style={{ display: 'none' }}>
-                            {planSteps.map((step, index) => (
-                              <div 
-                                key={`marker-${step.id}`} 
-                                className={`task-timeline-marker ${step.status}`}
-                                style={{ left: `${(index / (planSteps.length - 1)) * 100}%` }}
-                                onClick={() => setCurrentStepIndex(index)}
-                                title={step.title}
-                              >
-                                <div className="marker-tooltip">{step.title}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        
-                        <div className="timeline-controls">
-                          <button 
-                            className="timeline-nav-button"
-                            onClick={() => {
-                              setCurrentStepIndex(Math.max(0, currentStepIndex - 1));
-                              // Remove focus from the button after clicking
-                              if (document.activeElement instanceof HTMLElement) {
-                                document.activeElement.blur();
-                              }
-                            }}
-                            disabled={currentStepIndex === 0}
-                          >
-                            Previous
-                          </button>
-                          <span style={{ 
-                            display: 'inline-block', 
-                            textAlign: 'center',
-                            fontSize: '14px',
-                            color: '#666',
-                            margin: '0 10px'
-                          }}>
-                            Step {currentStepIndex + 1}/{planSteps.length}
-                          </span>
-                          <button 
-                            className="timeline-nav-button"
-                            onClick={() => {
-                              setCurrentStepIndex(Math.min(planSteps.length - 1, currentStepIndex + 1));
-                              // Remove focus from the button after clicking
-                              if (document.activeElement instanceof HTMLElement) {
-                                document.activeElement.blur();
-                              }
-                            }}
-                            disabled={currentStepIndex === planSteps.length - 1}
-                          >
-                            Next
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Chat Messages Container */}
-                  <div className="chat-messages-container">
-                    <div className="chat-messages">
-                      {renderMessages()}
-                    </div>
-                  </div>
-                  
-                  {/* Chat input component at the bottom */}
-                  <form className="chat-input-container" onSubmit={handleSubmit}>
-                    <div className="task-input-container">
-                      <input
-                        type="text"
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        placeholder={isStreaming ? "AI is responding..." : "Message the agent..."}
-                        className={`task-input ${isStreaming ? 'streaming' : ''}`}
-                        disabled={isStreaming}
-                      />
-                      <div className="task-input-actions">
-                        <button 
-                          type="button" 
-                          className="attach-button"
-                          onClick={triggerFileInput}
-                          title="Attach files"
-                          disabled={isStreaming}
-                        >
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M21.44 11.05L12.25 20.24C11.1242 21.3658 9.58718 21.9983 8.00505 21.9983C6.42291 21.9983 4.88589 21.3658 3.76005 20.24C2.63421 19.1141 2.00171 17.5771 2.00171 15.995C2.00171 14.4128 2.63421 12.8758 3.76005 11.75L12.33 3.18C13.0806 2.42949 14.0998 2.00098 15.165 2.00098C16.2302 2.00098 17.2494 2.42949 18 3.18C18.7505 3.93051 19.179 4.94975 19.179 6.015C19.179 7.08025 18.7505 8.09949 18 8.85L9.41 17.44C9.03472 17.8153 8.52644 18.0246 7.9975 18.0246C7.46855 18.0246 6.96028 17.8153 6.585 17.44C6.20972 17.0647 6.00038 16.5564 6.00038 16.0275C6.00038 15.4985 6.20972 14.9903 6.585 14.615L14.5 6.7" 
-                          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                        <input
-                          type="file"
-                          multiple
-                          ref={fileInputRef}
-                          onChange={handleFileInputChange}
-                          style={{ display: 'none' }}
-                          disabled={isStreaming}
-                        />
-                        <button 
-                          type="submit" 
-                          className={`send-button ${isStreaming ? 'streaming' : ''}`} 
-                          title={isStreaming ? "AI is responding..." : "Send message"}
-                          disabled={isStreaming}
-                        >
-                          {isStreaming ? (
-                            <div className="streaming-dots">
-                              <span></span><span></span><span></span>
-                            </div>
-                          ) : (
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                            <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </form>
+              <div className="task-chat-container">
+                {/* New control icons for panels */}
+                <div className="panel-controls">
+                  <button 
+                    className={`panel-toggle ${isPlanVisible ? 'active' : ''}`}
+                    onClick={togglePlanView}
+                    title="Task Steps"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M9 3v18" />
+                      <path d="M14 8h.01" />
+                      <path d="M14 12h.01" />
+                      <path d="M14 16h.01" />
+                    </svg>
+                    Steps
+                  </button>
+                  <button 
+                    className={`panel-toggle ${isScreenshotVisible ? 'active' : ''}`}
+                    onClick={toggleScreenshotView}
+                    title="Timeline"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5"/>
+                      <polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                    Timeline
+                  </button>
                 </div>
-              ) : (
-                <div className="task-context-view">
-                  {/* Similar journey visualization for context view */}
-                  <div className="visual-plan-container">
-                    <div className="visual-plan-header">
+                
+                {/* Task Journey Panel - Shown when toggled */}
+                {isPlanVisible && (
+                  <div className="dropdown-panel journey-panel" style={{ userSelect: 'none' }}>
+                    <div className="panel-header">
                       <h3>
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
                           <line x1="4" y1="22" x2="4" y2="15"></line>
                         </svg>
-                        Current Step Details
+                        Task Steps
                       </h3>
+                      <button className="panel-close" onClick={togglePlanView} title="Close panel">
+                        X
+                      </button>
                     </div>
                     
                     <div className="journey-path">
@@ -1629,6 +1377,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                                 {step.status === 'completed' && '✓ Completed'}
                                 {step.status === 'in-progress' && '► In Progress'}
                                 {step.status === 'error' && '✗ Error'}
+                                {step.status === 'planned' && '○ Planned'}
                               </div>
                             </div>
                             <div className="node-label">{step.title}</div>
@@ -1639,39 +1388,198 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                         ))}
                       </div>
                     </div>
-                  </div>
-                  
-                  {/* Step Details Card */}
-                  <div className="context-section">
-                    <h3 className="context-section-title">Current Step</h3>
-                    <div className="step-details-card">
-                      <div className="step-status">
-                        {planSteps[currentStepIndex]?.status === 'completed' && <span className="status completed">✓ Completed</span>}
-                        {planSteps[currentStepIndex]?.status === 'in-progress' && <span className="status in-progress">► In Progress</span>}
-                        {planSteps[currentStepIndex]?.status === 'planned' && <span className="status planned">○ Planned</span>}
-                        {planSteps[currentStepIndex]?.status === 'error' && <span className="status error">✗ Error</span>}
+                    
+                    <div className="plan-summary">
+                      <h4>Task Plan Progress</h4>
+                      <div className="plan-progress">
+                        <div className="progress-bar-container">
+                          <div 
+                            className="progress-bar" 
+                            style={{ width: `${calculateProgress()}%` }}
+                          ></div>
+                        </div>
+                        <div className="progress-text">
+                          {calculateProgress()}% Complete
+                        </div>
                       </div>
-                      <h4>{planSteps[currentStepIndex]?.title}</h4>
-                      <p>{planSteps[currentStepIndex]?.description}</p>
                     </div>
                   </div>
-                  
-                  {/* Context and Resources */}
-                  <div className="context-grid">
-                    {/* Screenshots */}
-                    <div className="context-section">
-                      <h3 className="context-section-title">Screenshot</h3>
-                      <div className="screenshot-card">
-                        <img 
-                          src={planSteps[currentStepIndex]?.screenshot} 
-                          alt={planSteps[currentStepIndex]?.title} 
-                          className="task-screenshot"
+                )}
+                
+                {/* Timeline Panel with Screenshots - Shown when toggled */}
+                {isScreenshotVisible && (
+                  <div className="dropdown-panel screenshot-panel">
+                    <div className="panel-header">
+                      <h3>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                          <circle cx="8.5" cy="8.5" r="1.5"/>
+                          <polyline points="21 15 16 10 5 21"/>
+                        </svg>
+                        Timeline
+                        <div className="tv-screen-status-badge">
+                          {planSteps[currentStepIndex]?.status === 'completed' && 'Completed'}
+                          {planSteps[currentStepIndex]?.status === 'in-progress' && 'In Progress'}
+                          {planSteps[currentStepIndex]?.status === 'planned' && 'Planned'}
+                          {planSteps[currentStepIndex]?.status === 'error' && 'Error'}
+                        </div>
+                      </h3>
+                      <button className="panel-close" onClick={toggleScreenshotView} title="Close panel">
+                        X
+                      </button>
+                    </div>
+                    
+                    <div className="tv-screen-container">
+                      <div className="tv-screen-content">
+                        {planSteps[currentStepIndex]?.screenshot ? (
+                          <img 
+                            src={planSteps[currentStepIndex].screenshot} 
+                            alt={planSteps[currentStepIndex].title} 
+                            className="tv-screen-image"
+                          />
+                        ) : (
+                          <div className="tv-content-placeholder">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+                              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                              <circle cx="8.5" cy="8.5" r="1.5"/>
+                              <polyline points="21 15 16 10 5 21"/>
+                            </svg>
+                            <p>No screenshot available for this step</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Add the timeline component directly below the screenshot */}
+                    <div className="timeline-container">
+                      <div className="task-timeline-slider-container">
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max={planSteps.length - 1} 
+                          value={currentStepIndex} 
+                          onChange={(e) => setCurrentStepIndex(parseInt(e.target.value))}
+                          className="task-timeline-slider"
+                          aria-label="Timeline Progress"
                         />
+                        
+                        {/* Hide the markers by setting display: none */}
+                        <div className="task-timeline-markers" style={{ display: 'none' }}>
+                          {planSteps.map((step, index) => (
+                            <div 
+                              key={`marker-${step.id}`} 
+                              className={`task-timeline-marker ${step.status}`}
+                              style={{ left: `${(index / (planSteps.length - 1)) * 100}%` }}
+                              onClick={() => setCurrentStepIndex(index)}
+                              title={step.title}
+                            >
+                              <div className="marker-tooltip">{step.title}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      
+                      <div className="timeline-controls">
+                        <button 
+                          className="timeline-nav-button"
+                          onClick={() => {
+                            setCurrentStepIndex(Math.max(0, currentStepIndex - 1));
+                            // Remove focus from the button after clicking
+                            if (document.activeElement instanceof HTMLElement) {
+                              document.activeElement.blur();
+                            }
+                          }}
+                          disabled={currentStepIndex === 0}
+                        >
+                          Previous
+                        </button>
+                        <span style={{ 
+                          display: 'inline-block', 
+                          textAlign: 'center',
+                          fontSize: '14px',
+                          color: '#666',
+                          margin: '0 10px'
+                        }}>
+                          Step {currentStepIndex + 1}/{planSteps.length}
+                        </span>
+                        <button 
+                          className="timeline-nav-button"
+                          onClick={() => {
+                            setCurrentStepIndex(Math.min(planSteps.length - 1, currentStepIndex + 1));
+                            // Remove focus from the button after clicking
+                            if (document.activeElement instanceof HTMLElement) {
+                              document.activeElement.blur();
+                            }
+                          }}
+                          disabled={currentStepIndex === planSteps.length - 1}
+                        >
+                          Next
+                        </button>
                       </div>
                     </div>
+                  </div>
+                )}
+                
+                {/* Chat Messages Container */}
+                <div className="chat-messages-container">
+                  <div className="chat-messages">
+                    {renderMessages()}
                   </div>
                 </div>
-              )}
+                
+                {/* Chat input component at the bottom */}
+                <form className="chat-input-container" onSubmit={handleSubmit}>
+                  <div className="task-input-container">
+                    <input
+                      type="text"
+                      value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      placeholder={isStreaming ? "AI is responding..." : "Message the agent..."}
+                      className={`task-input ${isStreaming ? 'streaming' : ''}`}
+                      disabled={isStreaming}
+                    />
+                    <div className="task-input-actions">
+                      <button 
+                        type="button" 
+                        className="attach-button"
+                        onClick={triggerFileInput}
+                        title="Attach files"
+                        disabled={isStreaming}
+                      >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M21.44 11.05L12.25 20.24C11.1242 21.3658 9.58718 21.9983 8.00505 21.9983C6.42291 21.9983 4.88589 21.3658 3.76005 20.24C2.63421 19.1141 2.00171 17.5771 2.00171 15.995C2.00171 14.4128 2.63421 12.8758 3.76005 11.75L12.33 3.18C13.0806 2.42949 14.0998 2.00098 15.165 2.00098C16.2302 2.00098 17.2494 2.42949 18 3.18C18.7505 3.93051 19.179 4.94975 19.179 6.015C19.179 7.08025 18.7505 8.09949 18 8.85L9.41 17.44C9.03472 17.8153 8.52644 18.0246 7.9975 18.0246C7.46855 18.0246 6.96028 17.8153 6.585 17.44C6.20972 17.0647 6.00038 16.5564 6.00038 16.0275C6.00038 15.4985 6.20972 14.9903 6.585 14.615L14.5 6.7" 
+                        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                      <input
+                        type="file"
+                        multiple
+                        ref={fileInputRef}
+                        onChange={handleFileInputChange}
+                        style={{ display: 'none' }}
+                        disabled={isStreaming}
+                      />
+                      <button 
+                        type="submit" 
+                        className={`send-button ${isStreaming ? 'streaming' : ''}`} 
+                        title={isStreaming ? "AI is responding..." : "Send message"}
+                        disabled={isStreaming}
+                      >
+                        {isStreaming ? (
+                          <div className="streaming-dots">
+                            <span></span><span></span><span></span>
+                          </div>
+                        ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M22 2L11 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
             </div>
           </div>
         </div>
