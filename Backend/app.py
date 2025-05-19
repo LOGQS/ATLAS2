@@ -5,6 +5,8 @@ import logging
 import time
 import subprocess
 import sys
+import re
+import uuid
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -704,7 +706,269 @@ def debug_chats():
         logger.exception(f"Error in debug_chats: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Modify the chat function to add more logging for debugging
+# Add regex patterns for creation detection
+CREATION_START_PATTERN = r"\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$"
+CREATION_END_PATTERN = r"\$\$end\$\$"
+
+# Add a function to track streaming creations
+def track_streaming_creations(stream, chat_id):
+    """
+    Track creation patterns in the stream and log them to a JSON file.
+    This doesn't affect the original stream and runs in parallel.
+    
+    Args:
+        stream: The original real-time stream from Gemini API
+        chat_id: The ID of the current chat
+        
+    Returns:
+        The original stream unmodified
+    """
+    # Ensure the function never breaks the main streaming flow
+    try:
+        # Get absolute path to data directory
+        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        creation_log_dir = data_dir_path / "creation_logs"
+        os.makedirs(creation_log_dir, exist_ok=True)
+        
+        # Create a unique ID for this streaming session
+        streaming_id = f"stream_{chat_id}_{uuid.uuid4().hex[:8]}_{int(time.time())}"
+        log_file_path = creation_log_dir / f"{streaming_id}.json"
+        
+        # Initialize log file with simpler structure
+        log_data = {
+            "streaming_id": streaming_id,
+            "chat_id": chat_id,
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "full_accumulated_content": "",
+            "outside_creations": {},  # Changed to a dictionary for indexed access
+            "current_outside_index": 1,  # Track the current outside_creation index
+            "inside_creations": {},
+            "start_tag_count": 0,
+            "end_tag_count": 0,
+            "stats": {
+                "total_chunks": 0,
+                "creations_started": 0,
+                "creations_completed": 0,
+                "outside_sections": 0
+            },
+            "completed_at": None
+        }
+        
+        # Initialize first outside_creation section
+        outside_key = f"outside_creation_1"
+        log_data["outside_creations"][outside_key] = {
+            "content": "",
+            "is_active": True,
+            "position": 0
+        }
+        log_data["stats"]["outside_sections"] += 1
+        
+        # Save initial log data
+        with open(log_file_path, "w", encoding="utf-8") as f:
+            json.dump(log_data, f, indent=2, ensure_ascii=False)
+        
+        safe_debug(f"Creation tracking started for chat {chat_id}, log file: {log_file_path}")
+        
+        # Compile regex patterns
+        start_pattern = re.compile(CREATION_START_PATTERN)
+        end_pattern = re.compile(CREATION_END_PATTERN)
+        
+        # Process each chunk in the stream
+        accumulated_content = ""
+        last_section_end = 0  # Track where the last section (creation or outside) ended
+        
+        for chunk in stream:
+            try:
+                # Get chunk text
+                chunk_text = chunk.text if hasattr(chunk, 'text') and chunk.text else ""
+                accumulated_content += chunk_text
+                
+                # Update statistics
+                log_data["stats"]["total_chunks"] += 1
+                
+                # Update full accumulated content
+                log_data["full_accumulated_content"] = accumulated_content
+                
+                # Get ALL start and end matches in the current accumulated content
+                start_matches = list(start_pattern.finditer(accumulated_content))
+                end_matches = list(end_pattern.finditer(accumulated_content))
+                
+                # Check counts to determine the current state
+                start_count = log_data["start_tag_count"]
+                end_count = log_data["end_tag_count"]
+                current_outside_index = log_data["current_outside_index"]
+                
+                # Process any new start tags
+                while len(start_matches) > start_count:
+                    # We found a new start tag
+                    new_start_match = start_matches[start_count]
+                    start_pos = new_start_match.start()
+                    
+                    # Extract outside content before this start tag (if any)
+                    if start_pos > last_section_end:
+                        outside_content = accumulated_content[last_section_end:start_pos]
+                        
+                        # Update or create the outside creation entry
+                        outside_key = f"outside_creation_{current_outside_index}"
+                        if outside_key in log_data["outside_creations"]:
+                            log_data["outside_creations"][outside_key]["content"] = outside_content
+                            log_data["outside_creations"][outside_key]["is_active"] = False
+                            log_data["outside_creations"][outside_key]["end_position"] = start_pos
+                        else:
+                            log_data["outside_creations"][outside_key] = {
+                                "content": outside_content,
+                                "is_active": False,
+                                "position": last_section_end,
+                                "end_position": start_pos
+                            }
+                            log_data["stats"]["outside_sections"] += 1
+                    
+                    # Extract creation details
+                    creation_type = new_start_match.group(1)
+                    title_part = new_start_match.group(2) if new_start_match.group(2) else ""
+                    
+                    # Parse language if present
+                    language = None
+                    title = title_part.strip() if title_part else ""
+                    if title and ":" in title:
+                        parts = title.split(":", 1)
+                        language = parts[0].strip()
+                        title = parts[1].strip()
+                    
+                    # Create a new inside creation entry
+                    creation_key = f"inside_creation_{start_count + 1}"
+                    log_data["inside_creations"][creation_key] = {
+                        "type": creation_type,
+                        "title": title,
+                        "language": language,
+                        "content": "",  # Will accumulate content after the start tag
+                        "is_complete": False,
+                        "start_position": start_pos,
+                        "start_tag": new_start_match.group(0)
+                    }
+                    
+                    # Update last section end to after the start tag
+                    last_section_end = new_start_match.end()
+                    
+                    # Increment start tag count
+                    log_data["start_tag_count"] = start_count + 1
+                    start_count += 1
+                    log_data["stats"]["creations_started"] += 1
+                    
+                    # Write [creation_window_open] marker to log
+                    safe_debug(f"[creation_window_open] type={creation_type}, title={title}, language={language}, creation_number={start_count}")
+                
+                # Process any new end tags
+                while len(end_matches) > end_count:
+                    # We found a new end tag
+                    new_end_match = end_matches[end_count]
+                    end_pos = new_end_match.end()
+                    
+                    # Get the corresponding creation
+                    creation_key = f"inside_creation_{end_count + 1}"
+                    if creation_key in log_data["inside_creations"]:
+                        current_creation = log_data["inside_creations"][creation_key]
+                        start_pos = current_creation["start_position"]
+                        
+                        # Get the content between the start and end tags
+                        creation_content_with_tags = accumulated_content[start_pos:end_pos]
+                        start_tag = current_creation["start_tag"]
+                        
+                        # Extract content after the start tag but before the end tag
+                        content_after_start = creation_content_with_tags[len(start_tag):].rstrip()
+                        content_before_end = content_after_start[:-len("$$end$$")]
+                        
+                        # Update the creation content
+                        current_creation["content"] = content_before_end
+                        current_creation["is_complete"] = True
+                        current_creation["end_position"] = end_pos
+                        current_creation["end_tag"] = "$$end$$"
+                        
+                        # Update last section end to after the end tag
+                        last_section_end = end_pos
+                        
+                        # Start a new outside creation section
+                        new_outside_index = current_outside_index + 1
+                        new_outside_key = f"outside_creation_{new_outside_index}"
+                        log_data["outside_creations"][new_outside_key] = {
+                            "content": "",  # Start with empty content, will update as more text comes
+                            "is_active": True,
+                            "position": end_pos,
+                            "after_creation": creation_key
+                        }
+                        log_data["current_outside_index"] = new_outside_index
+                        current_outside_index = new_outside_index
+                        log_data["stats"]["outside_sections"] += 1
+                        
+                        # Increment end tag count
+                        log_data["end_tag_count"] = end_count + 1
+                        end_count += 1
+                        log_data["stats"]["creations_completed"] += 1
+                        
+                        # Write [creation_window_close] marker to log
+                        safe_debug(f"[creation_window_close] type={current_creation['type']}, creation_number={end_count}")
+                
+                # Update content for any active creations
+                if start_count > end_count:
+                    # We're inside a creation, update its content
+                    active_creation_key = f"inside_creation_{end_count + 1}"
+                    if active_creation_key in log_data["inside_creations"]:
+                        active_creation = log_data["inside_creations"][active_creation_key]
+                        start_pos = active_creation["start_position"]
+                        start_tag = active_creation["start_tag"]
+                        
+                        # Get content after this start tag to the current end
+                        if len(accumulated_content) > start_pos + len(start_tag):
+                            active_creation["content"] = accumulated_content[start_pos + len(start_tag):]
+                else:
+                    # We're outside any creation, update the active outside section
+                    active_outside_key = f"outside_creation_{current_outside_index}"
+                    if active_outside_key in log_data["outside_creations"]:
+                        active_outside = log_data["outside_creations"][active_outside_key]
+                        
+                        if active_outside.get("is_active", False):
+                            # Get content from the start of this section to the end
+                            outside_pos = active_outside["position"]
+                            if len(accumulated_content) > outside_pos:
+                                # Check for any upcoming start tags
+                                if start_matches and len(start_matches) > start_count:
+                                    # There's an upcoming start tag, only include content up to it
+                                    next_start_pos = start_matches[start_count].start()
+                                    active_outside["content"] = accumulated_content[outside_pos:next_start_pos]
+                                else:
+                                    # No upcoming start tags, include all content
+                                    active_outside["content"] = accumulated_content[outside_pos:]
+                
+                # Save updated log data
+                with open(log_file_path, "w", encoding="utf-8") as f:
+                    json.dump(log_data, f, indent=2, ensure_ascii=False)
+            
+            except Exception as e:
+                # Error during chunk processing - log it but continue
+                safe_error(f"Error processing chunk in creation tracking: {str(e)}", e)
+            
+            # Always yield the original chunk unmodified
+            yield chunk
+        
+        # Final log update
+        log_data["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Save final log
+        with open(log_file_path, "w", encoding="utf-8") as f:
+            json.dump(log_data, f, indent=2, ensure_ascii=False)
+        
+        creation_stats = f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed, {log_data['stats']['outside_sections']} outside sections"
+        safe_debug(f"Creation tracking completed for chat {chat_id}, {creation_stats}, log file: {log_file_path}")
+    
+    except Exception as e:
+        # If there's any error in the tracking logic, just log it and pass through the stream
+        safe_error(f"Error in creation tracking: {str(e)}", e)
+        
+        # Pass through the original stream unmodified
+        for chunk in stream:
+            yield chunk
+
+# Modify the chat function to add creation tracking
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
@@ -1072,12 +1336,17 @@ def chat():
                     parts, 
                     config=config
                 )
+                
+                # Track creations in the real-time stream without affecting it
+                # This wraps the original response generator but doesn't modify the contents
+                tracked_response = track_streaming_creations(response, chat_id)
+                
+                # Use the buffer_and_delay function to add a delay to the response for frontend display
+                delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                
             except Exception as e:
                 safe_debug(f"Error during send_message_stream: {str(e)}", e)
                 return jsonify({"error": str(e)}), 500
-            
-            # Use the buffer_and_delay function to add a delay to the response
-            delayed_response = buffer_and_delay(response, delay_seconds=2.0)
             
             def generate():
                 # Add a try-except block around the entire streaming process
