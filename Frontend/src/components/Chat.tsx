@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
 import Message from './Message';
+import CreationWindow from './CreationWindow'; // Import CreationWindow
 
 interface FileAttachment {
   file_id: string;
@@ -112,6 +113,11 @@ const Chat = () => {
   const isSpeechDetectedRef = useRef<boolean>(false);
   // Add ref for silence start time
   const silenceStartRef = useRef<number | null>(null);
+
+  // State for CreationWindow
+  const [activeCreationId, setActiveCreationId] = useState<string | null>(null);
+  const [activeCreationDetails, setActiveCreationDetails] = useState<{ type: string, title?: string, language?: string } | null>(null);
+  const [isCreationWindowOpen, setIsCreationWindowOpen] = useState(false);
 
   // Available models with descriptions
   const models: Model[] = [
@@ -420,9 +426,9 @@ const Chat = () => {
     setTimeout(() => {
       // Use a short timeout to ensure state is updated
       const anyUploading = attachments.some(a => a !== attachment && a.uploading);
-      console.log(`Any attachments still uploading? ${anyUploading}`);
+      // console.log(`Any attachments still uploading? ${anyUploading}`);
       if (!anyUploading) {
-        console.log('No more uploads in progress, setting isUploading to false');
+        // console.log('No more uploads in progress, setting isUploading to false');
         setIsUploading(false);
       }
     }, 0);
@@ -512,105 +518,138 @@ const Chat = () => {
   };
 
   // More stable approach to handling SSE data from the server
-  const processStreamChunk = (chunk: string) => {
-    // Process each message from the server
+  const processStreamChunk = (jsonData: string) => {
     try {
-      if (chunk.trim() === '[DONE]') {
-        finalizeStream();
-        return;
+      const parsedData = JSON.parse(jsonData);
+
+      // Store chat ID if received from server and not yet set
+      if (parsedData.chat_id && !chatId) {
+        console.log(`Setting chat ID from response: ${parsedData.chat_id}`);
+        setChatId(parsedData.chat_id);
       }
 
-      // Parse the chunk if it's JSON
-      try {
-        const data = JSON.parse(chunk);
-        
-        // Store chat ID if received from server
-        if (data.chat_id && !chatId) {
-          console.log(`Setting chat ID from response: ${data.chat_id}`);
-          setChatId(data.chat_id);
-        }
-        
-        if (data.chunk) {
-          // Accumulate content in the ref
-          accumulatedContentRef.current += data.chunk;
-          
-          // Use requestAnimationFrame to optimize UI updates for streaming Markdown
+      // Handle different signal types
+      switch (parsedData.signal_type) {
+        case "CREATION_START":
+          console.log("Received CREATION_START:", parsedData);
+          setActiveCreationId(parsedData.creationId);
+          setActiveCreationDetails({
+            type: parsedData.type,
+            title: parsedData.title,
+            language: parsedData.language,
+          });
+          setIsCreationWindowOpen(true); // Or manage this based on CreationWindow's own logic
+          // The main assistant message should not include raw tags.
+          // Ensure an assistant message bubble is present if not already.
+          setMessages(prevMessages => {
+            const lastMessage = prevMessages[prevMessages.length -1];
+            if (!lastMessage || lastMessage.role !== 'assistant' || lastMessage.content !== accumulatedContentRef.current) {
+              // If no assistant message or content differs, create a new one or update
+              // This ensures that if main_chat_content arrived before this, it's preserved.
+              if (lastMessage && lastMessage.role === 'assistant') {
+                return prevMessages.map((msg, index) => 
+                  index === prevMessages.length - 1 
+                  ? { ...msg, content: accumulatedContentRef.current } 
+                  : msg
+                );
+              }
+              return [...prevMessages, { role: 'assistant', content: accumulatedContentRef.current }];
+            }
+            return prevMessages;
+          });
+          break;
+
+        case "MAIN_CHAT_CONTENT":
+          console.log("Received MAIN_CHAT_CONTENT:", parsedData.payload.substring(0,50) + "...");
+          accumulatedContentRef.current += parsedData.payload;
           requestAnimationFrame(() => {
             setMessages(prevMessages => {
               const updatedMessages = [...prevMessages];
               const lastIndex = updatedMessages.length - 1;
-              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
-              
-              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-                // Update existing message with new content
-                updatedMessages[lastIndex] = {
-                  ...lastMessage,
-                  content: accumulatedContentRef.current
-                };
+              if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                updatedMessages[lastIndex] = { ...updatedMessages[lastIndex], content: accumulatedContentRef.current };
               } else {
-                // Create new assistant message if needed
-                updatedMessages.push({ 
-                  role: 'assistant', 
-                  content: accumulatedContentRef.current
-                });
+                updatedMessages.push({ role: 'assistant', content: accumulatedContentRef.current });
               }
-              
               return updatedMessages;
             });
           });
-          
-          // Make sure streaming flag is set
-          if (!isStreaming) {
-            setIsStreaming(true);
+          if (!isStreaming) setIsStreaming(true);
+          break;
+
+        case "CREATION_CONTENT":
+          console.log("Received CREATION_CONTENT for:", parsedData.creationId, "Payload:", parsedData.payload.substring(0,50) + "...");
+          if (parsedData.creationId === activeCreationId) {
+            window.dispatchEvent(new CustomEvent('append-creation-content', {
+              detail: { creationId: activeCreationId, chunk: parsedData.payload }
+            }));
           }
-        }
+          break;
+
+        case "CREATION_END":
+          console.log("Received CREATION_END for:", parsedData.creationId);
+          if (parsedData.creationId === activeCreationId) {
+            window.dispatchEvent(new CustomEvent('end-creation-stream', {
+              detail: { creationId: activeCreationId }
+            }));
+            setActiveCreationId(null);
+            setActiveCreationDetails(null);
+            // setIsCreationWindowOpen(false); // Decide based on UX, CreationWindow might handle its own close
+          }
+          break;
         
-        if (data.done) {
-          finalizeStream();
-        }
-      } catch {
-        // Handle non-JSON chunks
-        if (chunk.trim()) {
-          accumulatedContentRef.current += chunk;
-          
-          requestAnimationFrame(() => {
-            setMessages(prevMessages => {
-              const updatedMessages = [...prevMessages];
-              const lastIndex = updatedMessages.length - 1;
-              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
-              
-              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-                updatedMessages[lastIndex] = {
-                  ...lastMessage,
-                  content: accumulatedContentRef.current
-                };
-              } else {
-                updatedMessages.push({ 
-                  role: 'assistant', 
-                  content: accumulatedContentRef.current 
-                });
-              }
-              
-              return updatedMessages;
+        case "ERROR": // Assuming backend might send an ERROR signal type
+          console.error("Received ERROR signal from backend:", parsedData.message, parsedData);
+          // Optionally, update UI to show this error
+          // For now, just logging it.
+          // You could add an error message to the chat.
+          setMessages(prev => [...prev, {role: 'assistant', content: `Backend Error: ${parsedData.message}`}]);
+          break;
+
+        default:
+          // This case handles the old "chunk" and "done" fields if they still arrive,
+          // or any other unexpected signal.
+          if (parsedData.chunk) { // Legacy chunk handling
+            console.warn("Received legacy chunk format:", parsedData.chunk.substring(0,50) + "...");
+            accumulatedContentRef.current += parsedData.chunk;
+            requestAnimationFrame(() => {
+              setMessages(prevMessages => {
+                const updatedMessages = [...prevMessages];
+                const lastIndex = updatedMessages.length - 1;
+                if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                  updatedMessages[lastIndex] = { ...updatedMessages[lastIndex], content: accumulatedContentRef.current };
+                } else {
+                  updatedMessages.push({ role: 'assistant', content: accumulatedContentRef.current });
+                }
+                return updatedMessages;
+              });
             });
-          });
-          
-          if (!isStreaming) {
-            setIsStreaming(true);
+            if (!isStreaming) setIsStreaming(true);
           }
-        }
+          break;
       }
+
+      // Handle 'done' signal, which might be part of any message or a separate one.
+      // The backend now sends a separate {"done": true, "chat_id": "..."} after all signals.
+      if (parsedData.done) {
+        console.log("Received DONE signal.");
+        finalizeStream();
+      }
+
     } catch (error) {
-      console.error('Error processing chunk:', error);
+      console.error('Error processing stream data:', jsonData, error);
+      // If parsing fails, it might be a raw string or a different format.
+      // For robustness, you could try to append it as plain text if it's not a control message.
+      // However, with the new signal structure, all data should be JSON.
+      // If it's not JSON, it's likely an error or unexpected output.
+      // For now, we log the error. If it's critical, the stream might break.
     }
   };
 
   // Function to finalize the stream and add to message history
   const finalizeStream = (isAborted = false) => {
-    // If aborted, remove the partial assistant message
     if (isAborted) {
       setMessages(prev => {
-        // If the last message is an assistant message (streaming), remove it
         if (prev.length > 0 && prev[prev.length - 1].role === 'assistant') {
           return prev.slice(0, -1);
         }
@@ -618,30 +657,35 @@ const Chat = () => {
       });
     }
     
-    // Reset streaming and loading states
     setIsStreaming(false);
     setLoading(false);
-    setIsThinking(false); // Also reset thinking state
+    setIsThinking(false);
     
-    // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
       clearTimeout(thinkingTimeoutRef.current);
       thinkingTimeoutRef.current = null;
     }
+
+    // If a creation was active, dispatch an end event for it
+    if (activeCreationId) {
+      console.warn(`Stream finalized while creation ${activeCreationId} was active. Dispatching end-creation-stream.`);
+      window.dispatchEvent(new CustomEvent('end-creation-stream', {
+        detail: { creationId: activeCreationId, autoClosed: true } // Add a flag for auto-closed
+      }));
+      setActiveCreationId(null);
+      setActiveCreationDetails(null);
+      // setIsCreationWindowOpen(false); // Or let user close it
+    }
     
-    // Only scroll to bottom for non-aborted messages
     if (!isAborted && shouldAutoScroll) {
-      setTimeout(() => { 
-        scrollToBottom();
-      }, 50); // Small delay for rendering
+      setTimeout(() => scrollToBottom(), 50);
     }
 
-    // Refocus the textarea after response is complete
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
       }
-    }, 100); // Small delay to ensure UI updates are complete
+    }, 100);
   };
 
   /**
@@ -737,15 +781,20 @@ const Chat = () => {
     setIsStreaming(false);
     setIsThinking(false); // Reset thinking state
     setShouldAutoScroll(true);
-    accumulatedContentRef.current = '';
+    accumulatedContentRef.current = ''; // Ensure accumulated content is cleared on reset
     setAttachments([]);
+
+    // Reset creation-related state
+    setActiveCreationId(null);
+    setActiveCreationDetails(null);
+    setIsCreationWindowOpen(false);
     
     // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
       clearTimeout(thinkingTimeoutRef.current);
       thinkingTimeoutRef.current = null;
     }
-  }, [attachments, chatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling]);
+  }, [attachments, chatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling, setActiveCreationId, setActiveCreationDetails, setIsCreationWindowOpen]);
 
   // Enhanced send function to handle document caching and chat history
   const handleSend = async () => {
@@ -799,8 +848,13 @@ const Chat = () => {
     // Reset states after adding the message
     setInput('');
     setAttachments([]);
-    accumulatedContentRef.current = '';
+    accumulatedContentRef.current = ''; // Crucial: Clear accumulator for new messages
     setLoading(true);
+
+    // Reset creation-related states before sending a new message
+    setActiveCreationId(null);
+    setActiveCreationDetails(null);
+    setIsCreationWindowOpen(false);
     
     // Maintain focus on the textarea after sending
     setTimeout(() => {
@@ -1758,6 +1812,15 @@ const Chat = () => {
 
   return (
     <div className="chat-container">
+      <CreationWindow
+        isOpen={isCreationWindowOpen}
+        creationToDisplay={
+          activeCreationId && activeCreationDetails
+            ? { id: activeCreationId, ...activeCreationDetails, content: '' } // Initial content is empty, fed by events
+            : null
+        }
+        onClose={() => setIsCreationWindowOpen(false)} // Allow Chat.tsx to close it if needed
+      />
       <div className="header">
         <div className="logo-container">
           <h1 className="app-title">ATLAS</h1>

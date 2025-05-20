@@ -710,263 +710,189 @@ def debug_chats():
 CREATION_START_PATTERN = r"\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$"
 CREATION_END_PATTERN = r"\$\$end\$\$"
 
-# Add a function to track streaming creations
+# Signal types
+SIGNAL_CREATION_START = "CREATION_START"
+SIGNAL_CREATION_CONTENT = "CREATION_CONTENT"
+SIGNAL_MAIN_CHAT_CONTENT = "MAIN_CHAT_CONTENT"
+SIGNAL_CREATION_END = "CREATION_END"
+
+# Add a function to track streaming creations and yield structured signals
 def track_streaming_creations(stream, chat_id):
     """
-    Track creation patterns in the stream and log them to a JSON file.
-    This doesn't affect the original stream and runs in parallel.
+    Track creation patterns in the stream and yield structured JSON signals
+    for frontend consumption.
     
     Args:
-        stream: The original real-time stream from Gemini API
-        chat_id: The ID of the current chat
+        stream: The original real-time stream from Gemini API (chunks with .text attribute)
+        chat_id: The ID of the current chat (for logging/debugging)
         
-    Returns:
-        The original stream unmodified
+    Yields:
+        Dictionaries representing structured signals (CREATION_START, CREATION_CONTENT, etc.)
     """
-    # Ensure the function never breaks the main streaming flow
+    activeCreationId = None
+    processing_buffer = ""
+    
+    # Compile regex patterns
+    start_pattern = re.compile(CREATION_START_PATTERN)
+    end_pattern = re.compile(CREATION_END_PATTERN)
+
+    original_stream_had_content = False
+
     try:
-        # Get absolute path to data directory
-        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
-        creation_log_dir = data_dir_path / "creation_logs"
-        os.makedirs(creation_log_dir, exist_ok=True)
-        
-        # Create a unique ID for this streaming session
-        streaming_id = f"stream_{chat_id}_{uuid.uuid4().hex[:8]}_{int(time.time())}"
-        log_file_path = creation_log_dir / f"{streaming_id}.json"
-        
-        # Initialize log file with simpler structure
-        log_data = {
-            "streaming_id": streaming_id,
-            "chat_id": chat_id,
-            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "full_accumulated_content": "",
-            "outside_creations": {},  # Changed to a dictionary for indexed access
-            "current_outside_index": 1,  # Track the current outside_creation index
-            "inside_creations": {},
-            "start_tag_count": 0,
-            "end_tag_count": 0,
-            "stats": {
-                "total_chunks": 0,
-                "creations_started": 0,
-                "creations_completed": 0,
-                "outside_sections": 0
-            },
-            "completed_at": None
-        }
-        
-        # Initialize first outside_creation section
-        outside_key = f"outside_creation_1"
-        log_data["outside_creations"][outside_key] = {
-            "content": "",
-            "is_active": True,
-            "position": 0
-        }
-        log_data["stats"]["outside_sections"] += 1
-        
-        # Save initial log data
-        with open(log_file_path, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False)
-        
-        safe_debug(f"Creation tracking started for chat {chat_id}, log file: {log_file_path}")
-        
-        # Compile regex patterns
-        start_pattern = re.compile(CREATION_START_PATTERN)
-        end_pattern = re.compile(CREATION_END_PATTERN)
-        
-        # Process each chunk in the stream
-        accumulated_content = ""
-        last_section_end = 0  # Track where the last section (creation or outside) ended
-        
         for chunk in stream:
-            try:
-                # Get chunk text
-                chunk_text = chunk.text if hasattr(chunk, 'text') and chunk.text else ""
-                accumulated_content += chunk_text
+            original_stream_had_content = True # Mark that we received at least one chunk
+            if hasattr(chunk, 'text') and chunk.text:
+                processing_buffer += chunk.text
+            else:
+                # If a chunk has no text (e.g. maybe just metadata or empty from API),
+                # and there's buffered main content, yield it.
+                # This case might be rare with Gemini API but good for robustness.
+                if processing_buffer and not activeCreationId:
+                    yield {
+                        "signal_type": SIGNAL_MAIN_CHAT_CONTENT,
+                        "payload": processing_buffer
+                    }
+                    processing_buffer = ""
+                # If it's creation content, it will be handled by subsequent logic or end of stream.
+                continue # Process next chunk
+
+            # Process buffer iteratively to find all tags
+            while True:
+                # Try to find the next start or end tag
+                start_match = start_pattern.search(processing_buffer)
+                end_match = end_pattern.search(processing_buffer) if activeCreationId else None
+
+                # Determine which tag comes first, if any
+                next_event_pos = float('inf')
+                event_type = None
+
+                if start_match:
+                    next_event_pos = start_match.start()
+                    event_type = "start"
                 
-                # Update statistics
-                log_data["stats"]["total_chunks"] += 1
+                if end_match and end_match.start() < next_event_pos:
+                    next_event_pos = end_match.start()
+                    event_type = "end"
                 
-                # Update full accumulated content
-                log_data["full_accumulated_content"] = accumulated_content
+                # If no event is found in the current buffer, break and wait for more content
+                if event_type is None:
+                    break # out of while True, will append more to processing_buffer or finish
+
+                # --- Event found ---
+                # Content before the event
+                content_before_event = processing_buffer[:next_event_pos]
+                if content_before_event:
+                    if activeCreationId:
+                        yield {
+                            "signal_type": SIGNAL_CREATION_CONTENT,
+                            "creationId": activeCreationId,
+                            "payload": content_before_event
+                        }
+                        # safe_debug(f"Yielded CREATION_CONTENT for {activeCreationId}: '{content_before_event[:50]}...'")
+                    else:
+                        yield {
+                            "signal_type": SIGNAL_MAIN_CHAT_CONTENT,
+                            "payload": content_before_event
+                        }
+                        # safe_debug(f"Yielded MAIN_CHAT_CONTENT: '{content_before_event[:50]}...'")
                 
-                # Get ALL start and end matches in the current accumulated content
-                start_matches = list(start_pattern.finditer(accumulated_content))
-                end_matches = list(end_pattern.finditer(accumulated_content))
-                
-                # Check counts to determine the current state
-                start_count = log_data["start_tag_count"]
-                end_count = log_data["end_tag_count"]
-                current_outside_index = log_data["current_outside_index"]
-                
-                # Process any new start tags
-                while len(start_matches) > start_count:
-                    # We found a new start tag
-                    new_start_match = start_matches[start_count]
-                    start_pos = new_start_match.start()
+                # Process the event itself
+                if event_type == "start":
+                    # If a creation is already active, it's an implicit end for the previous one (or an error/nested case not supported)
+                    # For now, let's assume creations are not nested. If activeCreationId is not None, it's like an unclosed one.
+                    if activeCreationId:
+                        safe_warning(f"New CREATION_START found while {activeCreationId} is active. Implicitly closing previous.")
+                        yield {"signal_type": SIGNAL_CREATION_END, "creationId": activeCreationId}
+                        activeCreationId = None # Reset before starting new one
+
+                    creation_type_match = start_match.group(1)
+                    title_part = start_match.group(2) if start_match.group(2) else ""
                     
-                    # Extract outside content before this start tag (if any)
-                    if start_pos > last_section_end:
-                        outside_content = accumulated_content[last_section_end:start_pos]
-                        
-                        # Update or create the outside creation entry
-                        outside_key = f"outside_creation_{current_outside_index}"
-                        if outside_key in log_data["outside_creations"]:
-                            log_data["outside_creations"][outside_key]["content"] = outside_content
-                            log_data["outside_creations"][outside_key]["is_active"] = False
-                            log_data["outside_creations"][outside_key]["end_position"] = start_pos
-                        else:
-                            log_data["outside_creations"][outside_key] = {
-                                "content": outside_content,
-                                "is_active": False,
-                                "position": last_section_end,
-                                "end_position": start_pos
-                            }
-                            log_data["stats"]["outside_sections"] += 1
-                    
-                    # Extract creation details
-                    creation_type = new_start_match.group(1)
-                    title_part = new_start_match.group(2) if new_start_match.group(2) else ""
-                    
-                    # Parse language if present
                     language = None
                     title = title_part.strip() if title_part else ""
-                    if title and ":" in title:
+                    if title and ":" in title: # e.g. "python:my_script.py"
                         parts = title.split(":", 1)
-                        language = parts[0].strip()
+                        language = parts[0].strip().lower() # Store language in lowercase
                         title = parts[1].strip()
                     
-                    # Create a new inside creation entry
-                    creation_key = f"inside_creation_{start_count + 1}"
-                    log_data["inside_creations"][creation_key] = {
-                        "type": creation_type,
+                    new_creation_id = uuid.uuid4().hex
+                    activeCreationId = new_creation_id
+                    yield {
+                        "signal_type": SIGNAL_CREATION_START,
+                        "type": creation_type_match,
                         "title": title,
                         "language": language,
-                        "content": "",  # Will accumulate content after the start tag
-                        "is_complete": False,
-                        "start_position": start_pos,
-                        "start_tag": new_start_match.group(0)
+                        "creationId": new_creation_id
                     }
-                    
-                    # Update last section end to after the start tag
-                    last_section_end = new_start_match.end()
-                    
-                    # Increment start tag count
-                    log_data["start_tag_count"] = start_count + 1
-                    start_count += 1
-                    log_data["stats"]["creations_started"] += 1
-                    
-                    # Write [creation_window_open] marker to log
-                    safe_debug(f"[creation_window_open] type={creation_type}, title={title}, language={language}, creation_number={start_count}")
+                    safe_debug(f"Yielded CREATION_START: type={creation_type_match}, title='{title}', lang='{language}', id={new_creation_id}")
+                    processing_buffer = processing_buffer[start_match.end():]
                 
-                # Process any new end tags
-                while len(end_matches) > end_count:
-                    # We found a new end tag
-                    new_end_match = end_matches[end_count]
-                    end_pos = new_end_match.end()
-                    
-                    # Get the corresponding creation
-                    creation_key = f"inside_creation_{end_count + 1}"
-                    if creation_key in log_data["inside_creations"]:
-                        current_creation = log_data["inside_creations"][creation_key]
-                        start_pos = current_creation["start_position"]
-                        
-                        # Get the content between the start and end tags
-                        creation_content_with_tags = accumulated_content[start_pos:end_pos]
-                        start_tag = current_creation["start_tag"]
-                        
-                        # Extract content after the start tag but before the end tag
-                        content_after_start = creation_content_with_tags[len(start_tag):].rstrip()
-                        content_before_end = content_after_start[:-len("$$end$$")]
-                        
-                        # Update the creation content
-                        current_creation["content"] = content_before_end
-                        current_creation["is_complete"] = True
-                        current_creation["end_position"] = end_pos
-                        current_creation["end_tag"] = "$$end$$"
-                        
-                        # Update last section end to after the end tag
-                        last_section_end = end_pos
-                        
-                        # Start a new outside creation section
-                        new_outside_index = current_outside_index + 1
-                        new_outside_key = f"outside_creation_{new_outside_index}"
-                        log_data["outside_creations"][new_outside_key] = {
-                            "content": "",  # Start with empty content, will update as more text comes
-                            "is_active": True,
-                            "position": end_pos,
-                            "after_creation": creation_key
-                        }
-                        log_data["current_outside_index"] = new_outside_index
-                        current_outside_index = new_outside_index
-                        log_data["stats"]["outside_sections"] += 1
-                        
-                        # Increment end tag count
-                        log_data["end_tag_count"] = end_count + 1
-                        end_count += 1
-                        log_data["stats"]["creations_completed"] += 1
-                        
-                        # Write [creation_window_close] marker to log
-                        safe_debug(f"[creation_window_close] type={current_creation['type']}, creation_number={end_count}")
-                
-                # Update content for any active creations
-                if start_count > end_count:
-                    # We're inside a creation, update its content
-                    active_creation_key = f"inside_creation_{end_count + 1}"
-                    if active_creation_key in log_data["inside_creations"]:
-                        active_creation = log_data["inside_creations"][active_creation_key]
-                        start_pos = active_creation["start_position"]
-                        start_tag = active_creation["start_tag"]
-                        
-                        # Get content after this start tag to the current end
-                        if len(accumulated_content) > start_pos + len(start_tag):
-                            active_creation["content"] = accumulated_content[start_pos + len(start_tag):]
-                else:
-                    # We're outside any creation, update the active outside section
-                    active_outside_key = f"outside_creation_{current_outside_index}"
-                    if active_outside_key in log_data["outside_creations"]:
-                        active_outside = log_data["outside_creations"][active_outside_key]
-                        
-                        if active_outside.get("is_active", False):
-                            # Get content from the start of this section to the end
-                            outside_pos = active_outside["position"]
-                            if len(accumulated_content) > outside_pos:
-                                # Check for any upcoming start tags
-                                if start_matches and len(start_matches) > start_count:
-                                    # There's an upcoming start tag, only include content up to it
-                                    next_start_pos = start_matches[start_count].start()
-                                    active_outside["content"] = accumulated_content[outside_pos:next_start_pos]
-                                else:
-                                    # No upcoming start tags, include all content
-                                    active_outside["content"] = accumulated_content[outside_pos:]
-                
-                # Save updated log data
-                with open(log_file_path, "w", encoding="utf-8") as f:
-                    json.dump(log_data, f, indent=2, ensure_ascii=False)
+                elif event_type == "end":
+                    # Content *inside* the tag (if any) up to the end tag was already handled by `content_before_event`
+                    yield {
+                        "signal_type": SIGNAL_CREATION_END,
+                        "creationId": activeCreationId
+                    }
+                    safe_debug(f"Yielded CREATION_END for {activeCreationId}")
+                    activeCreationId = None
+                    processing_buffer = processing_buffer[end_match.end():]
             
-            except Exception as e:
-                # Error during chunk processing - log it but continue
-                safe_error(f"Error processing chunk in creation tracking: {str(e)}", e)
-            
-            # Always yield the original chunk unmodified
-            yield chunk
-        
-        # Final log update
-        log_data["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Save final log
-        with open(log_file_path, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False)
-        
-        creation_stats = f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed, {log_data['stats']['outside_sections']} outside sections"
-        safe_debug(f"Creation tracking completed for chat {chat_id}, {creation_stats}, log file: {log_file_path}")
-    
+            # After iterating through tags in the current processing_buffer,
+            # if there's remaining content in processing_buffer and it's not part of an active creation,
+            # it means this content is waiting for more data to see if a tag completes.
+            # We don't yield it immediately unless the stream ends.
+            # However, if it's MAIN_CHAT_CONTENT, we can yield it.
+            if processing_buffer and not activeCreationId and not start_pattern.search(processing_buffer):
+                 # No active creation and no potential start tag starting in the buffer
+                yield {
+                    "signal_type": SIGNAL_MAIN_CHAT_CONTENT,
+                    "payload": processing_buffer
+                }
+                # safe_debug(f"Yielded trailing MAIN_CHAT_CONTENT from chunk processing: '{processing_buffer[:50]}...'")
+                processing_buffer = ""
+
+
+        # End of stream processing
+        if processing_buffer:
+            if activeCreationId:
+                # If a creation is active, any remaining buffer is its content
+                yield {
+                    "signal_type": SIGNAL_CREATION_CONTENT,
+                    "creationId": activeCreationId,
+                    "payload": processing_buffer
+                }
+                # safe_debug(f"Yielded final CREATION_CONTENT for {activeCreationId}: '{processing_buffer[:50]}...'")
+                # Implicitly end the creation if it wasn't properly closed
+                yield {
+                    "signal_type": SIGNAL_CREATION_END,
+                    "creationId": activeCreationId
+                }
+                safe_warning(f"Implicitly yielded CREATION_END for {activeCreationId} at end of stream.")
+            else:
+                # Otherwise, it's main chat content
+                yield {
+                    "signal_type": SIGNAL_MAIN_CHAT_CONTENT,
+                    "payload": processing_buffer
+                }
+                # safe_debug(f"Yielded final MAIN_CHAT_CONTENT: '{processing_buffer[:50]}...'")
+            processing_buffer = "" # Clear buffer
+
+        # If the original stream was empty or only contained empty chunks, ensure we yield something if needed (e.g. an empty main content signal)
+        # This specific handling might be overkill if Gemini API always sends meaningful chunks or a clear end.
+        # However, the prompt implies "every part of the original stream's text content is yielded".
+        # If processing_buffer is empty and original_stream_had_content was false, it means an empty stream.
+        # If original_stream_had_content is true but processing_buffer is empty, all content was processed and yielded.
+
     except Exception as e:
-        # If there's any error in the tracking logic, just log it and pass through the stream
-        safe_error(f"Error in creation tracking: {str(e)}", e)
-        
-        # Pass through the original stream unmodified
-        for chunk in stream:
-            yield chunk
+        safe_error(f"Error in track_streaming_creations for chat {chat_id}: {str(e)}", e)
+        # Yield an error signal if something goes wrong? Or just let it propagate?
+        # For now, let it propagate or be handled by the main chat endpoint's try-except.
+        # The original function passed through the stream on error, but here we are the stream.
+        # So, if an error occurs, the stream might just stop.
+        # Consider yielding a generic error signal if that's desirable for frontend.
+        # Example: yield {"signal_type": "ERROR", "message": str(e)}
+        # For now, re-raising or letting it be caught by higher Flask handlers.
+        raise # Re-raise the exception to be caught by the main generate() try-except
 
 # Modify the chat function to add creation tracking
 @app.route("/api/chat", methods=["POST"])
@@ -1351,30 +1277,44 @@ def chat():
             def generate():
                 # Add a try-except block around the entire streaming process
                 try:
-                    for chunk in delayed_response:
+                    # delayed_response now yields Python dictionaries (signals)
+                    for signal_item in delayed_response:
                         try:
-                            if chunk.text:
-                                # Safely encode the chunk to prevent JSON errors
-                                chunk_data = {'chunk': chunk.text, 'chat_id': chat_id}
-                                try:
-                                    json_data = json.dumps(chunk_data)
-                                    yield f"data: {json_data}\n\n"
-                                except UnicodeEncodeError as ue:
-                                    # Handle Unicode encoding errors by replacing problematic characters
-                                    safe_text = chunk.text.encode('utf-8', errors='replace').decode('utf-8')
-                                    safe_warning(f"Unicode encoding error in response chunk: {str(ue)}", safe_text)
-                                    yield f"data: {json.dumps({'chunk': safe_text, 'chat_id': chat_id})}\n\n"
-                                except json.JSONDecodeError as je:
-                                    safe_error(f"JSON decode error in response chunk: {str(je)}", je)
-                                    yield f"data: {json.dumps({'error': 'Error encoding response chunk', 'chat_id': chat_id})}\n\n"
-                        except json.JSONDecodeError as je:
-                            safe_error(f"JSON decode error in response chunk: {str(je)}", je)
-                            # Send a safe error message
-                            yield f"data: {json.dumps({'error': 'Error parsing response chunk', 'chat_id': chat_id})}\n\n"
-                        except Exception as e:
-                            safe_error(f"Error processing response chunk: {str(e)}", e)
-                            # Send a safe error message 
-                            yield f"data: {json.dumps({'error': 'Error processing response chunk', 'chat_id': chat_id})}\n\n"
+                            # Add chat_id to every signal_item before sending
+                            # This is useful for the client to associate events if multiple streams are open (though less common for SSE)
+                            signal_item_with_chat_id = signal_item.copy() # Avoid modifying the original item if it's reused
+                            signal_item_with_chat_id['chat_id'] = chat_id
+
+                            json_payload = json.dumps(signal_item_with_chat_id)
+                            yield f"data: {json_payload}\n\n"
+                        except UnicodeEncodeError as ue:
+                            # This might happen if data within signal_item (e.g. payload) has encoding issues
+                            # Try to create a safe version of the signal_item for logging/error reporting
+                            safe_item = {}
+                            for k, v in signal_item_with_chat_id.items():
+                                if isinstance(v, str):
+                                    safe_item[k] = v.encode('utf-8', errors='replace').decode('utf-8')
+                                else:
+                                    safe_item[k] = v # Assume other types are fine
+                            safe_warning(f"Unicode encoding error in signal item: {str(ue)}", safe_item)
+                            # Yield an error signal to the client
+                            error_signal = {
+                                "signal_type": "ERROR", 
+                                "message": "Unicode encoding error in stream.",
+                                "chat_id": chat_id,
+                                "problematic_item_type": signal_item.get("signal_type")
+                            }
+                            yield f"data: {json.dumps(error_signal)}\n\n"
+                        except Exception as e: # Catches other json.dumps errors or issues
+                            safe_error(f"Error processing signal item: {str(e)}", signal_item)
+                            # Yield an error signal to the client
+                            error_signal = {
+                                "signal_type": "ERROR",
+                                "message": f"Error processing signal: {str(e)}",
+                                "chat_id": chat_id,
+                                "item_type": signal_item.get("signal_type")
+                            }
+                            yield f"data: {json.dumps(error_signal)}\n\n"
                     
                     # Log the complete history after the response is done
                     try:

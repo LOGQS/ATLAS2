@@ -31,12 +31,15 @@ declare global {
     'show-creation': ShowCreationEvent;
     'show-creation-modal': CustomEvent<Creation>;
     'show-creation-sidebar': ShowCreationSidebarEvent;
-    // Add new events for streaming creations
-    'stream-to-creation': CustomEvent<{content: string, creationId: string}>;
-    'switch-creation-code': CustomEvent<{creationId: string}>;
-    'switch-creation-preview': CustomEvent<{creationId: string}>;
-    // Add new event for switching between creations
+    // Updated events for streaming creations
+    'append-creation-content': CustomEvent<{ creationId: string, chunk: string }>;
+    'end-creation-stream': CustomEvent<{ creationId: string, autoClosed?: boolean }>;
+    // General utility event, kept
     'switch-creation': CustomEvent<Creation>;
+    // Removed:
+    // 'stream-to-creation': CustomEvent<{content: string, creationId: string}>; // Replaced by append-creation-content
+    // 'switch-creation-code': CustomEvent<{creationId: string}>; // No longer used from Message.tsx
+    // 'switch-creation-preview': CustomEvent<{creationId: string}>; // No longer used from Message.tsx
   }
 }
 

@@ -1,62 +1,85 @@
 import React, { useState, useEffect, useRef } from 'react';
+// React already imported in the line above
 import { Creation } from '../utils/creationsHelper';
 import CreationContent from './CreationContent';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 interface CreationWindowProps {
-  creation: Creation | null;
+  isOpen: boolean;
+  creationToDisplay: Creation | null;
   onClose: () => void;
 }
 
-// Interface for streaming event detail
-interface StreamToCreationEvent {
-  content: string;
+// Detail structure for new events
+interface AppendContentEventDetail {
   creationId: string;
+  chunk: string;
 }
 
-const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) => {
-  const [animationState, setAnimationState] = useState<'entering' | 'visible' | 'exiting'>('entering');
+interface EndStreamEventDetail {
+  creationId: string;
+  autoClosed?: boolean;
+}
+
+const CreationWindow: React.FC<CreationWindowProps> = ({ isOpen, creationToDisplay, onClose }) => {
+  const [animationState, setAnimationState] = useState<'entering' | 'visible' | 'exiting' | 'hidden'>('hidden');
   const containerRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('code'); // Default to code view
   
-  // Add state to track streamed content
-  const [streamedContent, setStreamedContent] = useState<string>('');
+  const [currentContentBody, setCurrentContentBody] = useState<string>('');
   const isStreamingRef = useRef(false);
   
-  // Add state to track view transition animation
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
 
-  // Handle animation states when creation changes
+  // Manage animation based on isOpen prop
   useEffect(() => {
-    if (creation) {
+    if (isOpen) {
       setAnimationState('entering');
-      // Small delay to trigger animation
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         setAnimationState('visible');
-      }, 10);
-      
-      // Reset streamed content when creation changes
-      setStreamedContent(creation.content);
-      isStreamingRef.current = false;
+      }, 10); // Small delay for CSS transition
+      return () => clearTimeout(timer);
     } else {
-      setAnimationState('exiting');
+      // Only trigger exit animation if it was previously visible or entering
+      if (animationState === 'visible' || animationState === 'entering') {
+        setAnimationState('exiting');
+        // The onClose callback from props will be called by Chat.tsx after animation
+        // For direct close from CreationWindow (e.g. Esc or close button), we call it after animation.
+        // This effect is for prop-driven close. Chat.tsx handles its own state.
+      } else {
+        // If not visible/entering, just ensure it's hidden
+        setAnimationState('hidden');
+      }
     }
-  }, [creation]);
+  }, [isOpen, animationState]);
+
+
+  // Update content and view mode when creationToDisplay changes
+  useEffect(() => {
+    if (creationToDisplay) {
+      setCurrentContentBody(creationToDisplay.content || '');
+      // Default to 'code' view when a new creation is displayed or content starts streaming
+      setViewMode('code'); 
+      isStreamingRef.current = false; // Reset streaming state for the new creation
+    } else {
+      setCurrentContentBody(''); // Clear content when no creation is displayed
+      isStreamingRef.current = false;
+    }
+  }, [creationToDisplay]);
+
 
   // Close on escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && isOpen) { // Only act if window is open
         if (isStreamingRef.current) {
-          // Prevent closing during streaming
           e.preventDefault();
           e.stopPropagation();
           showStreamingCloseWarning();
           return;
-        }
-        else {
-          onClose();
+        } else {
+          onClose(); // Call the onClose prop
         }
       }
     };
@@ -65,9 +88,8 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onClose]);
+  }, [isOpen, onClose]); // Depend on isOpen and onClose
   
-  // Add function to show streaming close warning
   const showStreamingCloseWarning = () => {
     // Create or update a warning notification
     let warningElement = document.getElementById('streaming-close-warning');
@@ -94,122 +116,37 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
 
   // Listen for streaming events
   useEffect(() => {
-    // Handle incoming streaming content
-    const handleStreamToCreation = (event: CustomEvent<StreamToCreationEvent>) => {
-      const { content: newContent, creationId } = event.detail;
-      
-      // Only apply if this is for our current creation
-      if (creation && creation.id === creationId) {
+  // Event Handling for new events
+  useEffect(() => {
+    const handleAppendContent = (event: Event) => {
+      const detail = (event as CustomEvent<AppendContentEventDetail>).detail;
+      if (creationToDisplay && detail.creationId === creationToDisplay.id) {
+        setCurrentContentBody(prev => prev + detail.chunk);
+        if (viewMode !== 'code') setViewMode('code'); // Switch to code view on new content
         isStreamingRef.current = true;
-        setStreamedContent(prev => prev + newContent);
-        
-        // Automatically switch to code view during streaming
-        setViewMode('code');
       }
     };
-    
-    // Switch to code view
-    const handleSwitchToCode = (event: CustomEvent<{creationId: string}>) => {
-      if (creation && creation.id === event.detail.creationId) {
-        // Add animation when switching to code view
-        if (viewMode !== 'code') {
-          setIsViewTransitioning(true);
-          setTimeout(() => {
-            setViewMode('code');
-            setTimeout(() => {
-              setIsViewTransitioning(false);
-            }, 300); // Match transition duration
-          }, 150); // Half of transition time for crossfade effect
-        }
-      }
-    };
-    
-    // Switch to preview mode
-    const handleSwitchToPreview = (event: CustomEvent<{creationId: string}>) => {
-      if (creation && creation.id === event.detail.creationId) {
-        // Add animation when switching to preview
-        if (viewMode !== 'preview') {
-          setIsViewTransitioning(true);
-          setTimeout(() => {
-            setViewMode('preview');
-            setTimeout(() => {
-              setIsViewTransitioning(false);
-            }, 300); // Match transition duration
-          }, 150); // Half of transition time for crossfade effect
-        }
+
+    const handleEndStream = (event: Event) => {
+      const detail = (event as CustomEvent<EndStreamEventDetail>).detail;
+      if (creationToDisplay && detail.creationId === creationToDisplay.id) {
         isStreamingRef.current = false;
+        // Optionally switch to preview if not autoClosed and type supports it
+        if (!detail.autoClosed && creationToDisplay.type === 'markdown' /* or other previewable types */) {
+          // setViewMode('preview'); // Consider this UX carefully
+        }
       }
-    };
-    
-    // Handle closing creation window
-    const handleCloseCreationWindow = () => {
-      // Don't close if streaming is in progress
-      if (isStreamingRef.current) {
-        showStreamingCloseWarning();
-        return;
-      }
-      
-      // Begin exit animation
-      setAnimationState('exiting');
-      
-      // Allow animation to complete before actual closure
-      setTimeout(() => {
-        onClose();
-      }, 300);
     };
 
-    // Handle switching between creations with animation
-    const handleSwitchCreation = (event: CustomEvent<Creation>) => {
-      const newCreation = event.detail;
-      
-      // Don't do anything if streaming is in progress
-      if (isStreamingRef.current) {
-        showStreamingCloseWarning();
-        return;
-      }
-      
-      // Don't do anything if we're trying to switch to the same creation
-      if (creation && creation.id === newCreation.id) {
-        return;
-      }
-      
-      // Begin exit animation
-      setAnimationState('exiting');
-      
-      // Allow animation to complete before switching to the new creation
-      setTimeout(() => {
-        // Close current creation and show the new one
-        onClose();
-        
-        // Use a small delay to ensure DOM is updated before showing the new creation
-        setTimeout(() => {
-          // Dispatch event to show the new creation
-          const showEvent = new CustomEvent('show-creation-sidebar', {
-            detail: newCreation
-          });
-          window.dispatchEvent(showEvent);
-        }, 50);
-      }, 300);
-    };
-    
-    // Add event listeners
-    window.addEventListener('stream-to-creation', handleStreamToCreation as EventListener);
-    window.addEventListener('switch-creation-code', handleSwitchToCode as EventListener);
-    window.addEventListener('switch-creation-preview', handleSwitchToPreview as EventListener);
-    window.addEventListener('close-creation-window', handleCloseCreationWindow);
-    window.addEventListener('switch-creation', handleSwitchCreation as EventListener);
-    
-    // Clean up
+    window.addEventListener('append-creation-content', handleAppendContent);
+    window.addEventListener('end-creation-stream', handleEndStream);
+
     return () => {
-      window.removeEventListener('stream-to-creation', handleStreamToCreation as EventListener);
-      window.removeEventListener('switch-creation-code', handleSwitchToCode as EventListener);
-      window.removeEventListener('switch-creation-preview', handleSwitchToPreview as EventListener);
-      window.removeEventListener('close-creation-window', handleCloseCreationWindow);
-      window.removeEventListener('switch-creation', handleSwitchCreation as EventListener);
+      window.removeEventListener('append-creation-content', handleAppendContent);
+      window.removeEventListener('end-creation-stream', handleEndStream);
     };
-  }, [creation, viewMode, onClose]);
+  }, [creationToDisplay, viewMode]); // Rerun if creationToDisplay or viewMode changes
 
-  // Custom view mode change handler with animation
   const handleViewModeChange = (newMode: 'preview' | 'code') => {
     if (newMode !== viewMode) {
       setIsViewTransitioning(true);
@@ -228,43 +165,45 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
       showStreamingCloseWarning();
       return;
     }
-    onClose();
+    // Call the onClose prop which will set isOpen to false in Chat.tsx
+    // and trigger the animation via useEffect for isOpen.
+    onClose(); 
   };
 
-  if (!creation) return null;
+  // If not open or no creation, or exiting, don't render anything or render with exiting class
+  if (animationState === 'hidden' || !creationToDisplay) return null;
+  if (animationState === 'exiting' && !creationToDisplay) return null; // Avoid flicker if creationToDisplay is cleared before animation ends
 
-  // Determine the appropriate language for code highlighting
+  const currentCreation = creationToDisplay; // Use prop directly
+
   const getLanguageForHighlighting = () => {
-    if (creation.type === 'code' && creation.language) {
-      return creation.language;
+    if (currentCreation.type === 'code' && currentCreation.language) {
+      return currentCreation.language;
     }
-    
-    // Default languages based on creation type
-    switch (creation.type) {
+    switch (currentCreation.type) {
       case 'html': return 'html';
       case 'markdown': return 'markdown';
-      case 'svg': return 'markup';
-      case 'mermaid': return 'text';
+      case 'svg': return 'markup'; // SVG is XML-like, 'markup' is often used
+      case 'mermaid': return 'text'; // Mermaid code itself is plain text
       case 'react': return 'jsx';
-      default: return 'text';
+      default: return 'text'; // Default to plain text
     }
   };
   
-  // Determine what content to display - use streamed content when available
-  const displayContent = isStreamingRef.current ? streamedContent : creation.content;
+  const displayContent = currentContentBody;
 
   return (
     <div 
       className={`creation-window ${animationState}`}
       ref={containerRef}
-      data-creation-id={creation.id || `creation-${Date.now()}`}
+      data-creation-id={currentCreation.id || `creation-${Date.now()}`}
     >
       <div className="creation-window-header">
         <div className="creation-type-badge">
-          <span>{creation.type.charAt(0).toUpperCase() + creation.type.slice(1)}</span>
+          <span>{currentCreation.type.charAt(0).toUpperCase() + currentCreation.type.slice(1)}</span>
         </div>
         <h3 className="creation-title">
-          {creation.title || `Untitled ${creation.type.charAt(0).toUpperCase() + creation.type.slice(1)}`}
+          {currentCreation.title || `Untitled ${currentCreation.type.charAt(0).toUpperCase() + currentCreation.type.slice(1)}`}
         </h3>
         
         <div className="creation-view-toggle">
@@ -298,7 +237,7 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
         
         <button 
           className={`creation-window-close ${isStreamingRef.current ? 'streaming-disabled' : ''}`}
-          onClick={handleClose}
+          onClick={handleClose} // Updated to call props.onClose (indirectly via animation)
           aria-label="Close creation window"
           title={isStreamingRef.current ? "Cannot close during streaming" : "Close window"}
         >
@@ -312,8 +251,8 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
         {viewMode === 'preview' ? (
           <div className="view-container preview-container">
             <CreationContent 
-              creation={{...creation, content: displayContent}} 
-              viewMode={creation.type === 'react' ? 'react-preview' : 'window'} 
+              creation={{...currentCreation, content: displayContent}} 
+              viewMode={currentCreation.type === 'react' ? 'react-preview' : 'window'} 
               showToolbar={true} 
             />
           </div>
@@ -321,7 +260,7 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
           <div className="view-container code-container">
             <div className="creation-code-view">
               <SyntaxHighlighter
-                style={vscDarkPlus}
+                style={vscDarkPlus} // Ensure vscDarkPlus is imported or defined
                 language={getLanguageForHighlighting()}
                 showLineNumbers={true}
                 customStyle={{ margin: 0, borderRadius: '0', height: '100%', maxHeight: '100%' }}
