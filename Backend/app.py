@@ -18,6 +18,31 @@ from datetime import datetime
 from faster_whisper import WhisperModel
 from pathlib import Path
 from utils.prompts import creations_system_instruction
+import gc
+import ctypes
+import signal
+import atexit
+
+# Set environment variables to handle OpenMP issues BEFORE importing any libraries
+# This prevents the "libiomp5md.dll already initialized" error from faster_whisper
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['OMP_NUM_THREADS'] = '1'  # Limit threads to reduce conflicts
+
+# Force cleanup of any existing OpenMP runtime on Windows
+if sys.platform == "win32":
+    try:
+        # Try to unload any existing libiomp5md.dll
+        kernel32 = ctypes.windll.kernel32
+        # Get handle to libiomp5md.dll if it exists
+        lib_handle = kernel32.GetModuleHandleW("libiomp5md.dll")
+        if lib_handle:
+            print("Found existing libiomp5md.dll, attempting cleanup...")
+            # Force garbage collection
+            gc.collect()
+            # Note: We can't safely FreeLibrary here as it might be in use
+            # The environment variable will handle the duplicate warning
+    except Exception as e:
+        print(f"OpenMP cleanup attempt failed (this is usually safe to ignore): {e}")
 
 # Create logs directory if it doesn't exist
 logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -103,15 +128,68 @@ def safe_log_data(data, max_length=1000):
 
 # Initialize Whisper model at startup
 whisper_model = None
+
+def cleanup_whisper_model():
+    """
+    Clean up the existing Whisper model and force garbage collection
+    """
+    global whisper_model
+    try:
+        if whisper_model is not None:
+            logger.info("Cleaning up existing Whisper model...")
+            # Delete the model reference
+            del whisper_model
+            whisper_model = None
+            # Force garbage collection to clean up OpenMP resources
+            gc.collect()
+            logger.info("Whisper model cleanup completed")
+    except Exception as e:
+        logger.warning(f"Error during Whisper model cleanup: {str(e)}")
+
+def initialize_whisper_model():
+    """
+    Initialize the Whisper model with proper cleanup and OpenMP handling
+    """
+    global whisper_model
+    try:
+        # Clean up any existing model first
+        cleanup_whisper_model()
+        
+        # Set additional OpenMP environment variables for this process
+        os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+        os.environ['OMP_NUM_THREADS'] = '1'
+        
+        # Force garbage collection before loading
+        gc.collect()
+        
+        logger.info("Loading Whisper model at startup...")
+        
+        # Initialize with explicit CPU settings to avoid GPU/CUDA issues
+        whisper_model = WhisperModel(
+            model_size_or_path="base",
+            device="cpu",
+            compute_type="int8",
+            num_workers=1,  # Reduced from 4 to 1 to minimize OpenMP conflicts
+            download_root=None,  # Use default cache
+            local_files_only=False
+        )
+        
+        logger.info("Whisper model loaded successfully")
+        return whisper_model
+    except Exception as e:
+        logger.exception(f"Error loading Whisper model: {str(e)}")
+        # Clean up on failure
+        cleanup_whisper_model()
+        
+        # If it's an OpenMP error, provide helpful information
+        if "libiomp5md.dll" in str(e) or "OpenMP" in str(e):
+            logger.error("OpenMP conflict detected. The application will continue but audio transcription may not work. Try restarting the application or use the /api/whisper/reinitialize endpoint.")
+        
+        raise e
+
+# Initialize the model
 try:
-    logger.info("Loading Whisper model at startup...")
-    whisper_model = WhisperModel(
-        model_size_or_path="base",
-        device="cpu",
-        compute_type="int8",
-        num_workers=4
-    )
-    logger.info("Whisper model loaded successfully")
+    initialize_whisper_model()
 except Exception as e:
     logger.exception(f"Error loading Whisper model at startup: {str(e)}")
     # We'll continue without the model and try to initialize it when needed
@@ -296,13 +374,7 @@ def load_whisper_model():
     if whisper_model is None:
         logger.info("Whisper model not initialized at startup, loading now...")
         try:
-            whisper_model = WhisperModel(
-                model_size_or_path="base",
-                device="cpu",
-                compute_type="int8",
-                num_workers=4
-            )
-            logger.info("Whisper model loaded successfully")
+            return initialize_whisper_model()
         except Exception as e:
             logger.exception(f"Error loading Whisper model: {str(e)}")
             raise e
@@ -775,7 +847,6 @@ def track_streaming_creations(stream, chat_id):
         
         # Process each chunk in the stream
         accumulated_content = ""
-        last_section_end = 0  # Track where the last section (creation or outside) ended
         
         for chunk in stream:
             try:
@@ -804,24 +875,26 @@ def track_streaming_creations(stream, chat_id):
                     new_start_match = start_matches[start_count]
                     start_pos = new_start_match.start()
                     
-                    # Extract outside content before this start tag (if any)
-                    if start_pos > last_section_end:
-                        outside_content = accumulated_content[last_section_end:start_pos]
+                    # Extract outside content before this start tag
+                    outside_start_pos = 0
+                    if start_count > 0:
+                        # If this isn't the first creation, start from after the previous end tag
+                        prev_end_match = end_matches[start_count - 1] if len(end_matches) > start_count - 1 else None
+                        if prev_end_match:
+                            outside_start_pos = prev_end_match.end()
+                    
+                    # Extract content from outside_start_pos to start_pos
+                    if start_pos > outside_start_pos:
+                        outside_content = accumulated_content[outside_start_pos:start_pos]
                         
-                        # Update or create the outside creation entry
+                        # Update the current outside creation entry
                         outside_key = f"outside_creation_{current_outside_index}"
-                        if outside_key in log_data["outside_creations"]:
-                            log_data["outside_creations"][outside_key]["content"] = outside_content
-                            log_data["outside_creations"][outside_key]["is_active"] = False
-                            log_data["outside_creations"][outside_key]["end_position"] = start_pos
-                        else:
-                            log_data["outside_creations"][outside_key] = {
-                                "content": outside_content,
-                                "is_active": False,
-                                "position": last_section_end,
-                                "end_position": start_pos
-                            }
-                            log_data["stats"]["outside_sections"] += 1
+                        log_data["outside_creations"][outside_key] = {
+                            "content": outside_content,
+                            "is_active": False,
+                            "position": outside_start_pos,
+                            "end_position": start_pos
+                        }
                     
                     # Extract creation details
                     creation_type = new_start_match.group(1)
@@ -847,9 +920,6 @@ def track_streaming_creations(stream, chat_id):
                         "start_tag": new_start_match.group(0)
                     }
                     
-                    # Update last section end to after the start tag
-                    last_section_end = new_start_match.end()
-                    
                     # Increment start tag count
                     log_data["start_tag_count"] = start_count + 1
                     start_count += 1
@@ -868,30 +938,26 @@ def track_streaming_creations(stream, chat_id):
                     creation_key = f"inside_creation_{end_count + 1}"
                     if creation_key in log_data["inside_creations"]:
                         current_creation = log_data["inside_creations"][creation_key]
-                        start_pos = current_creation["start_position"]
-                        
-                        # Get the content between the start and end tags
-                        creation_content_with_tags = accumulated_content[start_pos:end_pos]
                         start_tag = current_creation["start_tag"]
+                        start_tag_end = current_creation["start_position"] + len(start_tag)
                         
-                        # Extract content after the start tag but before the end tag
-                        content_after_start = creation_content_with_tags[len(start_tag):].rstrip()
-                        content_before_end = content_after_start[:-len("$$end$$")]
-                        
-                        # Update the creation content
-                        current_creation["content"] = content_before_end
+                        # Extract content between start and end tags
+                        creation_content = accumulated_content[start_tag_end:new_end_match.start()]
+                        current_creation["content"] = creation_content
                         current_creation["is_complete"] = True
                         current_creation["end_position"] = end_pos
                         current_creation["end_tag"] = "$$end$$"
                         
-                        # Update last section end to after the end tag
-                        last_section_end = end_pos
+                        # Increment end tag count
+                        log_data["end_tag_count"] = end_count + 1
+                        end_count += 1
+                        log_data["stats"]["creations_completed"] += 1
                         
-                        # Start a new outside creation section
+                        # Start a new outside creation section after this end tag
                         new_outside_index = current_outside_index + 1
                         new_outside_key = f"outside_creation_{new_outside_index}"
                         log_data["outside_creations"][new_outside_key] = {
-                            "content": "",  # Start with empty content, will update as more text comes
+                            "content": "",  # Will be updated as more content comes
                             "is_active": True,
                             "position": end_pos,
                             "after_creation": creation_key
@@ -899,11 +965,6 @@ def track_streaming_creations(stream, chat_id):
                         log_data["current_outside_index"] = new_outside_index
                         current_outside_index = new_outside_index
                         log_data["stats"]["outside_sections"] += 1
-                        
-                        # Increment end tag count
-                        log_data["end_tag_count"] = end_count + 1
-                        end_count += 1
-                        log_data["stats"]["creations_completed"] += 1
                         
                         # Write [creation_window_close] marker to log
                         safe_debug(f"[creation_window_close] type={current_creation['type']}, creation_number={end_count}")
@@ -914,12 +975,12 @@ def track_streaming_creations(stream, chat_id):
                     active_creation_key = f"inside_creation_{end_count + 1}"
                     if active_creation_key in log_data["inside_creations"]:
                         active_creation = log_data["inside_creations"][active_creation_key]
-                        start_pos = active_creation["start_position"]
                         start_tag = active_creation["start_tag"]
+                        start_tag_end = active_creation["start_position"] + len(start_tag)
                         
-                        # Get content after this start tag to the current end
-                        if len(accumulated_content) > start_pos + len(start_tag):
-                            active_creation["content"] = accumulated_content[start_pos + len(start_tag):]
+                        # Get content from after the start tag to current position
+                        if len(accumulated_content) > start_tag_end:
+                            active_creation["content"] = accumulated_content[start_tag_end:]
                 else:
                     # We're outside any creation, update the active outside section
                     active_outside_key = f"outside_creation_{current_outside_index}"
@@ -927,16 +988,20 @@ def track_streaming_creations(stream, chat_id):
                         active_outside = log_data["outside_creations"][active_outside_key]
                         
                         if active_outside.get("is_active", False):
-                            # Get content from the start of this section to the end
+                            # Get content from the start of this section
                             outside_pos = active_outside["position"]
+                            
+                            # Check if there's an upcoming start tag
+                            next_start_pos = None
+                            if len(start_matches) > start_count:
+                                next_start_pos = start_matches[start_count].start()
+                            
                             if len(accumulated_content) > outside_pos:
-                                # Check for any upcoming start tags
-                                if start_matches and len(start_matches) > start_count:
-                                    # There's an upcoming start tag, only include content up to it
-                                    next_start_pos = start_matches[start_count].start()
+                                if next_start_pos is not None:
+                                    # Content up to the next start tag
                                     active_outside["content"] = accumulated_content[outside_pos:next_start_pos]
                                 else:
-                                    # No upcoming start tags, include all content
+                                    # All remaining content
                                     active_outside["content"] = accumulated_content[outside_pos:]
                 
                 # Save updated log data
@@ -949,6 +1014,18 @@ def track_streaming_creations(stream, chat_id):
             
             # Always yield the original chunk unmodified
             yield chunk
+        
+        # Final processing - handle any remaining outside content
+        if accumulated_content:
+            # Final cleanup of outside content
+            active_outside_key = f"outside_creation_{current_outside_index}"
+            if active_outside_key in log_data["outside_creations"]:
+                active_outside = log_data["outside_creations"][active_outside_key]
+                if active_outside.get("is_active", False):
+                    outside_pos = active_outside["position"]
+                    if len(accumulated_content) > outside_pos:
+                        active_outside["content"] = accumulated_content[outside_pos:]
+                        active_outside["is_active"] = False
         
         # Final log update
         log_data["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1814,7 +1891,7 @@ def generate_image():
 # Health check endpoint
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    return jsonify({"status": "healthy"})
+    return jsonify({"status": "healthy", "whisper_loaded": whisper_model is not None})
 
 # Logs endpoint (access with caution in production)
 @app.route("/api/logs", methods=["GET"])
@@ -3034,6 +3111,59 @@ try:
 except Exception as e:
     logger.error(f"Failed to register task endpoints: {str(e)}")
 
+def cleanup_on_exit():
+    """Cleanup function to be called on application exit"""
+    try:
+        logger.info("Application shutting down, cleaning up Whisper model...")
+        cleanup_whisper_model()
+        logger.info("Cleanup completed")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+def signal_handler(sig, frame):
+    """Handle termination signals"""
+    print(f"\nReceived signal {sig}, performing cleanup...")
+    cleanup_on_exit()
+    sys.exit(0)
+
+# Register cleanup functions
+atexit.register(cleanup_on_exit)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+# Add endpoint to manually reinitialize Whisper model
+@app.route("/api/whisper/reinitialize", methods=["POST"])
+def reinitialize_whisper():
+    """Manually reinitialize the Whisper model (useful for recovering from OpenMP issues)"""
+    try:
+        logger.info("Manual Whisper model reinitialization requested")
+        
+        # Force cleanup and garbage collection
+        cleanup_whisper_model()
+        
+        # Wait a moment for cleanup
+        import time
+        time.sleep(1)
+        
+        # Force another garbage collection
+        gc.collect()
+        
+        # Reinitialize the model
+        initialize_whisper_model()
+        
+        return jsonify({
+            "success": True,
+            "message": "Whisper model reinitialized successfully",
+            "model_loaded": whisper_model is not None
+        })
+    except Exception as e:
+        logger.exception(f"Error reinitializing Whisper model: {str(e)}")
+        return jsonify({
+            "error": "Failed to reinitialize Whisper model",
+            "details": str(e),
+            "model_loaded": whisper_model is not None
+        }), 500
+
 if __name__ == "__main__":
     try:
         safe_debug("Starting Flask application")
@@ -3047,5 +3177,7 @@ if __name__ == "__main__":
         except:
             # If even that fails, just print to console
             print("Additionally, could not write to error log file")
+        # Perform cleanup before exit
+        cleanup_on_exit()
         # Exit with error code
         sys.exit(1) 
