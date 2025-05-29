@@ -294,6 +294,9 @@ app.safe_exception = safe_exception
 # Dictionary to store chat sessions
 active_chats = {}
 
+# Global trigger for stream monitoring - starts as False
+stream_data_updated = False
+
 # Supported file types - expanded based on Gemini API documentation
 SUPPORTED_MIME_TYPES = {
     "image": [
@@ -1164,6 +1167,19 @@ def track_streaming_creations(stream, chat_id):
                 # Error during chunk processing - log it but continue
                 safe_error(f"Error processing chunk in creation tracking: {str(e)}", e)
                 debug_log("error_occurred", f"ERROR: {str(e)}")
+            
+            # Save updated log after each chunk (REPLACE previous state)
+            try:
+                with open(log_file_path, "w", encoding="utf-8") as f:
+                    json.dump(log_data, f, indent=2, ensure_ascii=False)
+                
+                # TRIGGER: Set global flag that new stream data is available
+                global stream_data_updated
+                stream_data_updated = True
+                
+            except Exception as save_error:
+                # Don't let file save errors break the stream
+                safe_error(f"Error saving creation log after chunk: {str(save_error)}", save_error)
             
             # Always yield the original chunk unmodified
             yield chunk
@@ -3331,6 +3347,158 @@ def reinitialize_whisper():
             "details": str(e),
             "model_loaded": whisper_model is not None
         }), 500
+
+# Creation logs endpoints for stream monitoring
+@app.route("/api/creation-logs/list", methods=["GET"])
+def list_creation_logs():
+    """
+    Endpoint to list available creation log files
+    """
+    try:
+        # Get absolute path to data directory
+        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        creation_log_dir = data_dir_path / "creation_logs"
+        
+        if not creation_log_dir.exists():
+            return jsonify([])
+        
+        # Get all JSON files in the creation logs directory
+        log_files = []
+        for file_path in creation_log_dir.glob("*.json"):
+            # Skip debug files for the main list
+            if "what_is_happening" not in file_path.name:
+                file_info = {
+                    "name": file_path.name,
+                    "size": file_path.stat().st_size,
+                    "modified": file_path.stat().st_mtime
+                }
+                log_files.append(file_info)
+        
+        # Sort by modification time (newest first)
+        log_files.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return jsonify(log_files)
+    except Exception as e:
+        safe_debug(f"Error listing creation logs: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/creation-logs/<filename>", methods=["GET"])
+def get_creation_log(filename):
+    """
+    Endpoint to get a specific creation log file
+    """
+    try:
+        # Sanitize filename to prevent path traversal
+        if not filename.endswith('.json') or '/' in filename or '\\' in filename:
+            return jsonify({"error": "Invalid filename"}), 400
+        
+        # Get absolute path to data directory
+        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        creation_log_dir = data_dir_path / "creation_logs"
+        log_file_path = creation_log_dir / filename
+        
+        if not log_file_path.exists():
+            return jsonify({"error": "Log file not found"}), 404
+        
+        # Read and return the JSON file
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_data = json.load(f)
+        
+        return jsonify(log_data)
+    except Exception as e:
+        safe_debug(f"Error reading creation log {filename}: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/stream-logs/latest", methods=["GET"])
+def get_latest_stream_log():
+    """
+    Endpoint to get the latest active stream log
+    """
+    try:
+        # Get absolute path to data directory
+        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        creation_log_dir = data_dir_path / "creation_logs"
+        
+        if not creation_log_dir.exists():
+            return jsonify({"error": "No creation logs directory"}), 404
+        
+        # Find the most recent stream log file (not debug files)
+        latest_file = None
+        latest_time = 0
+        
+        for file_path in creation_log_dir.glob("stream_*.json"):
+            if "what_is_happening" not in file_path.name:
+                file_time = file_path.stat().st_mtime
+                if file_time > latest_time:
+                    latest_time = file_time
+                    latest_file = file_path
+        
+        if not latest_file:
+            return jsonify({"error": "No stream log files found"}), 404
+        
+        # Read and return the latest log file
+        with open(latest_file, 'r', encoding='utf-8') as f:
+            log_data = json.load(f)
+        
+        # Add file metadata
+        log_data["_metadata"] = {
+            "filename": latest_file.name,
+            "size": latest_file.stat().st_size,
+            "modified": latest_time
+        }
+        
+        return jsonify(log_data)
+    except Exception as e:
+        safe_debug(f"Error getting latest stream log: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stream-events", methods=["GET"])
+def stream_events():
+    """
+    Server-Sent Events endpoint for real-time stream notifications
+    """
+    def event_stream():
+        global stream_data_updated
+        last_check = time.time()
+        
+        # Send initial connection event
+        yield f"data: {json.dumps({'type': 'connected', 'timestamp': time.time()})}\n\n"
+        
+        try:
+            while True:
+                # Check if stream data was updated
+                if stream_data_updated:
+                    # Reset the flag immediately
+                    stream_data_updated = False
+                    
+                    # Send update notification
+                    yield f"data: {json.dumps({'type': 'stream_updated', 'timestamp': time.time()})}\n\n"
+                    
+                    last_check = time.time()
+                
+                # Send heartbeat every 30 seconds to keep connection alive
+                current_time = time.time()
+                if current_time - last_check > 30:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
+                    last_check = current_time
+                
+                # Small sleep to prevent excessive CPU usage
+                time.sleep(0.1)
+                
+        except GeneratorExit:
+            # Client disconnected
+            safe_debug("Stream events client disconnected")
+        except Exception as e:
+            safe_error(f"Error in stream events: {str(e)}", e)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'timestamp': time.time()})}\n\n"
+    
+    response = Response(stream_with_context(event_stream()), content_type='text/event-stream')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Cache-Control'
+    return response
 
 if __name__ == "__main__":
     try:

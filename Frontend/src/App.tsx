@@ -14,6 +14,7 @@ import CreationWindow from './components/CreationWindow';
 import TaskSystem from './components/TaskSystem';
 import { Creation } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
+import { streamMonitor } from './utils/streamMonitor';
 
 interface ImportResult {
   success: boolean;
@@ -59,6 +60,10 @@ function App() {
   useEffect(() => {
     // Initial load
     setChatHistory(chatManager.getChats());
+    
+    // Initialize stream monitoring
+    console.log('🔧 Initializing stream monitor...');
+    streamMonitor.startMonitoring(); // Real-time push notifications via Server-Sent Events
     
     // Subscribe to updates - prevent excessive rerenders 
     const unsubscribe = chatManager.subscribe((chats) => {
@@ -140,6 +145,7 @@ function App() {
     
     return () => {
       unsubscribe();
+      streamMonitor.stopMonitoring(); // Clean up stream monitor
       window.removeEventListener('chat-created', handleChatCreated);
       window.removeEventListener('chat-updated', handleChatUpdated);
       window.removeEventListener('chat-reset', handleChatReset);
