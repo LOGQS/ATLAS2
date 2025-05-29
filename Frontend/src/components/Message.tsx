@@ -8,6 +8,8 @@ import rehypeKatex from 'rehype-katex';
 import { showHtmlPreview } from '../utils/htmlPreview';
 import { detectCreations, showCreation, removeCreationDirectives, CreationType, switchCreation } from '../utils/creationsHelper';
 import creationManager from '../utils/creationManager';
+import CreationIndicators from './CreationIndicators';
+import { getCreationIcon } from '../utils/creationIcons';
 
 // Add new imports for streaming creation detection
 import { Creation } from '../utils/creationsHelper';
@@ -386,11 +388,12 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       setPostCreationContent('');
       setCreationComplete(false);
     }
-  }, [content, isStreaming, isUser, isThinking, isCollectingCreation, streamedCreation, streamBuffer, creationEndPattern, creationStartPattern, isHistoryMessage, displayedContent, preCreationContent, postCreationContent, creationComplete]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, isStreaming, isUser, isThinking, isHistoryMessage, creationEndPattern, creationStartPattern]);
   
-  // Function to toggle creation window visibility - wrapped in useCallback
+  // Function to handle creation clicks - simplified since we use new components
   const toggleCreationWindow = useCallback((creation: Creation) => {
-    // If we're currently streaming a creation, don't allow toggling
+    // If we're currently streaming a creation, don't allow interaction
     if (isCollectingCreation && streamedCreation) {
       return;
     }
@@ -491,76 +494,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   };
 
   const runHtml = (html: string) => {
-    // Instead of managing preview state locally, dispatch an event
-    // that will be caught by the HtmlPreview component
     showHtmlPreview(html);
-  };
-  
-  // Helper function to get appropriate icon for creation types
-  const getCreationIcon = (type: string) => {
-    switch (type.toLowerCase()) {
-      case 'code':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="16 18 22 12 16 6"></polyline>
-            <polyline points="8 6 2 12 8 18"></polyline>
-          </svg>
-        );
-      case 'markdown':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 3v4a1 1 0 0 0 1 1h4"></path>
-            <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"></path>
-          </svg>
-        );
-      case 'html':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <path d="M3 12v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-            <path d="M3 12a9 9 0 0 1 9-9h4"></path>
-            <path d="M8 16H6"></path>
-            <path d="M12 16h-1"></path>
-            <path d="M16 16h-1"></path>
-          </svg>
-        );
-      case 'svg':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"></circle>
-            <circle cx="12" cy="12" r="4"></circle>
-          </svg>
-        );
-      case 'mermaid':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <line x1="3" y1="9" x2="21" y2="9"></line>
-            <line x1="9" y1="21" x2="9" y2="9"></line>
-          </svg>
-        );
-      case 'react':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="2"></circle>
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
-          </svg>
-        );
-      case 'placeholder':
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
-            <polyline points="21 15 16 10 5 21"></polyline>
-          </svg>
-        );
-      default:
-        return (
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-          </svg>
-        );
-    }
   };
   
   // Get appropriate className based on message type
@@ -815,23 +749,10 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       >
         {displayedContent}
       </ReactMarkdown>
-            <div className="creation-indicators">
-              {detectedCreations.map((creation, index) => (
-                <div 
-                  key={`creation-indicator-${index}`}
-                  className="creation-indicator-box"
-                  onClick={() => toggleCreationWindow(creation)}
-                  title={creation.title || `${creation.type} creation`}
-                >
-                  <div className="creation-indicator-icon">
-                    {getCreationIcon(creation.type)}
-                  </div>
-                  <span className="creation-indicator-type">
-                    {creation.type.charAt(0).toUpperCase() + creation.type.slice(1)}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <CreationIndicators
+              creations={detectedCreations}
+              onCreationClick={toggleCreationWindow}
+            />
           </>
         );
       }
@@ -883,23 +804,11 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         <>
           {contentParts.map((part, index) => 
             part.isCreation ? (
-              <div 
+              <CreationIndicators
                 key={`creation-part-${index}`}
-                className="creation-indicators"
-              >
-                <div 
-                  className="creation-indicator-box"
-                  onClick={() => toggleCreationWindow(part.creation!)}
-                  title={part.creation?.title || `${part.creation?.type} creation`}
-                >
-                  <div className="creation-indicator-icon">
-                    {part.creation ? getCreationIcon(part.creation.type) : null}
-                  </div>
-                  <span className="creation-indicator-type">
-                    {part.creation ? (part.creation.type.charAt(0).toUpperCase() + part.creation.type.slice(1)) : ''}
-                  </span>
-                </div>
-              </div>
+                creations={part.creation ? [part.creation] : []}
+                onCreationClick={toggleCreationWindow}
+              />
             ) : (
               <ReactMarkdown
                 key={`text-part-${index}`}
@@ -1106,15 +1015,17 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           </ReactMarkdown>
           
           <div className="creation-indicators streaming-creation-container">
-            <div className="creation-indicator-box streaming">
-              <div className="creation-indicator-icon">
-                {getCreationIcon(streamedCreation.type)}
-              </div>
-              <span className="creation-indicator-type">
-                {streamedCreation.type.charAt(0).toUpperCase() + streamedCreation.type.slice(1)}
-              </span>
-              <div className="streaming-wave"></div>
-            </div>
+            <CreationIndicators
+              creations={streamedCreation ? [{
+                type: streamedCreation.type as CreationType,
+                content: streamedCreation.content,
+                title: streamedCreation.title,
+                language: streamedCreation.language,
+                id: streamedCreation.id
+              }] : []}
+              onCreationClick={toggleCreationWindow}
+              isStreaming={true}
+            />
           </div>
         </>
       );

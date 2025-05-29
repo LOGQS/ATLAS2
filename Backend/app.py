@@ -806,6 +806,43 @@ def track_streaming_creations(stream, chat_id):
         streaming_id = f"stream_{chat_id}_{uuid.uuid4().hex[:8]}_{int(time.time())}"
         log_file_path = creation_log_dir / f"{streaming_id}.json"
         
+        # Create debug log file for detailed tracking
+        debug_log_path = creation_log_dir / f"what_is_happening_in_stream_{streaming_id}.json"
+        
+        # Initialize debug log structure
+        debug_log_data = {
+            "streaming_id": streaming_id,
+            "chat_id": chat_id,
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "events": []
+        }
+        
+        def debug_log(event_type, message, data=None):
+            """Write debug event to the debug log file as JSON"""
+            try:
+                event = {
+                    "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                    "event_type": event_type,
+                    "message": message
+                }
+                if data:
+                    event["data"] = data
+                
+                debug_log_data["events"].append(event)
+                
+                # Write the updated JSON to file
+                with open(debug_log_path, "w", encoding="utf-8") as f:
+                    json.dump(debug_log_data, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                # Don't let debug logging break the main process, but log the error
+                print(f"Debug log error: {e}")
+        
+        debug_log("session_start", "Streaming debug log started", {
+            "chat_id": chat_id,
+            "streaming_id": streaming_id,
+            "main_log_file": str(log_file_path)
+        })
+        
         # Initialize log file with simpler structure
         log_data = {
             "streaming_id": streaming_id,
@@ -854,6 +891,12 @@ def track_streaming_creations(stream, chat_id):
                 chunk_text = chunk.text if hasattr(chunk, 'text') and chunk.text else ""
                 accumulated_content += chunk_text
                 
+                # Debug log the chunk
+                if chunk_text:
+                    # Extract newline replacement outside f-string to avoid backslash in f-string expression
+                    safe_chunk_text = chunk_text.replace('\n', '\\n')
+                    debug_log("chunk_processed", f"CHUNK: '{safe_chunk_text}'")
+                
                 # Update statistics
                 log_data["stats"]["total_chunks"] += 1
                 
@@ -864,10 +907,18 @@ def track_streaming_creations(stream, chat_id):
                 start_matches = list(start_pattern.finditer(accumulated_content))
                 end_matches = list(end_pattern.finditer(accumulated_content))
                 
+                # Debug log current state
+                debug_log("state_update", f"ACCUMULATED LENGTH: {len(accumulated_content)}")
+                debug_log("state_update", f"START MATCHES: {len(start_matches)} (processed: {log_data['start_tag_count']})")
+                debug_log("state_update", f"END MATCHES: {len(end_matches)} (processed: {log_data['end_tag_count']})")
+                
                 # Check counts to determine the current state
                 start_count = log_data["start_tag_count"]
                 end_count = log_data["end_tag_count"]
                 current_outside_index = log_data["current_outside_index"]
+                
+                debug_log("state_update", f"CURRENT STATE: start_count={start_count}, end_count={end_count}, outside_index={current_outside_index}")
+                debug_log("state_update", f"INSIDE CREATION: {start_count > end_count}")
                 
                 # Process any new start tags
                 while len(start_matches) > start_count:
@@ -875,26 +926,72 @@ def track_streaming_creations(stream, chat_id):
                     new_start_match = start_matches[start_count]
                     start_pos = new_start_match.start()
                     
-                    # Extract outside content before this start tag
-                    outside_start_pos = 0
-                    if start_count > 0:
-                        # If this isn't the first creation, start from after the previous end tag
-                        prev_end_match = end_matches[start_count - 1] if len(end_matches) > start_count - 1 else None
-                        if prev_end_match:
-                            outside_start_pos = prev_end_match.end()
+                    debug_log("new_tag_found", f"NEW START TAG FOUND at position {start_pos}: {new_start_match.group(0)}")
                     
-                    # Extract content from outside_start_pos to start_pos
-                    if start_pos > outside_start_pos:
-                        outside_content = accumulated_content[outside_start_pos:start_pos]
+                    # Get the current outside creation to finalize its content
+                    current_outside_key = f"outside_creation_{current_outside_index}"
+                    if current_outside_key in log_data["outside_creations"]:
+                        current_outside = log_data["outside_creations"][current_outside_key]
+                        outside_start_pos = current_outside["position"]
                         
-                        # Update the current outside creation entry
-                        outside_key = f"outside_creation_{current_outside_index}"
-                        log_data["outside_creations"][outside_key] = {
-                            "content": outside_content,
-                            "is_active": False,
-                            "position": outside_start_pos,
-                            "end_position": start_pos
+                        debug_log("tag_finalized", f"FINALIZING {current_outside_key} from pos {outside_start_pos} to {start_pos}")
+                        
+                        # Extract content from the current outside section's start to this start tag
+                        # CRITICAL FIX: Only extract content if it doesn't contain creation markers
+                        if start_pos > outside_start_pos and outside_start_pos >= 0:
+                            potential_outside_content = accumulated_content[outside_start_pos:start_pos]
+                            
+                            # STRICT VALIDATION: Outside content should NOT contain creation blocks
+                            if "$$creation:" not in potential_outside_content and "$$end$$" not in potential_outside_content:
+                                outside_content = potential_outside_content
+                                safe_outside_content = outside_content.replace('\n', '\\n')
+                                debug_log("content_updated", f"OUTSIDE CONTENT: '{safe_outside_content}'")
+                                
+                                # Finalize the current outside creation entry
+                                current_outside.update({
+                                    "content": outside_content,
+                                    "is_active": False,
+                                    "end_position": start_pos
+                                })
+                                
+                                debug_log("tag_finalized", f"FINALIZED {current_outside_key}")
+                            else:
+                                # SAFETY: If content contains creation markers, it's corrupted - use empty content
+                                debug_log("content_corrupted", f"CONTENT CORRUPTED: contains creation markers, using empty content")
+                                current_outside.update({
+                                    "content": "",
+                                    "is_active": False,
+                                    "end_position": start_pos,
+                                    "error": "Content contained creation markers - cleared for safety"
+                                })
+                                
+                                debug_log("tag_finalized", f"FINALIZED {current_outside_key} (with error)")
+                        else:
+                            # Invalid position or no content - set as empty
+                            debug_log("invalid_position", f"INVALID POSITION: start_pos={start_pos}, outside_start_pos={outside_start_pos}")
+                            current_outside.update({
+                                "content": "",
+                                "is_active": False,
+                                "end_position": start_pos,
+                                "error": "Invalid position boundaries"
+                            })
+                            
+                            debug_log("tag_finalized", f"FINALIZED {current_outside_key} (invalid position)")
+                        
+                        # Create a placeholder for the next outside creation (will be properly set up when the creation ends)
+                        # This prevents the streaming logic from continuing to update the finalized outside creation
+                        next_outside_index = current_outside_index + 1
+                        next_outside_key = f"outside_creation_{next_outside_index}"
+                        log_data["outside_creations"][next_outside_key] = {
+                            "content": "",
+                            "is_active": False,  # Will be activated when the creation ends
+                            "position": -1,  # Will be set when the creation ends
+                            "placeholder": True
                         }
+                        log_data["current_outside_index"] = next_outside_index
+                        current_outside_index = next_outside_index
+                        
+                        debug_log("placeholder_created", f"CREATED PLACEHOLDER {next_outside_key}")
                     
                     # Extract creation details
                     creation_type = new_start_match.group(1)
@@ -907,6 +1004,8 @@ def track_streaming_creations(stream, chat_id):
                         parts = title.split(":", 1)
                         language = parts[0].strip()
                         title = parts[1].strip()
+                    
+                    debug_log("creation_details", f"CREATION DETAILS: type={creation_type}, title='{title}', language={language}")
                     
                     # Create a new inside creation entry
                     creation_key = f"inside_creation_{start_count + 1}"
@@ -925,14 +1024,15 @@ def track_streaming_creations(stream, chat_id):
                     start_count += 1
                     log_data["stats"]["creations_started"] += 1
                     
-                    # Write [creation_window_open] marker to log
-                    safe_debug(f"[creation_window_open] type={creation_type}, title={title}, language={language}, creation_number={start_count}")
+                    debug_log("creation_created", f"CREATED {creation_key}")
                 
                 # Process any new end tags
                 while len(end_matches) > end_count:
                     # We found a new end tag
                     new_end_match = end_matches[end_count]
                     end_pos = new_end_match.end()
+                    
+                    debug_log("new_tag_found", f"NEW END TAG FOUND at position {new_end_match.start()}-{end_pos}")
                     
                     # Get the corresponding creation
                     creation_key = f"inside_creation_{end_count + 1}"
@@ -948,28 +1048,47 @@ def track_streaming_creations(stream, chat_id):
                         current_creation["end_position"] = end_pos
                         current_creation["end_tag"] = "$$end$$"
                         
+                        debug_log("creation_completed", f"COMPLETED {creation_key} with content length {len(creation_content)}")
+                        
                         # Increment end tag count
                         log_data["end_tag_count"] = end_count + 1
                         end_count += 1
                         log_data["stats"]["creations_completed"] += 1
                         
-                        # Start a new outside creation section after this end tag
-                        new_outside_index = current_outside_index + 1
-                        new_outside_key = f"outside_creation_{new_outside_index}"
-                        log_data["outside_creations"][new_outside_key] = {
-                            "content": "",  # Will be updated as more content comes
-                            "is_active": True,
-                            "position": end_pos,
-                            "after_creation": creation_key
-                        }
-                        log_data["current_outside_index"] = new_outside_index
-                        current_outside_index = new_outside_index
-                        log_data["stats"]["outside_sections"] += 1
-                        
-                        # Write [creation_window_close] marker to log
-                        safe_debug(f"[creation_window_close] type={current_creation['type']}, creation_number={end_count}")
+                        # Check if we already have a placeholder outside creation set up from the start tag processing
+                        current_outside_key = f"outside_creation_{current_outside_index}"
+                        if (current_outside_key in log_data["outside_creations"] and 
+                            log_data["outside_creations"][current_outside_key].get("placeholder", False)):
+                            # Activate the existing placeholder
+                            placeholder_outside = log_data["outside_creations"][current_outside_key]
+                            placeholder_outside.update({
+                                "is_active": True,
+                                "position": end_pos,
+                                "after_creation": creation_key
+                            })
+                            # Remove the placeholder flag
+                            placeholder_outside.pop("placeholder", None)
+                            log_data["stats"]["outside_sections"] += 1
+                            
+                            debug_log("placeholder_activated", f"ACTIVATED PLACEHOLDER {current_outside_key} at position {end_pos}")
+                        else:
+                            # Start a new outside creation section after this end tag (fallback)
+                            new_outside_index = current_outside_index + 1
+                            new_outside_key = f"outside_creation_{new_outside_index}"
+                            log_data["outside_creations"][new_outside_key] = {
+                                "content": "",  # Will be updated as more content comes
+                                "is_active": True,
+                                "position": end_pos,
+                                "after_creation": creation_key
+                            }
+                            log_data["current_outside_index"] = new_outside_index
+                            current_outside_index = new_outside_index
+                            log_data["stats"]["outside_sections"] += 1
+                            
+                            debug_log("fallback_created", f"FALLBACK: CREATED NEW {new_outside_key} at position {end_pos}")
                 
-                # Update content for any active creations
+                # Update content for any active creations or outside sections
+                # COMPLETELY REWRITTEN LOGIC FOR OUTSIDE CREATION UPDATES
                 if start_count > end_count:
                     # We're inside a creation, update its content
                     active_creation_key = f"inside_creation_{end_count + 1}"
@@ -981,41 +1100,76 @@ def track_streaming_creations(stream, chat_id):
                         # Get content from after the start tag to current position
                         if len(accumulated_content) > start_tag_end:
                             active_creation["content"] = accumulated_content[start_tag_end:]
+                            debug_log("content_updated", f"UPDATED {active_creation_key} content (length: {len(active_creation['content'])})")
                 else:
                     # We're outside any creation, update the active outside section
                     active_outside_key = f"outside_creation_{current_outside_index}"
                     if active_outside_key in log_data["outside_creations"]:
                         active_outside = log_data["outside_creations"][active_outside_key]
                         
+                        # Only update if this outside creation is still active (not finalized)
                         if active_outside.get("is_active", False):
-                            # Get content from the start of this section
                             outside_pos = active_outside["position"]
                             
-                            # Check if there's an upcoming start tag
-                            next_start_pos = None
-                            if len(start_matches) > start_count:
-                                next_start_pos = start_matches[start_count].start()
+                            debug_log("outside_section_updated", f"UPDATING {active_outside_key} from position {outside_pos}")
                             
-                            if len(accumulated_content) > outside_pos:
-                                if next_start_pos is not None:
-                                    # Content up to the next start tag
-                                    active_outside["content"] = accumulated_content[outside_pos:next_start_pos]
+                            # CRITICAL FIX: Prevent outside creations from EVER containing creation blocks
+                            if len(accumulated_content) > outside_pos and outside_pos >= 0:
+                                # Get content from the outside position to current position
+                                potential_content = accumulated_content[outside_pos:]
+                                
+                                # STRICT VALIDATION: If content contains ANY creation markers, do not update
+                                if "$$creation:" in potential_content or "$$end$$" in potential_content:
+                                    debug_log("creation_markers_blocked", f"BLOCKED UPDATE: {active_outside_key} would contain creation markers")
+                                    # Immediately finalize this outside creation as corrupted
+                                    active_outside.update({
+                                        "content": "",
+                                        "is_active": False,
+                                        "error": "Content contained creation markers - blocked for safety"
+                                    })
+                                    debug_log("auto_finalized", f"AUTO-FINALIZED {active_outside_key} due to creation markers")
                                 else:
-                                    # All remaining content
-                                    active_outside["content"] = accumulated_content[outside_pos:]
+                                    # Find the next creation start tag in the potential content
+                                    next_creation_match = start_pattern.search(potential_content)
+                                    
+                                    if next_creation_match:
+                                        # There's a creation tag in the potential content - only take content up to that tag
+                                        safe_content = potential_content[:next_creation_match.start()]
+                                        debug_log("boundary_found", f"BOUNDARY FOUND: limiting content to {len(safe_content)} chars (next creation at {next_creation_match.start()})")
+                                        
+                                        # Only update if we have content and it's not getting shorter
+                                        if len(safe_content) >= len(active_outside.get("content", "")):
+                                            active_outside["content"] = safe_content
+                                            safe_safe_content = safe_content.replace('\n', '\\n')
+                                            debug_log("content_updated", f"SAFE UPDATE: {active_outside_key} content = '{safe_safe_content}'")
+                                        else:
+                                            debug_log("skipped_update", f"SKIPPED UPDATE: content would be shorter ({len(safe_content)} < {len(active_outside.get('content', ''))})")
+                                    else:
+                                        # No creation tag found, safe to use all potential content
+                                        if len(potential_content) >= len(active_outside.get("content", "")):
+                                            active_outside["content"] = potential_content
+                                            safe_potential_content = potential_content.replace('\n', '\\n')
+                                            debug_log("full_update", f"FULL UPDATE: {active_outside_key} content = '{safe_potential_content}'")
+                                        else:
+                                            debug_log("skipped_update", f"SKIPPED UPDATE: content would be shorter")
+                            else:
+                                debug_log("invalid_outside_position", f"INVALID OUTSIDE POSITION: outside_pos={outside_pos}, content_len={len(accumulated_content)}")
+                        else:
+                            debug_log("skipped_update", f"SKIPPED UPDATE: {active_outside_key} is not active")
                 
-                # Save updated log data
-                with open(log_file_path, "w", encoding="utf-8") as f:
-                    json.dump(log_data, f, indent=2, ensure_ascii=False)
+                # Add separator event for readability between chunks
+                debug_log("chunk_separator", "")
             
             except Exception as e:
                 # Error during chunk processing - log it but continue
                 safe_error(f"Error processing chunk in creation tracking: {str(e)}", e)
+                debug_log("error_occurred", f"ERROR: {str(e)}")
             
             # Always yield the original chunk unmodified
             yield chunk
         
         # Final processing - handle any remaining outside content
+        debug_log("final_processing", "=== FINAL PROCESSING ===")
         if accumulated_content:
             # Final cleanup of outside content
             active_outside_key = f"outside_creation_{current_outside_index}"
@@ -1024,7 +1178,16 @@ def track_streaming_creations(stream, chat_id):
                 if active_outside.get("is_active", False):
                     outside_pos = active_outside["position"]
                     if len(accumulated_content) > outside_pos:
-                        active_outside["content"] = accumulated_content[outside_pos:]
+                        final_content = accumulated_content[outside_pos:]
+                        
+                        # Final boundary check
+                        if "$$creation:" not in final_content and "$$end$$" not in final_content:
+                            active_outside["content"] = final_content
+                            safe_final_content = final_content.replace('\n', '\\n')
+                            debug_log("final_update", f"FINAL UPDATE: {active_outside_key} = '{safe_final_content}'")
+                        else:
+                            debug_log("final_skip", f"FINAL SKIP: {active_outside_key} contains creation markers")
+                        
                         active_outside["is_active"] = False
         
         # Final log update
@@ -1033,6 +1196,11 @@ def track_streaming_creations(stream, chat_id):
         # Save final log
         with open(log_file_path, "w", encoding="utf-8") as f:
             json.dump(log_data, f, indent=2, ensure_ascii=False)
+        
+        debug_log("final_log_saved", "=== FINAL LOG SAVED ===")
+        debug_log("final_stats", f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed")
+        debug_log("final_stats", f"Outside sections: {log_data['stats']['outside_sections']}")
+        debug_log("final_log_ended", "=== STREAMING DEBUG LOG ENDED ===")
         
         creation_stats = f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed, {log_data['stats']['outside_sections']} outside sections"
         safe_debug(f"Creation tracking completed for chat {chat_id}, {creation_stats}, log file: {log_file_path}")
