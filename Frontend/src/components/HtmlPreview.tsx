@@ -17,6 +17,22 @@ const HtmlPreview: React.FC = () => {
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>HTML Preview</title>
+            <!-- Tailwind CSS CDN for styling support -->
+            <script src="https://cdn.tailwindcss.com"></script>
+            <script>
+              tailwind.config = {
+                darkMode: 'class',
+                theme: {
+                  extend: {
+                    colors: {
+                      primary: "#1a1a1a",
+                      secondary: "#2a2a2a",
+                      accent: "#4f46e5",
+                    }
+                  }
+                }
+              }
+            </script>
             <style>
               body {
                 font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
@@ -85,7 +101,7 @@ const HtmlPreview: React.FC = () => {
               }
             </style>
           </head>
-          <body>${html}</body>
+          <body class="dark">${html}</body>
         </html>
       `;
       setPreviewContent(fullHtml);

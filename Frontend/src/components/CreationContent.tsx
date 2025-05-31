@@ -37,6 +37,9 @@ try {
 declare global {
   interface Window {
     mermaidInitialized?: boolean;
+    tailwind?: {
+      config: object;
+    };
   }
 }
 
@@ -591,11 +594,48 @@ const CreationContent: React.FC<CreationContentProps> = ({
       }
       
       case 'html': {
+        const htmlWithTailwind = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Tailwind CSS CDN for styling support -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            primary: "#1a1a1a",
+            secondary: "#2a2a2a",
+            accent: "#4f46e5",
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      margin: 0;
+      padding: 20px;
+      line-height: 1.5;
+    }
+    * { box-sizing: border-box; }
+  </style>
+</head>
+<body class="dark">
+${creation.content}
+</body>
+</html>`;
+        
         return (
           <div className="html-content">
             <div className="html-preview-frame">
               <iframe
-                srcDoc={creation.content}
+                srcDoc={htmlWithTailwind}
                 title="HTML Preview"
                 sandbox="allow-scripts"
                 className="html-preview-iframe"
@@ -716,6 +756,31 @@ const CreationContent: React.FC<CreationContentProps> = ({
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
+import './styles.css';
+
+// Ensure Tailwind CSS is loaded - inject script if not already present
+if (!document.querySelector('script[src*="tailwindcss.com"]')) {
+  const script = document.createElement('script');
+  script.src = 'https://cdn.tailwindcss.com';
+  script.onload = () => {
+    // Configure Tailwind after it loads
+    if (window.tailwind) {
+      window.tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              primary: "#1a1a1a",
+              secondary: "#2a2a2a",
+              accent: "#4f46e5",
+            }
+          }
+        }
+      };
+    }
+  };
+  document.head.appendChild(script);
+}
 
 // Add global error handler to catch and log errors
 window.addEventListener('error', (event) => {
@@ -741,6 +806,52 @@ try {
 `,
                   hidden: false
                 },
+                "/styles.css": {
+                  code: `/* Tailwind CSS - Using Play CDN for better Sandpack compatibility */
+@import url('https://cdn.tailwindcss.com');
+
+/* Custom CSS */
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+/* Ensure Tailwind config is applied */
+:root {
+  --tw-color-primary: #1a1a1a;
+  --tw-color-secondary: #2a2a2a;
+  --tw-color-accent: #4f46e5;
+}`,
+                  hidden: true
+                },
+                "/public/index.html": {
+                  code: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>React Component</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            primary: "#1a1a1a",
+            secondary: "#2a2a2a",
+            accent: "#4f46e5",
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>`,
+                  hidden: true
+                },
                 "/sandbox.config.json": {
                   hidden: true,
                   code: JSON.stringify({
@@ -754,6 +865,7 @@ try {
                 dependencies: {
                   "react": "^18.0.0",
                   "react-dom": "^18.0.0",
+                  "tailwindcss": "^3.4.0",
                   "d3": "^7.8.5", 
                   "recharts": "^2.5.0",
                   "prop-types": "^15.8.1",
