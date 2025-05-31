@@ -149,20 +149,24 @@ export function detectCreations(content: string): Creation[] {
       continue;
     }
     
-    // Extract language for code blocks
+    // Extract language and title for code blocks
     let language = undefined;
+    let extractedTitle = title?.trim();
+    
     if (creationType === 'code' && title && title.includes(':')) {
-      const parts = title.split(':');
-      language = parts[0].trim();
+      const colonIndex = title.indexOf(':');
+      language = title.substring(0, colonIndex).trim();
+      // Extract title part after the colon (and any spaces)
+      extractedTitle = title.substring(colonIndex + 1).trim();
     }
     
     // Create the creation object
     const creation: Creation = {
       type: creationType,
       content: creationContent.trim(),
-      title: title?.trim(),
+      title: extractedTitle,
       language,
-      id: `creation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      id: `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
     };
     
     // If this is a React component, look for external dependencies

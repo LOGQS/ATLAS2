@@ -6,6 +6,8 @@ import creationManager, { CreationEvent } from '../utils/creationManager';
 interface EnhancedCreationViewerProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenAddModal: () => void;
+  onOpenRenameModal: (creation: Creation) => void;
 }
 
 /**
@@ -13,7 +15,9 @@ interface EnhancedCreationViewerProps {
  */
 const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
   isOpen,
-  onClose
+  onClose,
+  onOpenAddModal,
+  onOpenRenameModal
 }) => {
   const [allCreations, setAllCreations] = useState<Creation[]>([]);
   const [currentCreation, setCurrentCreation] = useState<Creation | null>(null);
@@ -24,27 +28,6 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     isOpen ? 'entering' : 'exited'
   );
 
-  // For toast notifications
-  const [toast, setToast] = useState<{message: string, visible: boolean}>({
-    message: '',
-    visible: false
-  });
-
-  // For rename modal
-  const [renameModalVisible, setRenameModalVisible] = useState(false);
-  const [creationToRename, setCreationToRename] = useState<Creation | null>(null);
-  const [newTitleInput, setNewTitleInput] = useState('');
-  const newTitleInputRef = useRef<HTMLInputElement>(null);
-
-  // Function to show toast notification
-  const showToast = (message: string) => {
-    setToast({ message, visible: true });
-    
-    // Hide toast after 3 seconds
-    setTimeout(() => {
-      setToast(prev => ({ ...prev, visible: false }));
-    }, 3000);
-  };
 
   // Handle viewer close with animation
   const handleClose = useCallback(() => {
@@ -60,8 +43,9 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
   // Handle outside clicks to close the viewer
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      // If there's a modal open, don't close the gallery
-      if (renameModalVisible) {
+      // Don't close if clicking on a modal overlay or modal container
+      const target = event.target as Element;
+      if (target.closest('.modal-overlay') || target.closest('.modal-container')) {
         return;
       }
       
@@ -78,7 +62,7 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isOpen, animationState, handleClose, renameModalVisible]);
+  }, [isOpen, animationState, handleClose]);
 
   // Helper to check if creations array has changed in a meaningful way
   const haveCreationsChanged = (newCreations: Creation[], oldCreations: Creation[]): boolean => {
@@ -251,65 +235,10 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     e.stopPropagation();
     if (!creation.id) return;
     
-    // Set the creation to rename and open the modal
-    setCreationToRename(creation);
-    setNewTitleInput(creation.title || '');
-    setRenameModalVisible(true);
-    
-    // Focus the input field after the modal is visible
-    setTimeout(() => {
-      if (newTitleInputRef.current) {
-        newTitleInputRef.current.focus();
-        newTitleInputRef.current.select();
-      }
-    }, 100);
+    // Use the prop to open the rename modal at App level
+    onOpenRenameModal(creation);
   };
   
-  // Handle the actual rename operation when confirmed
-  const confirmRename = () => {
-    if (!creationToRename?.id || newTitleInput.trim() === '') return;
-    
-    // Use the creationManager to rename the creation
-    const success = creationManager.renameCreation(creationToRename.id, newTitleInput.trim());
-    
-    if (success) {
-      // Force update the current creation if it was the renamed one
-      if (currentCreation?.id === creationToRename.id) {
-        setCurrentCreation({
-          ...currentCreation,
-          title: newTitleInput.trim()
-        });
-      }
-      
-      // Force update creations list
-      setAllCreations(creationManager.getCreations());
-      
-      // Show toast notification
-      showToast(`Renamed to "${newTitleInput.trim()}"`);
-    }
-    
-    // Close the modal
-    setRenameModalVisible(false);
-    setCreationToRename(null);
-  };
-  
-  // Handle cancel rename
-  const cancelRename = () => {
-    setRenameModalVisible(false);
-    setCreationToRename(null);
-  };
-  
-  // Handle keyboard events in the rename modal
-  const handleRenameKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      confirmRename();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancelRename();
-    }
-  };
-
   // Handle deletion of a creation
   const handleDeleteCreation = (e: React.MouseEvent, creation: Creation) => {
     e.stopPropagation();
@@ -421,70 +350,9 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
       className={`enhanced-creation-viewer ${animationState}`}
       aria-hidden={!isOpen}
     >
-      {/* Toast notification */}
-      {toast.visible && (
-        <div className="copy-toast">
-          {toast.message}
-        </div>
-      )}
+
       
-      {/* Rename Modal */}
-      {renameModalVisible && (
-        <div 
-          className="modal-overlay"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div 
-            className="modal-container rename-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="modal-header">
-              <h3>Rename Creation</h3>
-              <button 
-                className="close-button" 
-                onClick={cancelRename}
-                aria-label="Close dialog"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-            <div className="modal-content">
-              <label className="rename-label" htmlFor="creation-title-input">
-                Creation Title
-              </label>
-              <input
-                id="creation-title-input"
-                ref={newTitleInputRef}
-                type="text"
-                value={newTitleInput}
-                onChange={(e) => setNewTitleInput(e.target.value)}
-                onKeyDown={handleRenameKeyDown}
-                className="rename-input"
-                placeholder="Enter new name"
-              />
-            </div>
-            <div className="modal-footer">
-              <button 
-                className="modal-button cancel-button" 
-                onClick={cancelRename}
-              >
-                Cancel
-              </button>
-              <button 
-                className="modal-button confirm-button" 
-                onClick={confirmRename}
-                disabled={newTitleInput.trim() === ''}
-              >
-                Rename
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
+
       <div 
         ref={viewerRef}
         className="enhanced-creation-viewer-container"
@@ -555,6 +423,17 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+                <button 
+                  className="add-creation-button" 
+                  onClick={onOpenAddModal}
+                  title="Add new creation manually"
+                  aria-label="Add new creation"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
                   </svg>
                 </button>
               </div>

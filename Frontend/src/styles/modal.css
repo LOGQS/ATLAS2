@@ -9,7 +9,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  z-index: 1000;
+  z-index: 10000;
   backdrop-filter: blur(4px);
 }
 
@@ -72,12 +72,21 @@
 }
 
 .confirm-button {
-  background-color: var(--error);
+  background-color: var(--primary-color, #007acc);
   color: white;
   border: none;
 }
 
 .confirm-button:hover {
+  background-color: var(--primary-color-hover, #0066aa);
+}
+
+/* Special styling for delete confirmation buttons */
+.confirm-button.delete-confirm {
+  background-color: var(--error);
+}
+
+.confirm-button.delete-confirm:hover {
   background-color: var(--error-hover);
 }
 
@@ -98,4 +107,87 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Add Creation Modal Styles */
+.add-creation-modal {
+  width: 600px;
+  max-width: 90vw;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.form-input,
+.form-select,
+.form-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-sizing: border-box;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color, #007acc);
+  box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace;
+}
+
+.form-select {
+  cursor: pointer;
+}
+
+.form-help-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.close-button {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.close-button:hover {
+  background-color: var(--hover-bg);
+  color: var(--text-primary);
+}
+
+/* Rename Modal Styles */
+.rename-modal {
+  width: 350px;
+  max-width: 90vw;
 } 

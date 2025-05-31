@@ -87,7 +87,7 @@ const DeleteChatModal: React.FC<DeleteChatModalProps> = ({
           <button
             onClick={onConfirm}
             disabled={isProcessing}
-            className="modal-button confirm-button"
+            className="modal-button confirm-button delete-confirm"
           >
             {isProcessing ? (
               <>

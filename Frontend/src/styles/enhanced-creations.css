@@ -69,6 +69,28 @@
   color: var(--text-color);
 }
 
+
+
+.add-creation-button {
+  background: var(--primary-color);
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+  min-width: 36px;
+  height: 36px;
+}
+
+.add-creation-button:hover {
+  background-color: var(--primary-color-hover);
+}
+
 .close-button {
   background: transparent;
   border: none;
@@ -144,10 +166,13 @@
 .creation-search {
   position: relative;
   margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .creation-search-input {
-  width: 85%;
+  flex: 1;
   padding: 8px 32px 8px 12px;
   background-color: var(--input-bg);
   border: 1px solid var(--border-color);
@@ -165,7 +190,7 @@
 
 .creation-search-clear {
   position: absolute;
-  right: 8px;
+  right: 48px; /* Adjusted to accommodate the add button */
   top: 50%;
   transform: translateY(-50%);
   background: transparent;
@@ -786,129 +811,4 @@
   }
 }
 
-/* Modal Dialog Styles */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.75);
-  z-index: 10000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  animation: fade-in 0.2s ease forwards;
-}
-
-.modal-container {
-  width: 350px;
-  max-width: 90vw;
-  background-color: var(--bg-color);
-  border-radius: 8px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-  animation: modal-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  overflow: hidden;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
-  background-color: var(--bg-color-secondary);
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
-.modal-content {
-  padding: 24px 20px;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  padding: 16px 20px;
-  border-top: 1px solid var(--border-color);
-  gap: 12px;
-}
-
-.modal-button {
-  padding: 8px 16px;
-  border-radius: 4px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.cancel-button {
-  background-color: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
-}
-
-.cancel-button:hover {
-  background-color: var(--hover-color);
-}
-
-.confirm-button {
-  background-color: var(--primary-color);
-  border: none;
-  color: white;
-}
-
-.confirm-button:hover {
-  background-color: var(--primary-color-hover);
-}
-
-.confirm-button:disabled {
-  background-color: var(--border-color);
-  cursor: not-allowed;
-}
-
-.rename-label {
-  align-self: flex-start;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-color);
-  margin-bottom: 8px;
-  width: 100%;
-}
-
-.rename-input {
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 4px;
-  border: 1px solid var(--border-color);
-  background-color: var(--input-bg);
-  color: var(--text-color);
-  font-size: 14px;
-  box-sizing: border-box;
-}
-
-.rename-input:focus {
-  outline: none;
-  border-color: var(--primary-color);
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
-}
-
-@keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-} 
+ 

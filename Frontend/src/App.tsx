@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import './App.css';
 import './styles/creations.css';
 import './styles/enhanced-creations.css';
@@ -12,8 +12,9 @@ import LeftSidebar from './components/LeftSidebar';
 import DeleteChatModal from './components/DeleteChatModal';
 import CreationWindow from './components/CreationWindow';
 import TaskSystem from './components/TaskSystem';
-import { Creation } from './utils/creationsHelper';
+import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
+import creationManager from './utils/creationManager';
 import { streamMonitor } from './utils/streamMonitor';
 
 interface ImportResult {
@@ -55,6 +56,23 @@ function App() {
   
   // Add state for task system
   const [isTaskSystemOpen, setIsTaskSystemOpen] = useState(false);
+
+  // Add creation modal state
+  const [addCreationModalOpen, setAddCreationModalOpen] = useState(false);
+  const [newCreationType, setNewCreationType] = useState<CreationType>('code');
+  const [newCreationTitle, setNewCreationTitle] = useState('');
+  const [newCreationContent, setNewCreationContent] = useState('');
+  const [newCreationLanguage, setNewCreationLanguage] = useState('javascript');
+  const [newCreationExternalDeps, setNewCreationExternalDeps] = useState('');
+
+  // Rename creation modal state
+  const [renameCreationModalOpen, setRenameCreationModalOpen] = useState(false);
+  const [creationToRename, setCreationToRename] = useState<Creation | null>(null);
+  const [renameCreationTitle, setRenameCreationTitle] = useState('');
+
+  // Modal refs for click-outside handling
+  const addCreationModalRef = useRef<HTMLDivElement>(null);
+  const renameCreationModalRef = useRef<HTMLDivElement>(null);
   
   // Load chat history when component mounts
   useEffect(() => {
@@ -614,6 +632,164 @@ function App() {
     setIsTaskSystemOpen(false);
   };
 
+  // Add creation modal handlers
+  const handleAddCreation = () => {
+    if (!newCreationTitle.trim() || !newCreationContent.trim()) {
+      return;
+    }
+
+    // Parse external dependencies for React components
+    let externalDependencies: Record<string, string> | undefined;
+    if (newCreationType === 'react' && newCreationExternalDeps.trim()) {
+      try {
+        externalDependencies = JSON.parse(newCreationExternalDeps.trim());
+      } catch {
+        alert('Invalid JSON format for external dependencies. Please check your syntax.');
+        return;
+      }
+    }
+
+    const newCreation: Creation = {
+      type: newCreationType,
+      content: newCreationContent.trim(),
+      title: newCreationTitle.trim(),
+      language: newCreationType === 'code' ? newCreationLanguage : undefined,
+      externalDependencies: externalDependencies,
+    };
+
+    // Add the creation using the creation manager
+    creationManager.addCreation(newCreation);
+    
+    // Close modal and reset form
+    setAddCreationModalOpen(false);
+    resetAddCreationForm();
+  };
+
+  const resetAddCreationForm = () => {
+    setNewCreationType('code');
+    setNewCreationTitle('');
+    setNewCreationContent('');
+    setNewCreationLanguage('javascript');
+    setNewCreationExternalDeps('');
+  };
+
+  const cancelAddCreation = useCallback(() => {
+    setAddCreationModalOpen(false);
+    resetAddCreationForm();
+  }, []);
+
+  const cancelRenameCreation = useCallback(() => {
+    setRenameCreationModalOpen(false);
+    setCreationToRename(null);
+  }, []);
+
+  // Auto-focus the title input when add creation modal opens
+  useEffect(() => {
+    if (addCreationModalOpen) {
+      setTimeout(() => {
+        const titleInput = document.getElementById('creation-title-input');
+        if (titleInput) {
+          titleInput.focus();
+        }
+      }, 100);
+    }
+  }, [addCreationModalOpen]);
+
+  // Close modals on escape key
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (addCreationModalOpen) {
+          cancelAddCreation();
+        } else if (renameCreationModalOpen) {
+          cancelRenameCreation();
+        }
+      }
+    };
+    
+    if (addCreationModalOpen || renameCreationModalOpen) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen]);
+
+  // Close modals on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (addCreationModalOpen && addCreationModalRef.current && !addCreationModalRef.current.contains(event.target as Node)) {
+        cancelAddCreation();
+      }
+      if (renameCreationModalOpen && renameCreationModalRef.current && !renameCreationModalRef.current.contains(event.target as Node)) {
+        cancelRenameCreation();
+      }
+    };
+    
+    if (addCreationModalOpen || renameCreationModalOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen]); // Functions are stable so don't need to be dependencies
+
+  // Auto-focus the title input when rename modal opens
+  useEffect(() => {
+    if (renameCreationModalOpen) {
+      setTimeout(() => {
+        const titleInput = document.getElementById('rename-creation-title-input') as HTMLInputElement;
+        if (titleInput) {
+          titleInput.focus();
+          titleInput.select();
+        }
+      }, 100);
+    }
+  }, [renameCreationModalOpen]);
+
+  // Handle keyboard events for add creation modal
+  const handleAddCreationKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      cancelAddCreation();
+    } else if (e.key === 'Enter' && e.ctrlKey) {
+      // Ctrl+Enter to submit
+      handleAddCreation();
+    }
+  };
+
+  // Rename creation modal handlers
+  const handleOpenRenameModal = (creation: Creation) => {
+    setCreationToRename(creation);
+    // Set the rename input to the displayed title (what user sees in gallery)
+    const displayedTitle = creation.title || `${creation.type.charAt(0).toUpperCase() + creation.type.slice(1)} Creation`;
+    setRenameCreationTitle(displayedTitle);
+    setRenameCreationModalOpen(true);
+  };
+
+  const handleRenameCreation = () => {
+    if (!creationToRename?.id || renameCreationTitle.trim() === '') return;
+    
+    // Use the creationManager to rename the creation
+    const success = creationManager.renameCreation(creationToRename.id, renameCreationTitle.trim());
+    
+    if (success) {
+      // Close the modal
+      setRenameCreationModalOpen(false);
+      setCreationToRename(null);
+    }
+  };
+
+  // Handle keyboard events for rename modal
+  const handleRenameCreationKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      cancelRenameCreation();
+    } else if (e.key === 'Enter') {
+      handleRenameCreation();
+    }
+  };
+
   return (
     <div className="min-h-screen bg-primary text-white">
       {/* Left Sidebar */}
@@ -774,7 +950,22 @@ function App() {
       {/* Enhanced Creation Viewer */}
       <EnhancedCreationViewer 
         isOpen={isEnhancedViewerOpen} 
-        onClose={() => setIsEnhancedViewerOpen(false)}
+        onClose={() => {
+          // Close any open creation modals when gallery closes
+          if (addCreationModalOpen) {
+            setAddCreationModalOpen(false);
+            resetAddCreationForm();
+          }
+          if (renameCreationModalOpen) {
+            setRenameCreationModalOpen(false);
+            setCreationToRename(null);
+          }
+          
+          // Close the enhanced viewer
+          setIsEnhancedViewerOpen(false);
+        }}
+        onOpenAddModal={() => setAddCreationModalOpen(true)}
+        onOpenRenameModal={handleOpenRenameModal}
       />
       
       {/* Creation Window */}
@@ -902,6 +1093,197 @@ function App() {
         message={`Are you sure you want to delete ${selectedChatIds.length} chats? This action cannot be undone.`}
         isProcessing={isDeleting}
       />
+
+      {/* Rename Creation Modal - Only show when gallery is open */}
+      {renameCreationModalOpen && isEnhancedViewerOpen && (
+        <div className="modal-overlay animate-fade-in">
+          <div ref={renameCreationModalRef} className="modal-container rename-modal animate-fade-in">
+            <div className="modal-header">
+              <h3>Rename Creation</h3>
+              <button 
+                className="close-button" 
+                onClick={cancelRenameCreation}
+                aria-label="Close dialog"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div className="modal-content">
+              <label className="form-label" htmlFor="rename-creation-title-input">
+                Creation Title
+              </label>
+              <input
+                id="rename-creation-title-input"
+                type="text"
+                value={renameCreationTitle}
+                onChange={(e) => setRenameCreationTitle(e.target.value)}
+                onKeyDown={handleRenameCreationKeyDown}
+                className="form-input"
+                placeholder="Enter new name"
+              />
+            </div>
+            <div className="modal-footer">
+              <button 
+                className="modal-button cancel-button" 
+                onClick={cancelRenameCreation}
+              >
+                Cancel
+              </button>
+              <button 
+                className="modal-button confirm-button" 
+                onClick={handleRenameCreation}
+                disabled={renameCreationTitle.trim() === ''}
+              >
+                Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Creation Modal - Only show when gallery is open */}
+      {addCreationModalOpen && isEnhancedViewerOpen && (
+        <div className="modal-overlay animate-fade-in">
+          <div ref={addCreationModalRef} className="modal-container add-creation-modal animate-fade-in">
+            <div className="modal-header">
+              <h3>Add New Creation</h3>
+              <button 
+                className="close-button" 
+                onClick={cancelAddCreation}
+                aria-label="Close dialog"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div className="modal-content">
+              <div className="form-group">
+                <label className="form-label" htmlFor="creation-type-select">
+                  Creation Type
+                </label>
+                <select
+                  id="creation-type-select"
+                  value={newCreationType}
+                  onChange={(e) => setNewCreationType(e.target.value as CreationType)}
+                  className="form-select"
+                >
+                  <option value="code">Code</option>
+                  <option value="html">HTML</option>
+                  <option value="markdown">Markdown</option>
+                  <option value="svg">SVG</option>
+                  <option value="mermaid">Mermaid Diagram</option>
+                  <option value="react">React Component</option>
+                  <option value="placeholder">Placeholder</option>
+                </select>
+              </div>
+              
+              {newCreationType === 'code' && (
+                <div className="form-group">
+                  <label className="form-label" htmlFor="creation-language-select">
+                    Programming Language
+                  </label>
+                  <select
+                    id="creation-language-select"
+                    value={newCreationLanguage}
+                    onChange={(e) => setNewCreationLanguage(e.target.value)}
+                    className="form-select"
+                  >
+                    <option value="javascript">JavaScript</option>
+                    <option value="typescript">TypeScript</option>
+                    <option value="python">Python</option>
+                    <option value="java">Java</option>
+                    <option value="cpp">C++</option>
+                    <option value="c">C</option>
+                    <option value="csharp">C#</option>
+                    <option value="php">PHP</option>
+                    <option value="ruby">Ruby</option>
+                    <option value="go">Go</option>
+                    <option value="rust">Rust</option>
+                    <option value="swift">Swift</option>
+                    <option value="kotlin">Kotlin</option>
+                    <option value="html">HTML</option>
+                    <option value="css">CSS</option>
+                    <option value="sql">SQL</option>
+                    <option value="bash">Bash</option>
+                    <option value="json">JSON</option>
+                    <option value="xml">XML</option>
+                    <option value="yaml">YAML</option>
+                  </select>
+                </div>
+              )}
+
+              {newCreationType === 'react' && (
+                <div className="form-group">
+                  <label className="form-label" htmlFor="creation-external-deps-textarea">
+                    External Dependencies (Optional)
+                  </label>
+                  <textarea
+                    id="creation-external-deps-textarea"
+                    value={newCreationExternalDeps}
+                    onChange={(e) => setNewCreationExternalDeps(e.target.value)}
+                    className="form-textarea"
+                    placeholder='{"package-name": "version", "lodash": "^4.17.21"}'
+                    rows={4}
+                  />
+                  <small className="form-help-text">
+                    Enter external dependencies as JSON (package name to version mapping). Example: {JSON.stringify({"lodash": "^4.17.21", "axios": "^1.0.0"})}
+                  </small>
+                </div>
+              )}
+              
+              <div className="form-group">
+                <label className="form-label" htmlFor="creation-title-input">
+                  Title
+                </label>
+                <input
+                  id="creation-title-input"
+                  type="text"
+                  value={newCreationTitle}
+                  onChange={(e) => setNewCreationTitle(e.target.value)}
+                  onKeyDown={handleAddCreationKeyDown}
+                  className="form-input"
+                  placeholder="Enter creation title"
+                />
+              </div>
+              
+              <div className="form-group">
+                <label className="form-label" htmlFor="creation-content-textarea">
+                  Content
+                </label>
+                <textarea
+                  id="creation-content-textarea"
+                  value={newCreationContent}
+                  onChange={(e) => setNewCreationContent(e.target.value)}
+                  onKeyDown={handleAddCreationKeyDown}
+                  className="form-textarea"
+                  placeholder="Enter your creation content here..."
+                  rows={12}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button 
+                className="modal-button cancel-button" 
+                onClick={cancelAddCreation}
+              >
+                Cancel
+              </button>
+              <button 
+                className="modal-button confirm-button" 
+                onClick={handleAddCreation}
+                disabled={!newCreationTitle.trim() || !newCreationContent.trim()}
+              >
+                Add Creation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Task System component */}
       <TaskSystem 
