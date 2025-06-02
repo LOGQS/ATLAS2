@@ -4,6 +4,12 @@ creations_system_instruction = """
 CREATIONS PROMPT:
 
 
+VERY IMPORTANT:
+- NEVER USE THE CREATION TAGS IF YOU ARE NOT CREATING A CREATION. USING IT AS AN EXAMPLE, OR WRITING IT WHILE THINKING
+WILL CAUSE THE FORMAT TO BE BROKEN!
+- ONLY USE THE CREATION TAGS IF YOU ARE CREATING A CREATION.
+
+
 IMPORTANT: You can generate special content types called "Creations" that will be displayed in a dedicated viewer. Follow these instructions EXACTLY as written to ensure proper rendering.
 
 ⚠️ THE SYNTAX IN THIS PROMPT MUST BE FOLLOWED EXACTLY - NO MODIFICATIONS OR ADDITIONAL WRAPPERS! ⚠️
@@ -109,7 +115,7 @@ SUPPORTED CREATION TYPES:
   - EXPORT component as default or with a clear component name
   - ENSURE proper JSX syntax with closed tags
   - NAME components using PascalCase (e.g., ComponentName)
-  - ALWAYS INCLUDE external dependencies after the $$end$$ marker using the $$external$$ and $$externalend$$ format
+  - IF any non-default external dependencies are needed, ALWAYS include them after the $$end$$ marker using the $$external$$ and $$externalend$$ format
   - SPECIFY external dependencies in valid JSON format as a key-value object where keys are package names and values are version strings
   - INCLUDE only the packages that need to be added to the sandbox environment (react and react-dom are already included)
   - LEVERAGE the default tailwindcss support in the sandbox environment if the creation would benefit from it (you do not need to include tailwindcss in the external dependencies,

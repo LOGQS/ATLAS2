@@ -106,12 +106,10 @@ function App() {
     
     // Listen for chat events
     const handleChatCreated = (event: Event) => {
-      console.log('Chat created event received, refreshing chats');
       
       // Cast to custom event to access the chat ID
       const customEvent = event as CustomEvent<{ chatId: string }>;
       if (customEvent.detail?.chatId) {
-        console.log(`Setting active chat ID to newly created chat: ${customEvent.detail.chatId}`);
         // Set the active chat ID to the newly created chat
         setActiveChatId(customEvent.detail.chatId);
       }
@@ -208,8 +206,47 @@ function App() {
     window.addEventListener('show-creation-sidebar', (e: Event) => {
       const customEvent = e as CustomEvent<Creation>;
       if (customEvent.detail) {
+        // Update creation first, then ensure window is open
+        // This prevents the window from closing during creation transitions
         setCurrentCreation(customEvent.detail);
-        setCreationWindowOpen(true);
+        if (!creationWindowOpen) {
+          setCreationWindowOpen(true);
+        }
+      }
+    });
+
+    // Add event listener for updating creation during streaming (without closing window)
+    window.addEventListener('stream-creation-update', (e: Event) => {
+      const customEvent = e as CustomEvent<Creation>;
+      if (customEvent.detail) {
+        console.log('🏠 APP RECEIVED stream-creation-update EVENT:', {
+          creationData: {
+            type: customEvent.detail.type,
+            title: customEvent.detail.title,
+            language: customEvent.detail.language,
+            id: customEvent.detail.id,
+            contentLength: customEvent.detail.content?.length || 0,
+            metadata: customEvent.detail.metadata
+          },
+          currentCreationWindowOpen: creationWindowOpen,
+          currentCreation: currentCreation ? {
+            type: currentCreation.type,
+            title: currentCreation.title,
+            id: currentCreation.id
+          } : null,
+          willOpenWindow: !creationWindowOpen
+        });
+        
+        // Update creation content during streaming without any window closing
+        // This prevents the flash of content in main chat
+        setCurrentCreation(customEvent.detail);
+        // Ensure window is open (should already be, but be safe)
+        if (!creationWindowOpen) {
+          console.log('🪟 OPENING CREATION WINDOW for creation:', customEvent.detail.type, customEvent.detail.title);
+          setCreationWindowOpen(true);
+        } else {
+          console.log('🪟 UPDATING EXISTING CREATION WINDOW with:', customEvent.detail.type, customEvent.detail.title);
+        }
       }
     });
     
@@ -219,8 +256,9 @@ function App() {
         setIsEnhancedViewerOpen(false);
       });
       window.removeEventListener('show-creation-sidebar', () => {});
+      window.removeEventListener('stream-creation-update', () => {});
     };
-  }, []);
+  }, [creationWindowOpen]);
 
   // Function to start a new chat
   const handleNewChat = () => {

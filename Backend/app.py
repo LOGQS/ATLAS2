@@ -225,6 +225,28 @@ if OPENROUTER_API_KEY:
 else:
     logger.info("OPENROUTER_API_KEY not found in environment variables")
 
+# Configure Groq API
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = None
+
+# Initialize Groq client if API key is available
+if GROQ_API_KEY:
+    try:
+        from openai import OpenAI
+        groq_client = OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=GROQ_API_KEY,
+        )
+        logger.info("Groq client initialized successfully")
+    except ImportError:
+        logger.warning("OpenAI library not installed. Groq functionality will not be available.")
+        groq_client = None
+    except Exception as e:
+        logger.error(f"Failed to initialize Groq client: {str(e)}")
+        groq_client = None
+else:
+    logger.info("GROQ_API_KEY not found in environment variables")
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -269,35 +291,65 @@ except Exception as e:
 # Add safe_log method to app context for consistent logging
 def safe_debug(message, data=None):
     """Safely log debug messages with potentially problematic data"""
-    if data is not None:
-        safe_data = safe_log_data(data)
-        logger.debug(f"{message}: {safe_data}")
-    else:
-        logger.debug(message)
+    try:
+        # Encode the message safely to handle Unicode characters on Windows
+        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        if data is not None:
+            safe_data = safe_log_data(data)
+            logger.debug(f"{safe_message}: {safe_data}")
+        else:
+            logger.debug(safe_message)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        # Fallback: log a simplified message without problematic characters
+        simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
+        logger.debug(f"[Unicode Error in Log] {simple_message}")
+        if data is not None:
+            logger.debug(f"[Data] {str(data)[:100]}...")
 
 def safe_info(message, data=None):
     """Safely log info messages with potentially problematic data"""
-    if data is not None:
-        safe_data = safe_log_data(data)
-        logger.info(f"{message}: {safe_data}")
-    else:
-        logger.info(message)
+    try:
+        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        if data is not None:
+            safe_data = safe_log_data(data)
+            logger.info(f"{safe_message}: {safe_data}")
+        else:
+            logger.info(safe_message)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
+        logger.info(f"[Unicode Error in Log] {simple_message}")
+        if data is not None:
+            logger.info(f"[Data] {str(data)[:100]}...")
 
 def safe_warning(message, data=None):
     """Safely log warning messages with potentially problematic data"""
-    if data is not None:
-        safe_data = safe_log_data(data)
-        logger.warning(f"{message}: {safe_data}")
-    else:
-        logger.warning(message)
+    try:
+        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        if data is not None:
+            safe_data = safe_log_data(data)
+            logger.warning(f"{safe_message}: {safe_data}")
+        else:
+            logger.warning(safe_message)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
+        logger.warning(f"[Unicode Error in Log] {simple_message}")
+        if data is not None:
+            logger.warning(f"[Data] {str(data)[:100]}...")
 
 def safe_error(message, data=None):
     """Safely log error messages with potentially problematic data"""
-    if data is not None:
-        safe_data = safe_log_data(data)
-        logger.error(f"{message}: {safe_data}")
-    else:
-        logger.error(message)
+    try:
+        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        if data is not None:
+            safe_data = safe_log_data(data)
+            logger.error(f"{safe_message}: {safe_data}")
+        else:
+            logger.error(safe_message)
+    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+        simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
+        logger.error(f"[Unicode Error in Log] {simple_message}")
+        if data is not None:
+            logger.error(f"[Data] {str(data)[:100]}...")
 
 def safe_exception(message, exception=None):
     """Safely log exceptions with potentially problematic data"""
@@ -413,13 +465,38 @@ def is_openrouter_model(model_name):
     openrouter_models = ["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"]
     return model_name in openrouter_models
 
-def create_openrouter_chat_response(messages, model_name, system_instruction=None):
+def is_groq_model(model_name):
     """
-    Create a chat response using OpenRouter API with direct HTTP requests for reasoning support
+    Check if the given model name is a Groq model
     """
-    if not OPENROUTER_API_KEY:
-        raise Exception("OpenRouter API key not available")
+    groq_models = ["llama-3.3-70b-versatile"]
+    return model_name in groq_models
 
+def get_openai_client_for_model(model_name):
+    """
+    Get the appropriate OpenAI client based on the model type
+    """
+    if is_groq_model(model_name):
+        if not GROQ_API_KEY:
+            raise Exception("Groq API key not available")
+        from openai import OpenAI
+        return OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=GROQ_API_KEY,
+        )
+    elif is_openrouter_model(model_name):
+        if not openrouter_client:
+            raise Exception("OpenRouter client not available")
+        return openrouter_client
+    else:
+        raise Exception(f"No client available for model: {model_name}")
+
+def create_openai_compatible_chat_response(messages, model_name, system_instruction=None):
+    """
+    Create a chat response using OpenAI-compatible APIs (OpenRouter, Groq, etc.)
+    """
+    client = get_openai_client_for_model(model_name)
+    
     # Convert messages to OpenAI format
     openai_messages = []
     
@@ -447,27 +524,24 @@ def create_openrouter_chat_response(messages, model_name, system_instruction=Non
             "content": content
         })
     
-    # Prepare the request payload with reasoning support
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
+    # Create request parameters
+    params = {
         "model": model_name,
         "messages": openai_messages,
-        "stream": True,
-        "include_reasoning": True  # Enable reasoning tokens to show the thinking process
+        "stream": True
     }
     
-    # Make the request with streaming
-    response = requests.post(url, headers=headers, json=payload, stream=True)
+    # Add reasoning tokens for OpenRouter models that support it
+    if is_openrouter_model(model_name):
+        params["extra_body"] = {"include_reasoning": True}
     
-    if response.status_code != 200:
-        raise Exception(f"OpenRouter API error: {response.status_code} - {response.text}")
+    # Use the OpenAI client to create the response
+    response = client.chat.completions.create(**params)
     
     # Return the response object that can be iterated over for streaming
     return response
+
+
 
 # Get available models
 @app.route("/api/models", methods=["GET"])
@@ -481,6 +555,10 @@ def get_models():
     # Add OpenRouter models if available
     if openrouter_client and OPENROUTER_API_KEY:
         models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"])
+    
+    # Add Groq models if available
+    if GROQ_API_KEY:
+        models.extend(["llama-3.3-70b-versatile"])
     
     return jsonify({
         "models": models
@@ -1440,39 +1518,41 @@ def chat():
         if new_chat:
             logger.debug(f"Creating new chat with model: {model_name}")
             
-            if is_openrouter_model(model_name):
-                # For OpenRouter models, create a simple chat object to store history
-                class OpenRouterChat:
+            if is_openrouter_model(model_name) or is_groq_model(model_name):
+                # For OpenAI-compatible models (OpenRouter/Groq), create a simple chat object to store history
+                class OpenAICompatibleChat:
                     def __init__(self, chat_id, model):
                         self.id = chat_id
                         self.model = model
-                        self.openrouter_history = []
+                        self.external_history = []
                         self.files = set()
                         
                     def get_history(self):
-                        # Return empty list since OpenRouter history is stored differently
+                        # Return empty list since external history is stored differently
                         return []
                 
-                # Initialize OpenRouter history if available
+                # Initialize external history if available
                 if history_messages:
-                    openrouter_history = []
+                    external_history = []
                     for msg in history_messages:
                         if msg["role"] in ["user", "assistant"] and msg.get("content"):
-                            openrouter_history.append({
+                            external_history.append({
                                 "role": msg["role"],
                                 "content": msg["content"]
                             })
-                    safe_debug(f"Initializing OpenRouter chat with {len(openrouter_history)} history messages")
+                    model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
+                    safe_debug(f"Initializing {model_type} chat with {len(external_history)} history messages")
                 else:
-                    openrouter_history = []
+                    external_history = []
                 
                 # Generate a unique ID if not provided
                 if not chat_id:
-                    chat_id = f"openrouter_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                    prefix = "openrouter" if is_openrouter_model(model_name) else "groq"
+                    chat_id = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
                 
-                # Create OpenRouter chat object
-                chat = OpenRouterChat(chat_id, model_name)
-                chat.openrouter_history = openrouter_history
+                # Create OpenAI-compatible chat object
+                chat = OpenAICompatibleChat(chat_id, model_name)
+                chat.external_history = external_history
                 
             else:
                 # Standard Gemini chat creation
@@ -1601,7 +1681,7 @@ def chat():
                 # Don't fail the chat if history update fails
                 safe_error(f"Failed to update chat history timestamp: {str(e)}", e)
         
-        def buffer_and_delay(stream, delay_seconds: float = 2.0):
+        def buffer_and_delay(stream, delay_seconds: float = 0.0):
             """Return a generator that re‑emits *stream* exactly *delay_seconds*
             after the first chunk while keeping the *original* inter‑chunk timing.
 
@@ -1729,11 +1809,12 @@ def chat():
             # Send message with all parts and stream the response
             safe_debug(f"Sending message to chat ID {chat_id} with {len(parts)} parts", parts)
             
-            # Check if we're using an OpenRouter model
-            if is_openrouter_model(model_name):
-                safe_debug(f"Using OpenRouter model: {model_name}")
+            # Check if we're using an OpenAI-compatible model (OpenRouter/Groq)
+            if is_openrouter_model(model_name) or is_groq_model(model_name):
+                model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
+                safe_debug(f"Using {model_type} model: {model_name}")
                 
-                # For OpenRouter models, we need to handle differently since they don't support files
+                # For OpenAI-compatible models, we need to handle differently since they don't support files
                 if len(parts) > 1:
                     # If there are file attachments, convert them to text descriptions
                     text_content = ""
@@ -1746,12 +1827,12 @@ def chat():
                     parts = [text_content]
                 
                 try:
-                    # Get the chat history for OpenRouter
-                    if chat_id in active_chats and hasattr(active_chats[chat_id], 'openrouter_history'):
-                        openrouter_history = active_chats[chat_id].openrouter_history
+                    # Get the chat history for external models
+                    if chat_id in active_chats and hasattr(active_chats[chat_id], 'external_history'):
+                        external_history = active_chats[chat_id].external_history
                     else:
-                        # Initialize OpenRouter history from Gemini history if available
-                        openrouter_history = []
+                        # Initialize external history from Gemini history if available
+                        external_history = []
                         if chat_id in active_chats:
                             try:
                                 gemini_history = active_chats[chat_id].get_history()
@@ -1764,7 +1845,7 @@ def chat():
                                                 content += part.text
                                     
                                     if role in ["user", "assistant"] and content:
-                                        openrouter_history.append({
+                                        external_history.append({
                                             "role": role,
                                             "content": content
                                         })
@@ -1773,70 +1854,28 @@ def chat():
                         
                         # Store the history on the chat object
                         if chat_id in active_chats:
-                            active_chats[chat_id].openrouter_history = openrouter_history
+                            active_chats[chat_id].external_history = external_history
                     
                     # Add the new user message
-                    current_messages = openrouter_history + [{
+                    current_messages = external_history + [{
                         "role": "user",
                         "content": parts[0] if parts else ""
                     }]
                     
-                    # Create OpenRouter response with system instruction
-                    raw_response = create_openrouter_chat_response(current_messages, model_name, creations_system_instruction)
+                    # Create response using unified OpenAI-compatible client
+                    response = create_openai_compatible_chat_response(current_messages, model_name, creations_system_instruction)
                     
-                    # Create a generator that parses the raw HTTP response into chunks
-                    def parse_openrouter_stream(http_response):
-                        for chunk in http_response.iter_lines(decode_unicode=True):
-                            if chunk and chunk.startswith('data: '):
-                                data_content = chunk[6:]  # Remove 'data: ' prefix
-                                
-                                if data_content.strip() == '[DONE]':
-                                    break
-                                    
-                                try:
-                                    chunk_data = json.loads(data_content)
-                                    safe_debug(f"🔍 Parsing OpenRouter chunk: {chunk_data}")
-                                    
-                                    # Create a mock chunk object that looks like OpenAI client format
-                                    class MockChunk:
-                                        def __init__(self, data):
-                                            self.choices = []
-                                            if 'choices' in data and data['choices']:
-                                                delta_data = data['choices'][0].get('delta', {})
-                                                mock_delta = MockDelta(delta_data)
-                                                mock_choice = MockChoice(mock_delta)
-                                                self.choices.append(mock_choice)
-                                    
-                                    class MockChoice:
-                                        def __init__(self, delta):
-                                            self.delta = delta
-                                    
-                                    class MockDelta:
-                                        def __init__(self, data):
-                                            self.content = data.get('content')
-                                            self.reasoning = data.get('reasoning')
-                                    
-                                    yield MockChunk(chunk_data)
-                                    
-                                except json.JSONDecodeError:
-                                    # Skip invalid JSON chunks
-                                    continue
-                    
-                    # Parse the response into our expected format
-                    response = parse_openrouter_stream(raw_response)
-                    
-                    # For OpenRouter models, we need to exclude reasoning tokens from creation tracking
-                    # Create a wrapper that modifies the chunk.text property to only include content
-                    def create_content_only_wrapper(original_stream):
-                        """Wrap OpenRouter stream to only track content in creation system"""
+                    # Create a wrapper for tracking content
+                    def create_content_wrapper(original_stream):
+                        """Wrap OpenAI-compatible stream for creation tracking"""
                         for chunk in original_stream:
-                            # Create a wrapper that filters out reasoning from creation tracking
+                            # Create a wrapper that exposes text property for creation tracking
                             class FilteredChunk:
                                 def __init__(self, original_chunk):
                                     # Copy all attributes from the original chunk
                                     self.__dict__.update(original_chunk.__dict__)
                                     
-                                    # Override the text property to only include content (not reasoning)
+                                    # Set the text property for creation tracking
                                     if (hasattr(original_chunk, 'choices') and original_chunk.choices and 
                                         hasattr(original_chunk.choices[0], 'delta') and 
                                         hasattr(original_chunk.choices[0].delta, 'content') and 
@@ -1849,18 +1888,19 @@ def chat():
                             
                             yield FilteredChunk(chunk)
                     
-                    # Track creations with content-only filtering for OpenRouter
-                    content_filtered_response = create_content_only_wrapper(response)
-                    tracked_response = track_streaming_creations(content_filtered_response, chat_id)
+                    # Option 1: Use raw stream directly (fastest)
+                    delayed_response = response
                     
-                    # Use the buffer_and_delay function to add a delay to the response for frontend display
-                    delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                    # Option 2: Keep creation tracking but no delay (uncomment if you want creation tracking)
+                    # content_filtered_response = create_content_wrapper(response)
+                    # delayed_response = track_streaming_creations(content_filtered_response, chat_id)
                     
                 except Exception as e:
-                    safe_debug(f"Error during OpenRouter request: {str(e)}", e)
+                    safe_debug(f"Error during {model_type} request: {str(e)}", e)
                     return jsonify({"error": str(e)}), 500
+
             else:
-                # Use standard Gemini API for non-OpenRouter models
+                # Use standard Gemini API for standard models
                 safe_debug("Using Gemini API for standard models")
                 
                 try:
@@ -1870,12 +1910,11 @@ def chat():
                         config=config
                     )
                     
-                    # Track creations in the real-time stream without affecting it
-                    # For Gemini models, all content is in the main stream (no separate reasoning tokens)
-                    tracked_response = track_streaming_creations(response, chat_id)
+                    # Option 1: Use raw stream directly (fastest)
+                    delayed_response = response
                     
-                    # Use the buffer_and_delay function to add a delay to the response for frontend display
-                    delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                    # Option 2: Keep creation tracking but no delay (uncomment if you want creation tracking)
+                    # delayed_response = track_streaming_creations(response, chat_id)
                     
                 except Exception as e:
                     safe_debug(f"Error during send_message_stream: {str(e)}", e)
@@ -1891,18 +1930,18 @@ def chat():
                         try:
                             chunk_text = ""
                             
-                            # Handle different response types (Gemini vs OpenRouter)
-                            if is_openrouter_model(model_name):
-                                # OpenRouter response structure (already parsed by our stream parser)
+                            # Handle different response types (Gemini vs OpenAI-compatible)
+                            if is_openrouter_model(model_name) or is_groq_model(model_name):
+                                # OpenAI-compatible response structure (OpenRouter/Groq)
                                 if hasattr(chunk, 'choices') and chunk.choices:
                                     delta = chunk.choices[0].delta
                                     
-                                    # Handle reasoning tokens
-                                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                                    # Handle reasoning tokens (OpenRouter only)
+                                    if hasattr(delta, 'reasoning') and delta.reasoning and is_openrouter_model(model_name):
                                         reasoning_data = {'reasoning': delta.reasoning, 'chat_id': chat_id}
                                         # Accumulate reasoning for saving to history
                                         accumulated_reasoning += delta.reasoning
-                                        safe_debug(f"🧠 Backend sending reasoning chunk: {delta.reasoning[:100]}...")
+                                        safe_debug(f"[REASONING] Backend sending reasoning chunk: {delta.reasoning[:100]}...")
                                         try:
                                             json_data = json.dumps(reasoning_data)
                                             yield f"data: {json_data}\n\n"
@@ -1944,11 +1983,11 @@ def chat():
                     
                     # Log the complete history after the response is done and handle OpenRouter history
                     try:
-                        if is_openrouter_model(model_name):
-                            # For OpenRouter models, update the stored history
+                        if is_openrouter_model(model_name) or is_groq_model(model_name):
+                            # For OpenAI-compatible models, update the stored history
                             if chat_id in active_chats:
-                                if not hasattr(active_chats[chat_id], 'openrouter_history'):
-                                    active_chats[chat_id].openrouter_history = []
+                                if not hasattr(active_chats[chat_id], 'external_history'):
+                                    active_chats[chat_id].external_history = []
                                 
                                 # Add the assistant response to history with reasoning if available
                                 if assistant_response.strip():
@@ -1956,16 +1995,17 @@ def chat():
                                         "role": "assistant",
                                         "content": assistant_response
                                     }
-                                    # Include reasoning if we accumulated any
-                                    if accumulated_reasoning.strip():
+                                    # Include reasoning if we accumulated any (OpenRouter only)
+                                    if accumulated_reasoning.strip() and is_openrouter_model(model_name):
                                         assistant_message["reasoning"] = accumulated_reasoning
-                                        safe_debug(f"🧠 Saving reasoning to history: {len(accumulated_reasoning)} chars")
+                                        safe_debug(f"[REASONING] Saving reasoning to history: {len(accumulated_reasoning)} chars")
                                     
-                                    active_chats[chat_id].openrouter_history.append(assistant_message)
+                                    active_chats[chat_id].external_history.append(assistant_message)
                                 
-                                # Use OpenRouter history for saving
-                                formatted_messages = active_chats[chat_id].openrouter_history.copy()
-                                safe_debug(f"OpenRouter chat {chat_id} history after response - length: {len(formatted_messages)}")
+                                # Use external history for saving
+                                formatted_messages = active_chats[chat_id].external_history.copy()
+                                model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
+                                safe_debug(f"{model_type} chat {chat_id} history after response - length: {len(formatted_messages)}")
                         else:
                             # Standard Gemini history handling
                             history = chat.get_history()
@@ -2242,11 +2282,12 @@ def get_chat(chat_id):
             chat = active_chats[chat_id]
             
             try:
-                # Check if this is an OpenRouter chat
-                if hasattr(chat, 'openrouter_history'):
-                    # For OpenRouter chats, use the stored history directly
-                    messages = chat.openrouter_history.copy()
-                    safe_debug(f"Retrieved {len(messages)} messages from OpenRouter chat {chat_id}")
+                # Check if this is an external (OpenAI-compatible) chat
+                if hasattr(chat, 'external_history'):
+                    # For external chats, use the stored history directly
+                    messages = chat.external_history.copy()
+                    model_type = "OpenRouter" if is_openrouter_model(chat.model) else "Groq" if is_groq_model(chat.model) else "External"
+                    safe_debug(f"Retrieved {len(messages)} messages from {model_type} chat {chat_id}")
                 else:
                     # Get the chat history from the Gemini API client
                     history = chat.get_history()
@@ -3660,9 +3701,7 @@ def reinitialize_whisper():
         
         # Force cleanup and garbage collection
         cleanup_whisper_model()
-        
-        # Wait a moment for cleanup
-        import time
+
         time.sleep(1)
         
         # Force another garbage collection
@@ -3843,9 +3882,7 @@ def stream_events():
                 if current_time - last_check > 30:
                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
                     last_check = current_time
-                
-                # Small sleep to prevent excessive CPU usage
-                time.sleep(0.1)
+        
                 
         except GeneratorExit:
             # Client disconnected

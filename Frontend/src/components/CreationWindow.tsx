@@ -92,19 +92,82 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
     }
   };
 
+  // Handle creation window updates
+  useEffect(() => {
+    if (creation) {
+      console.log('🪟 CREATION WINDOW UPDATED WITH NEW CREATION:', {
+        type: creation.type,
+        title: creation.title,
+        id: creation.id,
+        language: creation.language,
+        contentLength: creation.content?.length || 0,
+        isTemporary: creation.metadata?.isTemporary,
+        streamedContentLength: streamedContent.length,
+        viewMode,
+        isStreaming: isStreamingRef.current,
+        hasCompleteHeader: !!(creation.type && creation.title),
+        creationMetadata: creation.metadata
+      });
+      
+      // Reset streamed content when creation changes (unless streaming is active)
+      if (!isStreamingRef.current) {
+        console.log('🧹 RESETTING STREAMED CONTENT - New creation loaded');
+        setStreamedContent('');
+      }
+    } else {
+      console.log('🪟 CREATION WINDOW CLEARED - No creation');
+    }
+  }, [creation?.id, creation?.type, creation?.title, streamedContent.length, viewMode, creation]);
+  
   // Listen for streaming events
   useEffect(() => {
     // Handle incoming streaming content
     const handleStreamToCreation = (event: CustomEvent<StreamToCreationEvent>) => {
       const { content: newContent, creationId } = event.detail;
       
+      console.log('🎨 CREATION WINDOW RECEIVED CONTENT:', {
+        creationId,
+        contentLength: newContent.length,
+        preview: newContent.slice(-50),
+        hasEndTag: newContent.includes('$$end$$'),
+        currentCreationId: creation?.id,
+        isForCurrentCreation: creation?.id === creationId,
+        currentViewMode: viewMode,
+        isStreaming: isStreamingRef.current,
+        currentCreationData: creation ? {
+          type: creation.type,
+          title: creation.title,
+          language: creation.language,
+          contentLength: creation.content?.length || 0
+        } : null
+      });
+      
+      // Only log problematic content
+      if (newContent.includes('$$end$$')) {
+        console.error('🎨 CREATION WINDOW RECEIVED END TAG!', newContent);
+      }
+      
       // Only apply if this is for our current creation
       if (creation && creation.id === creationId) {
+        console.log('✅ APPLYING CONTENT TO CURRENT CREATION');
         isStreamingRef.current = true;
-        setStreamedContent(prev => prev + newContent);
+        setStreamedContent(prev => {
+          const updated = prev + newContent;
+          // Only log if end tag appears in the accumulated content
+          if (updated.includes('$$end$$') && !prev.includes('$$end$$')) {
+            console.error('🎨 END TAG NOW IN STREAMED CONTENT!', updated.slice(-100));
+          }
+          return updated;
+        });
         
         // Automatically switch to code view during streaming
         setViewMode('code');
+      } else {
+        console.warn('❌ CONTENT NOT APPLIED - Wrong creation ID or no current creation:', {
+          hasCreation: !!creation,
+          currentId: creation?.id,
+          receivedId: creationId
+        });
       }
     };
     
@@ -127,6 +190,12 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
     // Switch to preview mode
     const handleSwitchToPreview = (event: CustomEvent<{creationId: string}>) => {
       if (creation && creation.id === event.detail.creationId) {
+        console.log('🔄 Switching to preview mode');
+        // Log if end tag is still in content when switching to preview
+        if (streamedContent.includes('$$end$$')) {
+          console.error('🚨 END TAG STILL IN CONTENT WHEN SWITCHING TO PREVIEW!', streamedContent.slice(-100));
+        }
+        
         // Add animation when switching to preview
         if (viewMode !== 'preview') {
           setIsViewTransitioning(true);
@@ -207,7 +276,7 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
       window.removeEventListener('close-creation-window', handleCloseCreationWindow);
       window.removeEventListener('switch-creation', handleSwitchCreation as EventListener);
     };
-  }, [creation, viewMode, onClose]);
+  }, [creation, viewMode, onClose, streamedContent]);
 
   // Custom view mode change handler with animation
   const handleViewModeChange = (newMode: 'preview' | 'code') => {

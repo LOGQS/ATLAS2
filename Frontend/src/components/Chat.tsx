@@ -136,6 +136,11 @@ const Chat = () => {
       id: 'tngtech/deepseek-r1t-chimera:free', 
       name: 'DeepSeek R1T',
       description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
+    },
+    { 
+      id: 'llama-3.3-70b-versatile', 
+      name: 'Llama 3.3 70B',
+      description: 'Really fast model via Groq'
     }
   ];
 
@@ -535,24 +540,17 @@ const Chat = () => {
       // Parse the chunk if it's JSON
       try {
         const data = JSON.parse(chunk);
-        console.log('📡 Received data chunk:', data);
-        console.log('📡 Data keys:', Object.keys(data));
-        console.log('📡 Has reasoning?', 'reasoning' in data, 'Value:', data.reasoning);
         
         // Store chat ID if received from server
         if (data.chat_id && !chatId) {
-          console.log(`Setting chat ID from response: ${data.chat_id}`);
           setChatId(data.chat_id);
         }
         
         if (data.reasoning) {
-          // Handle reasoning tokens
-          console.log('🧠 Received reasoning chunk:', data.reasoning);
           
           // Update reasoning buffer and messages together to ensure consistency
           setReasoningBuffer(prev => {
             const newBuffer = prev + data.reasoning;
-            console.log('🧠 Updated reasoning buffer length:', newBuffer.length);
             
             // Update messages with the new reasoning buffer
             setMessages(prevMessages => {
@@ -596,7 +594,6 @@ const Chat = () => {
               if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
                 // Update existing message with new content and reasoning
                 const finalReasoning = reasoningBuffer || lastMessage.reasoning;
-                console.log('🧠 Updating message with reasoning:', finalReasoning ? 'YES' : 'NO', 'Length:', finalReasoning ? finalReasoning.length : 0);
                 updatedMessages[lastIndex] = {
                   ...lastMessage,
                   content: accumulatedContentRef.current,
@@ -989,7 +986,6 @@ const Chat = () => {
               try {
                 const parsedData = JSON.parse(data);
                 if (parsedData.chat_id && !chatId) {
-                  console.log(`Setting chat ID from response: ${parsedData.chat_id}`);
                   setChatId(parsedData.chat_id);
                   
                   // Trigger chat history refresh after getting a new chat ID

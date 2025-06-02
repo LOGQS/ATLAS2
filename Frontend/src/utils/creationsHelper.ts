@@ -37,6 +37,8 @@ declare global {
     'switch-creation-preview': CustomEvent<{creationId: string}>;
     // Add new event for switching between creations
     'switch-creation': CustomEvent<Creation>;
+    // Add new event for updating creation during streaming (without closing window)
+    'stream-creation-update': CustomEvent<Creation>;
   }
 }
 

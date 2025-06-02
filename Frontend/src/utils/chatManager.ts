@@ -229,7 +229,6 @@ class ChatManager {
     try {
       // Check local storage first for immediate UI display
       this.loadFromLocalStorage();
-      console.log(`Loaded ${this.chats.length} chats from local storage for immediate use`);
       
       // Try to load from backend as well, but handle connection errors gracefully
       try {
@@ -254,7 +253,6 @@ class ChatManager {
    */
   private async loadChats(): Promise<void> {
     try {
-      console.log('Attempting to load chat history from backend API...');
       
       // Add error handling for potential connection errors when the backend is starting up
       const response = await fetch('/api/chats/load', {
@@ -277,9 +275,7 @@ class ChatManager {
       const data = await response.json();
       
       if (data && data.chats) {
-        const previousCount = this.chats.length;
         this.chats = data.chats || [];
-        console.log(`Loaded ${this.chats.length} chats from backend (previously had ${previousCount})`);
         
         // If we successfully loaded, mark backend as available
         this.backendAvailable = true;
@@ -332,7 +328,6 @@ class ChatManager {
         // Only load from local storage if we don't already have data
         if (this.chats.length === 0 && parsed.chats) {
           this.chats = parsed.chats || [];
-          console.log(`Loaded ${this.chats.length} chats from local storage`);
         }
       }
     } catch (error) {

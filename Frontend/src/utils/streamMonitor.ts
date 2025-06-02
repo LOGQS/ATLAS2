@@ -57,9 +57,38 @@ class StreamMonitor {
 
   private callbacks: Array<(state: StreamMonitorState) => void> = [];
   private eventSource: EventSource | null = null;
+  private enableLogging: boolean = false; // Disable logs by default
 
   constructor() {
-    console.log('🔧 StreamMonitor: Initialized with Server-Sent Events');
+    if (this.enableLogging) {
+      console.log('🔧 StreamMonitor: Initialized with Server-Sent Events');
+    }
+  }
+
+  /**
+   * Enable or disable logging for StreamMonitor
+   */
+  setLogging(enabled: boolean): void {
+    this.enableLogging = enabled;
+    if (enabled) {
+      console.log('🔧 StreamMonitor: Logging enabled');
+    }
+  }
+
+  /**
+   * Internal logging method that respects the enableLogging flag
+   */
+  private log(message: string, ...args: unknown[]): void {
+    if (this.enableLogging) {
+      console.log(message, ...args);
+    }
+  }
+
+  /**
+   * Internal error logging method that always logs errors
+   */
+  private logError(message: string, ...args: unknown[]): void {
+    console.error(message, ...args);
   }
 
   /**
@@ -67,12 +96,12 @@ class StreamMonitor {
    */
   startMonitoring(): void {
     if (this.state.isMonitoring) {
-      console.log('🔄 Stream monitor already running');
+      this.log('🔄 Stream monitor already running');
       return;
     }
 
     this.state.isMonitoring = true;
-    console.log('🟢 StreamMonitor: Starting real-time monitoring with Server-Sent Events...');
+    this.log('🟢 StreamMonitor: Starting real-time monitoring with Server-Sent Events...');
     
     // Connect to Server-Sent Events endpoint
     this.connectToEventStream();
@@ -88,7 +117,7 @@ class StreamMonitor {
       this.eventSource = new EventSource('/api/stream-events');
 
       this.eventSource.onopen = () => {
-        console.log('📡 StreamMonitor: Connected to real-time event stream');
+        this.log('📡 StreamMonitor: Connected to real-time event stream');
         this.state.error = null;
         this.notifyCallbacks();
       };
@@ -99,48 +128,48 @@ class StreamMonitor {
           
           switch (data.type) {
             case 'connected':
-              console.log('✅ StreamMonitor: Event stream connection confirmed');
+              this.log('✅ StreamMonitor: Event stream connection confirmed');
               break;
               
             case 'stream_updated':
-              console.log('🔥 StreamMonitor: Real-time update received!');
+              this.log('🔥 StreamMonitor: Real-time update received!');
               this.fetchLatestStreamData();
               break;
               
             case 'heartbeat':
-              console.log('💓 StreamMonitor: Heartbeat received');
+              this.log('💓 StreamMonitor: Heartbeat received');
               break;
               
             case 'error':
-              console.error('❌ StreamMonitor: Server error:', data.message);
+              this.logError('❌ StreamMonitor: Server error:', data.message);
               this.state.error = data.message;
               this.notifyCallbacks();
               break;
               
             default:
-              console.log('📨 StreamMonitor: Unknown event type:', data.type);
+              this.log('📨 StreamMonitor: Unknown event type:', data.type);
           }
         } catch (error) {
-          console.error('❌ StreamMonitor: Error parsing event data:', error);
+          this.logError('❌ StreamMonitor: Error parsing event data:', error);
         }
       };
 
       this.eventSource.onerror = (error) => {
-        console.error('❌ StreamMonitor: Event stream error:', error);
+        this.logError('❌ StreamMonitor: Event stream error:', error);
         this.state.error = 'Connection to real-time stream failed';
         this.notifyCallbacks();
         
         // Attempt to reconnect after a delay
         setTimeout(() => {
           if (this.state.isMonitoring && (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED)) {
-            console.log('🔄 StreamMonitor: Attempting to reconnect...');
+            this.log('🔄 StreamMonitor: Attempting to reconnect...');
             this.connectToEventStream();
           }
         }, 5000);
       };
 
     } catch (error) {
-      console.error('❌ StreamMonitor: Failed to create EventSource:', error);
+      this.logError('❌ StreamMonitor: Failed to create EventSource:', error);
       this.state.error = `Failed to connect to event stream: ${error}`;
       this.notifyCallbacks();
     }
@@ -156,7 +185,7 @@ class StreamMonitor {
       if (!response.ok) {
         if (response.status === 404) {
           // No stream logs available yet
-          console.log('📝 StreamMonitor: No stream logs available yet');
+          this.log('📝 StreamMonitor: No stream logs available yet');
           return;
         }
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -208,12 +237,12 @@ class StreamMonitor {
       // Log update info
       const creationCount = Object.keys(creations).length;
       const outsideCount = Object.keys(outsideTexts).length;
-      console.log(`🎉 StreamMonitor: Updated - ${creationCount} creations, ${outsideCount} outside texts`);
+      this.log(`🎉 StreamMonitor: Updated - ${creationCount} creations, ${outsideCount} outside texts`);
 
       // Notify callbacks
       this.notifyCallbacks();
     } catch (error) {
-      console.error('❌ StreamMonitor: Error fetching stream data:', error);
+      this.logError('❌ StreamMonitor: Error fetching stream data:', error);
       this.state.error = `Failed to fetch stream data: ${error}`;
       this.notifyCallbacks();
     }
@@ -226,11 +255,11 @@ class StreamMonitor {
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
-      console.log('📡 StreamMonitor: Event stream closed');
+      this.log('📡 StreamMonitor: Event stream closed');
     }
     
     this.state.isMonitoring = false;
-    console.log('🛑 StreamMonitor: Real-time monitoring stopped');
+    this.log('🛑 StreamMonitor: Real-time monitoring stopped');
     this.notifyCallbacks();
   }
 
@@ -263,7 +292,7 @@ class StreamMonitor {
       try {
         callback(this.state);
       } catch (error) {
-        console.error('❌ StreamMonitor: Error in callback:', error);
+        this.logError('❌ StreamMonitor: Error in callback:', error);
       }
     });
   }

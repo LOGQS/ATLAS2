@@ -44,6 +44,47 @@ const cleanBackticksForStreaming = (content: string): string => {
   return cleaned;
 };
 
+// Helper function to check for partial end tags and exclude them from content being sent to creation window
+// This prevents partial $$end$$ tags from being streamed to the creation window
+const excludePartialEndTag = (content: string): { cleanContent: string; hasPartialEnd: boolean } => {
+  // Check for complete end tag first
+  const completeEndIndex = content.indexOf('$$end$$');
+  if (completeEndIndex !== -1) {
+    // Complete end tag found - return content up to (not including) the end tag
+    return {
+      cleanContent: content.substring(0, completeEndIndex),
+      hasPartialEnd: false
+    };
+  }
+  
+  // Check for partial end tags at the end of content
+  // Look for patterns like: $$, $$e, $$en, $$end, $$end$
+  const partialEndPatterns = ['$$end$', '$$end', '$$en', '$$e', '$$'];
+  
+  for (const pattern of partialEndPatterns) {
+    if (content.endsWith(pattern)) {
+      // Found partial end tag - exclude it
+      const cleanContent = content.substring(0, content.length - pattern.length);
+      console.log('🛡️ EXCLUDING PARTIAL END TAG:', {
+        pattern,
+        originalLength: content.length,
+        cleanLength: cleanContent.length,
+        excluded: pattern
+      });
+      return {
+        cleanContent,
+        hasPartialEnd: true
+      };
+    }
+  }
+  
+  // No partial end tag detected
+  return {
+    cleanContent: content,
+    hasPartialEnd: false
+  };
+};
+
 interface FileAttachment {
   file_id: string;
   file_type: 'image' | 'video' | 'audio' | 'document';
@@ -78,38 +119,192 @@ interface StreamedCreation {
 }
 
 const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning }) => {
+  const isMountedRef = useRef(true);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [codeBlockCopied, setCodeBlockCopied] = useState<{[key: string]: boolean}>({});
-  const contentRef = useRef<HTMLDivElement>(null);
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
   
-  // Debug logging for reasoning prop
-  console.log('🎯 Message component rendered with reasoning:', reasoning ? 'YES' : 'NO', 'Length:', reasoning ? reasoning.length : 0);
-  
-  // Keep track of the current content for streaming
-  const [displayedContent, setDisplayedContent] = useState(content);
-  
-  // Track if this component is mounted to avoid memory leaks
-  const isMountedRef = useRef(true);
+  // Refs to track completed creations during streaming
+  const completedStreamCreationsRef = useRef<Creation[]>([]);
   
   // Track if we've processed creations for this message already
   const creationsProcessedRef = useRef(false);
-
-  // New state variables for streaming creation detection
+  
+  // State for managing creation streaming
   const [isCollectingCreation, setIsCollectingCreation] = useState(false);
   const [streamedCreation, setStreamedCreation] = useState<StreamedCreation | null>(null);
+  const [creationComplete, setCreationComplete] = useState(false);
+  const [displayedContent, setDisplayedContent] = useState(content);
   const [streamBuffer, setStreamBuffer] = useState('');
-  
-  // Add state variables to track content before and after creation
   const [preCreationContent, setPreCreationContent] = useState('');
   const [postCreationContent, setPostCreationContent] = useState('');
-  const [creationComplete, setCreationComplete] = useState(false);
+  const [currentCreationStartPos, setCurrentCreationStartPos] = useState(-1);
+  
+  // New state for tracking content parts during streaming
+  const [streamingContentParts, setStreamingContentParts] = useState<{isCreation: boolean; content: string; creation?: Creation}[]>([]);
+  
+  const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<number | null>(null);
   
   // Memoize the regex patterns to prevent re-creating them on each render
   const creationStartPattern = useMemo(() => /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$/, []);
   const creationEndPattern = useMemo(() => /\$\$end\$\$/, []);
   
-  const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<ReturnType<typeof setTimeout> | null>(null);
+  // Function to split content into parts for proper streaming layout
+  const splitContentIntoParts = useCallback((rawContent: string): {isCreation: boolean; content: string; creation?: Creation}[] => {
+    const parts: {isCreation: boolean; content: string; creation?: Creation}[] = [];
+    const creationPattern = /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$([\s\S]*?)(\$\$end\$\$|$)/g;
+    
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = creationPattern.exec(rawContent)) !== null) {
+      const [fullMatch, type, titlePart, creationContent, endTag] = match;
+      const startPos = match.index;
+      const endPos = match.index + fullMatch.length;
+      
+      // Add text before this creation
+      if (startPos > lastIndex) {
+        const textBefore = rawContent.substring(lastIndex, startPos);
+        if (textBefore.trim()) {
+          parts.push({
+            isCreation: false,
+            content: textBefore
+          });
+        }
+      }
+      
+      // Parse creation details
+      let language = undefined;
+      let title = titlePart?.trim();
+      
+      if (title && title.includes(':')) {
+        const titleParts = title.split(':');
+        language = titleParts[0].trim();
+        title = titleParts.slice(1).join(':').trim();
+      }
+      
+      // Create the creation object
+      const creation: Creation = {
+        type: type as CreationType,
+        content: creationContent.trim(),
+        title,
+        language,
+        id: streamedCreation?.id || `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        metadata: { isTemporary: true, isStreaming: !endTag.includes('$$end$$') }
+      };
+      
+      // Add the creation part
+      parts.push({
+        isCreation: true,
+        content: '',
+        creation
+      });
+      
+      lastIndex = endPos;
+    }
+    
+    // Add any remaining text after the last creation
+    if (lastIndex < rawContent.length) {
+      const textAfter = rawContent.substring(lastIndex);
+      if (textAfter.trim()) {
+        parts.push({
+          isCreation: false,
+          content: textAfter
+        });
+      }
+    }
+    
+    // If no creations found, return the entire content as one part
+    if (parts.length === 0 && rawContent.trim()) {
+      parts.push({
+        isCreation: false,
+        content: rawContent
+      });
+    }
+    
+    return parts;
+  }, [streamedCreation]);
+  
+  
+  // Function to check if a creation header is complete
+  const isCreationHeaderComplete = useCallback((content: string, startPos: number = 0): { isComplete: boolean; match?: RegExpMatchArray } => {
+    // Only check content from the specified starting position
+    const contentToCheck = content.substring(startPos);
+    
+    // Check if there's a complete creation pattern in the content after startPos
+    const completeMatch = creationStartPattern.exec(contentToCheck);
+    if (completeMatch) {
+      // Adjust the match index to be relative to the original content
+      const adjustedMatch = [...completeMatch] as RegExpMatchArray;
+      adjustedMatch.index = (completeMatch.index || 0) + startPos;
+      console.log('✅ COMPLETE CREATION HEADER FOUND AT POSITION:', adjustedMatch.index, adjustedMatch[0]);
+      return { isComplete: true, match: adjustedMatch };
+    }
+    
+    // Check if there's an incomplete pattern at the very end of the content after startPos
+    // This regex looks for $$creation: followed by any incomplete text at the end
+    const incompleteAtEnd = /\$\$creation:[^$]*$/.exec(contentToCheck);
+    if (incompleteAtEnd) {
+      console.log('⏳ INCOMPLETE CREATION HEADER AT END (pos', startPos + ':', incompleteAtEnd[0]);
+      return { isComplete: false };
+    }
+    
+    return { isComplete: false };
+  }, [creationStartPattern]);
+  
+  // Safe wrapper for setDisplayedContent that prevents creation tags
+  const safeSetDisplayedContent = useCallback((content: string, source?: string) => {
+    if (content.includes('$$creation:') || content.includes('$$end$$')) {
+      console.warn('🛡️ BLOCKED ATTEMPT TO SET CONTENT WITH CREATION TAGS:', {
+        source: source || 'unknown',
+        contentLength: content.length,
+        preview: content.slice(-100)
+      });
+      const cleanedContent = removeCreationDirectives(content);
+      setDisplayedContent(cleanedContent);
+    } else {
+      setDisplayedContent(content);
+    }
+  }, []);
+  
+  // Track displayed content changes to identify when content appears in main chat
+  useEffect(() => {
+    const contentPreview = displayedContent.slice(-100);
+    const containsCreationTags = displayedContent.includes('$$creation:') || displayedContent.includes('$$end$$');
+    
+    // CRITICAL: If content contains creation tags, this should NEVER happen
+    if (containsCreationTags) {
+      console.error('🚨 CREATION TAGS IN DISPLAYED CONTENT - This should never happen!', {
+        length: displayedContent.length,
+        preview: contentPreview,
+        isStreaming,
+        hasActiveCreation: !!streamedCreation,
+        creationComplete,
+        stackTrace: new Error().stack?.split('\n').slice(1, 4)
+      });
+      
+      // EMERGENCY FIX: Immediately clean the content if it contains creation tags
+      const cleanedContent = removeCreationDirectives(displayedContent);
+      if (cleanedContent !== displayedContent) {
+        console.log('🧹 EMERGENCY CLEANUP - Removing creation tags from displayed content');
+        safeSetDisplayedContent(cleanedContent, 'emergency-cleanup');
+        return; // Exit early to prevent logging the problematic content
+      }
+    }
+    
+    // Only log significant content changes for debugging
+    if (displayedContent.length > 500) {
+      console.log('🖼️ DISPLAYED CONTENT CHANGED:', {
+        length: displayedContent.length,
+        preview: contentPreview,
+        containsCreationTags,
+        isStreaming,
+        hasActiveCreation: !!streamedCreation,
+        creationComplete
+      });
+    }
+  }, [displayedContent, isStreaming, streamedCreation, creationComplete, safeSetDisplayedContent]);
   
   // Process any creations when content changes and streaming ends
   useEffect(() => {
@@ -119,7 +314,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       
       // Always clean the content for display, regardless of whether we add to gallery
         const cleanedContent = removeCreationDirectives(content);
-      setDisplayedContent(cleanedContent);
+      safeSetDisplayedContent(cleanedContent, 'non-streaming-cleanup');
       
       // Only add to gallery if this is NOT a history message and we haven't processed it yet
       if (creations.length > 0 && !isHistoryMessage && !creationsProcessedRef.current) {
@@ -201,7 +396,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         }
       }
     }
-  }, [isUser, isStreaming, isThinking, content, isHistoryMessage]);
+  }, [isUser, isStreaming, isThinking, content, isHistoryMessage, safeSetDisplayedContent]);
   
   // New useEffect for detecting creations during streaming
   useEffect(() => {
@@ -213,6 +408,9 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         setStreamedCreation(null);
         setStreamBuffer('');
         setCreationComplete(false);
+        console.log('🧹 CLEARING COMPLETED CREATIONS ON STREAM END');
+        completedStreamCreationsRef.current = []; // Reset completed creations when streaming ends
+        setCurrentCreationStartPos(-1); // Reset position tracking
       }
       return;
     }
@@ -222,22 +420,369 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       // Clean any backticks around creation blocks in the current content
       const cleanedContent = cleanBackticksForStreaming(content);
       
-      // Check if we're already collecting a creation
-      if (isCollectingCreation && streamedCreation) {
-        // Look for the end pattern
-        if (creationEndPattern.test(cleanedContent) && !creationComplete) {
-          // Creation has ended, mark it complete to avoid reprocessing
+      // Update content parts on every streaming update to ensure text between creations streams properly
+      const updatedParts = splitContentIntoParts(cleanedContent);
+      setStreamingContentParts(updatedParts);
+      
+      // Only log when we're collecting a creation and something important happens
+      if (isCollectingCreation && (cleanedContent.includes('$$end$$') || !creationComplete)) {
+        console.log('📝 CREATION STREAMING:', {
+          hasEndTag: cleanedContent.includes('$$end$$'),
+          creationComplete,
+          newContent: content.slice(-50) // Just the new stuff
+        });
+      }
+      
+      // First, check if there's a new creation starting (this should run even if current creation is complete)
+      // Find ALL creation matches in the content to get the last/newest one
+      const allCreationMatches: RegExpMatchArray[] = [];
+      let match;
+      const globalCreationPattern = /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$/g;
+      
+      while ((match = globalCreationPattern.exec(cleanedContent)) !== null) {
+        allCreationMatches.push(match);
+      }
+      
+      // Get the last (newest) creation match
+      const newCreationMatch = allCreationMatches.length > 0 ? allCreationMatches[allCreationMatches.length - 1] : null;
+      let shouldStartNewCreation = false;
+      let newCreationDetails: {type: string; title?: string; language?: string; id?: string} | null = null;
+      
+      // Debug log to see what we're detecting
+      if (cleanedContent.includes('$$creation:')) {
+        console.log('🔍 CONTENT CONTAINS CREATION TAG:', {
+          totalMatches: allCreationMatches.length,
+          hasNewMatch: !!newCreationMatch,
+          matchDetails: newCreationMatch ? newCreationMatch.slice(0, 3) : null,
+          lastCreationSnippet: newCreationMatch ? cleanedContent.substring(newCreationMatch.index!, newCreationMatch.index! + 50) : null
+        });
+      }
+      
+      if (newCreationMatch) {
+        // Extract details from the new creation match
+        const [, newType, newTitlePart] = newCreationMatch;
+        
+        // CRITICAL FIX: Check if this creation header is complete before proceeding
+        // Only check from the position of this new creation match to avoid false positives from earlier headers
+        const headerStartPos = newCreationMatch.index || 0;
+        const headerCheck = isCreationHeaderComplete(cleanedContent, headerStartPos);
+        
+        let shouldProcessCreation = true;
+        if (!headerCheck.isComplete) {
+          console.log('⏳ NEW CREATION HEADER INCOMPLETE AT POSITION', headerStartPos, '- Skipping creation setup until complete');
+          // Don't proceed with creation transition yet, but don't return early
+          // Let the normal content cleaning logic handle the display
+          shouldProcessCreation = false;
+        } else {
+          console.log('✅ NEW CREATION HEADER COMPLETE AT POSITION', headerStartPos, '- Proceeding with transition');
+        }
+        
+        if (shouldProcessCreation) {
+          console.log('✅ NEW CREATION HEADER COMPLETE - Proceeding with transition');
+          
+          // Parse the new creation details
+          let newLanguage = undefined;
+          let newTitle = newTitlePart?.trim();
+          
+          if (newTitle && newTitle.includes(':')) {
+            const parts = newTitle.split(':');
+            newLanguage = parts[0].trim();
+            newTitle = parts.slice(1).join(':').trim();
+          }
+          
+          // Check if this is actually a different creation from what we're currently collecting
+          // OR if we don't have a current creation, treat it as new
+          // CRITICAL: Ignore matches at the same position as our current creation
+          const isAtCurrentCreationPosition = currentCreationStartPos >= 0 && 
+            newCreationMatch.index === currentCreationStartPos;
+          
+          const isDifferentCreation = !isAtCurrentCreationPosition && 
+            (!streamedCreation ||
+            streamedCreation.type !== newType ||
+            streamedCreation.title !== newTitle ||
+            streamedCreation.language !== newLanguage);
+          
+                  if (isDifferentCreation) {
+            console.log('🎯 CREATION TRANSITION STARTING - Current window state:',
+                       { hasCreation: !!streamedCreation, isCollecting: isCollectingCreation, 
+                         currentType: streamedCreation?.type, currentTitle: streamedCreation?.title });
+            
+            // CRITICAL FIX: Cancel any existing preview timeout immediately
+            // This handles the case where a new creation is detected during the preview animation
+            if (creationSwitchTimeout) {
+              console.log('⏰ CANCELING EXISTING PREVIEW TIMEOUT - New creation detected during preview animation');
+              clearTimeout(creationSwitchTimeout);
+              setCreationSwitchTimeout(null);
+            }
+            
+            if (streamedCreation) {
+              console.log('🔄 NEW CREATION DETECTED, resetting state - Old:', 
+                         `${streamedCreation.type}:${streamedCreation.language || ''}:${streamedCreation.title || ''}`,
+                         'New:', `${newType}:${newLanguage || ''}:${newTitle || ''}`,
+                         'Completed creations before reset:', completedStreamCreationsRef.current.length);
+              
+              // CRITICAL FIX: Save the current creation to completed list BEFORE resetting
+              // Save it regardless of content length - even empty creations should be preserved for UI consistency
+              const completedCreation: Creation = {
+                type: streamedCreation.type as CreationType,
+                content: streamedCreation.content.trim() || `// ${streamedCreation.type} creation started...`,
+                title: streamedCreation.title,
+                language: streamedCreation.language,
+                id: streamedCreation.id,
+                metadata: { isTemporary: true, fromTransition: true }
+              };
+              // Check for duplicates before adding
+              const isDuplicate = completedStreamCreationsRef.current.some(existing => 
+                existing.type === completedCreation.type && 
+                existing.title === completedCreation.title &&
+                existing.id === completedCreation.id
+              );
+              
+              console.log('🔍 CHECKING FOR DUPLICATE INTERRUPTED CREATION:', {
+                newCreation: {
+                  type: completedCreation.type,
+                  title: completedCreation.title,
+                  id: completedCreation.id,
+                  contentLength: completedCreation.content.length
+                },
+                existingCreations: completedStreamCreationsRef.current.map(c => ({
+                  type: c.type,
+                  title: c.title,
+                  id: c.id,
+                  contentLength: c.content.length
+                })),
+                isDuplicate
+              });
+              
+              if (!isDuplicate) {
+                completedStreamCreationsRef.current = [...completedStreamCreationsRef.current, completedCreation];
+                console.log('💾 SAVED INTERRUPTED CREATION TO COMPLETED LIST:', completedCreation.type, completedCreation.title, 
+                           'Content length:', streamedCreation.content.length, 'Total completed:', completedStreamCreationsRef.current.length);
+              } else {
+                console.log('🚫 SKIPPED DUPLICATE INTERRUPTED CREATION:', completedCreation.type, completedCreation.title);
+              }
+          } else {
+            console.log('🔄 STARTING NEW CREATION:', `${newType}:${newLanguage || ''}:${newTitle || ''}`);
+          }
+          
+          // CRITICAL FIX: Create new creation object IMMEDIATELY to prevent gaps
+          const creationId = `creation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const newCreation: StreamedCreation = {
+            type: newType,
+            title: newTitle,
+            language: newLanguage,
+            content: '',
+            isComplete: false,
+            id: creationId
+          };
+          
+          console.log('⚡ IMMEDIATE STATE UPDATE - Setting new creation:', 
+                     { type: newType, title: newTitle, id: creationId });
+          
+          // CRITICAL: Set new creation state IMMEDIATELY before any events or resets
+          // This prevents the gap where there's no active creation
+          setIsCollectingCreation(true);
+          setStreamedCreation(newCreation);
+          setCreationComplete(false);
+          setCurrentCreationStartPos(newCreationMatch?.index ?? -1);
+          
+
+          
+          // CRITICAL FIX: Dispatch the new creation IMMEDIATELY after state update
+          // This ensures the creation window always has a creation to show
+          console.log('🎯 DISPATCHING NEW CREATION (TRANSITION) with data:', {
+            type: newType as CreationType,
+            content: '',
+            title: newTitle,
+            language: newLanguage,
+            id: creationId,
+            metadata: { isTemporary: true },
+            transitionContext: true,
+            previousCreation: streamedCreation ? {
+              type: streamedCreation.type,
+              title: streamedCreation.title,
+              language: streamedCreation.language
+            } : null
+          });
+          
+          window.dispatchEvent(new CustomEvent('stream-creation-update', {
+            detail: {
+              type: newType as CreationType,
+              content: '',
+              title: newTitle,
+              language: newLanguage,
+              id: creationId,
+              metadata: { isTemporary: true }
+            }
+          }));
+          
+          console.log('🎯 DISPATCHING switch-creation-code (TRANSITION) with creationId:', creationId);
+          
+          // Dispatch event to switch to code editing mode
+          window.dispatchEvent(new CustomEvent('switch-creation-code', {
+            detail: { creationId }
+          }));
+          
+          console.log('📡 DISPATCHED CREATION EVENTS - Window should now have new creation:', creationId);
+          
+          // Now safely update displayed content to show only content before the new creation
+          if (newCreationMatch && newCreationMatch.index !== undefined) {
+            const contentBeforeNewCreation = cleanedContent.substring(0, newCreationMatch.index);
+            const cleanedContentBeforeNew = removeCreationDirectives(contentBeforeNewCreation);
+            safeSetDisplayedContent(cleanedContentBeforeNew, 'new-creation-pre-content');
+            setPreCreationContent(cleanedContentBeforeNew);
+            console.log('📝 UPDATED DISPLAY CONTENT - Length:', cleanedContentBeforeNew.length, 
+                       'Ends with:', cleanedContentBeforeNew.slice(-50));
+          }
+          
+          // FINAL CLEANUP: Reset remaining state variables
+          console.log('🧹 FINAL CLEANUP - Resetting remaining state');
+          setPostCreationContent('');
+          setStreamBuffer(cleanedContent);
+          
+          // Mark that we should start a new creation (for the content positioning logic)
+          shouldStartNewCreation = true;
+          newCreationDetails = { type: newType, title: newTitle, language: newLanguage, id: creationId };
+          
+          console.log('✅ CREATION TRANSITION COMPLETE - New creation ready for streaming');
+        }
+          }
+      }
+      
+      // Handle content positioning for new creation (state is already set above)
+      if (shouldStartNewCreation && newCreationDetails) {
+        // Note: Creation state was already set above to prevent timing gaps
+        // Note: Creation window update and code switch were already dispatched above
+        
+
+      } else if (isCollectingCreation && streamedCreation) {
+        console.log('📥 STREAMING TO EXISTING CREATION:', 
+                   { type: streamedCreation.type, title: streamedCreation.title, 
+                     isComplete: creationComplete, contentLength: streamedCreation.content.length,
+                     newContentLength: cleanedContent.length - streamBuffer.length });
+        
+        if (creationComplete) {
+          console.log('📋 HANDLING POST-CREATION CONTENT - Creation already complete');
+          // Creation is already complete, so we're now just receiving text after the creation
+          // BUT FIRST: Check if the new content contains a NEW creation pattern
+          if (cleanedContent.length > streamBuffer.length) {
+            // Extract only the new content that was added since last update
+            const newContent = cleanedContent.substring(streamBuffer.length);
+            console.log('📄 NEW POST-CREATION CONTENT:', { 
+              length: newContent.length, 
+              preview: newContent.slice(0, 100),
+              containsCreation: newContent.includes('$$creation:')
+            });
+            
+            // CRITICAL FIX: Check if new content contains a creation start before treating as post-creation
+            const newCreationInPostContent = creationStartPattern.exec(newContent);
+            
+            if (newCreationInPostContent) {
+              // There's a new creation in what we thought was post-creation content!
+              // This means we need to trigger new creation detection instead
+              console.log('🚨 NEW CREATION DETECTED IN POST-CREATION CONTENT!', newCreationInPostContent[0]);
+              
+              // CRITICAL FIX: Cancel any existing preview timeout immediately
+              // This handles rapid-fire creation sequences
+              if (creationSwitchTimeout) {
+                console.log('⏰ CANCELING EXISTING PREVIEW TIMEOUT - New creation detected in post-creation content');
+                clearTimeout(creationSwitchTimeout);
+                setCreationSwitchTimeout(null);
+              }
+              
+              // Reset the creationComplete flag so the new creation detection logic runs
+              setCreationComplete(false);
+              
+              // Important: Don't process this as post-creation content, let it fall through
+              // to the new creation detection logic by returning early
+              return;
+            }
+            
+            // No new creation detected, treat as normal post-creation content
+            const updatedPostContent = postCreationContent + newContent;
+            setPostCreationContent(updatedPostContent);
+            console.log('📝 UPDATED POST-CREATION:', { 
+              totalLength: updatedPostContent.length,
+              preview: updatedPostContent.slice(-50)
+            });
+            
+            // Update displayed content, preserving the structure
+            const newDisplayedContent = preCreationContent + updatedPostContent;
+            safeSetDisplayedContent(newDisplayedContent, 'post-creation-update');
+            console.log('🖥️ UPDATED DISPLAYED CONTENT:', {
+              totalLength: newDisplayedContent.length,
+              structure: `pre(${preCreationContent.length}) + post(${updatedPostContent.length})`
+            });
+            
+            // Update stream buffer to include this new content
+            setStreamBuffer(cleanedContent);
+          }
+              } else {
+          console.log('📡 STREAMING ACTIVE CREATION CONTENT');
+          
+          // Still collecting the creation
+          // Check if the end tag is in the new content AFTER the current creation start
+          // Find the start position of the current creation being collected
+          const currentCreationStart = newCreationMatch ? newCreationMatch.index! : cleanedContent.lastIndexOf('$$creation:');
+          
+          // Look for end tag only after the current creation start position
+          const endTagIndex = currentCreationStart >= 0 ? 
+            cleanedContent.indexOf('$$end$$', currentCreationStart) : 
+            cleanedContent.indexOf('$$end$$');
+          
+          let contentUpToEnd = cleanedContent;
+          
+          // Only log the decision point
+          if (endTagIndex !== -1) {
+            console.log('🎯 END TAG FOUND at position:', endTagIndex, 'after creation at:', currentCreationStart, 'Will trigger finalization:', !creationComplete);
+          }
+          
+          if (endTagIndex !== -1 && !creationComplete) {
+            console.log('🏁 FINALIZING CREATION - End tag detected, processing final content');
+            // End tag found - only process content up to the end tag
+            contentUpToEnd = cleanedContent.substring(0, endTagIndex);
+            
+            // Mark creation as complete to avoid reprocessing
           setCreationComplete(true);
           
-          // Create a full creation from our streamed content
-          const finalContent = cleanedContent.substring(0, cleanedContent.indexOf('$$end$$'));
-          const creationContent = streamedCreation.content + 
-            finalContent.substring(streamBuffer.length);
+            // Extract only the new creation content (excluding the end tag)
+            const newContent = contentUpToEnd.substring(streamBuffer.length);
+            
+            console.log('✅ FINALIZING CREATION - newContent length:', newContent.length, 
+                       'contains $$end$$:', newContent.includes('$$end$$'));
+            
+            if (newContent) {
+              console.log('📤 SENDING FINAL CONTENT TO CREATION WINDOW:', {
+                length: newContent.length,
+                preview: newContent.slice(-50)
+              });
+              // Update our creation content with final chunk
+              setStreamedCreation(prev => {
+                if (prev) {
+                  return {
+                    ...prev,
+                    content: prev.content + newContent,
+                  };
+                }
+                return prev;
+              });
+
+              // Send the final content chunk to the creation window (without end tag)
+              console.log('📤 SENDING FINAL CHUNK:', newContent.length, 'chars, contains $$end$$:', newContent.includes('$$end$$'));
+              
+              window.dispatchEvent(new CustomEvent('stream-to-creation', {
+                detail: {
+                  content: newContent,
+                  creationId: streamedCreation.id
+                }
+              }));
+            }
 
           // Create the final creation object
+            const finalCreationContent = streamedCreation.content + (newContent || '');
           const completeCreation: Creation = {
             type: streamedCreation.type as CreationType,
-            content: creationContent.trim(),
+              content: finalCreationContent.trim(),
             title: streamedCreation.title,
             language: streamedCreation.language,
             id: streamedCreation.id,
@@ -245,8 +790,27 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
             metadata: { isTemporary: true } 
           };
 
+            // Add this completed creation to our visual list
+            // Add this creation to completed creations immediately (check for duplicates)
+            const isDuplicateFinalized = completedStreamCreationsRef.current.some(existing => 
+              existing.type === completeCreation.type && 
+              existing.title === completeCreation.title &&
+              existing.id === completeCreation.id
+            );
+            
+            if (!isDuplicateFinalized) {
+              completedStreamCreationsRef.current = [...completedStreamCreationsRef.current, completeCreation];
+              console.log('✅ CREATION ADDED TO COMPLETED LIST (FINALIZED):', completeCreation.type, completeCreation.title, 
+                         'Total completed:', completedStreamCreationsRef.current.length);
+            } else {
+              console.log('🚫 SKIPPED DUPLICATE FINALIZED CREATION:', completeCreation.type, completeCreation.title);
+            }
+
           // Set timeout to switch to preview after a delay
+            console.log('⏰ CREATION FINALIZED, switching to preview in 1s');
+            
           const timeout = setTimeout(() => {
+              console.log('⏰ Switching to preview mode');
             // Dispatch event to switch to preview mode
             window.dispatchEvent(new CustomEvent('switch-creation-preview', {
               detail: { creationId: completeCreation.id }
@@ -255,73 +819,140 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           
           setCreationSwitchTimeout(timeout);
           
-          // Extract initial text after the creation
+            // Extract text after the creation
           if (cleanedContent.indexOf('$$end$$') > -1) {
             const afterCreation = cleanedContent.substring(cleanedContent.indexOf('$$end$$') + 7);
             setPostCreationContent(afterCreation);
             
-            // Update displayed content with both before and after parts
-            setDisplayedContent(preCreationContent + afterCreation);
+            console.log('📤 SETTING POST-CREATION DISPLAYED CONTENT:', {
+              preCreationLength: preCreationContent.length,
+              afterCreationLength: afterCreation.length,
+              totalLength: (preCreationContent + afterCreation).length,
+              containsCreationTags: (preCreationContent + afterCreation).includes('$$creation:') || (preCreationContent + afterCreation).includes('$$end$$')
+            });
+            
+            // CRITICAL FIX: Never set displayed content that contains creation tags
+            const combinedContent = preCreationContent + afterCreation;
+            if (combinedContent.includes('$$creation:') || combinedContent.includes('$$end$$')) {
+              console.error('🚨 WOULD SET CONTENT WITH CREATION TAGS - Cleaning first');
+              const cleanedDisplayContent = removeCreationDirectives(combinedContent);
+              safeSetDisplayedContent(cleanedDisplayContent, 'post-creation-combined');
+            } else {
+              // Update displayed content with both before and after parts
+              safeSetDisplayedContent(preCreationContent + afterCreation, 'post-creation-normal');
+            }
           }
-        } else if (creationComplete) {
-          // Creation is already complete, so we're now just receiving text after the creation
-          // Check if there's new content beyond what we've already processed
-          if (cleanedContent.length > streamBuffer.length) {
-            // Extract only the new content that was added since last update
-            const newContent = cleanedContent.substring(streamBuffer.length);
             
-            // Append new content to post-creation content
-            const updatedPostContent = postCreationContent + newContent;
-            setPostCreationContent(updatedPostContent);
-            
-            // Update displayed content, preserving the structure
-            setDisplayedContent(preCreationContent + updatedPostContent);
-            
-            // Update stream buffer to include this new content
+            // Update buffer to include the processed content up to and including the end tag
             setStreamBuffer(cleanedContent);
-          }
       } else {
-          // Still collecting the creation
+            // No end tag yet - continue collecting
           // Extract the new content since the last update
           const newContent = cleanedContent.substring(streamBuffer.length);
           
+            // Only log if content contains end tag (this would be a problem)
+            if (newContent.includes('$$end$$')) {
+              console.warn('⚠️ END TAG IN CONTINUING CONTENT!', newContent);
+            }
+            
+            if (newContent) {
+          // CRITICAL FIX: Check for partial end tags and exclude them before sending to creation window
+          const { cleanContent: cleanNewContent, hasPartialEnd } = excludePartialEndTag(newContent);
+          
+          if (hasPartialEnd) {
+            console.log('🛡️ PARTIAL END TAG DETECTED - Only sending clean content to creation window');
+          }
+          
+          // Only send content to creation window if we have clean content
+          if (cleanNewContent) {
           // Update our creation content
           setStreamedCreation(prev => {
             if (prev) {
               return {
                 ...prev,
-                content: prev.content + newContent,
+                content: prev.content + cleanNewContent,
               };
             }
             return prev;
           });
 
           // Send the new content to the creation window
+              // Only log if sending problematic content
+              if (cleanNewContent.includes('$$end$$')) {
+                console.error('🚨 SENDING END TAG TO CREATION!', cleanNewContent);
+              }
+              
           window.dispatchEvent(new CustomEvent('stream-to-creation', {
             detail: {
-              content: newContent,
+              content: cleanNewContent,
               creationId: streamedCreation.id
             }
           }));
+          }
 
-          // Update our buffer
+          // Update our buffer with the original content (including any partial end tag)
+          // We need to keep the full content in the buffer for proper end tag detection later
           setStreamBuffer(cleanedContent);
           
           // Keep the displayed content stable - only showing text before the creation
           // This prevents flickering as the creation content changes
           if (preCreationContent) {
-            setDisplayedContent(preCreationContent);
+            console.log('📌 SETTING STABLE PRE-CREATION CONTENT:', {
+              length: preCreationContent.length,
+              preview: preCreationContent.slice(-50),
+              containsCreationTags: preCreationContent.includes('$$creation:') || preCreationContent.includes('$$end$$')
+            });
+            
+            // CRITICAL FIX: Never set pre-creation content that contains creation tags
+            if (preCreationContent.includes('$$creation:') || preCreationContent.includes('$$end$$')) {
+              console.error('🚨 PRE-CREATION CONTENT HAS CREATION TAGS - Cleaning');
+              const cleanedPreContent = removeCreationDirectives(preCreationContent);
+              safeSetDisplayedContent(cleanedPreContent, 'pre-creation-cleaned');
+            } else {
+              safeSetDisplayedContent(preCreationContent, 'pre-creation-normal');
+            }
           } else if (cleanedContent.indexOf('$$creation:') > -1) {
             const beforeCreation = cleanedContent.substring(0, cleanedContent.indexOf('$$creation:'));
             setPreCreationContent(beforeCreation);
-            setDisplayedContent(beforeCreation);
+            
+            console.log('📌 SETTING NEW PRE-CREATION CONTENT:', {
+              length: beforeCreation.length,
+              preview: beforeCreation.slice(-50),
+              containsCreationTags: beforeCreation.includes('$$creation:') || beforeCreation.includes('$$end$$')
+            });
+            
+                        // CRITICAL FIX: Never set content that contains creation tags
+            if (beforeCreation.includes('$$creation:') || beforeCreation.includes('$$end$$')) {
+              console.error('🚨 NEW PRE-CREATION CONTENT HAS CREATION TAGS - Cleaning');
+              const cleanedBeforeCreation = removeCreationDirectives(beforeCreation);
+              safeSetDisplayedContent(cleanedBeforeCreation, 'new-pre-creation-cleaned');
+            } else {
+              safeSetDisplayedContent(beforeCreation, 'new-pre-creation-normal');
+            }
+          }
           }
         }
-      } else {
+      }
+    } else {
         // Not currently collecting a creation, check if we should start
-        const match = creationStartPattern.exec(cleanedContent);
-        if (match) {
-          // We found a creation start marker!
+        console.log('🔍 NO ACTIVE CREATION - Checking for new creation patterns');
+        
+        // CRITICAL FIX: Check if creation header is complete before proceeding
+        const headerCheck = isCreationHeaderComplete(cleanedContent, 0);
+        
+        if (headerCheck.isComplete && headerCheck.match) {
+          const match = headerCheck.match;
+          console.log('🎪 COMPLETE CREATION HEADER FOUND AT START:', match[0]);
+          
+          // CRITICAL FIX: Cancel any existing preview timeout immediately
+          // This handles the case where a new creation is detected during any preview animation
+          if (creationSwitchTimeout) {
+            console.log('⏰ CANCELING EXISTING PREVIEW TIMEOUT - New creation detected (fresh start)');
+            clearTimeout(creationSwitchTimeout);
+            setCreationSwitchTimeout(null);
+          }
+          
+          // We found a complete creation start marker!
           const [, type, titlePart] = match;
           
           // Extract language if present
@@ -335,7 +966,9 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           }
           
           // Create a unique ID for this creation
-          const creationId = `creation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const creationId = `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+          
+          console.log('🔨 CREATING NEW CREATION OBJECT WITH COMPLETE HEADER:', { type, title, language, id: creationId });
           
           // Set up the creation object
           const newCreation: StreamedCreation = {
@@ -352,38 +985,82 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           setStreamedCreation(newCreation);
           setStreamBuffer(cleanedContent);
           setCreationComplete(false);
+          setCurrentCreationStartPos(match.index ?? -1);
           
-          // Open the creation window and switch to code view
-          showCreation({
+
+          
+          console.log('📡 DISPATCHING CREATION UPDATE EVENTS WITH COMPLETE HEADER');
+          // For streaming creations, directly update the creation window without closing/reopening
+          // This prevents the flash of content in main chat during creation transitions
+          console.log('🎯 ABOUT TO DISPATCH stream-creation-update with data:', {
             type: type as CreationType,
             content: '',
             title,
             language,
             id: creationId,
-            // Mark as temporary until fully detected
-            metadata: { isTemporary: true }
+            metadata: { isTemporary: true },
+            fullHeaderReceived: true
           });
+          
+          window.dispatchEvent(new CustomEvent('stream-creation-update', {
+            detail: {
+              type: type as CreationType,
+              content: '',
+              title,
+              language,
+              id: creationId,
+              metadata: { isTemporary: true }
+            }
+          }));
+          
+          console.log('🎯 ABOUT TO DISPATCH switch-creation-code with creationId:', creationId);
           
           // Dispatch event to switch to code editing mode
           window.dispatchEvent(new CustomEvent('switch-creation-code', {
             detail: { creationId }
           }));
           
+          console.log('📝 SETTING PRE-CREATION CONTENT');
           // Store and display the content before the creation marker
           if (cleanedContent.indexOf('$$creation:') > -1) {
             const beforeCreation = cleanedContent.substring(0, cleanedContent.indexOf('$$creation:'));
             setPreCreationContent(beforeCreation);
-            setDisplayedContent(beforeCreation);
+            safeSetDisplayedContent(beforeCreation, 'new-pattern-before');
+            console.log('📋 PRE-CREATION CONTENT SET:', { length: beforeCreation.length, preview: beforeCreation.slice(-50) });
           } else {
             // Fallback to removing creation directives if we can't find the marker
             const displayContent = removeCreationDirectives(cleanedContent);
-            setDisplayedContent(displayContent);
+            safeSetDisplayedContent(displayContent, 'new-pattern-fallback');
+            console.log('📋 FALLBACK DISPLAY CONTENT SET:', { length: displayContent.length, preview: displayContent.slice(-50) });
           }
+        } else if (cleanedContent.includes('$$creation:')) {
+          // We detected a creation tag but the header is not complete yet
+          console.log('⏳ CREATION TAG DETECTED BUT HEADER INCOMPLETE AT START - Waiting for complete header');
+          
+          // Don't create any indicators or windows yet, just clean the content for display
+          const cleanedForDisplay = removeCreationDirectives(cleanedContent);
+          safeSetDisplayedContent(cleanedForDisplay, 'incomplete-creation-header');
         } else {
           // No creation patterns detected, show the raw content
+          console.log('📄 NO CREATION PATTERN - Showing raw content');
           // Only update if content actually changed to avoid unnecessary rerenders
           if (displayedContent !== cleanedContent) {
-            setDisplayedContent(cleanedContent);
+            const contentPreview = cleanedContent.slice(-100);
+            console.log('🖥️ UPDATING DISPLAYED CONTENT (NO CREATION):', { 
+              length: cleanedContent.length, 
+              preview: contentPreview,
+              containsCreationTags: cleanedContent.includes('$$creation:') || cleanedContent.includes('$$end$$')
+            });
+            
+            // CRITICAL FIX: Never display content with creation tags in main chat
+            // Always clean creation directives, even if no pattern is initially detected
+            if (cleanedContent.includes('$$creation:') || cleanedContent.includes('$$end$$')) {
+              console.log('🚫 CONTENT CONTAINS CREATION TAGS - Cleaning before display');
+              const cleanedForDisplay = removeCreationDirectives(cleanedContent);
+              safeSetDisplayedContent(cleanedForDisplay, 'no-creation-cleaned');
+            } else {
+              safeSetDisplayedContent(cleanedContent, 'no-creation-normal');
+            }
           }
         }
       }
@@ -392,6 +1069,14 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       setPreCreationContent('');
       setPostCreationContent('');
       setCreationComplete(false);
+      setStreamingContentParts([]);
+    } else {
+      // For non-streaming cases, ensure we still have content parts if needed
+      if (isCollectingCreation && streamingContentParts.length === 0) {
+        const cleanedContent = cleanBackticksForStreaming(content);
+        const initialParts = splitContentIntoParts(cleanedContent);
+        setStreamingContentParts(initialParts);
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, isStreaming, isUser, isThinking, isHistoryMessage, creationEndPattern, creationStartPattern]);
@@ -436,10 +1121,14 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   // Force update when content changes during streaming
   useEffect(() => {
     if (isMountedRef.current) {
-      if ((isUser || isThinking) && isStreaming) {
-        // During streaming for user messages or thinking, just show the raw content
-        setDisplayedContent(content);
+      // CRITICAL FIX: Don't override displayedContent for assistant messages during streaming
+      // This was causing creation tags to appear in main chat by bypassing creation logic
+      if (isUser && isStreaming) {
+        // Only set raw content for user messages (user messages don't have creations)
+        console.log('👤 USER MESSAGE STREAMING - Setting raw content');
+        safeSetDisplayedContent(content, 'user-streaming');
       }
+      // For assistant messages, let the main creation logic handle displayedContent
       
       // Force browser to paint the update
       if ((isStreaming || isThinking) && contentRef.current) {
@@ -448,7 +1137,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         void contentRef.current.offsetHeight; // Using void to indicate deliberate non-use
       }
     }
-  }, [content, isStreaming, isThinking, isUser]);
+  }, [content, isStreaming, isThinking, isUser, safeSetDisplayedContent]);
   
   // This effect runs on component mount/unmount only
   useEffect(() => {
@@ -922,116 +1611,111 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     
     // For streaming content with a creation currently being collected
     if (isCollectingCreation && streamedCreation) {
+      // Use the parts-based rendering to properly position creation indicators
       return (
         <>
-          <ReactMarkdown
-            key="streaming-with-creation"
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-            components={{
-              // Same components as above for code rendering
-              code({ className, children, ...props }) {
-                // ... same code rendering logic
-                const match = /language-(\w+)/.exec(className || '');
-                const language = match ? match[1] : '';
-                const codeContent = String(children).replace(/\n$/, '');
-                const blockId = `code-${Math.random().toString(36).substring(2, 9)}`;
-                const isHtml = language === 'html';
-                
-                // Check if this is a creation directive
-                const isCreation = codeContent.startsWith('creation:');
-                
-                if (isCreation) {
-                  // Same handling as above
-                  const firstLine = codeContent.split('\n')[0];
-                  const creationMatch = /creation:(\w+)(?:\s+(.+))?/.exec(firstLine);
-                  let creationType = '';
-                  let creationTitle = '';
-                  
-                  if (creationMatch) {
-                    creationType = creationMatch[1];
-                    creationTitle = creationMatch[2] || '';
-                  }
-                  
-                  return (
-                    <div className="creation-notification">
-                      <span className="creation-notification-icon">
-                        {getCreationIcon(creationType)}
-                      </span>
-                      <span className="creation-notification-text">
-                        <strong>{creationTitle || `${creationType.charAt(0).toUpperCase() + creationType.slice(1)} Creation`}</strong> is open in the sidebar
-                      </span>
-                    </div>
-                  );
-                }
-                
-                return match ? (
-                  <div className="code-block-container">
-                    <div className="code-block-actions">
-                      <button
-                        className="code-action-button"
-                        onClick={() => copyCodeBlock(codeContent, blockId)}
-                        aria-label="Copy code"
-                      >
-                        {codeBlockCopied[blockId] ? 'Copied!' : 'Copy'}
-                      </button>
-                      <button
-                        className="code-action-button"
-                        onClick={() => downloadCodeBlock(codeContent, language)}
-                        aria-label="Download code"
-                      >
-                        Download
-                      </button>
-                      {isHtml && (
-                        <button
-                          className="code-action-button run-button"
-                          onClick={() => runHtml(codeContent)}
-                          aria-label="Run HTML"
+          {streamingContentParts.map((part, index) => 
+            part.isCreation ? (
+              <CreationIndicators
+                key={`streaming-creation-${index}`}
+                creations={part.creation ? [part.creation] : []}
+                onCreationClick={toggleCreationWindow}
+                isStreaming={part.creation?.metadata?.isStreaming !== false}
+              />
+            ) : (
+              <ReactMarkdown
+                key={`streaming-text-${index}`}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  code({ className, children, ...props }) {
+                    const match = /language-(\w+)/.exec(className || '');
+                    const language = match ? match[1] : '';
+                    const codeContent = String(children).replace(/\n$/, '');
+                    const blockId = `code-${Math.random().toString(36).substring(2, 9)}`;
+                    const isHtml = language === 'html';
+                    
+                    // Check if this is a creation directive
+                    const isCreation = codeContent.startsWith('creation:');
+                    
+                    if (isCreation) {
+                      const firstLine = codeContent.split('\n')[0];
+                      const creationMatch = /creation:(\w+)(?:\s+(.+))?/.exec(firstLine);
+                      let creationType = '';
+                      let creationTitle = '';
+                      
+                      if (creationMatch) {
+                        creationType = creationMatch[1];
+                        creationTitle = creationMatch[2] || '';
+                      }
+                      
+                      return (
+                        <div className="creation-notification">
+                          <span className="creation-notification-icon">
+                            {getCreationIcon(creationType)}
+                          </span>
+                          <span className="creation-notification-text">
+                            <strong>{creationTitle || `${creationType.charAt(0).toUpperCase() + creationType.slice(1)} Creation`}</strong> is open in the sidebar
+                          </span>
+                        </div>
+                      );
+                    }
+                    
+                    return match ? (
+                      <div className="code-block-container">
+                        <div className="code-block-actions">
+                          <button
+                            className="code-action-button"
+                            onClick={() => copyCodeBlock(codeContent, blockId)}
+                            aria-label="Copy code"
+                          >
+                            {codeBlockCopied[blockId] ? 'Copied!' : 'Copy'}
+                          </button>
+                          <button
+                            className="code-action-button"
+                            onClick={() => downloadCodeBlock(codeContent, language)}
+                            aria-label="Download code"
+                          >
+                            Download
+                          </button>
+                          {isHtml && (
+                            <button
+                              className="code-action-button run-button"
+                              onClick={() => runHtml(codeContent)}
+                              aria-label="Run HTML"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                              </svg>
+                              View
+                            </button>
+                          )}
+                        </div>
+                        <SyntaxHighlighter
+                          // @ts-expect-error - Style type mismatch in library
+                          style={vscDarkPlus}
+                          language={language}
+                          PreTag="div"
+                          {...props}
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                          </svg>
-                          View
-                        </button>
-                      )}
-                    </div>
-                    <SyntaxHighlighter
-                      // @ts-expect-error - Style type mismatch in library
-                      style={vscDarkPlus}
-                      language={language}
-                      PreTag="div"
-                      {...props}
-                    >
-                      {codeContent}
-                    </SyntaxHighlighter>
-                  </div>
-                ) : (
-                  <code className={className} {...props}>
-                    {children}
-                  </code>
-                );
-              },
-              p: ({ children }) => {
-                return <p className={isStreaming ? 'streaming-paragraph' : ''}>{children}</p>;
-              }
-            }}
-          >
-            {displayedContent}
-          </ReactMarkdown>
-          
-          <div className="creation-indicators streaming-creation-container">
-            <CreationIndicators
-              creations={streamedCreation ? [{
-                type: streamedCreation.type as CreationType,
-                content: streamedCreation.content,
-                title: streamedCreation.title,
-                language: streamedCreation.language,
-                id: streamedCreation.id
-              }] : []}
-              onCreationClick={toggleCreationWindow}
-              isStreaming={true}
-            />
-          </div>
+                          {codeContent}
+                        </SyntaxHighlighter>
+                      </div>
+                    ) : (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    );
+                  },
+                  p: ({ children }) => {
+                    return <p className={isStreaming ? 'streaming-paragraph' : ''}>{children}</p>;
+                  }
+                }}
+              >
+                {removeCreationDirectives(part.content)}
+              </ReactMarkdown>
+            )
+          )}
         </>
       );
     }
@@ -1133,7 +1817,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         {displayedContent}
       </ReactMarkdown>
     );
-  }, [displayedContent, isStreaming, codeBlockCopied, isCollectingCreation, streamedCreation, content, isUser, toggleCreationWindow]);
+  }, [isUser, isCollectingCreation, content, isStreaming, streamedCreation, displayedContent, codeBlockCopied, toggleCreationWindow, streamingContentParts]);
 
   // Render thinking animation directly for thinking state
   if (!isUser && isThinking) {

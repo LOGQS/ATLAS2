@@ -1,11 +1,21 @@
 /* Creation indicator box styles */
 .creation-indicators {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   margin: 10px 0;
-  flex-wrap: wrap;
   width: 100%;
   position: relative;
+}
+
+/* Stack completed creations vertically during streaming */
+.creation-indicators.completed-during-streaming {
+  flex-direction: column;
+  gap: 8px;
+  /* Reduce margins when inline with streaming content */
+  margin: 8px 0;
+  width: auto;
+  max-width: 100%;
 }
 
 .creation-indicator-box {
@@ -56,19 +66,13 @@
   text-overflow: ellipsis;
 }
 
-/* Streaming creation container */
-.streaming-creation-container {
-  border-top-color: var(--primary-color);
-  margin-top: 15px;
-  opacity: 0.9;
-}
+/* Removed .streaming-creation-container - no longer used after layout fix */
 
 /* Streaming creation indicator */
 .creation-indicator-box.streaming {
   cursor: not-allowed;
   animation: subtle-pulse 2s infinite;
-  opacity: 0.9;
-  padding: 12px 24px; /* Match the doubled size */
+  padding: 12px 24px; /* Same size as finished indicators */
   background-color: rgba(var(--primary-color-rgb, 74, 110, 224), 0.1);
   border-color: var(--primary-color);
 }
@@ -86,13 +90,13 @@
 
 @keyframes subtle-pulse {
   0% {
-    opacity: 0.7;
-  }
-  50% {
     opacity: 0.9;
   }
+  50% {
+    opacity: 1;
+  }
   100% {
-    opacity: 0.7;
+    opacity: 0.9;
   }
 }
 
