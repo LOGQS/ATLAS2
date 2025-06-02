@@ -1780,3 +1780,311 @@ button:focus-visible {
 .animate-fade-in {
   animation: fadeIn 0.2s ease-out forwards;
 }
+
+/* Modern Reasoning Section Styles */
+.reasoning-section {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 25%, #a855f7 50%, #c084fc 75%, #e879f9 100%);
+  border-radius: 16px;
+  margin-bottom: 20px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.2), 0 4px 16px rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(8px);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  animation: reasoningFadeIn 0.5s ease-out;
+}
+
+@keyframes reasoningFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.reasoning-section:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px rgba(99, 102, 241, 0.3), 0 6px 20px rgba(99, 102, 241, 0.15);
+}
+
+.reasoning-section::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.6) 50%, transparent 100%);
+}
+
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.reasoning-header:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.reasoning-icon {
+  width: 24px;
+  height: 24px;
+  margin-right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 4px;
+  transition: all 0.3s ease;
+}
+
+.reasoning-icon svg {
+  width: 16px;
+  height: 16px;
+  color: rgba(255, 255, 255, 0.9);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.reasoning-header:hover .reasoning-icon {
+  background: rgba(255, 255, 255, 0.3);
+  transform: rotate(360deg);
+}
+
+.reasoning-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  letter-spacing: 0.025em;
+  flex: 1;
+}
+
+.reasoning-badge {
+  margin-left: auto;
+  margin-right: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 20px;
+  padding: 4px 12px;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+
+.reasoning-header:hover .reasoning-badge {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.reasoning-badge-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.reasoning-preview {
+  flex: 1;
+  margin-left: 12px;
+  margin-right: 12px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.8);
+  font-style: italic;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.reasoning-chevron {
+  width: 20px;
+  height: 20px;
+  color: rgba(255, 255, 255, 0.8);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.reasoning-chevron.expanded {
+  transform: rotate(180deg);
+  color: rgba(255, 255, 255, 1);
+}
+
+.reasoning-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.reasoning-content.expanded {
+  max-height: 800px;
+  overflow-y: auto;
+}
+
+.reasoning-text {
+  padding: 24px;
+  color: #374151;
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+.reasoning-text h1, .reasoning-text h2, .reasoning-text h3, .reasoning-text h4, .reasoning-text h5, .reasoning-text h6 {
+  color: #1f2937;
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+  font-weight: 600;
+}
+
+.reasoning-text h1 { font-size: 1.5em; }
+.reasoning-text h2 { font-size: 1.3em; }
+.reasoning-text h3 { font-size: 1.1em; }
+
+.reasoning-text p {
+  margin-bottom: 1em;
+  text-align: left;
+}
+
+.reasoning-text ul, .reasoning-text ol {
+  padding-left: 1.5em;
+  margin-bottom: 1em;
+}
+
+.reasoning-text li {
+  margin-bottom: 0.5em;
+}
+
+.reasoning-text strong {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.reasoning-text em {
+  font-style: italic;
+  color: #4b5563;
+}
+
+.reasoning-inline-code {
+  background: rgba(99, 102, 241, 0.1);
+  color: #6366f1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.9em;
+  font-weight: 500;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.reasoning-pre {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 1em 0;
+  overflow-x: auto;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.reasoning-code-block {
+  background: transparent;
+  color: #374151;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.reasoning-text blockquote {
+  border-left: 4px solid #6366f1;
+  padding-left: 16px;
+  margin: 1em 0;
+  color: #4b5563;
+  font-style: italic;
+  background: rgba(99, 102, 241, 0.05);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+}
+
+.reasoning-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.reasoning-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 3px;
+}
+
+.reasoning-content::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.reasoning-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.5);
+}
+
+/* Responsive design for reasoning section */
+@media (max-width: 768px) {
+  .reasoning-section {
+    border-radius: 12px;
+    margin-bottom: 16px;
+  }
+  
+  .reasoning-header {
+    padding: 14px 16px;
+  }
+  
+  .reasoning-title {
+    font-size: 15px;
+  }
+  
+  .reasoning-badge-text {
+    font-size: 11px;
+  }
+  
+  .reasoning-text {
+    padding: 20px;
+    font-size: 13px;
+  }
+  
+  .reasoning-content.expanded {
+    max-height: 600px;
+  }
+}
+
+@media (max-width: 480px) {
+  .reasoning-header {
+    padding: 12px 14px;
+  }
+  
+  .reasoning-title {
+    font-size: 14px;
+  }
+  
+  .reasoning-text {
+    padding: 16px;
+    font-size: 13px;
+  }
+  
+  .reasoning-content.expanded {
+    max-height: 400px;
+  }
+}

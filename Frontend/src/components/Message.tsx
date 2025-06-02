@@ -64,6 +64,7 @@ interface MessageProps {
   isThinking?: boolean;
   attachments?: FileAttachment[];
   isHistoryMessage?: boolean;
+  reasoning?: string;
 }
 
 // New interface for tracking streamed creation state
@@ -76,10 +77,14 @@ interface StreamedCreation {
   id: string;
 }
 
-const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false }) => {
+const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning }) => {
   const [copied, setCopied] = useState(false);
   const [codeBlockCopied, setCodeBlockCopied] = useState<{[key: string]: boolean}>({});
   const contentRef = useRef<HTMLDivElement>(null);
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
+  
+  // Debug logging for reasoning prop
+  console.log('🎯 Message component rendered with reasoning:', reasoning ? 'YES' : 'NO', 'Length:', reasoning ? reasoning.length : 0);
   
   // Keep track of the current content for streaming
   const [displayedContent, setDisplayedContent] = useState(content);
@@ -1273,6 +1278,77 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           </button>
         )}
         <div ref={contentRef} className="message-content">
+          {reasoning && !isUser && (
+            <div className="reasoning-section">
+              <div 
+                className="reasoning-header"
+                onClick={() => setReasoningExpanded(!reasoningExpanded)}
+              >
+                <div className="reasoning-icon">
+                  <svg 
+                    xmlns="http://www.w3.org/2000/svg" 
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    stroke="currentColor" 
+                    strokeWidth="2" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round"
+                  >
+                    <path d="M9 12l2 2 4-4"/>
+                    <path d="M21 12c.552 0 1-.448 1-1s-.448-1-1-1-1 .448-1 1 .448 1 1 1"/>
+                    <path d="M3 12c.552 0 1-.448 1-1s-.448-1-1-1-1 .448-1 1 .448 1 1 1"/>
+                    <path d="M12 21c.552 0 1-.448 1-1s-.448-1-1-1-1 .448-1 1 .448 1 1 1"/>
+                    <path d="M12 3c.552 0 1-.448 1-1s-.448-1-1-1-1 .448-1 1 .448 1 1 1"/>
+                    <path d="M18.364 18.364c.39.39 1.024.39 1.414 0s.39-1.024 0-1.414-.024-.39-1.414 0-.39 1.024 0 1.414"/>
+                    <path d="M4.222 4.222c.39.39 1.024.39 1.414 0s.39-1.024 0-1.414-1.024-.39-1.414 0-.39 1.024 0 1.414"/>
+                    <path d="M19.778 4.222c.39.39.39 1.024 0 1.414s-1.024.39-1.414 0-.39-1.024 0-1.414 1.024-.39 1.414 0"/>
+                    <path d="M5.636 18.364c.39.39.39 1.024 0 1.414s-1.024.39-1.414 0-.39-1.024 0-1.414 1.024-.39 1.414 0"/>
+                  </svg>
+                </div>
+                <span className="reasoning-title">AI Thought Process</span>
+                <div className="reasoning-badge">
+                  <span className="reasoning-badge-text">{isStreaming ? 'Thinking...' : 'Reasoning'}</span>
+                </div>
+                {!reasoningExpanded && (
+                  <span className="reasoning-preview">
+                    {reasoning.length > 60 ? reasoning.substring(0, 60) + '...' : reasoning}
+                  </span>
+                )}
+                <svg 
+                  className={`reasoning-chevron ${reasoningExpanded ? 'expanded' : ''}`}
+                  xmlns="http://www.w3.org/2000/svg" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                >
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </div>
+              <div className={`reasoning-content ${reasoningExpanded ? 'expanded' : ''}`}>
+                <div className="reasoning-text">
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      pre: ({ children }) => <pre className="reasoning-pre">{children}</pre>,
+                      code: ({ children, className }) => {
+                        const isInline = !className;
+                        return isInline ? (
+                          <code className="reasoning-inline-code">{children}</code>
+                        ) : (
+                          <code className="reasoning-code-block">{children}</code>
+                        );
+                      }
+                    }}
+                  >
+                    {reasoning}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="message-attachments">
               {attachments.map((attachment) => renderAttachment(attachment))}

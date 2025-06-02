@@ -22,6 +22,7 @@ import gc
 import ctypes
 import signal
 import atexit
+import requests
 
 # Set environment variables to handle OpenMP issues BEFORE importing any libraries
 # This prevents the "libiomp5md.dll already initialized" error from faster_whisper
@@ -201,6 +202,28 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Initialize with longer timeout
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Configure OpenRouter API
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+openrouter_client = None
+
+# Initialize OpenRouter client if API key is available
+if OPENROUTER_API_KEY:
+    try:
+        from openai import OpenAI
+        openrouter_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        logger.info("OpenRouter client initialized successfully")
+    except ImportError:
+        logger.warning("OpenAI library not installed. OpenRouter functionality will not be available.")
+        openrouter_client = None
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenRouter client: {str(e)}")
+        openrouter_client = None
+else:
+    logger.info("OPENROUTER_API_KEY not found in environment variables")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -383,15 +406,84 @@ def load_whisper_model():
             raise e
     return whisper_model
 
+def is_openrouter_model(model_name):
+    """
+    Check if the given model name is an OpenRouter model
+    """
+    openrouter_models = ["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"]
+    return model_name in openrouter_models
+
+def create_openrouter_chat_response(messages, model_name, system_instruction=None):
+    """
+    Create a chat response using OpenRouter API with direct HTTP requests for reasoning support
+    """
+    if not OPENROUTER_API_KEY:
+        raise Exception("OpenRouter API key not available")
+
+    # Convert messages to OpenAI format
+    openai_messages = []
+    
+    # Add system message first if provided
+    if system_instruction:
+        openai_messages.append({
+            "role": "system",
+            "content": system_instruction
+        })
+    
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        
+        # Convert role if needed
+        if role == "assistant":
+            role = "assistant"
+        elif role == "user":
+            role = "user"
+        else:
+            continue  # Skip unsupported roles
+            
+        openai_messages.append({
+            "role": role,
+            "content": content
+        })
+    
+    # Prepare the request payload with reasoning support
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model_name,
+        "messages": openai_messages,
+        "stream": True,
+        "include_reasoning": True  # Enable reasoning tokens to show the thinking process
+    }
+    
+    # Make the request with streaming
+    response = requests.post(url, headers=headers, json=payload, stream=True)
+    
+    if response.status_code != 200:
+        raise Exception(f"OpenRouter API error: {response.status_code} - {response.text}")
+    
+    # Return the response object that can be iterated over for streaming
+    return response
+
 # Get available models
 @app.route("/api/models", methods=["GET"])
 def get_models():
+    models = [
+        "gemini-2.5-flash-preview-05-20", 
+        "gemini-2.5-pro-exp-03-25",
+        "gemini-2.0-flash-exp-image-generation"
+    ]
+    
+    # Add OpenRouter models if available
+    if openrouter_client and OPENROUTER_API_KEY:
+        models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"])
+    
     return jsonify({
-        "models": [
-            "gemini-2.5-flash-preview-04-17", 
-            "gemini-2.5-pro-exp-03-25",
-            "gemini-2.0-flash-exp-image-generation"
-        ]
+        "models": models
     })
 
 # Get current settings
@@ -803,7 +895,17 @@ def track_streaming_creations(stream, chat_id):
         # Get absolute path to data directory
         data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
         creation_log_dir = data_dir_path / "creation_logs"
-        os.makedirs(creation_log_dir, exist_ok=True)
+        
+        # Ensure the creation logs directory exists
+        try:
+            creation_log_dir.mkdir(parents=True, exist_ok=True)
+            safe_debug(f"Creation logs directory ensured at: {creation_log_dir}")
+        except Exception as e:
+            safe_error(f"Failed to create creation logs directory: {str(e)}", e)
+            # If we can't create the directory, just pass through the stream without tracking
+            for chunk in stream:
+                yield chunk
+            return
         
         # Create a unique ID for this streaming session
         streaming_id = f"stream_{chat_id}_{uuid.uuid4().hex[:8]}_{int(time.time())}"
@@ -876,8 +978,12 @@ def track_streaming_creations(stream, chat_id):
         log_data["stats"]["outside_sections"] += 1
         
         # Save initial log data
-        with open(log_file_path, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False)
+        try:
+            with open(log_file_path, "w", encoding="utf-8") as f:
+                json.dump(log_data, f, indent=2, ensure_ascii=False)
+            safe_debug(f"Initial log data saved to: {log_file_path}")
+        except Exception as e:
+            safe_error(f"Failed to save initial log data: {str(e)}", e)
         
         safe_debug(f"Creation tracking started for chat {chat_id}, log file: {log_file_path}")
         
@@ -1334,36 +1440,72 @@ def chat():
         if new_chat:
             logger.debug(f"Creating new chat with model: {model_name}")
             
-            # Initialize chat with history if available (for existing chats loaded from file)
-            if history_messages:
-                # Convert history messages to the format expected by the API
-                api_history = []
-                for msg in history_messages:
-                    role = "model" if msg["role"] == "assistant" else msg["role"]
-                    api_history.append(
-                        types.Content(
-                            role=role,
-                            parts=[types.Part(text=msg["content"])]
-                        )
-                    )
+            if is_openrouter_model(model_name):
+                # For OpenRouter models, create a simple chat object to store history
+                class OpenRouterChat:
+                    def __init__(self, chat_id, model):
+                        self.id = chat_id
+                        self.model = model
+                        self.openrouter_history = []
+                        self.files = set()
+                        
+                    def get_history(self):
+                        # Return empty list since OpenRouter history is stored differently
+                        return []
                 
-                safe_debug(f"Initializing chat with {len(api_history)} history messages")
-                chat = client.chats.create(
-                    model=model_name,
-                    history=api_history
-                )
+                # Initialize OpenRouter history if available
+                if history_messages:
+                    openrouter_history = []
+                    for msg in history_messages:
+                        if msg["role"] in ["user", "assistant"] and msg.get("content"):
+                            openrouter_history.append({
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            })
+                    safe_debug(f"Initializing OpenRouter chat with {len(openrouter_history)} history messages")
+                else:
+                    openrouter_history = []
+                
+                # Generate a unique ID if not provided
+                if not chat_id:
+                    chat_id = f"openrouter_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                
+                # Create OpenRouter chat object
+                chat = OpenRouterChat(chat_id, model_name)
+                chat.openrouter_history = openrouter_history
+                
             else:
-                # For truly new chats with no history
-                chat = client.chats.create(model=model_name)
+                # Standard Gemini chat creation
+                if history_messages:
+                    # Convert history messages to the format expected by the API
+                    api_history = []
+                    for msg in history_messages:
+                        role = "model" if msg["role"] == "assistant" else msg["role"]
+                        api_history.append(
+                            types.Content(
+                                role=role,
+                                parts=[types.Part(text=msg["content"])]
+                            )
+                        )
+                    
+                    safe_debug(f"Initializing Gemini chat with {len(api_history)} history messages")
+                    chat = client.chats.create(
+                        model=model_name,
+                        history=api_history
+                    )
+                else:
+                    # For truly new chats with no history
+                    chat = client.chats.create(model=model_name)
+                
+                # Generate a unique ID if not provided
+                if not chat_id:
+                    chat_id = str(id(chat))
+                
+                # Add a files attribute to track files used in this chat session
+                chat.files = set()
             
-            # Generate a unique ID if not provided
-            if not chat_id:
-                chat_id = str(id(chat))
-            
-            # Store the chat in our dictionary and initialize file list
+            # Store the chat in our dictionary
             active_chats[chat_id] = chat
-            # Add a files attribute to track files used in this chat session
-            chat.files = set()
             logger.debug(f"New chat session created with ID: {chat_id}")
             
             # Save chat metadata to chat history file
@@ -1587,42 +1729,205 @@ def chat():
             # Send message with all parts and stream the response
             safe_debug(f"Sending message to chat ID {chat_id} with {len(parts)} parts", parts)
             
-            # Use only send_message_stream for streaming responses
-            # This should correctly update the history without duplicates
-            safe_debug("Sending message and streaming response")
-            
-            try:
-                # Send message with system instruction
-                response = chat.send_message_stream(
-                    parts, 
-                    config=config
-                )
+            # Check if we're using an OpenRouter model
+            if is_openrouter_model(model_name):
+                safe_debug(f"Using OpenRouter model: {model_name}")
                 
-                # Track creations in the real-time stream without affecting it
-                # This wraps the original response generator but doesn't modify the contents
-                tracked_response = track_streaming_creations(response, chat_id)
+                # For OpenRouter models, we need to handle differently since they don't support files
+                if len(parts) > 1:
+                    # If there are file attachments, convert them to text descriptions
+                    text_content = ""
+                    for part in parts:
+                        if isinstance(part, str):
+                            text_content += part
+                        else:
+                            # For file objects, add a description
+                            text_content += "[File attachment: processing not supported with this model]"
+                    parts = [text_content]
                 
-                # Use the buffer_and_delay function to add a delay to the response for frontend display
-                delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                try:
+                    # Get the chat history for OpenRouter
+                    if chat_id in active_chats and hasattr(active_chats[chat_id], 'openrouter_history'):
+                        openrouter_history = active_chats[chat_id].openrouter_history
+                    else:
+                        # Initialize OpenRouter history from Gemini history if available
+                        openrouter_history = []
+                        if chat_id in active_chats:
+                            try:
+                                gemini_history = active_chats[chat_id].get_history()
+                                for msg in gemini_history:
+                                    role = "assistant" if msg.role == "model" else msg.role
+                                    content = ""
+                                    if hasattr(msg, 'parts'):
+                                        for part in msg.parts:
+                                            if hasattr(part, 'text') and part.text:
+                                                content += part.text
+                                    
+                                    if role in ["user", "assistant"] and content:
+                                        openrouter_history.append({
+                                            "role": role,
+                                            "content": content
+                                        })
+                            except Exception as e:
+                                safe_debug(f"Error converting Gemini history: {str(e)}", e)
+                        
+                        # Store the history on the chat object
+                        if chat_id in active_chats:
+                            active_chats[chat_id].openrouter_history = openrouter_history
+                    
+                    # Add the new user message
+                    current_messages = openrouter_history + [{
+                        "role": "user",
+                        "content": parts[0] if parts else ""
+                    }]
+                    
+                    # Create OpenRouter response with system instruction
+                    raw_response = create_openrouter_chat_response(current_messages, model_name, creations_system_instruction)
+                    
+                    # Create a generator that parses the raw HTTP response into chunks
+                    def parse_openrouter_stream(http_response):
+                        for chunk in http_response.iter_lines(decode_unicode=True):
+                            if chunk and chunk.startswith('data: '):
+                                data_content = chunk[6:]  # Remove 'data: ' prefix
+                                
+                                if data_content.strip() == '[DONE]':
+                                    break
+                                    
+                                try:
+                                    chunk_data = json.loads(data_content)
+                                    safe_debug(f"🔍 Parsing OpenRouter chunk: {chunk_data}")
+                                    
+                                    # Create a mock chunk object that looks like OpenAI client format
+                                    class MockChunk:
+                                        def __init__(self, data):
+                                            self.choices = []
+                                            if 'choices' in data and data['choices']:
+                                                delta_data = data['choices'][0].get('delta', {})
+                                                mock_delta = MockDelta(delta_data)
+                                                mock_choice = MockChoice(mock_delta)
+                                                self.choices.append(mock_choice)
+                                    
+                                    class MockChoice:
+                                        def __init__(self, delta):
+                                            self.delta = delta
+                                    
+                                    class MockDelta:
+                                        def __init__(self, data):
+                                            self.content = data.get('content')
+                                            self.reasoning = data.get('reasoning')
+                                    
+                                    yield MockChunk(chunk_data)
+                                    
+                                except json.JSONDecodeError:
+                                    # Skip invalid JSON chunks
+                                    continue
+                    
+                    # Parse the response into our expected format
+                    response = parse_openrouter_stream(raw_response)
+                    
+                    # For OpenRouter models, we need to exclude reasoning tokens from creation tracking
+                    # Create a wrapper that modifies the chunk.text property to only include content
+                    def create_content_only_wrapper(original_stream):
+                        """Wrap OpenRouter stream to only track content in creation system"""
+                        for chunk in original_stream:
+                            # Create a wrapper that filters out reasoning from creation tracking
+                            class FilteredChunk:
+                                def __init__(self, original_chunk):
+                                    # Copy all attributes from the original chunk
+                                    self.__dict__.update(original_chunk.__dict__)
+                                    
+                                    # Override the text property to only include content (not reasoning)
+                                    if (hasattr(original_chunk, 'choices') and original_chunk.choices and 
+                                        hasattr(original_chunk.choices[0], 'delta') and 
+                                        hasattr(original_chunk.choices[0].delta, 'content') and 
+                                        original_chunk.choices[0].delta.content):
+                                        # Only expose content text for creation tracking
+                                        self.text = original_chunk.choices[0].delta.content
+                                    else:
+                                        # No content in this chunk, set empty text for creation tracking
+                                        self.text = ""
+                            
+                            yield FilteredChunk(chunk)
+                    
+                    # Track creations with content-only filtering for OpenRouter
+                    content_filtered_response = create_content_only_wrapper(response)
+                    tracked_response = track_streaming_creations(content_filtered_response, chat_id)
+                    
+                    # Use the buffer_and_delay function to add a delay to the response for frontend display
+                    delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                    
+                except Exception as e:
+                    safe_debug(f"Error during OpenRouter request: {str(e)}", e)
+                    return jsonify({"error": str(e)}), 500
+            else:
+                # Use standard Gemini API for non-OpenRouter models
+                safe_debug("Using Gemini API for standard models")
                 
-            except Exception as e:
-                safe_debug(f"Error during send_message_stream: {str(e)}", e)
-                return jsonify({"error": str(e)}), 500
+                try:
+                    # Send message with system instruction
+                    response = chat.send_message_stream(
+                        parts, 
+                        config=config
+                    )
+                    
+                    # Track creations in the real-time stream without affecting it
+                    # For Gemini models, all content is in the main stream (no separate reasoning tokens)
+                    tracked_response = track_streaming_creations(response, chat_id)
+                    
+                    # Use the buffer_and_delay function to add a delay to the response for frontend display
+                    delayed_response = buffer_and_delay(tracked_response, delay_seconds=2.0)
+                    
+                except Exception as e:
+                    safe_debug(f"Error during send_message_stream: {str(e)}", e)
+                    return jsonify({"error": str(e)}), 500
             
             def generate():
                 # Add a try-except block around the entire streaming process
+                assistant_response = ""  # Track the complete assistant response
+                accumulated_reasoning = ""  # Track the complete reasoning for OpenRouter models
+                
                 try:
                     for chunk in delayed_response:
                         try:
-                            if chunk.text:
+                            chunk_text = ""
+                            
+                            # Handle different response types (Gemini vs OpenRouter)
+                            if is_openrouter_model(model_name):
+                                # OpenRouter response structure (already parsed by our stream parser)
+                                if hasattr(chunk, 'choices') and chunk.choices:
+                                    delta = chunk.choices[0].delta
+                                    
+                                    # Handle reasoning tokens
+                                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                                        reasoning_data = {'reasoning': delta.reasoning, 'chat_id': chat_id}
+                                        # Accumulate reasoning for saving to history
+                                        accumulated_reasoning += delta.reasoning
+                                        safe_debug(f"🧠 Backend sending reasoning chunk: {delta.reasoning[:100]}...")
+                                        try:
+                                            json_data = json.dumps(reasoning_data)
+                                            yield f"data: {json_data}\n\n"
+                                        except (UnicodeEncodeError, json.JSONDecodeError) as e:
+                                            safe_warning(f"Error encoding reasoning chunk: {str(e)}")
+                                    
+                                    # Handle content tokens
+                                    if hasattr(delta, 'content') and delta.content:
+                                        chunk_text = delta.content
+                                        assistant_response += chunk_text
+                            else:
+                                # Gemini response structure
+                                if hasattr(chunk, 'text') and chunk.text:
+                                    chunk_text = chunk.text
+                                    assistant_response += chunk_text
+                            
+                            if chunk_text:
                                 # Safely encode the chunk to prevent JSON errors
-                                chunk_data = {'chunk': chunk.text, 'chat_id': chat_id}
+                                chunk_data = {'chunk': chunk_text, 'chat_id': chat_id}
                                 try:
                                     json_data = json.dumps(chunk_data)
                                     yield f"data: {json_data}\n\n"
                                 except UnicodeEncodeError as ue:
                                     # Handle Unicode encoding errors by replacing problematic characters
-                                    safe_text = chunk.text.encode('utf-8', errors='replace').decode('utf-8')
+                                    safe_text = chunk_text.encode('utf-8', errors='replace').decode('utf-8')
                                     safe_warning(f"Unicode encoding error in response chunk: {str(ue)}", safe_text)
                                     yield f"data: {json.dumps({'chunk': safe_text, 'chat_id': chat_id})}\n\n"
                                 except json.JSONDecodeError as je:
@@ -1637,24 +1942,46 @@ def chat():
                             # Send a safe error message 
                             yield f"data: {json.dumps({'error': 'Error processing response chunk', 'chat_id': chat_id})}\n\n"
                     
-                    # Log the complete history after the response is done
+                    # Log the complete history after the response is done and handle OpenRouter history
                     try:
-                        history = chat.get_history()
-                        safe_debug(f"Chat {chat_id} history after response - length: {len(history) if history else 0}")
-                        
-                        # Log a sample of the history to verify it's working - safely
-                        if history and len(history) > 0:
-                            for i, msg in enumerate(history[-3:]):  # Only log last 3 messages to reduce log size
-                                try:
-                                    safe_content = ""
-                                    if msg.parts and hasattr(msg.parts[0], 'text'):
-                                        safe_content = msg.parts[0].text[:50].replace('\n', ' ') + "..."
-                                    safe_debug(f"History item {i}: role={msg.role}, content={safe_content}")
-                                except Exception as e:
-                                    safe_debug(f"History item {i}: role={msg.role}, [Error accessing content: {str(e)}]")
+                        if is_openrouter_model(model_name):
+                            # For OpenRouter models, update the stored history
+                            if chat_id in active_chats:
+                                if not hasattr(active_chats[chat_id], 'openrouter_history'):
+                                    active_chats[chat_id].openrouter_history = []
                                 
-                        # Save the complete chat messages to the chat history file
-                        try:
+                                # Add the assistant response to history with reasoning if available
+                                if assistant_response.strip():
+                                    assistant_message = {
+                                        "role": "assistant",
+                                        "content": assistant_response
+                                    }
+                                    # Include reasoning if we accumulated any
+                                    if accumulated_reasoning.strip():
+                                        assistant_message["reasoning"] = accumulated_reasoning
+                                        safe_debug(f"🧠 Saving reasoning to history: {len(accumulated_reasoning)} chars")
+                                    
+                                    active_chats[chat_id].openrouter_history.append(assistant_message)
+                                
+                                # Use OpenRouter history for saving
+                                formatted_messages = active_chats[chat_id].openrouter_history.copy()
+                                safe_debug(f"OpenRouter chat {chat_id} history after response - length: {len(formatted_messages)}")
+                        else:
+                            # Standard Gemini history handling
+                            history = chat.get_history()
+                            safe_debug(f"Chat {chat_id} history after response - length: {len(history) if history else 0}")
+                            
+                            # Log a sample of the history to verify it's working - safely
+                            if history and len(history) > 0:
+                                for i, msg in enumerate(history[-3:]):  # Only log last 3 messages to reduce log size
+                                    try:
+                                        safe_content = ""
+                                        if msg.parts and hasattr(msg.parts[0], 'text'):
+                                            safe_content = msg.parts[0].text[:50].replace('\n', ' ') + "..."
+                                        safe_debug(f"History item {i}: role={msg.role}, content={safe_content}")
+                                    except Exception as e:
+                                        safe_debug(f"History item {i}: role={msg.role}, [Error accessing content: {str(e)}]")
+                            
                             # Format the messages for storage - convert 'model' role to 'assistant'
                             formatted_messages = []
                             previous_role = None
@@ -1681,6 +2008,9 @@ def chat():
                                     })
                                 
                                 previous_role = role
+                                
+                        # Save the complete chat messages to the chat history file
+                        try:
                             
                             # Load existing chat history
                             data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
@@ -1912,40 +2242,46 @@ def get_chat(chat_id):
             chat = active_chats[chat_id]
             
             try:
-                # Get the chat history from the API client
-                history = chat.get_history()
-                
-                # Format the messages for the frontend
-                messages = []
-                previous_role = None
-                if history:
-                    for msg in history:
-                        # Convert 'model' role to 'assistant' for frontend consistency
-                        role = "assistant" if msg.role == "model" else msg.role
-                        
-                        # Only include user and assistant messages
-                        if role in ["user", "assistant"]:
-                            # Extract text content from message parts
-                            content = ""
-                            if hasattr(msg, 'parts'):
-                                for part in msg.parts:
-                                    if hasattr(part, 'text') and part.text:
-                                        content += part.text
+                # Check if this is an OpenRouter chat
+                if hasattr(chat, 'openrouter_history'):
+                    # For OpenRouter chats, use the stored history directly
+                    messages = chat.openrouter_history.copy()
+                    safe_debug(f"Retrieved {len(messages)} messages from OpenRouter chat {chat_id}")
+                else:
+                    # Get the chat history from the Gemini API client
+                    history = chat.get_history()
+                    
+                    # Format the messages for the frontend
+                    messages = []
+                    previous_role = None
+                    if history:
+                        for msg in history:
+                            # Convert 'model' role to 'assistant' for frontend consistency
+                            role = "assistant" if msg.role == "model" else msg.role
                             
-                            # Combine consecutive assistant messages
-                            if role == "assistant" and previous_role == "assistant" and messages:
-                                # Append this content to the previous assistant message
-                                messages[-1]["content"] += content
-                            else:
-                                # Add as a new message
-                                messages.append({
-                                    "role": role,
-                                    "content": content
-                                })
-                            
-                            previous_role = role
-                
-                safe_debug(f"Retrieved {len(messages)} messages from active chat {chat_id}")
+                            # Only include user and assistant messages
+                            if role in ["user", "assistant"]:
+                                # Extract text content from message parts
+                                content = ""
+                                if hasattr(msg, 'parts'):
+                                    for part in msg.parts:
+                                        if hasattr(part, 'text') and part.text:
+                                            content += part.text
+                                
+                                # Combine consecutive assistant messages
+                                if role == "assistant" and previous_role == "assistant" and messages:
+                                    # Append this content to the previous assistant message
+                                    messages[-1]["content"] += content
+                                else:
+                                    # Add as a new message
+                                    messages.append({
+                                        "role": role,
+                                        "content": content
+                                    })
+                                
+                                previous_role = role
+                    
+                    safe_debug(f"Retrieved {len(messages)} messages from Gemini chat {chat_id}")
                 
                 # Get metadata from file if available
                 chat_metadata = {}
@@ -3359,6 +3695,13 @@ def list_creation_logs():
         data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
         creation_log_dir = data_dir_path / "creation_logs"
         
+        # Ensure the creation logs directory exists
+        try:
+            creation_log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            safe_debug(f"Failed to create creation logs directory: {str(e)}", e)
+            return jsonify([])
+        
         if not creation_log_dir.exists():
             return jsonify([])
         
@@ -3419,6 +3762,13 @@ def get_latest_stream_log():
         data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
         creation_log_dir = data_dir_path / "creation_logs"
         
+        # Ensure the creation logs directory exists
+        try:
+            creation_log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            safe_debug(f"Failed to create creation logs directory: {str(e)}", e)
+            return jsonify({"error": "Failed to create creation logs directory"}), 500
+        
         if not creation_log_dir.exists():
             return jsonify({"error": "No creation logs directory"}), 404
         
@@ -3437,8 +3787,19 @@ def get_latest_stream_log():
             return jsonify({"error": "No stream log files found"}), 404
         
         # Read and return the latest log file
-        with open(latest_file, 'r', encoding='utf-8') as f:
-            log_data = json.load(f)
+        try:
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if not content:
+                    safe_debug(f"Latest stream log file is empty: {latest_file}")
+                    return jsonify({"error": "Stream log file is empty"}), 404
+                log_data = json.loads(content)
+        except json.JSONDecodeError as e:
+            safe_debug(f"Invalid JSON in stream log file {latest_file}: {str(e)}")
+            return jsonify({"error": "Invalid JSON in stream log file"}), 500
+        except Exception as e:
+            safe_debug(f"Error reading stream log file {latest_file}: {str(e)}")
+            return jsonify({"error": f"Failed to read stream log file: {str(e)}"}), 500
         
         # Add file metadata
         log_data["_metadata"] = {

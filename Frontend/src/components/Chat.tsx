@@ -24,6 +24,7 @@ interface ChatMessage {
   content: string;
   attachments?: FileAttachment[];
   isHistory?: boolean; // Add this flag to identify messages from history
+  reasoning?: string; // For reasoning tokens from OpenRouter models
 }
 
 interface Model {
@@ -60,6 +61,7 @@ const Chat = () => {
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [reasoningBuffer, setReasoningBuffer] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Add a ref to track accumulated message content
   const accumulatedContentRef = useRef<string>('');
@@ -124,6 +126,16 @@ const Chat = () => {
       id: 'gemini-2.5-pro-exp-03-25', 
       name: 'Gemini 2.5 Pro',
       description: 'Advanced model with superior reasoning capabilities'
+    },
+    { 
+      id: 'deepseek/deepseek-r1-0528:free', 
+      name: 'DeepSeek R1',
+      description: 'Advanced reasoning model via OpenRouter'
+    },
+    { 
+      id: 'tngtech/deepseek-r1t-chimera:free', 
+      name: 'DeepSeek R1T',
+      description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
     }
   ];
 
@@ -523,11 +535,51 @@ const Chat = () => {
       // Parse the chunk if it's JSON
       try {
         const data = JSON.parse(chunk);
+        console.log('📡 Received data chunk:', data);
+        console.log('📡 Data keys:', Object.keys(data));
+        console.log('📡 Has reasoning?', 'reasoning' in data, 'Value:', data.reasoning);
         
         // Store chat ID if received from server
         if (data.chat_id && !chatId) {
           console.log(`Setting chat ID from response: ${data.chat_id}`);
           setChatId(data.chat_id);
+        }
+        
+        if (data.reasoning) {
+          // Handle reasoning tokens
+          console.log('🧠 Received reasoning chunk:', data.reasoning);
+          
+          // Update reasoning buffer and messages together to ensure consistency
+          setReasoningBuffer(prev => {
+            const newBuffer = prev + data.reasoning;
+            console.log('🧠 Updated reasoning buffer length:', newBuffer.length);
+            
+            // Update messages with the new reasoning buffer
+            setMessages(prevMessages => {
+              const updatedMessages = [...prevMessages];
+              const lastIndex = updatedMessages.length - 1;
+              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+              
+              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
+                // Update existing assistant message with accumulated reasoning
+                updatedMessages[lastIndex] = {
+                  ...lastMessage,
+                  reasoning: newBuffer
+                };
+              } else {
+                // Create new assistant message with reasoning
+                updatedMessages.push({ 
+                  role: 'assistant', 
+                  content: '',
+                  reasoning: newBuffer
+                });
+              }
+              
+              return updatedMessages;
+            });
+            
+            return newBuffer;
+          });
         }
         
         if (data.chunk) {
@@ -542,16 +594,20 @@ const Chat = () => {
               const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
               
               if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-                // Update existing message with new content
+                // Update existing message with new content and reasoning
+                const finalReasoning = reasoningBuffer || lastMessage.reasoning;
+                console.log('🧠 Updating message with reasoning:', finalReasoning ? 'YES' : 'NO', 'Length:', finalReasoning ? finalReasoning.length : 0);
                 updatedMessages[lastIndex] = {
                   ...lastMessage,
-                  content: accumulatedContentRef.current
+                  content: accumulatedContentRef.current,
+                  reasoning: finalReasoning
                 };
               } else {
                 // Create new assistant message if needed
                 updatedMessages.push({ 
                   role: 'assistant', 
-                  content: accumulatedContentRef.current
+                  content: accumulatedContentRef.current,
+                  reasoning: reasoningBuffer || undefined
                 });
               }
               
@@ -616,12 +672,36 @@ const Chat = () => {
         }
         return prev;
       });
+    } else {
+      // Before clearing the reasoning buffer, make sure the final message has the complete reasoning
+      if (reasoningBuffer) {
+        console.log('🧠 Finalizing stream with reasoning buffer length:', reasoningBuffer.length);
+        setMessages(prevMessages => {
+          const updatedMessages = [...prevMessages];
+          const lastIndex = updatedMessages.length - 1;
+          const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+          
+          if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
+            // Update the final message with the complete reasoning buffer
+            console.log('🧠 Setting final reasoning on message:', reasoningBuffer.substring(0, 100) + '...');
+            updatedMessages[lastIndex] = {
+              ...lastMessage,
+              reasoning: reasoningBuffer
+            };
+          }
+          
+          return updatedMessages;
+        });
+      } else {
+        console.log('🧠 No reasoning buffer to finalize');
+      }
     }
     
     // Reset streaming and loading states
     setIsStreaming(false);
     setLoading(false);
     setIsThinking(false); // Also reset thinking state
+    setReasoningBuffer(''); // Clear reasoning buffer AFTER saving to the final message
     
     // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
@@ -1948,6 +2028,7 @@ const Chat = () => {
               isThinking={isCurrentlyThinking}
               attachments={message.attachments}
               isHistoryMessage={message.isHistory} // Add this flag to indicate this is from chat history
+              reasoning={message.reasoning} // Pass reasoning tokens to Message component
             />
           );
         })}

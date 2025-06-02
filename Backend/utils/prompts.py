@@ -112,6 +112,8 @@ SUPPORTED CREATION TYPES:
   - ALWAYS INCLUDE external dependencies after the $$end$$ marker using the $$external$$ and $$externalend$$ format
   - SPECIFY external dependencies in valid JSON format as a key-value object where keys are package names and values are version strings
   - INCLUDE only the packages that need to be added to the sandbox environment (react and react-dom are already included)
+  - LEVERAGE the default tailwindcss support in the sandbox environment if the creation would benefit from it (you do not need to include tailwindcss in the external dependencies,
+  supported by default)
 
 - placeholder: Placeholder images
   - SPECIFY dimensions using format like "800x600" in the title
