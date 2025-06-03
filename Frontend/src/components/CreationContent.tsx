@@ -23,6 +23,11 @@ try {
         securityLevel: 'loose', // Allow more functionality
         logLevel: 'error',
         fontFamily: 'var(--font-sans)',
+        flowchart: {
+          useMaxWidth: true,
+          htmlLabels: true,
+          curve: 'basis'
+        }
       });
       window.mermaidInitialized = true;
     }
@@ -97,6 +102,11 @@ const CreationContent: React.FC<CreationContentProps> = ({
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [fontSize, setFontSize] = useState(14);
   const [showLineNumbers, setShowLineNumbers] = useState(true);
+  const [zoomLevel, setZoomLevel] = useState(100); // Zoom percentage
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   
   // View mode state for Sandpack component - set default based on viewMode
   const [sandpackView, setSandpackView] = useState<'code' | 'preview' | 'split'>(
@@ -109,6 +119,31 @@ const CreationContent: React.FC<CreationContentProps> = ({
       setSandpackView('preview');
     }
   }, [viewMode]);
+
+  // Keyboard shortcuts for zoom
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Only handle if Ctrl/Cmd is pressed
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === '+' || e.key === '=') {
+          e.preventDefault();
+          zoomIn();
+        } else if (e.key === '-') {
+          e.preventDefault();
+          zoomOut();
+        } else if (e.key === '0') {
+          e.preventDefault();
+          resetZoom();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => {
+      window.removeEventListener('keydown', handleKeyPress);
+    };
+  }, []);
+
 
   // Listen for messages from the React component iframe
   useEffect(() => {
@@ -148,47 +183,119 @@ const CreationContent: React.FC<CreationContentProps> = ({
 
   // Render Mermaid content when it becomes visible
   useEffect(() => {
-    if (creation.type === 'mermaid' && mermaidRef.current) {
+    // Capture the ref value at the beginning of the effect
+    const mermaidElement = mermaidRef.current;
+    
+    if (creation.type === 'mermaid' && mermaidElement) {
+      // Clear any existing content first
+      mermaidElement.innerHTML = '';
+      mermaidElement.removeAttribute('data-processed');
+      mermaidElement.className = 'mermaid';
+      
       // Set a unique id for the mermaid div to avoid rendering conflicts
-      const id = `mermaid-diagram-${Date.now()}`;
-      mermaidRef.current.id = id;
+      const id = `mermaid-diagram-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      mermaidElement.id = id;
       
-      // Add the content to the div
-      mermaidRef.current.textContent = creation.content;
-      
-      // Check if mermaid is loaded
-      if (mermaid) {
+      // Function to render the diagram
+      const renderDiagram = async () => {
+        if (!mermaidElement || !mermaid) return;
+        
         try {
-          // Small delay to ensure the DOM is ready
-          setTimeout(() => {
-            mermaid.init(undefined, mermaidRef.current);
-          }, 100);
+          // Clear the element completely
+          mermaidElement.innerHTML = '';
+          mermaidElement.textContent = creation.content;
+          
+          // Use mermaid.run() for more reliable rendering
+          await mermaid.run({
+            querySelector: `#${id}`,
+            suppressErrors: false
+          });
+          
+          // Verify the diagram was rendered (should have SVG content)
+          if (mermaidElement && !mermaidElement.querySelector('svg')) {
+            throw new Error('Mermaid diagram did not render properly');
+          }
+          
+          // Fix SVG sizing to display full diagram with intelligent scaling
+          const svg = mermaidElement.querySelector('svg');
+          if (svg) {
+            // Get the container dimensions
+            const container = mermaidElement.parentElement;
+            if (container) {
+              const containerWidth = container.clientWidth - 40; // Account for padding
+              const containerHeight = container.clientHeight - 40; // Account for padding
+              
+              // Get the natural SVG dimensions
+              const svgWidth = parseFloat(svg.getAttribute('width') || '0');
+              const svgHeight = parseFloat(svg.getAttribute('height') || '0');
+              
+              if (svgWidth > 0 && svgHeight > 0 && containerWidth > 0 && containerHeight > 0) {
+                // Calculate scale ratios for both dimensions
+                const widthRatio = containerWidth / svgWidth;
+                const heightRatio = containerHeight / svgHeight;
+                
+                // Use the smaller ratio to ensure diagram fits in both dimensions
+                const scale = Math.min(widthRatio, heightRatio, 1); // Don't scale up beyond 100%
+                
+                // Apply the calculated scale
+                const scaledWidth = svgWidth * scale;
+                const scaledHeight = svgHeight * scale;
+                
+                svg.style.width = `${scaledWidth}px`;
+                svg.style.height = `${scaledHeight}px`;
+                svg.style.maxWidth = 'none';
+                svg.style.maxHeight = 'none';
+              } else {
+                // Fallback for when dimensions can't be determined
+                svg.style.maxWidth = '100%';
+                svg.style.maxHeight = '100%';
+                svg.style.width = 'auto';
+                svg.style.height = 'auto';
+              }
+            }
+            svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+          }
         } catch (e) {
           console.error('Error rendering mermaid diagram:', e);
           // Fallback in case of error - show the code
-          mermaidRef.current.className = 'mermaid-error';
-          mermaidRef.current.innerHTML = `
-            <div class="error-message">Error rendering diagram</div>
-            <pre><code>${creation.content}</code></pre>
-          `;
+          if (mermaidElement) {
+            mermaidElement.className = 'mermaid-error';
+            mermaidElement.innerHTML = `
+              <div class="error-message">Error rendering diagram</div>
+              <pre><code>${creation.content}</code></pre>
+            `;
+          }
         }
+      };
+      
+      // Check if mermaid is loaded
+      if (mermaid && mermaid.run) {
+        // Add a small delay to ensure DOM is ready and previous renders are cleaned up
+        const timeoutId = setTimeout(() => {
+          renderDiagram();
+        }, 150);
+        
+        return () => clearTimeout(timeoutId);
       } else {
         // If mermaid isn't loaded yet, retry when it becomes available
+        let attempts = 0;
+        const maxAttempts = 20; // 6 seconds max wait
+        
         const checkInterval = setInterval(() => {
-          if (mermaid && mermaidRef.current) {
+          attempts++;
+          
+          if (mermaid && mermaid.run && mermaidElement) {
             clearInterval(checkInterval);
-            try {
-              mermaid.init(undefined, mermaidRef.current);
-            } catch (e) {
-              console.error('Error in delayed mermaid rendering:', e);
-              // Fallback
-              if (mermaidRef.current) {
-                mermaidRef.current.className = 'mermaid-error';
-                mermaidRef.current.innerHTML = `
-                  <div class="error-message">Error rendering diagram</div>
-                  <pre><code>${creation.content}</code></pre>
-                `;
-              }
+            renderDiagram();
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            // Show error after timeout
+            if (mermaidElement) {
+              mermaidElement.className = 'mermaid-error';
+              mermaidElement.innerHTML = `
+                <div class="error-message">Mermaid library failed to load</div>
+                <pre><code>${creation.content}</code></pre>
+              `;
             }
           }
         }, 300);
@@ -197,6 +304,15 @@ const CreationContent: React.FC<CreationContentProps> = ({
         return () => clearInterval(checkInterval);
       }
     }
+    
+    // Cleanup function to clear mermaid content when switching away
+    return () => {
+      // Use the captured ref value in the cleanup function
+      if (mermaidElement) {
+        mermaidElement.innerHTML = '';
+        mermaidElement.removeAttribute('data-processed');
+      }
+    };
   }, [creation]);
 
   // Handle copy content to clipboard
@@ -367,6 +483,135 @@ const CreationContent: React.FC<CreationContentProps> = ({
   const toggleLineNumbers = () => {
     setShowLineNumbers(prev => !prev);
   };
+
+  // Center-based zoom with pan offset
+  const getZoomTransform = () => {
+    const scale = zoomLevel / 100;
+    if (isPanEnabled && (panOffset.x !== 0 || panOffset.y !== 0)) {
+      return `translate(${panOffset.x}px, ${panOffset.y}px) scale(${scale})`;
+    }
+    return `scale(${scale})`;
+  };
+
+  // Check if panning is enabled (zoom > 100%)
+  const isPanEnabled = zoomLevel > 100;
+
+  // Zoom controls
+  const zoomIn = () => {
+    setZoomLevel(prev => Math.min(prev + 10, 1000)); // Max 1000%
+  };
+
+  const zoomOut = () => {
+    setZoomLevel(prev => Math.max(prev - 10, 10)); // Min 10%
+  };
+
+  const resetZoom = () => {
+    setZoomLevel(100);
+    setPanOffset({ x: 0, y: 0 });
+  };
+
+  // Reset pan offset when zoom goes back to 100% or below
+  useEffect(() => {
+    if (zoomLevel <= 100) {
+      setPanOffset({ x: 0, y: 0 });
+    }
+  }, [zoomLevel]);
+
+  // Middle mouse button panning functionality
+  useEffect(() => {
+    if (!contentRef.current) return;
+
+    const container = contentRef.current;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      // Only handle middle mouse button (button 1) and if panning is enabled
+      if (e.button === 1 && isPanEnabled) {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+        setDragStart({ x: e.clientX, y: e.clientY });
+        container.style.cursor = 'grabbing';
+        
+        // Prevent context menu and other default behaviors
+        document.body.style.userSelect = 'none';
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !isPanEnabled) return;
+
+      e.preventDefault();
+      const deltaX = e.clientX - dragStart.x;
+      const deltaY = e.clientY - dragStart.y;
+
+      // Get container dimensions for bounds checking
+      const containerRect = container.getBoundingClientRect();
+      const containerWidth = containerRect.width;
+      const containerHeight = containerRect.height;
+
+      // Calculate scaled content dimensions
+      const scale = zoomLevel / 100;
+      const scaledWidth = containerWidth * scale;
+      const scaledHeight = containerHeight * scale;
+
+      // Calculate new positions based on current pan offset
+      const newX = panOffset.x + deltaX;
+      const newY = panOffset.y + deltaY;
+      
+      // Calculate bounds - ensure content never goes completely off-screen
+      const minX = -(scaledWidth - containerWidth * 0.1); // Keep 10% of content visible
+      const maxX = containerWidth * 0.9; // Keep 10% of content visible
+      const minY = -(scaledHeight - containerHeight * 0.1);
+      const maxY = containerHeight * 0.9;
+
+      // Apply bounds checking
+      const boundedX = Math.max(minX, Math.min(maxX, newX));
+      const boundedY = Math.max(minY, Math.min(maxY, newY));
+      
+      // Update pan offset state
+      setPanOffset({ x: boundedX, y: boundedY });
+
+      // Update drag start for next movement
+      setDragStart({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      if (e.button === 1) {
+        setIsDragging(false);
+        container.style.cursor = isPanEnabled ? 'grab' : 'default';
+      }
+    };
+
+    const handleMouseLeave = () => {
+      setIsDragging(false);
+      container.style.cursor = isPanEnabled ? 'grab' : 'default';
+    };
+
+    // Add event listeners
+    container.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    container.addEventListener('mouseleave', handleMouseLeave);
+
+    // Set initial cursor style and overflow behavior
+    container.style.cursor = isPanEnabled ? 'grab' : 'default';
+    
+    // Find zoom-wrapper and control overflow based on pan state
+    const zoomWrapper = container.querySelector('.zoom-wrapper') as HTMLElement;
+    if (zoomWrapper && creation.type !== 'code') {
+      // For non-code types, disable scrolling when panning is enabled
+      zoomWrapper.style.overflow = isPanEnabled ? 'hidden' : 'auto';
+    }
+
+    // Cleanup
+    return () => {
+      container.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      container.removeEventListener('mouseleave', handleMouseLeave);
+      container.style.cursor = 'default';
+    };
+  }, [isDragging, dragStart, isPanEnabled, creation.type, zoomLevel, panOffset]);
 
   // Function to render toolbar with controls
   const renderToolbar = () => {
@@ -543,22 +788,37 @@ const CreationContent: React.FC<CreationContentProps> = ({
     switch (creation.type) {
       case 'code': {
         return (
-          <div className="code-content" style={{ fontSize: `${fontSize}px` }}>
-            <SyntaxHighlighter
-              style={theme === 'dark' ? vscDarkPlus as PrismStyleType : vs as PrismStyleType}
-              language={creation.language || 'javascript'}
-              showLineNumbers={showLineNumbers}
-              wrapLines
-            >
-              {creation.content}
-            </SyntaxHighlighter>
+          <div 
+            className="zoom-wrapper" 
+            style={{
+              transform: getZoomTransform(),
+              width: '100%',
+              height: '100%'
+            }}>
+            <div className="code-content" style={{ fontSize: `${fontSize}px` }}>
+              <SyntaxHighlighter
+                style={theme === 'dark' ? vscDarkPlus as PrismStyleType : vs as PrismStyleType}
+                language={creation.language || 'javascript'}
+                showLineNumbers={showLineNumbers}
+                wrapLines
+              >
+                {creation.content}
+              </SyntaxHighlighter>
+            </div>
           </div>
         );
       }
       
       case 'markdown': {
         return (
-          <div className="markdown-content">
+          <div 
+            className="zoom-wrapper" 
+            style={{
+              transform: `scale(${zoomLevel / 100})`,
+              width: '100%',
+              height: '100%'
+            }}>
+            <div className="markdown-content">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -589,6 +849,7 @@ const CreationContent: React.FC<CreationContentProps> = ({
             >
               {creation.content}
             </ReactMarkdown>
+            </div>
           </div>
         );
       }
@@ -632,14 +893,21 @@ ${creation.content}
 </html>`;
         
         return (
-          <div className="html-content">
-            <div className="html-preview-frame">
-              <iframe
-                srcDoc={htmlWithTailwind}
-                title="HTML Preview"
-                sandbox="allow-scripts"
-                className="html-preview-iframe"
-              />
+          <div className="zoom-wrapper" style={{
+            transform: getZoomTransform(),
+            transformOrigin: '0 0',
+            width: '100%',
+            height: '100%'
+          }}>
+            <div className="html-content">
+              <div className="html-preview-frame">
+                <iframe
+                  srcDoc={htmlWithTailwind}
+                  title="HTML Preview"
+                  sandbox="allow-scripts"
+                  className="html-preview-iframe"
+                />
+              </div>
             </div>
           </div>
         );
@@ -647,18 +915,35 @@ ${creation.content}
       
       case 'svg': {
         return (
-          <div 
-            className="svg-container"
-            dangerouslySetInnerHTML={{ __html: creation.content }}
-          />
+          <div className="zoom-wrapper" style={{
+            transform: getZoomTransform(),
+            transformOrigin: '0 0',
+            width: '100%',
+            height: '100%'
+          }}>
+            <div 
+              className="svg-container"
+              dangerouslySetInnerHTML={{ __html: creation.content }}
+            />
+          </div>
         );
       }
       
       case 'mermaid': {
         return (
-          <div className="mermaid-container">
-            <div ref={mermaidRef} className="mermaid">
-              {/* Content is set in useEffect */}
+          <div className="zoom-wrapper" style={{
+            transform: getZoomTransform(),
+            transformOrigin: '0 0',
+            width: '100%',
+            height: '100%'
+          }}>
+            <div className="mermaid-container">
+              <div 
+                ref={mermaidRef} 
+                className="mermaid"
+              >
+                {/* Content is set in useEffect */}
+              </div>
             </div>
           </div>
         );
@@ -670,7 +955,13 @@ ${creation.content}
         const showViewToggle = viewMode !== 'react-preview';
 
         return (
-          <div className={`react-component-container sandpack-${sandpackView}-view`} ref={sandpackRef}>
+          <div className="zoom-wrapper" style={{
+            transform: getZoomTransform(),
+            transformOrigin: '0 0',
+            width: '100%',
+            height: '100%'
+          }}>
+            <div className={`react-component-container sandpack-${sandpackView}-view`} ref={sandpackRef}>
             <div className="sandpack-actions">
               {showViewToggle && (
                 <div className="view-toggle-buttons">
@@ -875,6 +1166,7 @@ body {
                 }
               }}
             />
+            </div>
           </div>
         );
       }
@@ -885,12 +1177,69 @@ body {
     }
   };
 
+  // Render zoom controls overlay
+  const renderZoomControls = () => {
+    // Don't show zoom controls in inline mode only
+    if (viewMode === 'inline') return null;
+    
+    return (
+      <div className="zoom-controls-overlay">
+        <button 
+          className="zoom-button zoom-out" 
+          onClick={zoomOut}
+          disabled={zoomLevel <= 10}
+          title="Zoom out"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+            <line x1="8" y1="11" x2="14" y2="11"></line>
+          </svg>
+        </button>
+        
+        <span className="zoom-level">{zoomLevel}%</span>
+        
+        <button 
+          className="zoom-button zoom-in" 
+          onClick={zoomIn}
+          disabled={zoomLevel >= 1000}
+          title="Zoom in"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+            <line x1="11" y1="8" x2="11" y2="14"></line>
+            <line x1="8" y1="11" x2="14" y2="11"></line>
+          </svg>
+        </button>
+        
+        {zoomLevel !== 100 && (
+          <button 
+            className="zoom-button zoom-reset" 
+            onClick={resetZoom}
+            title="Reset zoom"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 13v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7"></path>
+              <path d="M14 4h6v6"></path>
+              <path d="M20 4L10 14"></path>
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className={`creation-content-container ${creation.type}-viewer ${viewMode} ${viewMode === 'react-preview' ? 'react-preview' : ''}`}>
       {renderToolbar()}
-      <div className="creation-content-main">
+      <div 
+        className="creation-content-main" 
+        ref={contentRef}
+      >
         {renderContent()}
       </div>
+      {renderZoomControls()}
     </div>
   );
 };

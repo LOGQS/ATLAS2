@@ -127,9 +127,11 @@
 
 .creation-window-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  position: relative; /* Add position relative for child positioning */
+  overflow: hidden !important; /* Force remove scroll from outer container */
+  padding: 0; /* Remove padding to prevent issues */
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 /* View transition animation styles */
@@ -142,6 +144,25 @@
   width: 100%;
   height: 100%;
   transition: opacity 0.3s ease, transform 0.3s ease;
+  overflow: hidden !important; /* Force prevent container from scrolling */
+  display: flex;
+  flex-direction: column;
+  padding: 16px; /* Move padding here */
+  box-sizing: border-box; /* Include padding in height calculation */
+}
+
+/* Specific styles for preview and code containers */
+.preview-container {
+  overflow: hidden !important; /* Force no scroll on preview container */
+  padding-bottom: 24px; /* Extra padding to ensure last line is visible */
+}
+
+.code-container {
+  overflow: hidden !important; /* Force no scroll on code container */
+  padding: 16px; /* Add padding back to code container */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .view-transitioning .view-container {
@@ -166,14 +187,87 @@
 /* Add styles for code view container */
 .creation-code-view {
   height: 100%;
-  overflow: auto;
+  overflow: hidden; /* Container should NOT scroll */
   border-radius: 4px;
-  margin: -16px; /* Offset parent padding */
+  margin: 0; /* Remove negative margin */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Ensure the syntax highlighter wrapper takes full height */
+.creation-code-view > div:first-child {
+  height: 100%;
+  flex: 1;
+  min-height: 0; /* Allow it to shrink */
 }
 
 .creation-code-view pre {
   margin: 0 !important;
+  padding: 16px !important; /* Add padding since we removed container padding */
+  white-space: pre !important; /* Don't wrap code */
+  overflow-x: scroll !important; /* Always show horizontal scrollbar */
+  overflow-y: auto !important; /* Vertical scroll only when needed */
   height: 100%;
+  box-sizing: border-box;
+  width: 100%; /* Constrain width to container */
+}
+
+/* Force horizontal scrollbar to always show in code view */
+.creation-code-view pre[class*="language-"] {
+  overflow-x: scroll !important;
+}
+
+/* Apply the same code scrolling fix to code type creations in preview window */
+.preview-container .code-viewer pre,
+.preview-container .code-content pre {
+  margin: 0 !important;
+  padding: 16px !important;
+  white-space: pre !important;
+  overflow-x: scroll !important; /* Always show horizontal scrollbar */
+  overflow-y: auto !important;
+  height: 100%;
+  box-sizing: border-box;
+  width: 100%; /* Constrain width to container */
+}
+
+.preview-container .code-viewer,
+.preview-container .code-content,
+.preview-container .markdown-viewer {
+  height: 100%;
+  overflow: hidden; /* Container should NOT scroll */
+  border-radius: 4px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Style scrollbars to be more visible */
+.creation-code-view::-webkit-scrollbar,
+.creation-code-view pre::-webkit-scrollbar,
+.creation-code-view > div::-webkit-scrollbar {
+  height: 12px;
+  width: 12px;
+}
+
+.creation-code-view::-webkit-scrollbar-track,
+.creation-code-view pre::-webkit-scrollbar-track,
+.creation-code-view > div::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+}
+
+.creation-code-view::-webkit-scrollbar-thumb,
+.creation-code-view pre::-webkit-scrollbar-thumb,
+.creation-code-view > div::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 6px;
+  border: 2px solid var(--bg-tertiary);
+}
+
+.creation-code-view::-webkit-scrollbar-thumb:hover,
+.creation-code-view pre::-webkit-scrollbar-thumb:hover,
+.creation-code-view > div::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
 }
 
 /* Responsive behavior */
@@ -361,6 +455,47 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+/* Fix for creation content container in window mode */
+.creation-window .creation-content-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Ensure creation-content-main handles scrolling in window mode */
+.creation-window .creation-content-main {
+  flex: 1;
+  overflow: hidden; /* Outer container should NOT scroll */
+  position: relative;
+}
+
+
+/* Fix code preview scrolling - only inner content should scroll */
+.creation-window .code-viewer .creation-content-main,
+.creation-window .markdown-viewer .creation-content-main {
+  overflow: hidden !important;
+}
+
+/* Let the zoom wrapper handle the content */
+.creation-window .code-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: auto;
+}
+
+/* Markdown viewer should not have outer scrollbar - content handles its own scrolling */
+.creation-window .markdown-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: hidden !important; /* Prevent outer container scrollbar */
+}
+
+/* SVG and Mermaid viewers should not have outer scrollbar */
+.creation-window .svg-viewer .zoom-wrapper,
+.creation-window .mermaid-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: hidden !important; /* Prevent outer container scrollbar */
 }
 
 /* Streaming close warning notification */
