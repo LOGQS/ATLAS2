@@ -23,6 +23,9 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
   const [currentCreation, setCurrentCreation] = useState<Creation | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'recent' | 'html' | 'code' | 'other'>('all');
   const [filterText, setFilterText] = useState('');
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedCreations, setSelectedCreations] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
   const [animationState, setAnimationState] = useState<'entering' | 'entered' | 'exiting' | 'exited'>(
     isOpen ? 'entering' : 'exited'
@@ -106,11 +109,11 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     updateCreations();
 
     // Subscribe to changes - only actual changes to the data should trigger updates
-    const unsubscribe = creationManager.subscribe((event: CreationEvent, creation: Creation) => {
+    const unsubscribe = creationManager.subscribe((event: CreationEvent, creation: Creation | null) => {
       // Only update on real changes to avoid loops
-      if (['add', 'remove', 'update'].includes(event)) {
+      if (['add', 'remove', 'update', 'clear'].includes(event)) {
         updateCreations();
-      } else if (event === 'view' && creation.id !== currentCreation?.id) {
+      } else if (event === 'view' && creation && creation.id !== currentCreation?.id) {
         // Only update if viewing a different creation than the current one
         updateCreations();
       }
@@ -204,6 +207,48 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     return true;
   });
 
+  // Toggle selection mode
+  const toggleSelectMode = useCallback(() => {
+    setIsSelectMode(prev => !prev);
+    setSelectedCreations(new Set());
+    setLastSelectedIndex(null);
+  }, []);
+
+  // Keyboard shortcuts for selection
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isOpen) return;
+      
+      // Only handle these shortcuts when in select mode
+      if (isSelectMode) {
+        // Ctrl/Cmd + A: Select all
+        if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+          e.preventDefault();
+          e.stopPropagation();
+          const allIds = new Set(filteredCreations.map(c => c.id).filter(Boolean) as string[]);
+          setSelectedCreations(allIds);
+          return; // Important: return early to prevent other handlers
+        }
+        
+        // Escape: Deselect all or exit select mode
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (selectedCreations.size > 0) {
+            setSelectedCreations(new Set());
+          } else {
+            toggleSelectMode();
+          }
+          return; // Important: return early to prevent other handlers
+        }
+      }
+    };
+    
+    // Use capture phase to intercept before other handlers
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isOpen, isSelectMode, filteredCreations, selectedCreations.size, toggleSelectMode]);
+
   // Handle selection of a creation
   const handleSelectCreation = (creation: Creation) => {
     // If switching between creations, add a small delay for cleanup
@@ -259,20 +304,125 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     }
   };
 
+  // Toggle creation selection with shift-click support
+  const toggleCreationSelection = (creationId: string, index: number, isShiftClick: boolean = false) => {
+    const newSelected = new Set(selectedCreations);
+    
+    if (isShiftClick && lastSelectedIndex !== null && isSelectMode) {
+      // Shift-click: toggle range based on the clicked item's current state
+      const start = Math.min(lastSelectedIndex, index);
+      const end = Math.max(lastSelectedIndex, index);
+      
+      // Determine if we should select or deselect based on the clicked item
+      const shouldSelect = !newSelected.has(creationId);
+      
+      // Apply the same action (select or deselect) to all items in the range
+      for (let i = start; i <= end; i++) {
+        const creation = filteredCreations[i];
+        if (creation?.id) {
+          if (shouldSelect) {
+            newSelected.add(creation.id);
+          } else {
+            newSelected.delete(creation.id);
+          }
+        }
+      }
+    } else {
+      // Regular click: toggle single selection
+      if (newSelected.has(creationId)) {
+        newSelected.delete(creationId);
+      } else {
+        newSelected.add(creationId);
+      }
+      setLastSelectedIndex(index);
+    }
+    
+    setSelectedCreations(newSelected);
+  };
+
+  // Delete selected creations
+  const handleDeleteSelected = () => {
+    if (selectedCreations.size === 0) return;
+    
+    const count = selectedCreations.size;
+    const confirmMessage = count === 1 
+      ? 'Are you sure you want to delete this creation?' 
+      : `Are you sure you want to delete ${count} creations?`;
+    
+    if (confirm(confirmMessage)) {
+      // Delete each selected creation
+      selectedCreations.forEach(creationId => {
+        creationManager.removeCreation(creationId);
+      });
+      
+      // If current creation was deleted, select a new one
+      if (currentCreation?.id && selectedCreations.has(currentCreation.id)) {
+        const creations = creationManager.getCreations();
+        if (creations.length > 0) {
+          setCurrentCreation(creations[0]);
+        } else {
+          setCurrentCreation(null);
+        }
+      }
+      
+      // Exit select mode
+      setIsSelectMode(false);
+      setSelectedCreations(new Set());
+    }
+  };
+
+  // Clear all creations
+  const handleClearAll = async () => {
+    const creations = creationManager.getCreations();
+    if (creations.length === 0) {
+      alert('No creations to clear');
+      return;
+    }
+    
+    const confirmMessage = `Are you sure you want to delete ALL ${creations.length} creations? This action cannot be undone.`;
+    
+    if (confirm(confirmMessage)) {
+      // Clear all creations
+      await creationManager.clearAllCreations();
+      setCurrentCreation(null);
+      setSelectedCreations(new Set());
+      setIsSelectMode(false);
+    }
+  };
+
   // If viewer is not open and exited state, don't render
   if (animationState === 'exited' && !isOpen) {
     return null;
   }
 
   // Component for rendering creation list items
-  const CreationListItem: React.FC<{ creation: Creation }> = ({ creation }) => {
+  const CreationListItem: React.FC<{ creation: Creation; index: number }> = ({ creation, index }) => {
     const isActive = currentCreation?.id === creation.id;
+    const isSelected = creation.id ? selectedCreations.has(creation.id) : false;
+    
+    const handleClick = (e: React.MouseEvent) => {
+      if (isSelectMode && creation.id) {
+        toggleCreationSelection(creation.id, index, e.shiftKey);
+      } else {
+        handleSelectCreation(creation);
+      }
+    };
     
     return (
       <div 
-        className={`creation-list-item ${isActive ? 'active' : ''}`}
-        onClick={() => handleSelectCreation(creation)}
+        className={`creation-list-item ${isActive ? 'active' : ''} ${isSelectMode ? 'select-mode' : ''} ${isSelected ? 'selected' : ''}`}
+        onClick={handleClick}
       >
+        {isSelectMode && (
+          <div className="creation-item-checkbox">
+            <input 
+              type="checkbox" 
+              checked={isSelected}
+              onChange={() => {}} // Handled by parent click
+              onClick={(e) => e.stopPropagation()} // Prevent double toggle
+            />
+          </div>
+        )}
         <div className="creation-item-icon">
           {creation.type === 'code' && (
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -319,28 +469,30 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
           </div>
         </div>
         
-        <div className="creation-item-actions">
-          <button 
-            className="creation-item-rename" 
-            onClick={(e) => handleRenameCreation(e, creation)}
-            title="Rename creation"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9"></path>
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-            </svg>
-          </button>
-          <button 
-            className="creation-item-delete" 
-            onClick={(e) => handleDeleteCreation(e, creation)}
-            title="Delete creation"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
-          </button>
-        </div>
+        {!isSelectMode && (
+          <div className="creation-item-actions">
+            <button 
+              className="creation-item-rename" 
+              onClick={(e) => handleRenameCreation(e, creation)}
+              title="Rename creation"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+              </svg>
+            </button>
+            <button 
+              className="creation-item-delete" 
+              onClick={(e) => handleDeleteCreation(e, creation)}
+              title="Delete creation"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -407,6 +559,69 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
                 </button>
               </div>
               
+              <div className="creation-actions-toolbar">
+                {!isSelectMode ? (
+                  <>
+                    <button 
+                      className="toolbar-button select-button"
+                      onClick={toggleSelectMode}
+                      title="Select multiple creations (hold Shift to select range)"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 11 12 14 22 4"></polyline>
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                      </svg>
+                      <span>Select</span>
+                    </button>
+                    <button 
+                      className="toolbar-button clear-all-button"
+                      onClick={handleClearAll}
+                      title="Delete all creations"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        <line x1="10" y1="11" x2="10" y2="17"></line>
+                        <line x1="14" y1="11" x2="14" y2="17"></line>
+                      </svg>
+                      <span>Clear All</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      className="toolbar-button cancel-button"
+                      onClick={toggleSelectMode}
+                      title="Cancel selection"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                      </svg>
+                      <span>Cancel</span>
+                    </button>
+                    <button 
+                      className="toolbar-button delete-selected-button"
+                      onClick={handleDeleteSelected}
+                      disabled={selectedCreations.size === 0}
+                      title={`Delete ${selectedCreations.size} selected creation${selectedCreations.size !== 1 ? 's' : ''}`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                      <span>Delete Selected ({selectedCreations.size})</span>
+                    </button>
+                  </>
+                )}
+              </div>
+              
+              {isSelectMode && (
+                <div className="selection-help">
+                  <span>Click to select • Shift+Click to select range • Ctrl+A to select all • Esc to cancel</span>
+                </div>
+              )}
+              
               <div className="creation-search">
                 <input
                   type="text"
@@ -442,7 +657,7 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
             <div className="creation-list">
               {filteredCreations.length > 0 ? (
                 filteredCreations.map((creation, index) => (
-                  <CreationListItem key={creation.id || index} creation={creation} />
+                  <CreationListItem key={creation.id || index} creation={creation} index={index} />
                 ))
               ) : (
                 <div className="empty-creations-message">

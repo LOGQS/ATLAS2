@@ -480,12 +480,18 @@ button:focus-visible {
 .message-content {
   padding-top: 1.5rem; /* Add padding at the top to prevent overlap with copy button */
   position: relative;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* Reduce vertical padding for user message content */
 .user-message .message-content {
   padding-top: 0; /* No copy button in user messages, so no need for top padding */
   line-height: 1.4; /* Slightly reduced line height for more compact text */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .message-content > p:first-child {
@@ -834,6 +840,9 @@ button:focus-visible {
   resize: none;
   overflow-y: auto;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .message-input:focus {

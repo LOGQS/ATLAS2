@@ -468,34 +468,50 @@
 /* Ensure creation-content-main handles scrolling in window mode */
 .creation-window .creation-content-main {
   flex: 1;
-  overflow: hidden; /* Outer container should NOT scroll */
+  overflow: hidden !important; /* Force outer container to NEVER scroll */
   position: relative;
 }
 
 
-/* Fix code preview scrolling - only inner content should scroll */
+/* Fix content scrolling - outer container NEVER scrolls, inner content handles its own */
 .creation-window .code-viewer .creation-content-main,
-.creation-window .markdown-viewer .creation-content-main {
+.creation-window .markdown-viewer .creation-content-main,
+.creation-window .svg-viewer .creation-content-main,
+.creation-window .mermaid-viewer .creation-content-main,
+.creation-window .react-viewer .creation-content-main {
   overflow: hidden !important;
 }
 
-/* Let the zoom wrapper handle the content */
+/* Code content should scroll within zoom wrapper */
 .creation-window .code-viewer .zoom-wrapper {
   height: 100%;
   overflow: auto;
 }
 
-/* Markdown viewer should not have outer scrollbar - content handles its own scrolling */
-.creation-window .markdown-viewer .zoom-wrapper {
-  height: 100%;
-  overflow: hidden !important; /* Prevent outer container scrollbar */
-}
-
-/* SVG and Mermaid viewers should not have outer scrollbar */
+/* For non-code types, let inner content elements handle scrolling */
+.creation-window .markdown-viewer .zoom-wrapper,
 .creation-window .svg-viewer .zoom-wrapper,
 .creation-window .mermaid-viewer .zoom-wrapper {
   height: 100%;
-  overflow: hidden !important; /* Prevent outer container scrollbar */
+  overflow: hidden !important; /* Zoom wrapper doesn't scroll */
+}
+
+/* Markdown content scrolls within its container */
+.creation-window .markdown-viewer .markdown-content {
+  height: 100%;
+  overflow: auto !important;
+}
+
+/* SVG content scrolls within its container */
+.creation-window .svg-viewer .svg-container {
+  height: 100%;
+  overflow: auto !important;
+}
+
+/* Mermaid content scrolls within its container */
+.creation-window .mermaid-viewer .mermaid-container {
+  height: 100%;
+  overflow: auto !important;
 }
 
 /* Streaming close warning notification */

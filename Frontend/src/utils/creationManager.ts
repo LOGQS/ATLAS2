@@ -1,8 +1,8 @@
 import { Creation } from './creationsHelper';
 
 // Type definitions for the creation events
-export type CreationEvent = 'add' | 'update' | 'remove' | 'view';
-export type CreationListener = (event: CreationEvent, creation: Creation, allCreations: Creation[]) => void;
+export type CreationEvent = 'add' | 'update' | 'remove' | 'view' | 'clear';
+export type CreationListener = (event: CreationEvent, creation: Creation | null, allCreations: Creation[]) => void;
 
 /**
  * Creation Manager - Singleton class to manage all creations throughout the application
@@ -271,9 +271,9 @@ class CreationManager {
   /**
    * Notify all listeners of a change
    */
-  private notifyListeners(event: CreationEvent, creation: Creation, allCreations: Creation[]): void {
+  private notifyListeners(event: CreationEvent, creation: Creation | null, allCreations: Creation[]): void {
     // For view events, throttle notifications to prevent spam
-    if (event === 'view') {
+    if (event === 'view' && creation) {
       const now = Date.now();
       
       // If we've recently notified about viewing this same creation, skip
@@ -512,6 +512,46 @@ class CreationManager {
     console.log(`Creation removed: ${id}`);
     
     return true;
+  }
+  
+  /**
+   * Clear all creations
+   */
+  public async clearAllCreations(): Promise<void> {
+    // Store count for logging
+    const count = this.creations.length;
+    
+    // Clear all creations
+    this.creations = [];
+    this.creationHistory = [];
+    
+    // Save to session storage
+    this.saveToSessionStorage();
+    
+    // If backend is available, call the clear endpoint
+    if (this.backendAvailable) {
+      try {
+        const response = await fetch('/api/gallery/clear', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (!response.ok) {
+          console.error('Failed to clear gallery on backend:', response.status);
+        } else {
+          console.log('Gallery cleared on backend successfully');
+        }
+      } catch (error) {
+        console.error('Error clearing gallery on backend:', error);
+      }
+    }
+    
+    // Notify listeners with null creation and empty array
+    this.notifyListeners('clear', null, []);
+    
+    console.log(`All ${count} creations cleared`);
   }
 }
 

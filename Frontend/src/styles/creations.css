@@ -342,7 +342,7 @@
 /* Mermaid container */
 .mermaid-container {
   background-color: var(--color-bg-secondary);
-  padding: 20px;
+  padding: 40px; /* Increased padding for better spacing */
   border-radius: 5px;
   overflow: auto;
   display: flex;
@@ -361,6 +361,8 @@
   justify-content: center;
   align-items: center;
   position: relative;
+  min-width: 100%;
+  min-height: 100%;
 }
 
 /* Loading state for mermaid diagrams */
@@ -2070,7 +2072,7 @@ button.sp-tab-button:active,
 .creation-content-main {
   position: relative;
   height: 100%;
-  overflow: hidden;
+  overflow: hidden !important; /* Force: outer container NEVER scrolls */
   flex: 1;
 }
 
@@ -2120,6 +2122,12 @@ button.sp-tab-button:active,
   cursor: not-allowed;
 }
 
+.zoom-button.holding {
+  background-color: rgba(78, 115, 237, 0.8);
+  color: white;
+  transform: scale(0.95);
+}
+
 .zoom-button svg {
   width: 16px;
   height: 16px;
@@ -2137,6 +2145,11 @@ button.sp-tab-button:active,
 
 .zoom-reset {
   margin-left: 4px;
+}
+
+.zoom-reset.hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Light theme support */
@@ -2157,6 +2170,11 @@ button.sp-tab-button:active,
 
 .light-theme .zoom-level {
   color: rgba(0, 0, 0, 0.7);
+}
+
+.light-theme .zoom-button.holding {
+  background-color: rgba(78, 115, 237, 0.8);
+  color: white;
 }
 
 /* Hide zoom controls when printing */
@@ -2200,27 +2218,79 @@ button.sp-tab-button:active,
   box-sizing: border-box;
 }
 
-/* Fix scrolling behavior for code viewer */
+/* Fix scrolling behavior - outer container NEVER scrolls for any content type */
 .code-viewer .creation-content-main,
-.markdown-viewer .creation-content-main {
+.markdown-viewer .creation-content-main,
+.svg-viewer .creation-content-main,
+.mermaid-viewer .creation-content-main,
+.html-viewer .creation-content-main,
+.react-viewer .creation-content-main {
   overflow: hidden !important;
 }
 
-/* Code content should handle its own scrolling when zoomed */
-.code-viewer .zoom-wrapper,
-.markdown-viewer .zoom-wrapper {
+/* Code content scrolls within zoom wrapper */
+.code-viewer .zoom-wrapper {
   overflow: auto;
 }
 
-/* Enable panning for non-code creation types when zoomed */
-.html-viewer .zoom-wrapper,
+/* For non-code types, zoom wrapper doesn't scroll - inner content does */
+.markdown-viewer .zoom-wrapper,
 .svg-viewer .zoom-wrapper,
 .mermaid-viewer .zoom-wrapper,
+.html-viewer .zoom-wrapper,
 .react-viewer .zoom-wrapper {
-  overflow: hidden; /* Prevent default scrolling to allow panning */
+  overflow: hidden !important; /* Prevent default scrolling to allow panning */
+}
+
+/* Inner content containers handle their own scrolling */
+.markdown-viewer .markdown-content {
+  height: 100%;
+  overflow: auto !important;
+  max-height: 100%;
+}
+
+.svg-viewer .svg-container {
+  height: 100%;
+  overflow: auto !important;
+  max-height: 100%;
+}
+
+.mermaid-viewer .mermaid-container {
+  height: 100%;
+  overflow: auto !important;
+  max-height: 100%;
+}
+
+/* Specific fixes for enhanced creation viewer (gallery) to ensure no outer scroll */
+.enhanced-creation-viewer .creation-content-main {
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.enhanced-creation-viewer .creation-content-main::-webkit-scrollbar {
+  display: none !important;
 }
 
 /* Ensure proper scrolling for code content */
 .code-content {
   min-width: fit-content;
+}
+
+/* Panning cursor override */
+.creation-content-main.panning,
+.creation-content-main.panning * {
+  cursor: grabbing !important;
+}
+
+/* Alt overlay to disable iframe interactions */
+.alt-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  background: transparent;
+  pointer-events: auto;
 }

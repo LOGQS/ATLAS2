@@ -232,7 +232,12 @@
 }
 
 .creation-list-item.active {
-  background-color: var(--selection-color);
+  background: linear-gradient(90deg, var(--primary-color) 0%, rgba(0, 122, 255, 0.1) 100%);
+  border-left: 4px solid var(--primary-color);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.15);
+  transform: translateX(2px);
+  transition: all 0.3s ease;
 }
 
 .creation-item-icon {
@@ -440,7 +445,7 @@
 
 .creation-content-main {
   flex: 1;
-  overflow: auto;
+  overflow: hidden !important; /* Force: outer container NEVER scrolls */
   position: relative;
 }
 
@@ -448,6 +453,84 @@
 .code-content {
   height: 100%;
   overflow: auto;
+}
+
+/* Fix for code creations in enhanced gallery - ensure outer container never scrolls */
+.enhanced-creation-viewer .code-viewer .creation-content-main {
+  overflow: hidden !important;
+}
+
+/* Code content should scroll within the zoom wrapper in enhanced gallery */
+.enhanced-creation-viewer .code-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: auto !important;
+}
+
+/* Ensure the code content itself doesn't add extra scrolling */
+.enhanced-creation-viewer .code-viewer .code-content {
+  overflow: visible !important; /* Let parent zoom-wrapper handle scrolling */
+  height: 100%;
+}
+
+/* Fix SyntaxHighlighter's pre element to not create its own scroll */
+.enhanced-creation-viewer .code-viewer .code-content pre {
+  overflow: visible !important; /* Prevent pre from scrolling */
+  max-height: none !important;
+  height: auto !important;
+}
+
+/* Target the specific syntax highlighter container if it has one */
+.enhanced-creation-viewer .code-viewer .code-content > div {
+  overflow: visible !important;
+  height: auto !important;
+}
+
+/* Fix for markdown creations in enhanced gallery */
+.enhanced-creation-viewer .markdown-viewer .creation-content-main {
+  overflow: hidden !important;
+}
+
+.enhanced-creation-viewer .markdown-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: hidden !important; /* Zoom wrapper doesn't scroll */
+}
+
+.enhanced-creation-viewer .markdown-viewer .markdown-content {
+  height: 100%;
+  overflow: auto !important; /* Content scrolls independently */
+  max-height: 100%;
+}
+
+/* Fix for mermaid creations in enhanced gallery */
+.enhanced-creation-viewer .mermaid-viewer .creation-content-main {
+  overflow: hidden !important;
+}
+
+.enhanced-creation-viewer .mermaid-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: hidden !important; /* Zoom wrapper doesn't scroll */
+}
+
+.enhanced-creation-viewer .mermaid-viewer .mermaid-container {
+  height: 100%;
+  overflow: auto !important; /* Content scrolls independently */
+  max-height: 100%;
+}
+
+/* Fix for svg creations in enhanced gallery */
+.enhanced-creation-viewer .svg-viewer .creation-content-main {
+  overflow: hidden !important;
+}
+
+.enhanced-creation-viewer .svg-viewer .zoom-wrapper {
+  height: 100%;
+  overflow: hidden !important; /* Zoom wrapper doesn't scroll */
+}
+
+.enhanced-creation-viewer .svg-viewer .svg-container {
+  height: 100%;
+  overflow: auto !important; /* Content scrolls independently */
+  max-height: 100%;
 }
 
 .code-content pre {
@@ -459,8 +542,9 @@
 /* Markdown content */
 .markdown-content {
   padding: 24px;
-  overflow: auto;
+  overflow: auto !important; /* Ensure markdown content scrolls independently */
   height: 100%;
+  max-height: 100%;
   color: var(--text-color);
 }
 
@@ -551,7 +635,8 @@
   height: 100%;
   padding: 24px;
   background-color: white;
-  overflow: auto;
+  overflow: auto !important; /* Ensure SVG content scrolls independently */
+  max-height: 100%;
 }
 
 .svg-container svg {
@@ -566,7 +651,8 @@
   justify-content: center;
   height: 100%;
   padding: 24px;
-  overflow: auto;
+  overflow: auto !important; /* Ensure Mermaid content scrolls independently */
+  max-height: 100%;
 }
 
 /* React component container */
@@ -722,53 +808,221 @@
   }
 }
 
-/* Make sure custom scrollbars look nice */
+/* Make sure custom scrollbars look nice - removed creation-content-main from the list */
 .creation-list,
-.creation-content-main,
 .code-content,
 .markdown-content,
 .svg-container,
-.mermaid-container {
+.mermaid-container,
+.enhanced-creation-viewer .zoom-wrapper {
   scrollbar-width: thin;
   scrollbar-color: var(--border-color) transparent;
 }
 
 .creation-list::-webkit-scrollbar,
-.creation-content-main::-webkit-scrollbar,
 .code-content::-webkit-scrollbar,
 .markdown-content::-webkit-scrollbar,
 .svg-container::-webkit-scrollbar,
-.mermaid-container::-webkit-scrollbar {
+.mermaid-container::-webkit-scrollbar,
+.enhanced-creation-viewer .zoom-wrapper::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 .creation-list::-webkit-scrollbar-track,
-.creation-content-main::-webkit-scrollbar-track,
 .code-content::-webkit-scrollbar-track,
 .markdown-content::-webkit-scrollbar-track,
 .svg-container::-webkit-scrollbar-track,
-.mermaid-container::-webkit-scrollbar-track {
+.mermaid-container::-webkit-scrollbar-track,
+.enhanced-creation-viewer .zoom-wrapper::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .creation-list::-webkit-scrollbar-thumb,
-.creation-content-main::-webkit-scrollbar-thumb,
 .code-content::-webkit-scrollbar-thumb,
 .markdown-content::-webkit-scrollbar-thumb,
 .svg-container::-webkit-scrollbar-thumb,
-.mermaid-container::-webkit-scrollbar-thumb {
+.mermaid-container::-webkit-scrollbar-thumb,
+.enhanced-creation-viewer .zoom-wrapper::-webkit-scrollbar-thumb {
   background-color: var(--border-color);
   border-radius: 4px;
 }
 
 .creation-list::-webkit-scrollbar-thumb:hover,
-.creation-content-main::-webkit-scrollbar-thumb:hover,
 .code-content::-webkit-scrollbar-thumb:hover,
 .markdown-content::-webkit-scrollbar-thumb:hover,
 .svg-container::-webkit-scrollbar-thumb:hover,
-.mermaid-container::-webkit-scrollbar-thumb:hover {
+.mermaid-container::-webkit-scrollbar-thumb:hover,
+.enhanced-creation-viewer .zoom-wrapper::-webkit-scrollbar-thumb:hover {
   background-color: #5a5a5a;
+}
+
+/* Hide scrollbar for the outer main container since it should never scroll */
+.enhanced-creation-viewer .creation-content-main {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.enhanced-creation-viewer .creation-content-main::-webkit-scrollbar {
+  display: none;
+}
+
+/* Creation actions toolbar */
+.creation-actions-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+}
+
+.toolbar-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-color-secondary);
+  color: var(--text-color);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.toolbar-button:hover {
+  background-color: var(--hover-color);
+  border-color: var(--primary-color);
+}
+
+.toolbar-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.toolbar-button.select-button {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.toolbar-button.clear-all-button {
+  border-color: var(--danger-color);
+  color: var(--danger-color);
+}
+
+.toolbar-button.clear-all-button:hover {
+  background-color: var(--danger-hover);
+  border-color: var(--danger-color);
+}
+
+.toolbar-button.cancel-button {
+  background-color: var(--bg-color);
+}
+
+.toolbar-button.delete-selected-button {
+  background-color: var(--danger-color);
+  color: white;
+  border-color: var(--danger-color);
+}
+
+.toolbar-button.delete-selected-button:hover {
+  background-color: #c51400;
+}
+
+.toolbar-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-button:disabled:hover {
+  background-color: var(--bg-color-secondary);
+  border-color: var(--border-color);
+}
+
+/* Selection mode styles */
+.creation-list-item.select-mode {
+  cursor: pointer;
+  padding-left: 8px;
+}
+
+.creation-list-item.select-mode:hover {
+  background-color: var(--hover-color);
+}
+
+.creation-list-item.selected {
+  background-color: rgba(0, 122, 255, 0.08);
+  border-left: 3px solid rgba(0, 122, 255, 0.6);
+  border-radius: 4px;
+}
+
+/* When both active and selected, active style dominates but add selection indicator */
+.creation-list-item.active.selected {
+  background: linear-gradient(90deg, var(--primary-color) 0%, rgba(0, 122, 255, 0.15) 100%);
+  border-left: 4px solid var(--primary-color);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.25);
+  transform: translateX(2px);
+  position: relative;
+}
+
+/* Add a subtle checkmark indicator for active+selected items */
+.creation-list-item.active.selected::after {
+  content: "✓";
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  color: var(--primary-color);
+  font-weight: bold;
+  font-size: 12px;
+  background: white;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.creation-item-checkbox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.creation-item-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary-color);
+}
+
+/* Adjust icon position when checkbox is present */
+.creation-list-item.select-mode .creation-item-icon {
+  margin-left: 0;
+}
+
+/* Hide individual actions in select mode */
+.creation-list-item.select-mode .creation-item-actions {
+  display: none;
+}
+
+/* Selection help text */
+.selection-help {
+  padding: 8px 16px;
+  background-color: var(--bg-color);
+  border-bottom: 1px solid var(--border-color);
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-color-secondary);
+}
+
+.selection-help span {
+  opacity: 0.8;
 }
 
 /* Floating button to toggle the enhanced creation viewer */

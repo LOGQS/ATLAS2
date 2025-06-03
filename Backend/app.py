@@ -5,7 +5,6 @@ import logging
 import time
 import subprocess
 import sys
-import re
 import uuid
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
@@ -2382,9 +2381,12 @@ def save_gallery():
         # Log the absolute path for debugging
         safe_debug(f"Saving gallery to: {gallery_file.absolute()}")
         
-        # Pretty print JSON for readability
+        # Pretty print JSON for readability with robust file handling
         with open(gallery_file, "w", encoding="utf-8") as f:
+            f.truncate(0)  # Ensure file is completely empty first
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()  # Force write to disk
+            os.fsync(f.fileno())  # Force filesystem sync
             
         safe_debug(f"Gallery saved successfully with {len(data.get('creations', []))} creations")
         
@@ -2456,6 +2458,43 @@ def load_gallery():
             "history": [],
             "error": f"Error loading gallery: {str(e)}"
         })
+
+@app.route("/api/gallery/clear", methods=["POST"])
+def clear_gallery():
+    """Clear all creations from the gallery"""
+    try:
+        # Ensure data directory exists using absolute paths
+        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir.mkdir(exist_ok=True)
+        
+        # Gallery file path
+        gallery_file = data_dir / "gallery.json"
+        
+        safe_debug(f"Clearing gallery at: {gallery_file.absolute()}")
+        
+        # Save empty gallery structure
+        empty_gallery = {
+            "creations": [],
+            "history": []
+        }
+        
+        # Ensure file is completely overwritten by explicitly truncating
+        with open(gallery_file, "w", encoding="utf-8") as f:
+            f.truncate(0)  # Ensure file is completely empty
+            json.dump(empty_gallery, f, indent=2, ensure_ascii=False)
+            f.flush()  # Force write to disk
+            os.fsync(f.fileno())  # Force filesystem sync
+        
+        safe_debug("Gallery cleared successfully")
+        
+        return jsonify({
+            "message": "Gallery cleared successfully",
+            "path": str(gallery_file.absolute())
+        })
+        
+    except Exception as e:
+        safe_exception(f"Error clearing gallery: {str(e)}", e)
+        return jsonify({"error": f"Failed to clear gallery: {str(e)}"}), 500
 
 @app.route("/api/chats/save", methods=["POST"])
 def save_chats():

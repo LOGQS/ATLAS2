@@ -59,6 +59,7 @@ const Chat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const userInteractedWithScrollRef = useRef(false); // To track if the user initiated a scroll
   const [isStreaming, setIsStreaming] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [reasoningBuffer, setReasoningBuffer] = useState('');
@@ -114,6 +115,8 @@ const Chat = () => {
   const isSpeechDetectedRef = useRef<boolean>(false);
   // Add ref for silence start time
   const silenceStartRef = useRef<number | null>(null);
+  // Add a ref to track if a scroll is programmatic
+  const isProgrammaticScrollRef = useRef(false);
 
   // Available models with descriptions
   const models: Model[] = [
@@ -451,26 +454,49 @@ const Chat = () => {
     if (!container) return;
 
     const handleScroll = () => {
-      // Only disable auto-scroll if we're currently streaming a message
-      if (!isStreaming) return;
+      if (isProgrammaticScrollRef.current) {
+        isProgrammaticScrollRef.current = false;
+        return;
+      }
 
       const { scrollTop, scrollHeight, clientHeight } = container;
-      const isScrolledUp = scrollHeight - scrollTop - clientHeight > 100; // 100px threshold
-      
-      if (isScrolledUp) {
-        setShouldAutoScroll(false);
+      const isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
+
+      if (isAtBottom) {
+        if (!shouldAutoScroll) {
+          console.log('User scrolled to bottom, enabling auto-scroll');
+          setShouldAutoScroll(true);
+          userInteractedWithScrollRef.current = false;
+          // Give smooth scroll feedback when user manually returns to bottom
+          if (!isStreaming) {
+            setTimeout(() => scrollToBottom(true), 50);
+          }
+        }
+      } else {
+        if (shouldAutoScroll) {
+          console.log('User scrolled up, disabling auto-scroll');
+          setShouldAutoScroll(false);
+          userInteractedWithScrollRef.current = true;
+        } else if (!userInteractedWithScrollRef.current) {
+           userInteractedWithScrollRef.current = true;
+        }
       }
     };
 
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, [isStreaming]);
+  }, [isStreaming, shouldAutoScroll]);
 
   useEffect(() => {
-    if (shouldAutoScroll) {
-      scrollToBottom();
+    if (shouldAutoScroll && messages.length > 0) {
+      if (!userInteractedWithScrollRef.current) {
+        console.log('Auto-scrolling to bottom due to new message and shouldAutoScroll=true');
+        // Use immediate scroll during streaming to prevent jumping
+        // Only use smooth scroll when not actively streaming (for better UX when user returns to bottom)
+        scrollToBottom(!isStreaming);
+      }
     }
-  }, [messages, shouldAutoScroll]);
+  }, [messages, shouldAutoScroll, isStreaming]);
 
   // Close model dropdown when clicking outside
   useEffect(() => {
@@ -524,8 +550,14 @@ const Chat = () => {
     };
   }, [attachments]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (smooth = false) => {
+    if (messagesContainerRef.current) {
+      isProgrammaticScrollRef.current = true;
+      // During streaming, maintain position immediately to prevent jumping
+      // Only use smooth scrolling when user manually returns to bottom
+      const behavior = smooth ? 'smooth' : 'auto';
+      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    }
   };
 
   // More stable approach to handling SSE data from the server
@@ -706,8 +738,11 @@ const Chat = () => {
     
     // Only scroll to bottom for non-aborted messages
     if (!isAborted && shouldAutoScroll) {
-      setTimeout(() => { 
-        scrollToBottom();
+      setTimeout(() => {
+        if (shouldAutoScroll && !userInteractedWithScrollRef.current) {
+          console.log('Finalize stream: Auto-scrolling to bottom');
+          scrollToBottom();
+        }
       }, 50); // Small delay for rendering
     }
 
@@ -811,16 +846,25 @@ const Chat = () => {
     setLoading(false);
     setIsStreaming(false);
     setIsThinking(false); // Reset thinking state
-    setShouldAutoScroll(true);
+    // setShouldAutoScroll(true); // Respect user's scroll choice
+    userInteractedWithScrollRef.current = false; // On reset, assume fresh state for scrolling
     accumulatedContentRef.current = '';
     setAttachments([]);
+    setReasoningBuffer('');
     
     // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
       clearTimeout(thinkingTimeoutRef.current);
       thinkingTimeoutRef.current = null;
     }
-  }, [attachments, chatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling]);
+    
+    // Focus on textarea after reset
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    }, 0);
+  }, [attachments, chatId]); // Added dependencies
 
   // Enhanced send function to handle document caching and chat history
   const handleSend = async () => {
@@ -833,48 +877,71 @@ const Chat = () => {
     // Require either text or at least one attachment to send a message
     if ((!input.trim() && attachments.length === 0) || loading) return;
 
-    // Reset auto-scroll for new message
-    setShouldAutoScroll(true);
-    
     // Check if we have document attachments that could benefit from caching
     const documentAttachments = attachments.filter(
       attachment => attachment.file_type === 'document' && attachment.file_id
     );
     
     // Create a cache if we have documents
-    let cacheId = documentCache;
-    if (documentAttachments.length > 0 && !documentCache) {
-      // Extract file IDs from document attachments
+    let cacheId = documentCache; // Use existing global documentCache
+    if (documentAttachments.length > 0 && !documentCache) { 
+      // If there are document attachments and no current global cache, create one
       const fileIds = documentAttachments
         .map(attachment => attachment.file_id)
-        .filter(Boolean) as string[];
+        .filter(Boolean) as string[]; // Make sure to filter out any null/undefined ids
         
       if (fileIds.length > 0) {
-        // Create a cache for these documents
-        cacheId = await createDocumentCache(fileIds);
+        console.log('Calling createDocumentCache for file IDs:', fileIds);
+        cacheId = await createDocumentCache(fileIds); // This will also set global documentCache
       }
     }
     
-    // Create user message with content and any attachments
     const userMessage: ChatMessage = { 
       role: 'user', 
-      content: input,
+      content: input.trim(),
       attachments: attachments.length > 0 ? attachments.map(a => ({
+        // Map only necessary fields for the message
         file_id: a.file_id,
         file_type: a.file_type,
         mime_type: a.mime_type,
         filename: a.filename,
-        original_name: a.original_name
+        original_name: a.original_name,
+        // Do not include local_url, uploading, upload_progress etc.
       })) : undefined,
-      isHistory: false // Explicitly mark this message as NOT from history
+      isHistory: false 
     };
     
+    // Auto-scroll logic BEFORE adding the message to the state
+    // This ensures that if we decide to scroll, it happens with the new message already in view.
+    if (messagesContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
+      if (isAtBottom) {
+          if(!shouldAutoScroll) {
+              console.log('handleSend: User at bottom, enabling auto-scroll');
+              setShouldAutoScroll(true);
+          }
+          // If at bottom, user interaction is reset, allowing auto-scroll for this new message
+          userInteractedWithScrollRef.current = false; 
+      } else if (!userInteractedWithScrollRef.current) {
+          // If user hasn't scrolled up, and we are not at the bottom,
+          // we should still enable auto-scroll for this new message.
+          if(!shouldAutoScroll) {
+              console.log('handleSend: User not at bottom, no prior scroll up, ensuring auto-scroll for new message');
+              setShouldAutoScroll(true);
+          }
+          // Since auto-scroll is being (re-)enabled and user hasn't interacted, reset this ref
+          userInteractedWithScrollRef.current = false;
+      }
+      // If userInteractedWithScrollRef.current is true (user scrolled up and is not at bottom),
+      // shouldAutoScroll remains false, and we don't scroll.
+    }
+
     setMessages(prev => [...prev, userMessage]);
     
-    // Reset states after adding the message
     setInput('');
-    setAttachments([]);
-    accumulatedContentRef.current = '';
+    setAttachments([]); // Clear attachments from input area AFTER they are included in userMessage
+    accumulatedContentRef.current = ''; // Clear any accumulated assistant message content
     setLoading(true);
     
     // Maintain focus on the textarea after sending
@@ -913,14 +980,15 @@ const Chat = () => {
       const requestData: {
         messages: ChatMessage[],
         model: string,
-        cache_id?: string,
+        cache_id?: string, // cache_id is optional
         chat_id?: string
       } = { 
         messages: historyForAPI,
         model
       };
       
-      // Add cache_id if we have one and this message includes at least one document
+      // Add cache_id if we have one (either pre-existing or newly created)
+      // and this message includes at least one document.
       if (cacheId && documentAttachments.length > 0) {
         requestData.cache_id = cacheId;
       }
@@ -1266,7 +1334,8 @@ const Chat = () => {
       setLoading(false);
       setIsStreaming(false);
       setIsThinking(false);
-      setShouldAutoScroll(true);
+      // setShouldAutoScroll(true); // Respect user's scroll choice
+      userInteractedWithScrollRef.current = false; // On new chat, assume fresh state
       accumulatedContentRef.current = '';
       setAttachments([]);
       
@@ -1718,7 +1787,8 @@ const Chat = () => {
         // Reset some states
         setIsStreaming(false);
         setIsThinking(false);
-        setShouldAutoScroll(true);
+        // setShouldAutoScroll(true); // Respect user's scroll choice
+        userInteractedWithScrollRef.current = false; // On load, assume fresh state
         accumulatedContentRef.current = '';
         
         // Set the chat ID to the one from the event
@@ -1812,7 +1882,8 @@ const Chat = () => {
       setLoading(false);
       setIsStreaming(false);
       setIsThinking(false);
-      setShouldAutoScroll(true);
+      // setShouldAutoScroll(true); // Respect user's scroll choice
+      userInteractedWithScrollRef.current = false; // On delete, assume fresh state
       accumulatedContentRef.current = '';
       setChatId(null);
       

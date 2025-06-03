@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Creation } from '../utils/creationsHelper';
 import CreationContent from './CreationContent';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -24,8 +24,53 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
   const [streamedContent, setStreamedContent] = useState<string>('');
   const isStreamingRef = useRef(false);
   
+  // Add state and refs for code view auto-scroll
+  const codeViewRef = useRef<HTMLDivElement>(null);
+  const [shouldAutoScrollCode, setShouldAutoScrollCode] = useState(true);
+  const userInteractedWithCodeScrollRef = useRef(false);
+  const isProgrammaticCodeScrollRef = useRef(false);
+
   // Add state to track view transition animation
   const [isViewTransitioning, setIsViewTransitioning] = useState(false);
+
+  // Function to scroll code view to bottom
+  const scrollToCodeBottom = useCallback((smooth = false) => {
+    setTimeout(() => {
+      const codeViewArea = codeViewRef.current;
+      if (codeViewArea && viewMode === 'code') {
+        const preElement = codeViewArea.querySelector('pre'); // SyntaxHighlighter often uses a <pre> tag for scrolling
+        const targetElement = preElement || codeViewArea; // Fallback to codeViewArea if <pre> not found
+
+        console.log(
+          'CreationWindow: scrollToCodeBottom attempting scroll. Target:',
+          preElement ? 'pre' : 'div.creation-code-view',
+          'ScrollHeight:', targetElement.scrollHeight,
+          'ClientHeight:', targetElement.clientHeight,
+          'Current scrollTop:', targetElement.scrollTop,
+          'Smooth:', smooth
+        );
+
+        isProgrammaticCodeScrollRef.current = true;
+        
+        if (smooth) {
+          targetElement.scrollTo({ top: targetElement.scrollHeight, behavior: 'smooth' });
+        } else {
+          // Immediate scroll to prevent jumping during streaming
+          targetElement.scrollTop = targetElement.scrollHeight;
+        }
+        
+        console.log('CreationWindow: scrollToCodeBottom completed, scrollTop:', targetElement.scrollTop);
+
+      } else {
+        console.log(
+          'CreationWindow: scrollToCodeBottom - Conditions NOT MET or ref unavailable. HasRef:',
+          !!codeViewArea,
+          'ViewMode:',
+          viewMode
+        );
+      }
+    }, 75); // Slightly increased timeout for rendering, can be adjusted
+  }, [viewMode]);
 
   // Handle animation states when creation changes
   useEffect(() => {
@@ -150,6 +195,7 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
       // Only apply if this is for our current creation
       if (creation && creation.id === creationId) {
         console.log('✅ APPLYING CONTENT TO CURRENT CREATION');
+        
         isStreamingRef.current = true;
         setStreamedContent(prev => {
           const updated = prev + newContent;
@@ -162,6 +208,10 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
         
         // Automatically switch to code view during streaming
         setViewMode('code');
+        console.log('CreationWindow: handleStreamToCreation - setViewMode called. isStreamingRef.current:', isStreamingRef.current);
+
+        // Removed direct scroll call from here
+
       } else {
         console.warn('❌ CONTENT NOT APPLIED - Wrong creation ID or no current creation:', {
           hasCreation: !!creation,
@@ -276,7 +326,97 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
       window.removeEventListener('close-creation-window', handleCloseCreationWindow);
       window.removeEventListener('switch-creation', handleSwitchCreation as EventListener);
     };
-  }, [creation, viewMode, onClose, streamedContent]);
+  }, [creation, viewMode, onClose, streamedContent, shouldAutoScrollCode, scrollToCodeBottom]);
+
+  // New useEffect for handling auto-scroll on content/mode changes
+  useEffect(() => {
+    console.log('CreationWindow: Auto-scroll effect triggered. States:', {
+      viewMode,
+      shouldAutoScrollCode,
+      userInteracted: userInteractedWithCodeScrollRef.current,
+      isStreaming: isStreamingRef.current,
+      streamedContentLength: streamedContent.length // Log content length to see updates
+    });
+
+    if (
+      viewMode === 'code' &&
+      isStreamingRef.current && // Ensure streaming is active
+      shouldAutoScrollCode &&
+      !userInteractedWithCodeScrollRef.current
+    ) {
+      console.log('CreationWindow: Conditions MET for auto-scroll. Maintaining bottom position immediately.');
+      // Directly maintain scroll position during streaming to prevent jumping
+      const codeViewArea = codeViewRef.current;
+      if (codeViewArea) {
+        const preElement = codeViewArea.querySelector('pre');
+        const targetElement = preElement || codeViewArea;
+        isProgrammaticCodeScrollRef.current = true;
+        targetElement.scrollTop = targetElement.scrollHeight;
+      }
+    } else {
+      const reason = [];
+      if (viewMode !== 'code') reason.push('viewMode is not code');
+      if (!isStreamingRef.current) reason.push('isStreamingRef is false');
+      if (!shouldAutoScrollCode) reason.push('shouldAutoScrollCode is false');
+      if (userInteractedWithCodeScrollRef.current) reason.push('user has interacted with scroll');
+      console.log('CreationWindow: Conditions NOT MET for auto-scroll. Reasons:', reason.join('; ') || 'None, but still not scrolling');
+    }
+  }, [streamedContent, viewMode, shouldAutoScrollCode, scrollToCodeBottom]);
+
+  // Scroll handler for code view
+  useEffect(() => {
+    const codeViewArea = codeViewRef.current;
+    // Determine the actual scrollable element, likely the <pre> tag or the container itself
+    const scrollableElement = codeViewArea?.querySelector('pre') || codeViewArea;
+
+    if (!scrollableElement || viewMode !== 'code') {
+      // If no scrollable element or not in code view, do nothing and clean up if listener was attached previously
+      return;
+    }
+    
+    console.log('CreationWindow: Attaching scroll listener to:', scrollableElement.tagName);
+
+    const handleCodeScroll = () => {
+      if (isProgrammaticCodeScrollRef.current) {
+        console.log('CreationWindow: handleCodeScroll - IGNORING programmatic scroll');
+        isProgrammaticCodeScrollRef.current = false;
+        return;
+      }
+
+      const { scrollTop, scrollHeight, clientHeight } = scrollableElement;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight <= 1.5; // Using 1.5px threshold for safety
+      
+      console.log('CreationWindow: handleCodeScroll - USER SCROLL detected. AtBottom:', isAtBottom, 'scrollTop:', scrollTop, 'scrollHeight:', scrollHeight, 'clientHeight:', clientHeight);
+
+      if (isAtBottom) {
+        if (!shouldAutoScrollCode) {
+          console.log('CreationWindow: User scrolled to code bottom, ENABLING auto-scroll.');
+          setShouldAutoScrollCode(true);
+          userInteractedWithCodeScrollRef.current = false;
+          // Give smooth scroll feedback when user manually returns to bottom
+          if (!isStreamingRef.current) {
+            setTimeout(() => scrollToCodeBottom(true), 50);
+          }
+        }
+      } else { // User scrolled up, not at the bottom
+        if (shouldAutoScrollCode) {
+          console.log('CreationWindow: User scrolled up in code, DISABLING auto-scroll.');
+          setShouldAutoScrollCode(false);
+          userInteractedWithCodeScrollRef.current = true;
+        } else if (!userInteractedWithCodeScrollRef.current) {
+          // If auto-scroll is already off, and user scrolls further, ensure interaction is marked.
+          console.log('CreationWindow: User scroll while auto-scroll already off, ensuring interaction is marked.');
+          userInteractedWithCodeScrollRef.current = true;
+        }
+      }
+    };
+
+    scrollableElement.addEventListener('scroll', handleCodeScroll);
+    return () => {
+      console.log('CreationWindow: Removing scroll listener from:', scrollableElement.tagName);
+      scrollableElement.removeEventListener('scroll', handleCodeScroll);
+    };
+  }, [viewMode, shouldAutoScrollCode, scrollToCodeBottom]); // Dependencies should correctly re-attach listener if viewMode or element changes
 
   // Custom view mode change handler with animation
   const handleViewModeChange = (newMode: 'preview' | 'code') => {
@@ -388,7 +528,7 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
           </div>
         ) : (
           <div className="view-container code-container">
-            <div className="creation-code-view">
+            <div className="creation-code-view" ref={codeViewRef}>
               <SyntaxHighlighter
                 style={vscDarkPlus}
                 language={getLanguageForHighlighting()}
