@@ -116,6 +116,7 @@ interface StreamedCreation {
   content: string;
   isComplete: boolean;
   id: string;
+  forwarded: number;   // NEW – bytes already sent to the creation window
 }
 
 const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning }) => {
@@ -507,6 +508,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
             title: newTitle,
             language: newLanguage,
             content: '',
+            forwarded: 0,
             isComplete: false,
             id: creationId
           };
@@ -520,8 +522,12 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           
 
           
-          // CRITICAL FIX: Dispatch the new creation IMMEDIATELY after state update
-          // This ensures the creation window always has a creation to show
+          // Dispatch event to switch to code editing mode before the update, ensuring the window is open
+          window.dispatchEvent(new CustomEvent('switch-creation-code', {
+            detail: { creationId }
+          }));
+          
+          // Now dispatch the creation update so the window receives it after mounting
           window.dispatchEvent(new CustomEvent('stream-creation-update', {
             detail: {
               type: newType as CreationType,
@@ -531,11 +537,6 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
               id: creationId,
               metadata: { isTemporary: true }
             }
-          }));
-          
-          // Dispatch event to switch to code editing mode
-          window.dispatchEvent(new CustomEvent('switch-creation-code', {
-            detail: { creationId }
           }));
           
           // Now safely update displayed content to show only content before the new creation
@@ -548,7 +549,8 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           
           // FINAL CLEANUP: Reset remaining state variables
           setPostCreationContent('');
-          setStreamBuffer(cleanedContent);
+          // buffer only up to the header – nothing inside the creation yet
+          setStreamBuffer(cleanedContent.substring(0, (newCreationMatch?.index ?? 0) + (newCreationMatch?.[0]?.length ?? 0)));
           
           // Mark that we should start a new creation (for the content positioning logic)
           shouldStartNewCreation = true;
@@ -564,6 +566,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         
 
       } else if (isCollectingCreation && streamedCreation) {
+        // If creation is already complete, handle post-creation content or new creations
         if (creationComplete) {
           // Creation is already complete, so we're now just receiving text after the creation
           // BUT FIRST: Check if the new content contains a NEW creation pattern
@@ -612,173 +615,104 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           // Still collecting the creation
           // Check if the end tag is in the new content AFTER the current creation start
           // Find the start position of the current creation being collected
-          const currentCreationStart = newCreationMatch ? newCreationMatch.index! : cleanedContent.lastIndexOf('$$creation:');
+          const currentCreationHeaderMatch = creationStartPattern.exec(cleanedContent.substring(currentCreationStartPos));
+          const headerLength = currentCreationHeaderMatch?.[0]?.length ?? 0;
           
           // Look for end tag only after the current creation start position
-          const endTagIndex = currentCreationStart >= 0 ? 
-            cleanedContent.indexOf('$$end$$', currentCreationStart) : 
+          const endTagIndex = currentCreationStartPos >= 0 ? 
+            cleanedContent.indexOf('$$end$$', currentCreationStartPos + headerLength) : 
             cleanedContent.indexOf('$$end$$');
           
-          let contentUpToEnd = cleanedContent;
-          
-          if (endTagIndex !== -1 && !creationComplete) {
-            // End tag found - only process content up to the end tag
-            contentUpToEnd = cleanedContent.substring(0, endTagIndex);
-            
-            // Mark creation as complete to avoid reprocessing
-          setCreationComplete(true);
-          
-            // Extract only the new creation content (excluding the end tag)
-            const newContent = contentUpToEnd.substring(streamBuffer.length);
-            
-            if (newContent) {
-              // Update our creation content with final chunk
-              setStreamedCreation(prev => {
-                if (prev) {
+          // all text that has arrived **inside** the creation so far
+          const fullCreationText =
+            cleanedContent.slice(currentCreationStartPos + headerLength,
+                                 endTagIndex === -1 ? undefined : endTagIndex);
+
+          // send only what hasn't been forwarded yet
+          if (fullCreationText.length > streamedCreation.forwarded) {
+            const newChunk = fullCreationText.slice(streamedCreation.forwarded);
+            if (newChunk.length) {
+              // CRITICAL FIX: Check for partial end tags and exclude them before sending to creation window
+              // This check should ideally be on newChunk, but since fullCreationText already excludes beyond $$end$$,
+              // a partial end tag within newChunk itself is unlikely unless $$end$$ is malformed or part of the actual content.
+              const { cleanContent: cleanNewChunk, hasPartialEnd } = excludePartialEndTag(newChunk);
+
+              if (hasPartialEnd) {
+                console.log('🛡️ PARTIAL END TAG DETECTED IN NEWCHUNK - Only sending clean content to creation window');
+              }
+
+              if (cleanNewChunk.length) {
+                window.dispatchEvent(new CustomEvent('stream-to-creation', {
+                  detail: { content: cleanNewChunk, creationId: streamedCreation.id }
+                }));
+
+                setStreamedCreation(prev => {
+                  if (!prev) return prev;
                   return {
                     ...prev,
-                    content: prev.content + newContent,
+                    content: prev.content + cleanNewChunk, // Append only the clean, new chunk
+                    forwarded: prev.forwarded + cleanNewChunk.length // Update forwarded by the length of the chunk sent
                   };
-                }
-                return prev;
-              });
-
-              // Send the final content chunk to the creation window (without end tag)
-              window.dispatchEvent(new CustomEvent('stream-to-creation', {
-                detail: {
-                  content: newContent,
-                  creationId: streamedCreation.id
-                }
-              }));
+                });
+              }
             }
+          }
+          
+          // Update streamBuffer to reflect all processed content so far, up to where fullCreationText ends
+          // If endTag is found, buffer includes it. Otherwise, it includes all of fullCreationText.
+          const bufferEndPosition = endTagIndex === -1 ? 
+                                    currentCreationStartPos + headerLength + fullCreationText.length :
+                                    endTagIndex + '$$end$$'.length; // Include the end tag in buffer if found
+          setStreamBuffer(cleanedContent.substring(0, bufferEndPosition));
 
-          // Create the final creation object
-            const finalCreationContent = streamedCreation.content + (newContent || '');
-          const completeCreation: Creation = {
-            type: streamedCreation.type as CreationType,
-              content: finalCreationContent.trim(),
-            title: streamedCreation.title,
-            language: streamedCreation.language,
-            id: streamedCreation.id,
-            // Add metadata to mark this as temporary - will be replaced by the final detection
-            metadata: { isTemporary: true } 
-          };
+          // If end tag was found and creation is not yet marked complete by this logic path
+          if (endTagIndex !== -1 && !creationComplete) {
+            setCreationComplete(true);
 
-            // Add this completed creation to our visual list
-            // Add this creation to completed creations immediately (check for duplicates)
-            const isDuplicateFinalized = completedStreamCreationsRef.current.some(existing => 
-              existing.type === completeCreation.type && 
+            const completeCreation: Creation = {
+              type: streamedCreation.type as CreationType,
+              content: streamedCreation.content.trim(), // content is already updated via setStreamedCreation
+              title: streamedCreation.title,
+              language: streamedCreation.language,
+              id: streamedCreation.id,
+              metadata: { isTemporary: true }
+            };
+
+            const isDuplicateFinalized = completedStreamCreationsRef.current.some(existing =>
+              existing.type === completeCreation.type &&
               existing.title === completeCreation.title &&
               existing.id === completeCreation.id
             );
-            
+
             if (!isDuplicateFinalized) {
               completedStreamCreationsRef.current = [...completedStreamCreationsRef.current, completeCreation];
             }
 
-          // Set timeout to switch to preview after a delay
             const timeout = setTimeout(() => {
-            // Dispatch event to switch to preview mode
-            window.dispatchEvent(new CustomEvent('switch-creation-preview', {
-              detail: { creationId: completeCreation.id }
-            }));
-          }, 1000);
-          
-          setCreationSwitchTimeout(timeout);
-          
-            // Extract text after the creation
-          if (cleanedContent.indexOf('$$end$$') > -1) {
-            const afterCreation = cleanedContent.substring(cleanedContent.indexOf('$$end$$') + 7);
-            setPostCreationContent(afterCreation);
-            
-            // CRITICAL FIX: Never set displayed content that contains creation tags
-            const combinedContent = preCreationContent + afterCreation;
-            if (combinedContent.includes('$$creation:') || combinedContent.includes('$$end$$')) {
-              const cleanedDisplayContent = removeCreationDirectives(combinedContent);
-              safeSetDisplayedContent(cleanedDisplayContent, 'post-creation-combined');
-            } else {
-              // Update displayed content with both before and after parts
-              safeSetDisplayedContent(preCreationContent + afterCreation, 'post-creation-normal');
-            }
-          }
-            
-            // Update buffer to include the processed content up to and including the end tag
-            setStreamBuffer(cleanedContent);
-      } else {
-            // No end tag yet - continue collecting
-          // Extract the new content since the last update
-          const newContent = cleanedContent.substring(streamBuffer.length);
-          
-            // Only log if content contains end tag (this would be a problem)
-            if (newContent.includes('$$end$$')) {
-              console.warn('⚠️ END TAG IN CONTINUING CONTENT!', newContent);
-            }
-            
-            if (newContent) {
-          // CRITICAL FIX: Check for partial end tags and exclude them before sending to creation window
-          const { cleanContent: cleanNewContent, hasPartialEnd } = excludePartialEndTag(newContent);
-          
-          if (hasPartialEnd) {
-            console.log('🛡️ PARTIAL END TAG DETECTED - Only sending clean content to creation window');
-          }
-          
-          // Only send content to creation window if we have clean content
-          if (cleanNewContent) {
-          // Update our creation content
-          setStreamedCreation(prev => {
-            if (prev) {
-              return {
-                ...prev,
-                content: prev.content + cleanNewContent,
-              };
-            }
-            return prev;
-          });
+              window.dispatchEvent(new CustomEvent('switch-creation-preview', {
+                detail: { creationId: completeCreation.id }
+              }));
+            }, 1000);
+            setCreationSwitchTimeout(timeout);
 
-          // Send the new content to the creation window
-              // Only log if sending problematic content
-              if (cleanNewContent.includes('$$end$$')) {
-                console.error('🚨 SENDING END TAG TO CREATION!', cleanNewContent);
-              }
-              
-          window.dispatchEvent(new CustomEvent('stream-to-creation', {
-            detail: {
-              content: cleanNewContent,
-              creationId: streamedCreation.id
+            const afterCreationContent = cleanedContent.substring(endTagIndex + '$$end$$'.length);
+            if (afterCreationContent) {
+              setPostCreationContent(afterCreationContent);
+              const newDisplayedContent = preCreationContent + afterCreationContent;
+              safeSetDisplayedContent(newDisplayedContent, 'post-creation-update-after-endtag');
             }
-          }));
-          }
-
-          // Update our buffer with the original content (including any partial end tag)
-          // We need to keep the full content in the buffer for proper end tag detection later
-          setStreamBuffer(cleanedContent);
-          
-          // Keep the displayed content stable - only showing text before the creation
-          // This prevents flickering as the creation content changes
-          if (preCreationContent) {
-            // CRITICAL FIX: Never set pre-creation content that contains creation tags
-            if (preCreationContent.includes('$$creation:') || preCreationContent.includes('$$end$$')) {
-              const cleanedPreContent = removeCreationDirectives(preCreationContent);
-              safeSetDisplayedContent(cleanedPreContent, 'pre-creation-cleaned');
+          } else if (endTagIndex === -1) {
+            // No end tag yet, ensure displayed content is only pre-creation content
+            if (preCreationContent) {
+              safeSetDisplayedContent(preCreationContent, 'pre-creation-no-endtag');
             } else {
-              safeSetDisplayedContent(preCreationContent, 'pre-creation-normal');
+              // Fallback if preCreationContent is somehow empty
+              const textBeforeCreation = cleanedContent.substring(0, currentCreationStartPos);
+              safeSetDisplayedContent(textBeforeCreation, 'pre-creation-no-endtag-fallback');
             }
-          } else if (cleanedContent.indexOf('$$creation:') > -1) {
-            const beforeCreation = cleanedContent.substring(0, cleanedContent.indexOf('$$creation:'));
-            setPreCreationContent(beforeCreation);
-            
-            // CRITICAL FIX: Never set content that contains creation tags
-            if (beforeCreation.includes('$$creation:') || beforeCreation.includes('$$end$$')) {
-              const cleanedBeforeCreation = removeCreationDirectives(beforeCreation);
-              safeSetDisplayedContent(cleanedBeforeCreation, 'new-pre-creation-cleaned');
-            } else {
-              safeSetDisplayedContent(beforeCreation, 'new-pre-creation-normal');
-            }
-          }
           }
         }
-      }
-    } else {
+      } else {
         
         // CRITICAL FIX: Check if creation header is complete before proceeding
         const headerCheck = isCreationHeaderComplete(cleanedContent, 0);
@@ -815,6 +749,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
             title,
             language,
             content: '',
+            forwarded: 0,
             isComplete: false,
             id: creationId
           };
@@ -822,10 +757,15 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           // Start collecting the creation
           setIsCollectingCreation(true);
           setStreamedCreation(newCreation);
-          setStreamBuffer(cleanedContent);
+          // buffer only up to the header – nothing inside the creation yet
+          setStreamBuffer(cleanedContent.substring(0, (match.index ?? 0) + (match[0]?.length ?? 0)));
           setCreationComplete(false);
           setCurrentCreationStartPos(match.index ?? -1);
-          
+
+          // Dispatch event to switch to code editing mode
+          window.dispatchEvent(new CustomEvent('switch-creation-code', {
+            detail: { creationId }
+          }));
 
           
           // For streaming creations, directly update the creation window without closing/reopening
@@ -840,11 +780,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
               metadata: { isTemporary: true }
             }
           }));
-          
-          // Dispatch event to switch to code editing mode
-          window.dispatchEvent(new CustomEvent('switch-creation-code', {
-            detail: { creationId }
-          }));
+        
           
           // Store and display the content before the creation marker
           if (cleanedContent.indexOf('$$creation:') > -1) {
