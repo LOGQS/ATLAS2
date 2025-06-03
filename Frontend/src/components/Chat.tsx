@@ -55,7 +55,7 @@ const Chat = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState('gemini-2.5-flash-preview-04-17');
+  const [model, setModel] = useState('gemini-2.5-flash-preview-05-20');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -118,7 +118,7 @@ const Chat = () => {
   // Available models with descriptions
   const models: Model[] = [
     { 
-      id: 'gemini-2.5-flash-preview-04-17', 
+      id: 'gemini-2.5-flash-preview-05-20', 
       name: 'Gemini 2.5 Flash',
       description: 'Fast responses, ideal for simple queries'
     },
@@ -689,9 +689,7 @@ const Chat = () => {
           
           return updatedMessages;
         });
-      } else {
-        console.log('🧠 No reasoning buffer to finalize');
-      }
+              }
     }
     
     // Reset streaming and loading states
@@ -929,7 +927,7 @@ const Chat = () => {
       
       // Add chat_id if we have one (to continue the conversation)
       if (chatId) {
-        console.log(`Continuing conversation with chat ID: ${chatId}`);
+
         requestData.chat_id = chatId;
       } else {
         console.log('Starting a new conversation');

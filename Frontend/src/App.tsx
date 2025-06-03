@@ -15,7 +15,6 @@ import TaskSystem from './components/TaskSystem';
 import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
 import creationManager from './utils/creationManager';
-import { streamMonitor } from './utils/streamMonitor';
 
 interface ImportResult {
   success: boolean;
@@ -79,10 +78,6 @@ function App() {
     // Initial load
     setChatHistory(chatManager.getChats());
     
-    // Initialize stream monitoring
-    console.log('🔧 Initializing stream monitor...');
-    streamMonitor.startMonitoring(); // Real-time push notifications via Server-Sent Events
-    
     // Subscribe to updates - prevent excessive rerenders 
     const unsubscribe = chatManager.subscribe((chats) => {
       // Only update if chats have actually changed
@@ -123,11 +118,11 @@ function App() {
     const handleChatUpdated = (event: Event) => {
       const customEvent = event as CustomEvent<{ chatId: string }>;
       if (customEvent.detail?.chatId) {
-        console.log(`Chat updated event received for ID: ${customEvent.detail.chatId}`);
+
         
         // If we have a chatId but no active chat selected, set this as the active chat
         if (!activeChatId) {
-          console.log(`Setting active chat ID to updated chat: ${customEvent.detail.chatId}`);
+
           setActiveChatId(customEvent.detail.chatId);
         }
         
@@ -161,7 +156,6 @@ function App() {
     
     return () => {
       unsubscribe();
-      streamMonitor.stopMonitoring(); // Clean up stream monitor
       window.removeEventListener('chat-created', handleChatCreated);
       window.removeEventListener('chat-updated', handleChatUpdated);
       window.removeEventListener('chat-reset', handleChatReset);
@@ -258,7 +252,7 @@ function App() {
       window.removeEventListener('show-creation-sidebar', () => {});
       window.removeEventListener('stream-creation-update', () => {});
     };
-  }, [creationWindowOpen]);
+  }, [creationWindowOpen, currentCreation]);
 
   // Function to start a new chat
   const handleNewChat = () => {

@@ -22,7 +22,9 @@ import gc
 import ctypes
 import signal
 import atexit
-import requests
+from groq import Groq
+from openai import OpenAI
+import time
 
 # Set environment variables to handle OpenMP issues BEFORE importing any libraries
 # This prevents the "libiomp5md.dll already initialized" error from faster_whisper
@@ -200,8 +202,19 @@ load_dotenv()
 
 # Configure Google Generative AI
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Initialize with longer timeout
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
+
+# Initialize Gemini client if API key is available
+if GEMINI_API_KEY:
+    try:
+        # Initialize with longer timeout
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("Gemini client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Gemini client: {str(e)}")
+        client = None
+else:
+    logger.warning("GEMINI_API_KEY not found in environment variables")
 
 # Configure OpenRouter API
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -210,7 +223,6 @@ openrouter_client = None
 # Initialize OpenRouter client if API key is available
 if OPENROUTER_API_KEY:
     try:
-        from openai import OpenAI
         openrouter_client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
@@ -232,9 +244,7 @@ groq_client = None
 # Initialize Groq client if API key is available
 if GROQ_API_KEY:
     try:
-        from openai import OpenAI
-        groq_client = OpenAI(
-            base_url="https://api.groq.com/openai/v1",
+        groq_client = Groq(
             api_key=GROQ_API_KEY,
         )
         logger.info("Groq client initialized successfully")
@@ -369,8 +379,7 @@ app.safe_exception = safe_exception
 # Dictionary to store chat sessions
 active_chats = {}
 
-# Global trigger for stream monitoring - starts as False
-stream_data_updated = False
+
 
 # Supported file types - expanded based on Gemini API documentation
 SUPPORTED_MIME_TYPES = {
@@ -458,6 +467,14 @@ def load_whisper_model():
             raise e
     return whisper_model
 
+def check_gemini_client():
+    """
+    Check if Gemini client is available and return an error response if not
+    """
+    if client is None:
+        return {"error": "Gemini API client not available. Please check your GEMINI_API_KEY environment variable."}, 503
+    return None, None
+
 def is_openrouter_model(model_name):
     """
     Check if the given model name is an OpenRouter model
@@ -472,6 +489,86 @@ def is_groq_model(model_name):
     groq_models = ["llama-3.3-70b-versatile"]
     return model_name in groq_models
 
+def is_gemini_model(model_name):
+    """
+    Check if the given model name is a Gemini model
+    """
+    # More flexible detection - any model starting with "gemini-" is a Gemini model
+    return model_name.startswith("gemini-")
+
+def supports_file_attachments(model_name):
+    """
+    Check if the model supports file attachments
+    """
+    return is_gemini_model(model_name)
+
+class UnifiedChatSession:
+    """
+    Unified chat session that can switch between different AI providers
+    while maintaining consistent history
+    """
+    
+    def __init__(self, chat_id, initial_model=None):
+        self.id = chat_id
+        self.current_model = initial_model or settings["model"]
+        self.unified_history = []  # OpenAI-compatible format
+        self.files = set()  # Track uploaded files
+        self.created_at = time.time()
+        self.last_updated = time.time()
+        
+    def add_message(self, role, content, reasoning=None):
+        """Add a message to the unified history"""
+        message = {
+            "role": role,
+            "content": content,
+            "timestamp": time.time(),
+            "model": self.current_model
+        }
+        if reasoning:
+            message["reasoning"] = reasoning
+        
+        self.unified_history.append(message)
+        self.last_updated = time.time()
+        
+    def switch_model(self, new_model):
+        """Switch to a different model while preserving history"""
+        if new_model != self.current_model:
+            safe_info(f"Switching chat {self.id} from {self.current_model} to {new_model}")
+            self.current_model = new_model
+            self.last_updated = time.time()
+            
+    def get_history_for_provider(self, model_name=None):
+        """Get chat history formatted for the specified provider"""
+        target_model = model_name or self.current_model
+        
+        # Return OpenAI-compatible format (works for all providers)
+        formatted_history = []
+        for msg in self.unified_history:
+            if msg["role"] in ["user", "assistant"]:
+                formatted_msg = {
+                    "role": msg["role"],
+                    "content": msg["content"]
+                }
+                formatted_history.append(formatted_msg)
+                
+        return formatted_history
+        
+    def get_history_length(self):
+        """Get the number of messages in history"""
+        return len(self.unified_history)
+        
+    def clear_history(self):
+        """Clear all chat history"""
+        self.unified_history = []
+        self.last_updated = time.time()
+        
+    def get_last_user_message(self):
+        """Get the most recent user message"""
+        for msg in reversed(self.unified_history):
+            if msg["role"] == "user":
+                return msg["content"]
+        return None
+
 def get_openai_client_for_model(model_name):
     """
     Get the appropriate OpenAI client based on the model type
@@ -479,7 +576,6 @@ def get_openai_client_for_model(model_name):
     if is_groq_model(model_name):
         if not GROQ_API_KEY:
             raise Exception("Groq API key not available")
-        from openai import OpenAI
         return OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=GROQ_API_KEY,
@@ -488,8 +584,66 @@ def get_openai_client_for_model(model_name):
         if not openrouter_client:
             raise Exception("OpenRouter client not available")
         return openrouter_client
+    elif is_gemini_model(model_name):
+        # Use Gemini via OpenAI compatibility for unified interface
+        if not GEMINI_API_KEY:
+            raise Exception("Gemini API key not available")
+        return OpenAI(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=GEMINI_API_KEY,
+        )
     else:
         raise Exception(f"No client available for model: {model_name}")
+
+def create_unified_chat_response(messages, model_name, system_instruction=None, files=None):
+    """
+    Create a chat response using unified OpenAI-compatible APIs for all providers
+    """
+    client = get_openai_client_for_model(model_name)
+    
+    # Convert messages to OpenAI format
+    openai_messages = []
+    
+    # Add system message first if provided
+    if system_instruction:
+        openai_messages.append({
+            "role": "system",
+            "content": system_instruction
+        })
+    
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        
+        # Convert role if needed
+        if role == "assistant":
+            role = "assistant"
+        elif role == "user":
+            role = "user"
+        else:
+            continue  # Skip unsupported roles
+            
+        openai_messages.append({
+            "role": role,
+            "content": content
+        })
+    
+    # Create request parameters
+    params = {
+        "model": model_name,
+        "messages": openai_messages,
+        "stream": True
+    }
+    
+    # Add reasoning tokens for OpenRouter models that support it
+    if is_openrouter_model(model_name):
+        params["extra_body"] = {"include_reasoning": True}
+    
+    # Use the OpenAI client to create the response
+    response = client.chat.completions.create(**params)
+    
+    # Return the response object that can be iterated over for streaming
+    return response
 
 def create_openai_compatible_chat_response(messages, model_name, system_instruction=None):
     """
@@ -546,11 +700,15 @@ def create_openai_compatible_chat_response(messages, model_name, system_instruct
 # Get available models
 @app.route("/api/models", methods=["GET"])
 def get_models():
-    models = [
-        "gemini-2.5-flash-preview-05-20", 
-        "gemini-2.5-pro-exp-03-25",
-        "gemini-2.0-flash-exp-image-generation"
-    ]
+    models = []
+    
+    # Add Gemini models if client is available
+    if client is not None:
+        models.extend([
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-flash-preview-05-20", 
+            "gemini-2.5-pro-exp-03-25"
+        ])
     
     # Add OpenRouter models if available
     if openrouter_client and OPENROUTER_API_KEY:
@@ -561,7 +719,12 @@ def get_models():
         models.extend(["llama-3.3-70b-versatile"])
     
     return jsonify({
-        "models": models
+        "models": models,
+        "available_clients": {
+            "gemini": client is not None,
+            "openrouter": openrouter_client is not None and OPENROUTER_API_KEY is not None,
+            "groq": GROQ_API_KEY is not None
+        }
     })
 
 # Get current settings
@@ -581,10 +744,128 @@ def update_settings():
     
     return jsonify(settings)
 
+# Switch model for an existing chat
+@app.route("/api/chat/<chat_id>/switch-model", methods=["POST"])
+def switch_chat_model(chat_id):
+    """Switch the model for an existing chat session"""
+    try:
+        data = request.json
+        new_model = data.get("model")
+        
+        if not new_model:
+            return jsonify({"error": "Model is required"}), 400
+            
+        # Validate that we have the necessary client for the new model
+        if is_openrouter_model(new_model):
+            if not openrouter_client or not OPENROUTER_API_KEY:
+                return jsonify({"error": f"OpenRouter model '{new_model}' requested but OpenRouter client not available. Please check your OPENROUTER_API_KEY."}), 503
+        elif is_groq_model(new_model):
+            if not GROQ_API_KEY:
+                return jsonify({"error": f"Groq model '{new_model}' requested but Groq API key not available. Please check your GROQ_API_KEY."}), 503
+        elif is_gemini_model(new_model):
+            if not GEMINI_API_KEY:
+                return jsonify({"error": f"Gemini model '{new_model}' requested but Gemini API key not available. Please check your GEMINI_API_KEY."}), 503
+        else:
+            return jsonify({"error": f"Unknown model: {new_model}"}), 400
+        
+        # Check if chat exists
+        if chat_id not in active_chats:
+            return jsonify({"error": "Chat not found"}), 404
+            
+        chat = active_chats[chat_id]
+        previous_model = getattr(chat, 'current_model', 'unknown')
+        
+        # Convert old chat to UnifiedChatSession if needed
+        if not isinstance(chat, UnifiedChatSession):
+            # Convert legacy chat to unified format
+            unified_chat = UnifiedChatSession(chat_id, new_model)
+            
+            # Try to extract history from the old chat
+            try:
+                if hasattr(chat, 'external_history'):
+                    # OpenRouter/Groq chat
+                    for msg in chat.external_history:
+                        unified_chat.add_message(
+                            msg.get("role"),
+                            msg.get("content", ""),
+                            msg.get("reasoning")
+                        )
+                elif hasattr(chat, 'get_history'):
+                    # Gemini chat - get history and convert
+                    history = chat.get_history()
+                    if history:
+                        for msg in history:
+                            role = "assistant" if msg.role == "model" else msg.role
+                            content = ""
+                            if hasattr(msg, 'parts'):
+                                for part in msg.parts:
+                                    if hasattr(part, 'text') and part.text:
+                                        content += part.text
+                            
+                            if role in ["user", "assistant"] and content:
+                                unified_chat.add_message(role, content)
+                                
+                # Preserve file associations
+                if hasattr(chat, 'files'):
+                    unified_chat.files = chat.files
+                    
+            except Exception as e:
+                safe_warning(f"Error converting chat history during model switch: {str(e)}")
+                # Continue with empty history rather than failing
+                
+            # Replace the old chat with the unified one
+            active_chats[chat_id] = unified_chat
+            chat = unified_chat
+        else:
+            # Already a UnifiedChatSession, just switch the model
+            previous_model = chat.current_model
+            chat.switch_model(new_model)
+        
+        # Update chat history in file
+        try:
+            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+            chats_file = data_dir / "chats.json"
+            
+            if chats_file.exists():
+                with open(chats_file, "r", encoding="utf-8") as f:
+                    chat_history = json.load(f)
+                
+                # Update the chat entry
+                for chat_entry in chat_history.get("chats", []):
+                    if chat_entry.get("id") == chat_id:
+                        chat_entry["model"] = new_model
+                        chat_entry["updated_at"] = datetime.now().isoformat()
+                        break
+                
+                # Save updated chat history
+                with open(chats_file, "w", encoding="utf-8") as f:
+                    json.dump(chat_history, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            safe_warning(f"Failed to update chat model in history file: {str(e)}")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Switched chat {chat_id} to model {new_model}",
+            "chat_id": chat_id,
+            "new_model": new_model,
+            "previous_model": previous_model,
+            "supports_files": supports_file_attachments(new_model),
+            "history_length": chat.get_history_length() if hasattr(chat, 'get_history_length') else 0
+        })
+        
+    except Exception as e:
+        safe_exception(f"Error switching chat model: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
 # List uploaded files
 @app.route("/api/files", methods=["GET"])
 def list_files():
     try:
+        # Check if Gemini client is available
+        error_response, status_code = check_gemini_client()
+        if error_response:
+            return jsonify(error_response), status_code
+            
         files = []
         for file in client.files.list():
             files.append({
@@ -602,6 +883,11 @@ def list_files():
 def list_documents():
     """List all uploaded documents specifically for document processing."""
     try:
+        # Check if Gemini client is available
+        error_response, status_code = check_gemini_client()
+        if error_response:
+            return jsonify(error_response), status_code
+            
         documents = []
         for file in client.files.list():
             # Skip non-active files
@@ -667,6 +953,11 @@ def get_file_state(file_id):
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
     safe_debug("Upload request received")
+    
+    # Check if Gemini client is available
+    error_response, status_code = check_gemini_client()
+    if error_response:
+        return jsonify(error_response), status_code
     
     if 'file' not in request.files:
         safe_error("No file part in the request")
@@ -951,469 +1242,7 @@ def debug_chats():
         logger.exception(f"Error in debug_chats: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Add regex patterns for creation detection
-CREATION_START_PATTERN = r"\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$"
-CREATION_END_PATTERN = r"\$\$end\$\$"
 
-# Add a function to track streaming creations
-def track_streaming_creations(stream, chat_id):
-    """
-    Track creation patterns in the stream and log them to a JSON file.
-    This doesn't affect the original stream and runs in parallel.
-    
-    Args:
-        stream: The original real-time stream from Gemini API
-        chat_id: The ID of the current chat
-        
-    Returns:
-        The original stream unmodified
-    """
-    # Ensure the function never breaks the main streaming flow
-    try:
-        # Get absolute path to data directory
-        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
-        creation_log_dir = data_dir_path / "creation_logs"
-        
-        # Ensure the creation logs directory exists
-        try:
-            creation_log_dir.mkdir(parents=True, exist_ok=True)
-            safe_debug(f"Creation logs directory ensured at: {creation_log_dir}")
-        except Exception as e:
-            safe_error(f"Failed to create creation logs directory: {str(e)}", e)
-            # If we can't create the directory, just pass through the stream without tracking
-            for chunk in stream:
-                yield chunk
-            return
-        
-        # Create a unique ID for this streaming session
-        streaming_id = f"stream_{chat_id}_{uuid.uuid4().hex[:8]}_{int(time.time())}"
-        log_file_path = creation_log_dir / f"{streaming_id}.json"
-        
-        # Create debug log file for detailed tracking
-        debug_log_path = creation_log_dir / f"what_is_happening_in_stream_{streaming_id}.json"
-        
-        # Initialize debug log structure
-        debug_log_data = {
-            "streaming_id": streaming_id,
-            "chat_id": chat_id,
-            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "events": []
-        }
-        
-        def debug_log(event_type, message, data=None):
-            """Write debug event to the debug log file as JSON"""
-            try:
-                event = {
-                    "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
-                    "event_type": event_type,
-                    "message": message
-                }
-                if data:
-                    event["data"] = data
-                
-                debug_log_data["events"].append(event)
-                
-                # Write the updated JSON to file
-                with open(debug_log_path, "w", encoding="utf-8") as f:
-                    json.dump(debug_log_data, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                # Don't let debug logging break the main process, but log the error
-                print(f"Debug log error: {e}")
-        
-        debug_log("session_start", "Streaming debug log started", {
-            "chat_id": chat_id,
-            "streaming_id": streaming_id,
-            "main_log_file": str(log_file_path)
-        })
-        
-        # Initialize log file with simpler structure
-        log_data = {
-            "streaming_id": streaming_id,
-            "chat_id": chat_id,
-            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "full_accumulated_content": "",
-            "outside_creations": {},  # Changed to a dictionary for indexed access
-            "current_outside_index": 1,  # Track the current outside_creation index
-            "inside_creations": {},
-            "start_tag_count": 0,
-            "end_tag_count": 0,
-            "stats": {
-                "total_chunks": 0,
-                "creations_started": 0,
-                "creations_completed": 0,
-                "outside_sections": 0
-            },
-            "completed_at": None
-        }
-        
-        # Initialize first outside_creation section
-        outside_key = f"outside_creation_1"
-        log_data["outside_creations"][outside_key] = {
-            "content": "",
-            "is_active": True,
-            "position": 0
-        }
-        log_data["stats"]["outside_sections"] += 1
-        
-        # Save initial log data
-        try:
-            with open(log_file_path, "w", encoding="utf-8") as f:
-                json.dump(log_data, f, indent=2, ensure_ascii=False)
-            safe_debug(f"Initial log data saved to: {log_file_path}")
-        except Exception as e:
-            safe_error(f"Failed to save initial log data: {str(e)}", e)
-        
-        safe_debug(f"Creation tracking started for chat {chat_id}, log file: {log_file_path}")
-        
-        # Compile regex patterns
-        start_pattern = re.compile(CREATION_START_PATTERN)
-        end_pattern = re.compile(CREATION_END_PATTERN)
-        
-        # Process each chunk in the stream
-        accumulated_content = ""
-        
-        for chunk in stream:
-            try:
-                # Get chunk text
-                chunk_text = chunk.text if hasattr(chunk, 'text') and chunk.text else ""
-                accumulated_content += chunk_text
-                
-                # Debug log the chunk
-                if chunk_text:
-                    # Extract newline replacement outside f-string to avoid backslash in f-string expression
-                    safe_chunk_text = chunk_text.replace('\n', '\\n')
-                    debug_log("chunk_processed", f"CHUNK: '{safe_chunk_text}'")
-                
-                # Update statistics
-                log_data["stats"]["total_chunks"] += 1
-                
-                # Update full accumulated content
-                log_data["full_accumulated_content"] = accumulated_content
-                
-                # Get ALL start and end matches in the current accumulated content
-                start_matches = list(start_pattern.finditer(accumulated_content))
-                end_matches = list(end_pattern.finditer(accumulated_content))
-                
-                # Debug log current state
-                debug_log("state_update", f"ACCUMULATED LENGTH: {len(accumulated_content)}")
-                debug_log("state_update", f"START MATCHES: {len(start_matches)} (processed: {log_data['start_tag_count']})")
-                debug_log("state_update", f"END MATCHES: {len(end_matches)} (processed: {log_data['end_tag_count']})")
-                
-                # Check counts to determine the current state
-                start_count = log_data["start_tag_count"]
-                end_count = log_data["end_tag_count"]
-                current_outside_index = log_data["current_outside_index"]
-                
-                debug_log("state_update", f"CURRENT STATE: start_count={start_count}, end_count={end_count}, outside_index={current_outside_index}")
-                debug_log("state_update", f"INSIDE CREATION: {start_count > end_count}")
-                
-                # Process any new start tags
-                while len(start_matches) > start_count:
-                    # We found a new start tag
-                    new_start_match = start_matches[start_count]
-                    start_pos = new_start_match.start()
-                    
-                    debug_log("new_tag_found", f"NEW START TAG FOUND at position {start_pos}: {new_start_match.group(0)}")
-                    
-                    # Get the current outside creation to finalize its content
-                    current_outside_key = f"outside_creation_{current_outside_index}"
-                    if current_outside_key in log_data["outside_creations"]:
-                        current_outside = log_data["outside_creations"][current_outside_key]
-                        outside_start_pos = current_outside["position"]
-                        
-                        debug_log("tag_finalized", f"FINALIZING {current_outside_key} from pos {outside_start_pos} to {start_pos}")
-                        
-                        # Extract content from the current outside section's start to this start tag
-                        # CRITICAL FIX: Only extract content if it doesn't contain creation markers
-                        if start_pos > outside_start_pos and outside_start_pos >= 0:
-                            potential_outside_content = accumulated_content[outside_start_pos:start_pos]
-                            
-                            # STRICT VALIDATION: Outside content should NOT contain creation blocks
-                            if "$$creation:" not in potential_outside_content and "$$end$$" not in potential_outside_content:
-                                outside_content = potential_outside_content
-                                safe_outside_content = outside_content.replace('\n', '\\n')
-                                debug_log("content_updated", f"OUTSIDE CONTENT: '{safe_outside_content}'")
-                                
-                                # Finalize the current outside creation entry
-                                current_outside.update({
-                                    "content": outside_content,
-                                    "is_active": False,
-                                    "end_position": start_pos
-                                })
-                                
-                                debug_log("tag_finalized", f"FINALIZED {current_outside_key}")
-                            else:
-                                # SAFETY: If content contains creation markers, it's corrupted - use empty content
-                                debug_log("content_corrupted", f"CONTENT CORRUPTED: contains creation markers, using empty content")
-                                current_outside.update({
-                                    "content": "",
-                                    "is_active": False,
-                                    "end_position": start_pos,
-                                    "error": "Content contained creation markers - cleared for safety"
-                                })
-                                
-                                debug_log("tag_finalized", f"FINALIZED {current_outside_key} (with error)")
-                        else:
-                            # Invalid position or no content - set as empty
-                            debug_log("invalid_position", f"INVALID POSITION: start_pos={start_pos}, outside_start_pos={outside_start_pos}")
-                            current_outside.update({
-                                "content": "",
-                                "is_active": False,
-                                "end_position": start_pos,
-                                "error": "Invalid position boundaries"
-                            })
-                            
-                            debug_log("tag_finalized", f"FINALIZED {current_outside_key} (invalid position)")
-                        
-                        # Create a placeholder for the next outside creation (will be properly set up when the creation ends)
-                        # This prevents the streaming logic from continuing to update the finalized outside creation
-                        next_outside_index = current_outside_index + 1
-                        next_outside_key = f"outside_creation_{next_outside_index}"
-                        log_data["outside_creations"][next_outside_key] = {
-                            "content": "",
-                            "is_active": False,  # Will be activated when the creation ends
-                            "position": -1,  # Will be set when the creation ends
-                            "placeholder": True
-                        }
-                        log_data["current_outside_index"] = next_outside_index
-                        current_outside_index = next_outside_index
-                        
-                        debug_log("placeholder_created", f"CREATED PLACEHOLDER {next_outside_key}")
-                    
-                    # Extract creation details
-                    creation_type = new_start_match.group(1)
-                    title_part = new_start_match.group(2) if new_start_match.group(2) else ""
-                    
-                    # Parse language if present
-                    language = None
-                    title = title_part.strip() if title_part else ""
-                    if title and ":" in title:
-                        parts = title.split(":", 1)
-                        language = parts[0].strip()
-                        title = parts[1].strip()
-                    
-                    debug_log("creation_details", f"CREATION DETAILS: type={creation_type}, title='{title}', language={language}")
-                    
-                    # Create a new inside creation entry
-                    creation_key = f"inside_creation_{start_count + 1}"
-                    log_data["inside_creations"][creation_key] = {
-                        "type": creation_type,
-                        "title": title,
-                        "language": language,
-                        "content": "",  # Will accumulate content after the start tag
-                        "is_complete": False,
-                        "start_position": start_pos,
-                        "start_tag": new_start_match.group(0)
-                    }
-                    
-                    # Increment start tag count
-                    log_data["start_tag_count"] = start_count + 1
-                    start_count += 1
-                    log_data["stats"]["creations_started"] += 1
-                    
-                    debug_log("creation_created", f"CREATED {creation_key}")
-                
-                # Process any new end tags
-                while len(end_matches) > end_count:
-                    # We found a new end tag
-                    new_end_match = end_matches[end_count]
-                    end_pos = new_end_match.end()
-                    
-                    debug_log("new_tag_found", f"NEW END TAG FOUND at position {new_end_match.start()}-{end_pos}")
-                    
-                    # Get the corresponding creation
-                    creation_key = f"inside_creation_{end_count + 1}"
-                    if creation_key in log_data["inside_creations"]:
-                        current_creation = log_data["inside_creations"][creation_key]
-                        start_tag = current_creation["start_tag"]
-                        start_tag_end = current_creation["start_position"] + len(start_tag)
-                        
-                        # Extract content between start and end tags
-                        creation_content = accumulated_content[start_tag_end:new_end_match.start()]
-                        current_creation["content"] = creation_content
-                        current_creation["is_complete"] = True
-                        current_creation["end_position"] = end_pos
-                        current_creation["end_tag"] = "$$end$$"
-                        
-                        debug_log("creation_completed", f"COMPLETED {creation_key} with content length {len(creation_content)}")
-                        
-                        # Increment end tag count
-                        log_data["end_tag_count"] = end_count + 1
-                        end_count += 1
-                        log_data["stats"]["creations_completed"] += 1
-                        
-                        # Check if we already have a placeholder outside creation set up from the start tag processing
-                        current_outside_key = f"outside_creation_{current_outside_index}"
-                        if (current_outside_key in log_data["outside_creations"] and 
-                            log_data["outside_creations"][current_outside_key].get("placeholder", False)):
-                            # Activate the existing placeholder
-                            placeholder_outside = log_data["outside_creations"][current_outside_key]
-                            placeholder_outside.update({
-                                "is_active": True,
-                                "position": end_pos,
-                                "after_creation": creation_key
-                            })
-                            # Remove the placeholder flag
-                            placeholder_outside.pop("placeholder", None)
-                            log_data["stats"]["outside_sections"] += 1
-                            
-                            debug_log("placeholder_activated", f"ACTIVATED PLACEHOLDER {current_outside_key} at position {end_pos}")
-                        else:
-                            # Start a new outside creation section after this end tag (fallback)
-                            new_outside_index = current_outside_index + 1
-                            new_outside_key = f"outside_creation_{new_outside_index}"
-                            log_data["outside_creations"][new_outside_key] = {
-                                "content": "",  # Will be updated as more content comes
-                                "is_active": True,
-                                "position": end_pos,
-                                "after_creation": creation_key
-                            }
-                            log_data["current_outside_index"] = new_outside_index
-                            current_outside_index = new_outside_index
-                            log_data["stats"]["outside_sections"] += 1
-                            
-                            debug_log("fallback_created", f"FALLBACK: CREATED NEW {new_outside_key} at position {end_pos}")
-                
-                # Update content for any active creations or outside sections
-                # COMPLETELY REWRITTEN LOGIC FOR OUTSIDE CREATION UPDATES
-                if start_count > end_count:
-                    # We're inside a creation, update its content
-                    active_creation_key = f"inside_creation_{end_count + 1}"
-                    if active_creation_key in log_data["inside_creations"]:
-                        active_creation = log_data["inside_creations"][active_creation_key]
-                        start_tag = active_creation["start_tag"]
-                        start_tag_end = active_creation["start_position"] + len(start_tag)
-                        
-                        # Get content from after the start tag to current position
-                        if len(accumulated_content) > start_tag_end:
-                            active_creation["content"] = accumulated_content[start_tag_end:]
-                            debug_log("content_updated", f"UPDATED {active_creation_key} content (length: {len(active_creation['content'])})")
-                else:
-                    # We're outside any creation, update the active outside section
-                    active_outside_key = f"outside_creation_{current_outside_index}"
-                    if active_outside_key in log_data["outside_creations"]:
-                        active_outside = log_data["outside_creations"][active_outside_key]
-                        
-                        # Only update if this outside creation is still active (not finalized)
-                        if active_outside.get("is_active", False):
-                            outside_pos = active_outside["position"]
-                            
-                            debug_log("outside_section_updated", f"UPDATING {active_outside_key} from position {outside_pos}")
-                            
-                            # CRITICAL FIX: Prevent outside creations from EVER containing creation blocks
-                            if len(accumulated_content) > outside_pos and outside_pos >= 0:
-                                # Get content from the outside position to current position
-                                potential_content = accumulated_content[outside_pos:]
-                                
-                                # STRICT VALIDATION: If content contains ANY creation markers, do not update
-                                if "$$creation:" in potential_content or "$$end$$" in potential_content:
-                                    debug_log("creation_markers_blocked", f"BLOCKED UPDATE: {active_outside_key} would contain creation markers")
-                                    # Immediately finalize this outside creation as corrupted
-                                    active_outside.update({
-                                        "content": "",
-                                        "is_active": False,
-                                        "error": "Content contained creation markers - blocked for safety"
-                                    })
-                                    debug_log("auto_finalized", f"AUTO-FINALIZED {active_outside_key} due to creation markers")
-                                else:
-                                    # Find the next creation start tag in the potential content
-                                    next_creation_match = start_pattern.search(potential_content)
-                                    
-                                    if next_creation_match:
-                                        # There's a creation tag in the potential content - only take content up to that tag
-                                        safe_content = potential_content[:next_creation_match.start()]
-                                        debug_log("boundary_found", f"BOUNDARY FOUND: limiting content to {len(safe_content)} chars (next creation at {next_creation_match.start()})")
-                                        
-                                        # Only update if we have content and it's not getting shorter
-                                        if len(safe_content) >= len(active_outside.get("content", "")):
-                                            active_outside["content"] = safe_content
-                                            safe_safe_content = safe_content.replace('\n', '\\n')
-                                            debug_log("content_updated", f"SAFE UPDATE: {active_outside_key} content = '{safe_safe_content}'")
-                                        else:
-                                            debug_log("skipped_update", f"SKIPPED UPDATE: content would be shorter ({len(safe_content)} < {len(active_outside.get('content', ''))})")
-                                    else:
-                                        # No creation tag found, safe to use all potential content
-                                        if len(potential_content) >= len(active_outside.get("content", "")):
-                                            active_outside["content"] = potential_content
-                                            safe_potential_content = potential_content.replace('\n', '\\n')
-                                            debug_log("full_update", f"FULL UPDATE: {active_outside_key} content = '{safe_potential_content}'")
-                                        else:
-                                            debug_log("skipped_update", f"SKIPPED UPDATE: content would be shorter")
-                            else:
-                                debug_log("invalid_outside_position", f"INVALID OUTSIDE POSITION: outside_pos={outside_pos}, content_len={len(accumulated_content)}")
-                        else:
-                            debug_log("skipped_update", f"SKIPPED UPDATE: {active_outside_key} is not active")
-                
-                # Add separator event for readability between chunks
-                debug_log("chunk_separator", "")
-            
-            except Exception as e:
-                # Error during chunk processing - log it but continue
-                safe_error(f"Error processing chunk in creation tracking: {str(e)}", e)
-                debug_log("error_occurred", f"ERROR: {str(e)}")
-            
-            # Save updated log after each chunk (REPLACE previous state)
-            try:
-                with open(log_file_path, "w", encoding="utf-8") as f:
-                    json.dump(log_data, f, indent=2, ensure_ascii=False)
-                
-                # TRIGGER: Set global flag that new stream data is available
-                global stream_data_updated
-                stream_data_updated = True
-                
-            except Exception as save_error:
-                # Don't let file save errors break the stream
-                safe_error(f"Error saving creation log after chunk: {str(save_error)}", save_error)
-            
-            # Always yield the original chunk unmodified
-            yield chunk
-        
-        # Final processing - handle any remaining outside content
-        debug_log("final_processing", "=== FINAL PROCESSING ===")
-        if accumulated_content:
-            # Final cleanup of outside content
-            active_outside_key = f"outside_creation_{current_outside_index}"
-            if active_outside_key in log_data["outside_creations"]:
-                active_outside = log_data["outside_creations"][active_outside_key]
-                if active_outside.get("is_active", False):
-                    outside_pos = active_outside["position"]
-                    if len(accumulated_content) > outside_pos:
-                        final_content = accumulated_content[outside_pos:]
-                        
-                        # Final boundary check
-                        if "$$creation:" not in final_content and "$$end$$" not in final_content:
-                            active_outside["content"] = final_content
-                            safe_final_content = final_content.replace('\n', '\\n')
-                            debug_log("final_update", f"FINAL UPDATE: {active_outside_key} = '{safe_final_content}'")
-                        else:
-                            debug_log("final_skip", f"FINAL SKIP: {active_outside_key} contains creation markers")
-                        
-                        active_outside["is_active"] = False
-        
-        # Final log update
-        log_data["completed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Save final log
-        with open(log_file_path, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, indent=2, ensure_ascii=False)
-        
-        debug_log("final_log_saved", "=== FINAL LOG SAVED ===")
-        debug_log("final_stats", f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed")
-        debug_log("final_stats", f"Outside sections: {log_data['stats']['outside_sections']}")
-        debug_log("final_log_ended", "=== STREAMING DEBUG LOG ENDED ===")
-        
-        creation_stats = f"Creations: {log_data['stats']['creations_started']} started, {log_data['stats']['creations_completed']} completed, {log_data['stats']['outside_sections']} outside sections"
-        safe_debug(f"Creation tracking completed for chat {chat_id}, {creation_stats}, log file: {log_file_path}")
-    
-    except Exception as e:
-        # If there's any error in the tracking logic, just log it and pass through the stream
-        safe_error(f"Error in creation tracking: {str(e)}", e)
-        
-        # Pass through the original stream unmodified
-        for chunk in stream:
-            yield chunk
-
-# Modify the chat function to add creation tracking
 @app.route("/api/chat", methods=["POST"])
 def chat():
     try:
@@ -1423,6 +1252,19 @@ def chat():
         messages = data.get("messages", [])
         model_name = data.get("model", settings["model"])
         # We'll ignore cache_id since caching is removed
+        
+        # Validate that we have the necessary client for the requested model
+        if is_openrouter_model(model_name):
+            if not openrouter_client or not OPENROUTER_API_KEY:
+                return jsonify({"error": f"OpenRouter model '{model_name}' requested but OpenRouter client not available. Please check your OPENROUTER_API_KEY."}), 503
+        elif is_groq_model(model_name):
+            if not GROQ_API_KEY:
+                return jsonify({"error": f"Groq model '{model_name}' requested but Groq API key not available. Please check your GROQ_API_KEY."}), 503
+        else:
+            # Default to Gemini models
+            error_response, status_code = check_gemini_client()
+            if error_response:
+                return jsonify(error_response), status_code
         
         # Get or create chat session ID
         chat_id = data.get("chat_id")  # Frontend might send a chat ID to continue a conversation
@@ -1518,71 +1360,20 @@ def chat():
         if new_chat:
             logger.debug(f"Creating new chat with model: {model_name}")
             
-            if is_openrouter_model(model_name) or is_groq_model(model_name):
-                # For OpenAI-compatible models (OpenRouter/Groq), create a simple chat object to store history
-                class OpenAICompatibleChat:
-                    def __init__(self, chat_id, model):
-                        self.id = chat_id
-                        self.model = model
-                        self.external_history = []
-                        self.files = set()
-                        
-                    def get_history(self):
-                        # Return empty list since external history is stored differently
-                        return []
-                
-                # Initialize external history if available
-                if history_messages:
-                    external_history = []
-                    for msg in history_messages:
-                        if msg["role"] in ["user", "assistant"] and msg.get("content"):
-                            external_history.append({
-                                "role": msg["role"],
-                                "content": msg["content"]
-                            })
-                    model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
-                    safe_debug(f"Initializing {model_type} chat with {len(external_history)} history messages")
-                else:
-                    external_history = []
-                
-                # Generate a unique ID if not provided
-                if not chat_id:
-                    prefix = "openrouter" if is_openrouter_model(model_name) else "groq"
-                    chat_id = f"{prefix}_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-                
-                # Create OpenAI-compatible chat object
-                chat = OpenAICompatibleChat(chat_id, model_name)
-                chat.external_history = external_history
-                
-            else:
-                # Standard Gemini chat creation
-                if history_messages:
-                    # Convert history messages to the format expected by the API
-                    api_history = []
-                    for msg in history_messages:
-                        role = "model" if msg["role"] == "assistant" else msg["role"]
-                        api_history.append(
-                            types.Content(
-                                role=role,
-                                parts=[types.Part(text=msg["content"])]
-                            )
-                        )
-                    
-                    safe_debug(f"Initializing Gemini chat with {len(api_history)} history messages")
-                    chat = client.chats.create(
-                        model=model_name,
-                        history=api_history
-                    )
-                else:
-                    # For truly new chats with no history
-                    chat = client.chats.create(model=model_name)
-                
-                # Generate a unique ID if not provided
-                if not chat_id:
-                    chat_id = str(id(chat))
-                
-                # Add a files attribute to track files used in this chat session
-                chat.files = set()
+            # Use unified chat session for all providers
+            chat = UnifiedChatSession(chat_id, model_name)
+            
+            # Initialize history if available
+            if history_messages:
+                safe_debug(f"Initializing unified chat with {len(history_messages)} history messages")
+                for msg in history_messages:
+                    if msg["role"] in ["user", "assistant"] and msg.get("content"):
+                        chat.add_message(msg["role"], msg["content"])
+            
+            # Generate a unique ID if not provided
+            if not chat_id:
+                chat_id = f"unified_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+                chat.id = chat_id
             
             # Store the chat in our dictionary
             active_chats[chat_id] = chat
@@ -1681,54 +1472,7 @@ def chat():
                 # Don't fail the chat if history update fails
                 safe_error(f"Failed to update chat history timestamp: {str(e)}", e)
         
-        def buffer_and_delay(stream, delay_seconds: float = 0.0):
-            """Return a generator that re‑emits *stream* exactly *delay_seconds*
-            after the first chunk while keeping the *original* inter‑chunk timing.
 
-            Effectively two rabbits run at the same speed but the second one starts
-            `delay_seconds` later.  Implementation details:
-            * Every incoming chunk is timestamped (time.perf_counter, ms resolution)
-              and stored in an OrderedDict keyed by its sequential index.
-            * While streaming we continuously check if the scheduled send‑time of
-              the *oldest* buffered chunk has passed; if so, we yield it.
-            * After the upstream generator exhausts, we flush whatever is left
-              respecting the exact remaining timing.
-            """
-            import collections, time
-
-            buffer: "collections.OrderedDict[int, tuple]" = collections.OrderedDict()
-            first_arrival: float | None = None
-            seq = 0
-
-            # Helper to attempt emitting ready chunks
-            def _flush_ready(now: float):
-                while buffer:
-                    idx, (chunk_obj, delta_from_start) = next(iter(buffer.items()))
-                    # Scheduled send‑time = first_arrival + delay + delta
-                    if now >= first_arrival + delay_seconds + delta_from_start:
-                        yield buffer.popitem(last=False)[1][0]
-                    else:
-                        break
-
-            for upstream_chunk in stream:
-                now = time.perf_counter()
-                if first_arrival is None:
-                    first_arrival = now
-                delta = now - first_arrival          # seconds since first chunk
-                buffer[seq] = (upstream_chunk, delta)
-                seq += 1
-
-                # Emit whatever is due *before* blocking for next upstream chunk
-                yield from _flush_ready(time.perf_counter())
-
-            # Upstream is finished – flush the remainder keeping timing exact
-            for _, (chunk_obj, delta_from_start) in list(buffer.items()):
-                scheduled_time = first_arrival + delay_seconds + delta_from_start
-                remaining = scheduled_time - time.perf_counter()
-                if remaining > 0:
-                    time.sleep(remaining)
-                yield chunk_obj
-                buffer.popitem(last=False)
 
         # Get the latest user message
         latest_message = messages[-1] if messages and messages[-1]["role"] == "user" else None
@@ -1809,116 +1553,41 @@ def chat():
             # Send message with all parts and stream the response
             safe_debug(f"Sending message to chat ID {chat_id} with {len(parts)} parts", parts)
             
-            # Check if we're using an OpenAI-compatible model (OpenRouter/Groq)
-            if is_openrouter_model(model_name) or is_groq_model(model_name):
-                model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
-                safe_debug(f"Using {model_type} model: {model_name}")
-                
-                # For OpenAI-compatible models, we need to handle differently since they don't support files
-                if len(parts) > 1:
-                    # If there are file attachments, convert them to text descriptions
-                    text_content = ""
-                    for part in parts:
-                        if isinstance(part, str):
-                            text_content += part
-                        else:
-                            # For file objects, add a description
-                            text_content += "[File attachment: processing not supported with this model]"
-                    parts = [text_content]
-                
-                try:
-                    # Get the chat history for external models
-                    if chat_id in active_chats and hasattr(active_chats[chat_id], 'external_history'):
-                        external_history = active_chats[chat_id].external_history
+            # Check if files are supported for this model
+            if not supports_file_attachments(model_name) and len(parts) > 1:
+                # Convert file attachments to text descriptions for non-Gemini models
+                text_content = ""
+                for part in parts:
+                    if isinstance(part, str):
+                        text_content += part
                     else:
-                        # Initialize external history from Gemini history if available
-                        external_history = []
-                        if chat_id in active_chats:
-                            try:
-                                gemini_history = active_chats[chat_id].get_history()
-                                for msg in gemini_history:
-                                    role = "assistant" if msg.role == "model" else msg.role
-                                    content = ""
-                                    if hasattr(msg, 'parts'):
-                                        for part in msg.parts:
-                                            if hasattr(part, 'text') and part.text:
-                                                content += part.text
-                                    
-                                    if role in ["user", "assistant"] and content:
-                                        external_history.append({
-                                            "role": role,
-                                            "content": content
-                                        })
-                            except Exception as e:
-                                safe_debug(f"Error converting Gemini history: {str(e)}", e)
-                        
-                        # Store the history on the chat object
-                        if chat_id in active_chats:
-                            active_chats[chat_id].external_history = external_history
-                    
-                    # Add the new user message
-                    current_messages = external_history + [{
-                        "role": "user",
-                        "content": parts[0] if parts else ""
-                    }]
-                    
-                    # Create response using unified OpenAI-compatible client
-                    response = create_openai_compatible_chat_response(current_messages, model_name, creations_system_instruction)
-                    
-                    # Create a wrapper for tracking content
-                    def create_content_wrapper(original_stream):
-                        """Wrap OpenAI-compatible stream for creation tracking"""
-                        for chunk in original_stream:
-                            # Create a wrapper that exposes text property for creation tracking
-                            class FilteredChunk:
-                                def __init__(self, original_chunk):
-                                    # Copy all attributes from the original chunk
-                                    self.__dict__.update(original_chunk.__dict__)
-                                    
-                                    # Set the text property for creation tracking
-                                    if (hasattr(original_chunk, 'choices') and original_chunk.choices and 
-                                        hasattr(original_chunk.choices[0], 'delta') and 
-                                        hasattr(original_chunk.choices[0].delta, 'content') and 
-                                        original_chunk.choices[0].delta.content):
-                                        # Only expose content text for creation tracking
-                                        self.text = original_chunk.choices[0].delta.content
-                                    else:
-                                        # No content in this chunk, set empty text for creation tracking
-                                        self.text = ""
-                            
-                            yield FilteredChunk(chunk)
-                    
-                    # Option 1: Use raw stream directly (fastest)
-                    delayed_response = response
-                    
-                    # Option 2: Keep creation tracking but no delay (uncomment if you want creation tracking)
-                    # content_filtered_response = create_content_wrapper(response)
-                    # delayed_response = track_streaming_creations(content_filtered_response, chat_id)
-                    
-                except Exception as e:
-                    safe_debug(f"Error during {model_type} request: {str(e)}", e)
-                    return jsonify({"error": str(e)}), 500
-
-            else:
-                # Use standard Gemini API for standard models
-                safe_debug("Using Gemini API for standard models")
+                        # For file objects, add a description
+                        text_content += "[File attachment: processing not supported with this model]"
+                parts = [text_content]
                 
-                try:
-                    # Send message with system instruction
-                    response = chat.send_message_stream(
-                        parts, 
-                        config=config
-                    )
-                    
-                    # Option 1: Use raw stream directly (fastest)
-                    delayed_response = response
-                    
-                    # Option 2: Keep creation tracking but no delay (uncomment if you want creation tracking)
-                    # delayed_response = track_streaming_creations(response, chat_id)
-                    
-                except Exception as e:
-                    safe_debug(f"Error during send_message_stream: {str(e)}", e)
-                    return jsonify({"error": str(e)}), 500
+            try:
+                # Add the user message to our unified history
+                user_message_content = parts[0] if parts and isinstance(parts[0], str) else ""
+                if user_message_content:
+                    chat.add_message("user", user_message_content)
+                
+                # Get history for the current provider
+                history_for_provider = chat.get_history_for_provider(model_name)
+                
+                # Create response using unified approach
+                safe_debug(f"Using unified interface for model: {model_name}")
+                response = create_unified_chat_response(
+                    history_for_provider, 
+                    model_name, 
+                    creations_system_instruction
+                )
+                
+                # Use raw stream directly (fastest approach)
+                delayed_response = response
+                
+            except Exception as e:
+                safe_debug(f"Error during unified chat request: {str(e)}", e)
+                return jsonify({"error": str(e)}), 500
             
             def generate():
                 # Add a try-except block around the entire streaming process
@@ -1930,32 +1599,25 @@ def chat():
                         try:
                             chunk_text = ""
                             
-                            # Handle different response types (Gemini vs OpenAI-compatible)
-                            if is_openrouter_model(model_name) or is_groq_model(model_name):
-                                # OpenAI-compatible response structure (OpenRouter/Groq)
-                                if hasattr(chunk, 'choices') and chunk.choices:
-                                    delta = chunk.choices[0].delta
-                                    
-                                    # Handle reasoning tokens (OpenRouter only)
-                                    if hasattr(delta, 'reasoning') and delta.reasoning and is_openrouter_model(model_name):
-                                        reasoning_data = {'reasoning': delta.reasoning, 'chat_id': chat_id}
-                                        # Accumulate reasoning for saving to history
-                                        accumulated_reasoning += delta.reasoning
-                                        safe_debug(f"[REASONING] Backend sending reasoning chunk: {delta.reasoning[:100]}...")
-                                        try:
-                                            json_data = json.dumps(reasoning_data)
-                                            yield f"data: {json_data}\n\n"
-                                        except (UnicodeEncodeError, json.JSONDecodeError) as e:
-                                            safe_warning(f"Error encoding reasoning chunk: {str(e)}")
-                                    
-                                    # Handle content tokens
-                                    if hasattr(delta, 'content') and delta.content:
-                                        chunk_text = delta.content
-                                        assistant_response += chunk_text
-                            else:
-                                # Gemini response structure
-                                if hasattr(chunk, 'text') and chunk.text:
-                                    chunk_text = chunk.text
+                            # Handle unified OpenAI-compatible response structure
+                            if hasattr(chunk, 'choices') and chunk.choices:
+                                delta = chunk.choices[0].delta
+                                
+                                # Handle reasoning tokens (OpenRouter only)
+                                if hasattr(delta, 'reasoning') and delta.reasoning and is_openrouter_model(model_name):
+                                    reasoning_data = {'reasoning': delta.reasoning, 'chat_id': chat_id}
+                                    # Accumulate reasoning for saving to history
+                                    accumulated_reasoning += delta.reasoning
+                                    safe_debug(f"[REASONING] Backend sending reasoning chunk: {delta.reasoning[:100]}...")
+                                    try:
+                                        json_data = json.dumps(reasoning_data)
+                                        yield f"data: {json_data}\n\n"
+                                    except (UnicodeEncodeError, json.JSONDecodeError) as e:
+                                        safe_warning(f"Error encoding reasoning chunk: {str(e)}")
+                                
+                                # Handle content tokens
+                                if hasattr(delta, 'content') and delta.content:
+                                    chunk_text = delta.content
                                     assistant_response += chunk_text
                             
                             if chunk_text:
@@ -1981,73 +1643,31 @@ def chat():
                             # Send a safe error message 
                             yield f"data: {json.dumps({'error': 'Error processing response chunk', 'chat_id': chat_id})}\n\n"
                     
-                    # Log the complete history after the response is done and handle OpenRouter history
+                    # Log the complete history after the response is done
                     try:
-                        if is_openrouter_model(model_name) or is_groq_model(model_name):
-                            # For OpenAI-compatible models, update the stored history
-                            if chat_id in active_chats:
-                                if not hasattr(active_chats[chat_id], 'external_history'):
-                                    active_chats[chat_id].external_history = []
-                                
-                                # Add the assistant response to history with reasoning if available
-                                if assistant_response.strip():
-                                    assistant_message = {
-                                        "role": "assistant",
-                                        "content": assistant_response
-                                    }
-                                    # Include reasoning if we accumulated any (OpenRouter only)
-                                    if accumulated_reasoning.strip() and is_openrouter_model(model_name):
-                                        assistant_message["reasoning"] = accumulated_reasoning
-                                        safe_debug(f"[REASONING] Saving reasoning to history: {len(accumulated_reasoning)} chars")
-                                    
-                                    active_chats[chat_id].external_history.append(assistant_message)
-                                
-                                # Use external history for saving
-                                formatted_messages = active_chats[chat_id].external_history.copy()
-                                model_type = "OpenRouter" if is_openrouter_model(model_name) else "Groq"
-                                safe_debug(f"{model_type} chat {chat_id} history after response - length: {len(formatted_messages)}")
-                        else:
-                            # Standard Gemini history handling
-                            history = chat.get_history()
-                            safe_debug(f"Chat {chat_id} history after response - length: {len(history) if history else 0}")
+                        # Add the assistant response to unified history
+                        if assistant_response.strip():
+                            reasoning_to_save = accumulated_reasoning if accumulated_reasoning.strip() and is_openrouter_model(model_name) else None
+                            if reasoning_to_save:
+                                safe_debug(f"[REASONING] Saving reasoning to history: {len(accumulated_reasoning)} chars")
                             
-                            # Log a sample of the history to verify it's working - safely
-                            if history and len(history) > 0:
-                                for i, msg in enumerate(history[-3:]):  # Only log last 3 messages to reduce log size
-                                    try:
-                                        safe_content = ""
-                                        if msg.parts and hasattr(msg.parts[0], 'text'):
-                                            safe_content = msg.parts[0].text[:50].replace('\n', ' ') + "..."
-                                        safe_debug(f"History item {i}: role={msg.role}, content={safe_content}")
-                                    except Exception as e:
-                                        safe_debug(f"History item {i}: role={msg.role}, [Error accessing content: {str(e)}]")
-                            
-                            # Format the messages for storage - convert 'model' role to 'assistant'
-                            formatted_messages = []
-                            previous_role = None
-                            for msg in history:
-                                # Map the Gemini API 'model' role to 'assistant' for frontend consistency
-                                role = "assistant" if msg.role == "model" else msg.role
-                                
-                                # Extract text content from message parts
-                                content = ""
-                                if hasattr(msg, 'parts'):
-                                    for part in msg.parts:
-                                        if hasattr(part, 'text') and part.text:
-                                            content += part.text
-                                
-                                # Combine consecutive assistant messages
-                                if role == "assistant" and previous_role == "assistant" and formatted_messages:
-                                    # Append this content to the previous assistant message
-                                    formatted_messages[-1]["content"] += content
-                                else:
-                                    # Add as a new message
-                                    formatted_messages.append({
-                                        "role": role,
-                                        "content": content
-                                    })
-                                
-                                previous_role = role
+                            chat.add_message("assistant", assistant_response, reasoning_to_save)
+                        
+                        # Get formatted messages for saving to file
+                        formatted_messages = chat.unified_history.copy()
+                        
+                        # Convert to the format expected by the frontend (remove metadata)
+                        simplified_messages = []
+                        for msg in formatted_messages:
+                            simplified_msg = {
+                                "role": msg["role"],
+                                "content": msg["content"]
+                            }
+                            if "reasoning" in msg:
+                                simplified_msg["reasoning"] = msg["reasoning"]
+                            simplified_messages.append(simplified_msg)
+                        
+                        safe_debug(f"Unified chat {chat_id} history after response - length: {len(simplified_messages)}")
                                 
                         # Save the complete chat messages to the chat history file
                         try:
@@ -2070,7 +1690,7 @@ def chat():
                             for chat_entry in chat_history.get("chats", []):
                                 if chat_entry.get("id") == chat_id:
                                     chat_entry["updated_at"] = datetime.now().isoformat()
-                                    chat_entry["messages"] = formatted_messages
+                                    chat_entry["messages"] = simplified_messages
                                     chat_updated = True
                                     break
                             
@@ -2084,8 +1704,8 @@ def chat():
                                     "model": model_name,
                                     "created_at": timestamp,
                                     "updated_at": timestamp,
-                                    "first_message": formatted_messages[0]["content"][:100] if formatted_messages else "",
-                                    "messages": formatted_messages
+                                    "first_message": simplified_messages[0]["content"][:100] if simplified_messages else "",
+                                    "messages": simplified_messages
                                 }
                                 chat_history.setdefault("chats", []).append(new_chat_entry)
                             
@@ -2093,7 +1713,7 @@ def chat():
                             with open(chats_file, "w", encoding="utf-8") as f:
                                 json.dump(chat_history, f, indent=2, ensure_ascii=False)
                             
-                            safe_debug(f"Saved {len(formatted_messages)} messages for chat {chat_id}")
+                            safe_debug(f"Saved {len(simplified_messages)} messages for chat {chat_id}")
                         except Exception as e:
                             safe_error(f"Failed to save chat messages: {str(e)}", e)
                                 
@@ -2282,15 +1902,28 @@ def get_chat(chat_id):
             chat = active_chats[chat_id]
             
             try:
-                # Check if this is an external (OpenAI-compatible) chat
-                if hasattr(chat, 'external_history'):
-                    # For external chats, use the stored history directly
+                # Check if this is a unified chat session
+                if isinstance(chat, UnifiedChatSession):
+                    # For unified chats, convert the history to frontend format
+                    messages = []
+                    for msg in chat.unified_history:
+                        formatted_msg = {
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        }
+                        if "reasoning" in msg:
+                            formatted_msg["reasoning"] = msg["reasoning"]
+                        messages.append(formatted_msg)
+                    
+                    safe_debug(f"Retrieved {len(messages)} messages from unified chat {chat_id}")
+                elif hasattr(chat, 'external_history'):
+                    # Legacy external chat format
                     messages = chat.external_history.copy()
-                    model_type = "OpenRouter" if is_openrouter_model(chat.model) else "Groq" if is_groq_model(chat.model) else "External"
-                    safe_debug(f"Retrieved {len(messages)} messages from {model_type} chat {chat_id}")
+                    model_type = "OpenRouter" if is_openrouter_model(getattr(chat, 'model', '')) else "Groq" if is_groq_model(getattr(chat, 'model', '')) else "External"
+                    safe_debug(f"Retrieved {len(messages)} messages from legacy {model_type} chat {chat_id}")
                 else:
-                    # Get the chat history from the Gemini API client
-                    history = chat.get_history()
+                    # Legacy Gemini chat format
+                    history = chat.get_history() if hasattr(chat, 'get_history') else []
                     
                     # Format the messages for the frontend
                     messages = []
@@ -2322,7 +1955,7 @@ def get_chat(chat_id):
                                 
                                 previous_role = role
                     
-                    safe_debug(f"Retrieved {len(messages)} messages from Gemini chat {chat_id}")
+                    safe_debug(f"Retrieved {len(messages)} messages from legacy Gemini chat {chat_id}")
                 
                 # Get metadata from file if available
                 chat_metadata = {}
@@ -3723,180 +3356,7 @@ def reinitialize_whisper():
             "model_loaded": whisper_model is not None
         }), 500
 
-# Creation logs endpoints for stream monitoring
-@app.route("/api/creation-logs/list", methods=["GET"])
-def list_creation_logs():
-    """
-    Endpoint to list available creation log files
-    """
-    try:
-        # Get absolute path to data directory
-        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
-        creation_log_dir = data_dir_path / "creation_logs"
-        
-        # Ensure the creation logs directory exists
-        try:
-            creation_log_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            safe_debug(f"Failed to create creation logs directory: {str(e)}", e)
-            return jsonify([])
-        
-        if not creation_log_dir.exists():
-            return jsonify([])
-        
-        # Get all JSON files in the creation logs directory
-        log_files = []
-        for file_path in creation_log_dir.glob("*.json"):
-            # Skip debug files for the main list
-            if "what_is_happening" not in file_path.name:
-                file_info = {
-                    "name": file_path.name,
-                    "size": file_path.stat().st_size,
-                    "modified": file_path.stat().st_mtime
-                }
-                log_files.append(file_info)
-        
-        # Sort by modification time (newest first)
-        log_files.sort(key=lambda x: x["modified"], reverse=True)
-        
-        return jsonify(log_files)
-    except Exception as e:
-        safe_debug(f"Error listing creation logs: {str(e)}", e)
-        return jsonify({"error": str(e)}), 500
 
-@app.route("/api/creation-logs/<filename>", methods=["GET"])
-def get_creation_log(filename):
-    """
-    Endpoint to get a specific creation log file
-    """
-    try:
-        # Sanitize filename to prevent path traversal
-        if not filename.endswith('.json') or '/' in filename or '\\' in filename:
-            return jsonify({"error": "Invalid filename"}), 400
-        
-        # Get absolute path to data directory
-        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
-        creation_log_dir = data_dir_path / "creation_logs"
-        log_file_path = creation_log_dir / filename
-        
-        if not log_file_path.exists():
-            return jsonify({"error": "Log file not found"}), 404
-        
-        # Read and return the JSON file
-        with open(log_file_path, 'r', encoding='utf-8') as f:
-            log_data = json.load(f)
-        
-        return jsonify(log_data)
-    except Exception as e:
-        safe_debug(f"Error reading creation log {filename}: {str(e)}", e)
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/stream-logs/latest", methods=["GET"])
-def get_latest_stream_log():
-    """
-    Endpoint to get the latest active stream log
-    """
-    try:
-        # Get absolute path to data directory
-        data_dir_path = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
-        creation_log_dir = data_dir_path / "creation_logs"
-        
-        # Ensure the creation logs directory exists
-        try:
-            creation_log_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            safe_debug(f"Failed to create creation logs directory: {str(e)}", e)
-            return jsonify({"error": "Failed to create creation logs directory"}), 500
-        
-        if not creation_log_dir.exists():
-            return jsonify({"error": "No creation logs directory"}), 404
-        
-        # Find the most recent stream log file (not debug files)
-        latest_file = None
-        latest_time = 0
-        
-        for file_path in creation_log_dir.glob("stream_*.json"):
-            if "what_is_happening" not in file_path.name:
-                file_time = file_path.stat().st_mtime
-                if file_time > latest_time:
-                    latest_time = file_time
-                    latest_file = file_path
-        
-        if not latest_file:
-            return jsonify({"error": "No stream log files found"}), 404
-        
-        # Read and return the latest log file
-        try:
-            with open(latest_file, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if not content:
-                    safe_debug(f"Latest stream log file is empty: {latest_file}")
-                    return jsonify({"error": "Stream log file is empty"}), 404
-                log_data = json.loads(content)
-        except json.JSONDecodeError as e:
-            safe_debug(f"Invalid JSON in stream log file {latest_file}: {str(e)}")
-            return jsonify({"error": "Invalid JSON in stream log file"}), 500
-        except Exception as e:
-            safe_debug(f"Error reading stream log file {latest_file}: {str(e)}")
-            return jsonify({"error": f"Failed to read stream log file: {str(e)}"}), 500
-        
-        # Add file metadata
-        log_data["_metadata"] = {
-            "filename": latest_file.name,
-            "size": latest_file.stat().st_size,
-            "modified": latest_time
-        }
-        
-        return jsonify(log_data)
-    except Exception as e:
-        safe_debug(f"Error getting latest stream log: {str(e)}", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/stream-events", methods=["GET"])
-def stream_events():
-    """
-    Server-Sent Events endpoint for real-time stream notifications
-    """
-    def event_stream():
-        global stream_data_updated
-        last_check = time.time()
-        
-        # Send initial connection event
-        yield f"data: {json.dumps({'type': 'connected', 'timestamp': time.time()})}\n\n"
-        
-        try:
-            while True:
-                # Check if stream data was updated
-                if stream_data_updated:
-                    # Reset the flag immediately
-                    stream_data_updated = False
-                    
-                    # Send update notification
-                    yield f"data: {json.dumps({'type': 'stream_updated', 'timestamp': time.time()})}\n\n"
-                    
-                    last_check = time.time()
-                
-                # Send heartbeat every 30 seconds to keep connection alive
-                current_time = time.time()
-                if current_time - last_check > 30:
-                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
-                    last_check = current_time
-        
-                
-        except GeneratorExit:
-            # Client disconnected
-            safe_debug("Stream events client disconnected")
-        except Exception as e:
-            safe_error(f"Error in stream events: {str(e)}", e)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'timestamp': time.time()})}\n\n"
-    
-    response = Response(stream_with_context(event_stream()), content_type='text/event-stream')
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['Connection'] = 'keep-alive'
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Cache-Control'
-    return response
 
 if __name__ == "__main__":
     try:
