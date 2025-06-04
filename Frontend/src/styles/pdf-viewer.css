@@ -1,0 +1,41 @@
+.pdf-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.pdf-viewer-container {
+  position: relative;
+  width: 80%;
+  height: 80%;
+  background: var(--bg-secondary, #1a1a1a);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-viewer-container .pdf-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 24px;
+}
+
+.pdf-viewer-container .loading {
+  color: #fff;
+  text-align: center;
+  padding: 1rem;
+}
+
+.highlight-popup {
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  max-width: 200px;
+}

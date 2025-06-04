@@ -10,6 +10,7 @@ import { detectCreations, showCreation, removeCreationDirectives, CreationType, 
 import creationManager from '../utils/creationManager';
 import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
+import PDFViewer from './PDFViewer';
 
 // Add new imports for streaming creation detection
 import { Creation } from '../utils/creationsHelper';
@@ -144,6 +145,8 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   
   // New state for tracking content parts during streaming
   const [streamingContentParts, setStreamingContentParts] = useState<{isCreation: boolean; content: string; creation?: Creation}[]>([]);
+
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   
   const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<number | null>(null);
   
@@ -1671,15 +1674,22 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           </div>
         );
         
-      case 'document':
+      case 'document': {
+        const openViewer = () => {
+          if (isPdf) {
+            const url = attachment.local_url || `/api/download/${attachment.file_id}`;
+            setPdfUrl(url);
+          }
+        };
         return (
-          <div key={attachment.file_id} className="message-attachment message-document">
+          <div key={attachment.file_id} className={`message-attachment message-document ${isPdf ? 'pdf-viewer-trigger' : ''}`} onClick={openViewer}>
             <div className="attachment-icon">
               {docIcon}
             </div>
             <div className="attachment-label">{attachment.original_name}</div>
           </div>
         );
+      }
         
       default:
         // Generic file type
@@ -1697,6 +1707,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   };
 
   return (
+    <>
     <div className="message-wrapper">
       <div className={getMessageClass()}>
         {!isUser && !isThinking && (
@@ -1789,6 +1800,10 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         </div>
       </div>
     </div>
+    {pdfUrl && (
+      <PDFViewer url={pdfUrl} onClose={() => setPdfUrl(null)} />
+    )}
+    </>
   );
 };
 
