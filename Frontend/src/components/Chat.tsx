@@ -117,6 +117,25 @@ const Chat = () => {
   const silenceStartRef = useRef<number | null>(null);
   // Add a ref to track if a scroll is programmatic
   const isProgrammaticScrollRef = useRef(false);
+  // Add state for text-to-speech output
+  const [ttsEnabled, setTtsEnabled] = useState(() => {
+    const saved = localStorage.getItem('ttsEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+
+  // Persist TTS setting
+  useEffect(() => {
+    localStorage.setItem('ttsEnabled', JSON.stringify(ttsEnabled));
+  }, [ttsEnabled]);
+
+  // Helper to speak assistant messages when TTS is enabled
+  const speak = useCallback((text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'en-US';
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  }, []);
 
   // Available models with descriptions
   const models: Model[] = [
@@ -497,6 +516,15 @@ const Chat = () => {
       }
     }
   }, [messages, shouldAutoScroll, isStreaming]);
+
+  // Speak assistant messages when streaming finishes
+  useEffect(() => {
+    if (!ttsEnabled || isStreaming || messages.length === 0) return;
+    const last = messages[messages.length - 1];
+    if (last.role === 'assistant' && last.content) {
+      speak(last.content);
+    }
+  }, [messages, isStreaming, ttsEnabled, speak]);
 
   // Close model dropdown when clicking outside
   useEffect(() => {
@@ -2192,8 +2220,23 @@ const Chat = () => {
             </svg>
           )}
         </button>
-        
-        <button 
+
+        {/* Text-to-Speech toggle */}
+        <button
+          className={`tts-button ${ttsEnabled ? 'enabled' : ''}`}
+          onClick={() => setTtsEnabled(prev => !prev)}
+          disabled={loading}
+          aria-label={ttsEnabled ? 'Disable speech output' : 'Enable speech output'}
+          title={ttsEnabled ? 'Disable speech output' : 'Read responses aloud'}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="tts-icon">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M15.54 8.46a5 5 0 010 7.07"></path>
+            <path d="M19.07 4.93a9 9 0 010 12.73"></path>
+          </svg>
+        </button>
+
+        <button
           className="send-button"
           onClick={handleSend}
           disabled={loading || isUploading || (!input.trim() && attachments.length === 0)}
