@@ -843,6 +843,38 @@ class ChatManager {
       return null;
     }
   }
+
+  /**
+   * Replace chat history with a condensed summary
+   * @param id Chat ID
+   * @param summary Summary text
+   * @param model Model name
+   */
+  public async condenseChat(id: string, summary: string, model: string): Promise<boolean> {
+    try {
+      if (!this.backendAvailable) {
+        console.log('Backend not available, cannot condense chat');
+        return false;
+      }
+
+      const response = await fetch(`/api/chat/${id}/condense`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary, model })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to condense chat: ${response.status} ${response.statusText}`);
+      }
+
+      // Refresh chats list after condensing
+      await this.refreshChats();
+      return true;
+    } catch (error) {
+      console.error('Error condensing chat:', error);
+      return false;
+    }
+  }
 }
 
 // Export the singleton instance

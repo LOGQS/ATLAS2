@@ -2067,6 +2067,71 @@ def summarize_chat(chat_id):
         safe_exception(f"Error summarizing chat {chat_id}: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
+# Condense chat history by replacing all messages with a single summary
+@app.route("/api/chat/<chat_id>/condense", methods=["POST"])
+def condense_chat(chat_id):
+    """Replace chat history with a condensed summary message"""
+    try:
+        data = request.json or {}
+        summary = data.get("summary")
+        model_name = data.get("model", settings.get("model"))
+
+        if not summary:
+            return jsonify({"error": "Summary is required"}), 400
+
+        condensed_message = {
+            "role": "system",
+            "content": summary
+        }
+
+        # Update active chat if it exists
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            chat.unified_history = [condensed_message]
+            chat.last_updated = time.time()
+
+        # Update history file
+        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        chats_file = data_dir / "chats.json"
+        chat_history = {"chats": []}
+        if chats_file.exists():
+            try:
+                with open(chats_file, "r", encoding="utf-8") as f:
+                    chat_history = json.load(f)
+            except json.JSONDecodeError:
+                safe_warning(f"Invalid JSON in chats file when condensing {chat_id}")
+
+        found = False
+        for chat_entry in chat_history.get("chats", []):
+            if chat_entry.get("id") == chat_id:
+                chat_entry["messages"] = [condensed_message]
+                chat_entry["updated_at"] = datetime.now().isoformat()
+                chat_entry["first_message"] = summary[:100]
+                chat_entry["model"] = model_name
+                found = True
+                break
+
+        if not found:
+            timestamp = datetime.now().isoformat()
+            new_chat_entry = {
+                "id": chat_id,
+                "title": "Chat",
+                "model": model_name,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "first_message": summary[:100],
+                "messages": [condensed_message]
+            }
+            chat_history.setdefault("chats", []).append(new_chat_entry)
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        return jsonify({"success": True, "chat_id": chat_id})
+    except Exception as e:
+        safe_exception(f"Error condensing chat {chat_id}: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
 # Generate image endpoint
 @app.route("/api/generate-image", methods=["POST"])
 def generate_image():

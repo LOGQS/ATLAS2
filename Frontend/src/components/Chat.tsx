@@ -22,7 +22,7 @@ interface FileAttachment {
 }
 
 interface ChatMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   attachments?: FileAttachment[];
   isHistory?: boolean; // Add this flag to identify messages from history
@@ -885,6 +885,19 @@ const Chat = () => {
     } finally {
       setIsSummarizing(false);
       setSummaryModalOpen(true);
+    }
+  };
+
+  // Replace current chat history with the generated summary
+  const useSummaryAsHistory = async () => {
+    if (!chatId || !summaryContent) return;
+    const success = await chatManager.condenseChat(chatId, summaryContent, model);
+    if (success) {
+      setMessages([{ role: 'system', content: summaryContent, isHistory: true }]);
+      setSummaryModalOpen(false);
+      window.dispatchEvent(new CustomEvent('chat-updated', { detail: { chatId } }));
+    } else {
+      alert('Failed to replace chat history with summary.');
     }
   };
 
@@ -2248,6 +2261,7 @@ const Chat = () => {
         isOpen={summaryModalOpen}
         onClose={() => setSummaryModalOpen(false)}
         summary={summaryContent}
+        onUseSummary={useSummaryAsHistory}
       />
     </div>
   );

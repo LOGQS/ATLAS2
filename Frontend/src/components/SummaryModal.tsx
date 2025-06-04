@@ -4,9 +4,10 @@ interface SummaryModalProps {
   isOpen: boolean;
   onClose: () => void;
   summary: string;
+  onUseSummary?: () => void;
 }
 
-const SummaryModal: React.FC<SummaryModalProps> = ({ isOpen, onClose, summary }) => {
+const SummaryModal: React.FC<SummaryModalProps> = ({ isOpen, onClose, summary, onUseSummary }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -45,7 +46,12 @@ const SummaryModal: React.FC<SummaryModalProps> = ({ isOpen, onClose, summary })
           <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word', margin: 0 }}>{summary}</pre>
         </div>
         <div className="modal-footer">
-          <button className="modal-button confirm-button" onClick={onClose}>
+          {onUseSummary && (
+            <button className="modal-button confirm-button" onClick={onUseSummary}>
+              Use Summary
+            </button>
+          )}
+          <button className="modal-button cancel-button" onClick={onClose}>
             Close
           </button>
         </div>
