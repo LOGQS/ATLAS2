@@ -9,7 +9,6 @@
     "start": "npx concurrently \"npm run backend\" \"npm run frontend\""
   },
   "devDependencies": {
-    "@stagewise/toolbar-react": "^0.2.0",
     "@types/node": "^22.15.29",
     "concurrently": "^8.2.2"
   },

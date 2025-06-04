@@ -87,6 +87,7 @@ def delete_file(profile_id: str, filename: str):
 
 
 def get_knowledge(profile_id: str, query: str = ""):
+    """Get knowledge as text content (for vectorized search or system messages)"""
     kb_dir = KNOWLEDGE_BASE_DIR / profile_id
     if not kb_dir.exists():
         return ""
@@ -116,3 +117,31 @@ def get_knowledge(profile_id: str, query: str = ""):
             return "\n".join(texts)
     else:
         return "\n".join(texts)
+
+
+def get_profile_file_paths(profile_id: str):
+    """Get file paths for direct attachment (for non-vectorized knowledge base)"""
+    kb_dir = KNOWLEDGE_BASE_DIR / profile_id
+    if not kb_dir.exists():
+        return []
+    
+    file_paths = []
+    for f in kb_dir.iterdir():
+        if f.is_file():
+            file_paths.append(str(f))
+    return file_paths
+
+
+def should_attach_files_directly(profile_id: str):
+    """Check if files should be attached directly (knowledge base enabled but vectorization disabled)"""
+    profiles = load_profiles()
+    profile = next((p for p in profiles if p.get("id") == profile_id), None)
+    if not profile:
+        return False
+    
+    # Check if profile has files
+    kb_dir = KNOWLEDGE_BASE_DIR / profile_id
+    has_files = kb_dir.exists() and any(f.is_file() for f in kb_dir.iterdir())
+    
+    # Attach directly if has files but vectorization is disabled
+    return has_files and not profile.get("vectorize", False)

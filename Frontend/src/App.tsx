@@ -5,6 +5,7 @@ import './styles/enhanced-creations.css';
 import './styles/left-sidebar.css';
 import './styles/modal.css';
 import './styles/creation-window.css';
+import './styles/settings-window.css';
 import Chat from './components/Chat';
 import HtmlPreview from './components/HtmlPreview';
 import EnhancedCreationViewer from './components/EnhancedCreationViewer';
@@ -12,10 +13,10 @@ import LeftSidebar from './components/LeftSidebar';
 import DeleteChatModal from './components/DeleteChatModal';
 import CreationWindow from './components/CreationWindow';
 import TaskSystem from './components/TaskSystem';
+import SettingsWindow from './components/SettingsWindow';
 import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
 import creationManager from './utils/creationManager';
-import profileManager, { Profile } from './utils/profileManager';
 
 interface ImportResult {
   success: boolean;
@@ -36,10 +37,6 @@ function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
-  // Profile management state
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [activeProfile, setActiveProfile] = useState<string | null>(profileManager.getActiveProfile());
-  const [newProfileName, setNewProfileName] = useState('');
   
   // Add state for delete confirmation modal
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -61,6 +58,9 @@ function App() {
   
   // Add state for task system
   const [isTaskSystemOpen, setIsTaskSystemOpen] = useState(false);
+  
+  // Add state for settings window
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Add creation modal state
   const [addCreationModalOpen, setAddCreationModalOpen] = useState(false);
@@ -169,15 +169,6 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load profiles
-  useEffect(() => {
-    profileManager.refresh();
-    const unsub = profileManager.subscribe((profs, active) => {
-      setProfiles(profs);
-      setActiveProfile(active);
-    });
-    return () => unsub();
-  }, []);
 
   // Function to handle keyboard shortcut for enhanced viewer
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -289,19 +280,6 @@ function App() {
     }, 500);
   };
 
-  const handleCreateProfile = async () => {
-    if (!newProfileName.trim()) return;
-    await profileManager.create(newProfileName.trim());
-    setNewProfileName('');
-  };
-
-  const handleSelectProfile = (id: string) => {
-    profileManager.setActiveProfile(id);
-  };
-
-  const handleDeleteProfile = async (id: string) => {
-    await profileManager.remove(id);
-  };
 
   // Format date string for display
   const formatChatDate = useCallback((dateString: string): string => {
@@ -534,41 +512,6 @@ function App() {
               </button>
             </div>
           )}
-        </div>
-
-        {/* Profiles Section */}
-        <div className="sidebar-section">
-          <h3 className="sidebar-heading">Profiles</h3>
-          <ul className="sidebar-nav">
-            {profiles.map((p) => (
-              <li key={p.id} className={activeProfile === p.id ? 'active-profile' : ''}>
-                <button className="sidebar-link sidebar-button" onClick={() => handleSelectProfile(p.id)}>
-                  <span>{p.name}</span>
-                </button>
-                <button className="sidebar-action-button" onClick={() => handleDeleteProfile(p.id)} title="Delete profile">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              </li>
-            ))}
-            <li>
-              <input
-                type="text"
-                value={newProfileName}
-                onChange={(e) => setNewProfileName(e.target.value)}
-                placeholder="New profile"
-                className="profile-input"
-              />
-              <button className="sidebar-action-button" onClick={handleCreateProfile} title="Add profile">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-              </button>
-            </li>
-          </ul>
         </div>
       </li>
     );
@@ -909,7 +852,10 @@ function App() {
               </button>
             </li>
             <li>
-              <button className="sidebar-link sidebar-button">
+              <button 
+                className="sidebar-link sidebar-button"
+                onClick={() => setIsSettingsOpen(true)}
+              >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="12" r="3"></circle>
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -1386,6 +1332,12 @@ function App() {
       <TaskSystem 
         isOpen={isTaskSystemOpen}
         onClose={handleCloseTaskSystem}
+      />
+      
+      {/* Add Settings Window component */}
+      <SettingsWindow
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

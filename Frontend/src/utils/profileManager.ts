@@ -2,6 +2,7 @@ export interface Profile {
   id: string;
   name: string;
   vectorize: boolean;
+  files?: string[];
 }
 
 export type ProfileListener = (profiles: Profile[], active: string | null) => void;
@@ -50,6 +51,12 @@ class ProfileManager {
       if (res.ok) {
         const data = await res.json();
         this.profiles = data.profiles || [];
+        
+        // Load files for each profile (we'll always load files to show if KB should be enabled)
+        for (const profile of this.profiles) {
+          profile.files = await this.getFiles(profile.id);
+        }
+        
         this.emit();
       }
     } catch (err) {
@@ -88,10 +95,45 @@ class ProfileManager {
   public async uploadFile(id: string, file: File): Promise<void> {
     const form = new FormData();
     form.append('file', file);
-    await fetch(`/api/profiles/${id}/files`, {
+    const res = await fetch(`/api/profiles/${id}/files`, {
       method: 'POST',
       body: form
     });
+    if (res.ok) {
+      // Refresh files for just this profile instead of all profiles
+      await this.refreshProfileFiles(id);
+    }
+  }
+
+  public async getFiles(id: string): Promise<string[]> {
+    try {
+      const res = await fetch(`/api/profiles/${id}/files`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.files || [];
+      }
+    } catch (err) {
+      console.error('Failed to load profile files', err);
+    }
+    return [];
+  }
+
+  public async deleteFile(id: string, filename: string): Promise<void> {
+    const res = await fetch(`/api/profiles/${id}/files/${filename}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      // Refresh files for just this profile instead of all profiles
+      await this.refreshProfileFiles(id);
+    }
+  }
+
+  private async refreshProfileFiles(profileId: string): Promise<void> {
+    const profile = this.profiles.find(p => p.id === profileId);
+    if (profile) {
+      profile.files = await this.getFiles(profileId);
+      this.emit();
+    }
   }
 
   public setActiveProfile(id: string | null) {

@@ -26,6 +26,8 @@ from utils.profile_manager import (
     save_file as profile_save_file,
     delete_file as profile_delete_file,
     get_knowledge,
+    get_profile_file_paths,
+    should_attach_files_directly,
 )
 import gc
 import ctypes
@@ -280,7 +282,7 @@ for handler in logger.handlers:
 app.logger.setLevel(logging.DEBUG)
 
 # Ensure data directory exists at startup
-data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
 try:
     data_dir.mkdir(exist_ok=True)
     logger.info(f"Data directory created/verified at: {data_dir}")
@@ -397,13 +399,22 @@ SUPPORTED_MIME_TYPES = {
         "image/png", 
         "image/gif", 
         "image/webp", 
-        "image/tiff"
+        "image/tiff",
+        "image/heic",
+        "image/heif"
     ],
     "video": [
         "video/mp4", 
         "video/mpeg", 
         "video/quicktime", 
-        "video/x-msvideo"
+        "video/x-msvideo",
+        "video/mov",
+        "video/avi",
+        "video/x-flv",
+        "video/mpg",
+        "video/webm",
+        "video/wmv",
+        "video/3gpp"
     ],
     "audio": [
         "audio/mpeg",
@@ -434,7 +445,9 @@ SUPPORTED_MIME_TYPES = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "text/x-python",
         "application/x-python",
-        "text/python"
+        "text/python",
+        "application/rtf",
+        "text/rtf"
     ]
 }
 
@@ -444,13 +457,14 @@ PROCESSING_FILE_TYPES = {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.oasis.opendocument.text",
-        "application/msword"
+        "application/msword",
+        "application/rtf"
     ]
 }
 
 # Default settings
 DEFAULT_SETTINGS = {
-    "model": "gemini-2.5-flash-preview",
+    "model": "gemini-2.5-flash-preview-05-20",
     "safety_settings": {
         "harassment": "BLOCK_NONE",
         "hate_speech": "BLOCK_NONE",
@@ -577,6 +591,10 @@ class UnifiedChatSession:
             if msg["role"] == "user":
                 return msg["content"]
         return None
+    
+    def get_history(self):
+        """Get the complete unified history (for legacy compatibility)"""
+        return self.unified_history
 
 def get_openai_client_for_model(model_name):
     """
@@ -604,11 +622,45 @@ def get_openai_client_for_model(model_name):
     else:
         raise Exception(f"No client available for model: {model_name}")
 
+class GeminiToOpenAIAdapter:
+    """Adapter to make Gemini streaming responses compatible with OpenAI format"""
+    def __init__(self, gemini_stream):
+        self.gemini_stream = gemini_stream
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        try:
+            chunk = next(self.gemini_stream)
+            # Convert Gemini chunk to OpenAI-compatible format
+            return self._convert_chunk(chunk)
+        except StopIteration:
+            raise
+    
+    def _convert_chunk(self, gemini_chunk):
+        """Convert Gemini chunk to OpenAI-compatible chunk"""
+        class MockChoice:
+            def __init__(self, content):
+                self.delta = MockDelta(content)
+        
+        class MockDelta:
+            def __init__(self, content):
+                self.content = content
+        
+        class MockChunk:
+            def __init__(self, content):
+                self.choices = [MockChoice(content)]
+        
+        # Extract text from Gemini chunk
+        content = getattr(gemini_chunk, 'text', '') if hasattr(gemini_chunk, 'text') else ''
+        return MockChunk(content)
+
 def create_unified_chat_response(messages, model_name, system_instruction=None, files=None):
     """
     Create a chat response using unified OpenAI-compatible APIs for all providers
     """
-    client = get_openai_client_for_model(model_name)
+    client_for_model = get_openai_client_for_model(model_name)
     
     # Convert messages to OpenAI format
     openai_messages = []
@@ -649,10 +701,58 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
         params["extra_body"] = {"include_reasoning": True}
     
     # Use the OpenAI client to create the response
-    response = client.chat.completions.create(**params)
+    response = client_for_model.chat.completions.create(**params)
     
     # Return the response object that can be iterated over for streaming
     return response
+
+def create_gemini_chat_with_files(parts, model_name, system_instruction=None):
+    """
+    Create a Gemini chat response with files using native API
+    Returns OpenAI-compatible format for streaming
+    """
+    # Count actual files vs text parts
+    file_count = sum(1 for part in parts if not isinstance(part, str))
+    text_parts = sum(1 for part in parts if isinstance(part, str))
+    safe_debug(f"Using native Gemini API for model {model_name} with {len(parts)} parts ({file_count} files, {text_parts} text)")
+    
+    # Prepare safety settings
+    safety_settings = []
+    if settings.get("safety_settings"):
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": settings.get("safety_settings", {}).get("harassment", "BLOCK_NONE")
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": settings.get("safety_settings", {}).get("hate_speech", "BLOCK_NONE")
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": settings.get("safety_settings", {}).get("sexually_explicit", "BLOCK_NONE")
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": settings.get("safety_settings", {}).get("dangerous_content", "BLOCK_NONE")
+            }
+        ]
+
+    # Configure the model with safety settings and system instruction
+    config = types.GenerateContentConfig(
+        safety_settings=safety_settings,
+        system_instruction=system_instruction if system_instruction else None
+    )
+    
+    # For Gemini with files, use the native API with files as parts
+    response = client.models.generate_content_stream(
+        model=model_name,
+        contents=parts,  # parts contains the array with text and file objects
+        config=config
+    )
+    
+    # Wrap Gemini response to be OpenAI-compatible
+    return GeminiToOpenAIAdapter(response)
 
 def create_openai_compatible_chat_response(messages, model_name, system_instruction=None):
     """
@@ -1230,7 +1330,14 @@ def debug_chats():
                 logger.debug(f"Chat {chat_id} history length: {history_length}")
                 if history_length > 0:
                     last_msg = history[-1]
-                    logger.debug(f"Last message for chat {chat_id}: role={last_msg.role}, content={last_msg.parts[0].text[:50]}...")
+                    # Handle unified format
+                    if isinstance(last_msg, dict):
+                        # Unified format: {"role": "user", "content": "text", ...}
+                        content_preview = last_msg.get("content", "")[:50] if last_msg.get("content") else 'No content'
+                        logger.debug(f"Last message for chat {chat_id}: role={last_msg.get('role', 'unknown')}, content={content_preview}...")
+                    else:
+                        # Legacy format
+                        logger.debug(f"Last message for chat {chat_id}: role={last_msg.role}, content={last_msg.parts[0].text[:50]}...")
                 
                 chat_info.append({
                     "chat_id": chat_id,
@@ -1295,13 +1402,19 @@ def chat():
                 # Log a small sample of the history to verify it's working
                 if history and history_length > 0:
                     sample_msg = history[-1]
-                    # Safely log the message content
+                    # Safely log the message content (unified format)
                     try:
-                        sample_text = sample_msg.parts[0].text[:50] if sample_msg.parts else 'No parts'
-                        safe_debug(f"Last message in history: role={sample_msg.role}", sample_text)
+                        if isinstance(sample_msg, dict):
+                            # Unified format: {"role": "user", "content": "text", ...}
+                            sample_text = sample_msg.get("content", "")[:50] if sample_msg.get("content") else 'No content'
+                            safe_debug(f"Last message in history: role={sample_msg.get('role', 'unknown')}", sample_text)
+                        else:
+                            # Legacy format: assume it has .parts and .role
+                            sample_text = sample_msg.parts[0].text[:50] if hasattr(sample_msg, 'parts') and sample_msg.parts else 'No parts'
+                            safe_debug(f"Last message in history: role={sample_msg.role}", sample_text)
                     except Exception as e:
                         # Handle potential encoding errors when accessing message parts
-                        logger.debug(f"Last message in history: role={sample_msg.role}, [Error accessing text: {str(e)}]")
+                        logger.debug(f"Last message in history: [Error accessing text: {str(e)}]")
             except Exception as e:
                 logger.error(f"Error logging chat history: {str(e)}")
         elif chat_id is not None:
@@ -1560,6 +1673,45 @@ def chat():
                             original_name = attachment.get('original_name', 'unknown')
                             parts.append(f"[Error loading {file_type} file: {original_name}]")
             
+            # Add profile knowledge base files as direct attachments if vectorization is disabled
+            profile_id = data.get("profile")
+            if profile_id and should_attach_files_directly(profile_id):
+                try:
+                    file_paths = get_profile_file_paths(profile_id)
+                    safe_debug(f"Adding {len(file_paths)} profile files as direct attachments for profile {profile_id}")
+                    
+                    for file_path in file_paths:
+                        try:
+                            # Determine MIME type based on file extension
+                            file_ext = Path(file_path).suffix.lower()
+                            mime_type_map = {
+                                '.pdf': 'application/pdf',
+                                '.txt': 'text/plain',
+                                '.md': 'text/markdown',
+                                '.doc': 'application/msword',
+                                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                            }
+                            mime_type = mime_type_map.get(file_ext, 'text/plain')
+                            
+                            # Upload file to Gemini API for processing
+                            file_obj = client.files.upload(
+                                file=file_path,
+                                config=dict(mime_type=mime_type)
+                            )
+                            parts.append(file_obj)
+                            safe_debug(f"Added profile file to parts: {file_path}")
+                            
+                            # Track this file for cleanup
+                            if hasattr(chat, 'files'):
+                                chat.files.add(file_obj.name)
+                        except Exception as e:
+                            safe_debug(f"Error uploading profile file {file_path}: {str(e)}")
+                            # Add text fallback
+                            filename = Path(file_path).name
+                            parts.append(f"[Profile file: {filename}]")
+                except Exception as e:
+                    safe_debug(f"Error processing profile files: {str(e)}")
+            
             # Send message with all parts and stream the response
             safe_debug(f"Sending message to chat ID {chat_id} with {len(parts)} parts", parts)
             
@@ -1584,20 +1736,39 @@ def chat():
                 # Get history for the current provider
                 history_for_provider = chat.get_history_for_provider(model_name)
 
-                # Append profile knowledge as a system message if available
+                # Append profile knowledge as a system message if vectorization is enabled
                 profile_id = data.get("profile")
                 if profile_id:
-                    knowledge = get_knowledge(profile_id, user_message_content)
-                    if knowledge:
-                        history_for_provider.append({"role": "system", "content": knowledge})
+                    if should_attach_files_directly(profile_id):
+                        safe_debug(f"Profile {profile_id}: Knowledge base enabled, vectorization disabled - files attached directly")
+                    else:
+                        safe_debug(f"Profile {profile_id}: Using vectorized knowledge retrieval")
+                        # Only use knowledge as system message when vectorization is enabled
+                        knowledge = get_knowledge(profile_id, user_message_content)
+                        if knowledge:
+                            history_for_provider.append({"role": "system", "content": knowledge})
+                            safe_debug(f"Added vectorized knowledge to system message ({len(knowledge)} chars)")
                 
                 # Create response using unified approach
                 safe_debug(f"Using unified interface for model: {model_name}")
-                response = create_unified_chat_response(
-                    history_for_provider, 
-                    model_name, 
-                    creations_system_instruction
-                )
+                
+                # Check if we need to use Gemini native API for file attachments
+                if supports_file_attachments(model_name) and len(parts) > 1:
+                    # Use Gemini native API for files (parts include text + files)
+                    safe_debug(f"Using Gemini native API with {len(parts)} parts for file support")
+                    response = create_gemini_chat_with_files(
+                        parts, 
+                        model_name, 
+                        creations_system_instruction
+                    )
+                else:
+                    # Use unified OpenAI-compatible approach for text-only
+                    safe_debug(f"Using unified OpenAI-compatible API for text-only chat")
+                    response = create_unified_chat_response(
+                        history_for_provider, 
+                        model_name, 
+                        creations_system_instruction
+                    )
                 
                 # Use raw stream directly (fastest approach)
                 delayed_response = response
