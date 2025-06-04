@@ -5,6 +5,7 @@ import './styles/enhanced-creations.css';
 import './styles/left-sidebar.css';
 import './styles/modal.css';
 import './styles/creation-window.css';
+import './styles/focus-mode.css';
 import Chat from './components/Chat';
 import HtmlPreview from './components/HtmlPreview';
 import EnhancedCreationViewer from './components/EnhancedCreationViewer';
@@ -55,6 +56,9 @@ function App() {
   
   // Add state for task system
   const [isTaskSystemOpen, setIsTaskSystemOpen] = useState(false);
+
+  // Focus mode state
+  const [isFocusMode, setIsFocusMode] = useState(false);
 
   // Add creation modal state
   const [addCreationModalOpen, setAddCreationModalOpen] = useState(false);
@@ -163,11 +167,22 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Toggle focus mode
+  const toggleFocusMode = useCallback(() => {
+    setIsFocusMode(prev => !prev);
+  }, []);
+
   // Function to handle keyboard shortcut for enhanced viewer
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     // Alt + C to open enhanced creation viewer
     if (e.altKey && e.key === 'c') {
       setIsEnhancedViewerOpen(true);
+    }
+
+    // Alt + F to toggle focus mode
+    if (e.altKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      toggleFocusMode();
     }
     
     // Escape to close enhanced viewer
@@ -180,7 +195,7 @@ function App() {
         setCurrentCreation(null);
       }
     }
-  }, [isEnhancedViewerOpen, creationWindowOpen]);
+  }, [isEnhancedViewerOpen, creationWindowOpen, toggleFocusMode]);
 
   // Add keyboard shortcut listener
   useEffect(() => {
@@ -253,6 +268,7 @@ function App() {
       window.removeEventListener('stream-creation-update', () => {});
     };
   }, [creationWindowOpen, currentCreation]);
+
 
   // Function to start a new chat
   const handleNewChat = () => {
@@ -823,7 +839,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-primary text-white">
+    <div className={`min-h-screen bg-primary text-white app-container ${isFocusMode ? 'focus-mode' : ''}`}>
       {/* Left Sidebar */}
       <LeftSidebar>
         <div className="sidebar-section">
@@ -976,7 +992,21 @@ function App() {
         </div>
       </LeftSidebar>
 
-      <Chat />
+      <Chat isFocusMode={isFocusMode} onToggleFocusMode={toggleFocusMode} />
+      {isFocusMode && (
+        <button
+          className="focus-mode-floating"
+          onClick={toggleFocusMode}
+          title="Exit Focus Mode (Alt+F)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 14 10 14 10 20"></polyline>
+            <polyline points="20 10 14 10 14 4"></polyline>
+            <line x1="14" y1="10" x2="21" y2="3"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+        </button>
+      )}
       <HtmlPreview />
       
       {/* Enhanced Creation Viewer */}

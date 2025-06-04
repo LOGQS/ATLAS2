@@ -1,0 +1,39 @@
+.app-container {
+  position: relative;
+}
+
+.focus-mode-toggle,
+.focus-mode-floating {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: none;
+  color: rgba(255, 255, 255, 0.8);
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.focus-mode-toggle:hover,
+.focus-mode-floating:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.focus-mode-floating {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 1001;
+}
+
+.app-container.focus-mode .left-sidebar,
+.app-container.focus-mode .left-sidebar-trigger,
+.app-container.focus-mode .header {
+  display: none;
+}
+
+.app-container.focus-mode .chat-container {
+  max-width: 100%;
+}
