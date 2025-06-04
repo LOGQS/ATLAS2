@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "install": "cd Frontend && npm install && cd ../Backend && pip install -r requirements.txt",
-    "frontend": "cd Frontend && npm run dev",
-    "backend": "cd Backend && python app.py",
+    "install": "npm run install:frontend && npm run install:backend",
+    "install:frontend": "npm install --prefix Frontend",
+    "install:backend": "pip install -r Backend/requirements.txt",
+    "frontend": "npm run dev --prefix Frontend",
+    "backend": "python Backend/app.py",
     "start": "npx concurrently \"npm run backend\" \"npm run frontend\""
   },
   "devDependencies": {
