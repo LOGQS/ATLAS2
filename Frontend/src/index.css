@@ -2093,7 +2093,63 @@ button:focus-visible {
     font-size: 13px;
   }
   
-  .reasoning-content.expanded {
-    max-height: 400px;
-  }
+.reasoning-content.expanded {
+  max-height: 400px;
+}
+}
+
+/* URL preview card styles */
+.url-previews {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.url-preview-card {
+  display: flex;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color-secondary);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.url-preview-card.loading {
+  padding: 0.75rem;
+}
+
+.url-preview-image {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.url-preview-content {
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.url-preview-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.url-preview-description {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.url-preview-domain {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: auto;
 }
