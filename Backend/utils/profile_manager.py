@@ -7,7 +7,7 @@ from werkzeug.utils import secure_filename
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-DATA_DIR = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+DATA_DIR = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
 PROFILES_FILE = DATA_DIR / "profiles.json"
 KNOWLEDGE_BASE_DIR = DATA_DIR / "knowledge_bases"
 

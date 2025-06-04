@@ -932,7 +932,7 @@ def switch_chat_model(chat_id):
         
         # Update chat history in file
         try:
-            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
             chats_file = data_dir / "chats.json"
             
             if chats_file.exists():
@@ -1422,7 +1422,7 @@ def chat():
             safe_debug(f"Chat {chat_id} not in active sessions, checking history file")
             try:
                 # Load chat history from file
-                data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                 chats_file = data_dir / "chats.json"
                 
                 if chats_file.exists():
@@ -1504,7 +1504,7 @@ def chat():
             # Save chat metadata to chat history file
             try:
                 # First, load existing chat history
-                data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                 chats_file = data_dir / "chats.json"
                 
                 chat_history = {"chats": []}
@@ -1572,7 +1572,7 @@ def chat():
             # Update the last updated timestamp in chat history
             try:
                 # Load chat history
-                data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                 chats_file = data_dir / "chats.json"
                 
                 if chats_file.exists():
@@ -1861,7 +1861,7 @@ def chat():
                         try:
                             
                             # Load existing chat history
-                            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                             chats_file = data_dir / "chats.json"
                             
                             chat_history = {"chats": []}
@@ -1948,7 +1948,7 @@ def clear_chat(chat_id):
             # Also remove the chat from chat history file
             try:
                 # Load chat history
-                data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                 chats_file = data_dir / "chats.json"
                 
                 if chats_file.exists():
@@ -1975,7 +1975,7 @@ def clear_chat(chat_id):
         else:
             # Try to delete from chat history file even if not in active_chats
             try:
-                data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+                data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
                 chats_file = data_dir / "chats.json"
                 
                 if chats_file.exists():
@@ -2011,7 +2011,7 @@ def delete_chat_from_history(chat_id):
         safe_debug(f"Deleting chat {chat_id} from history")
         
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         if not chats_file.exists():
@@ -2065,7 +2065,7 @@ def get_chat(chat_id):
         safe_debug(f"Retrieving chat history for ID: {chat_id}")
         
         # First check if we have messages in the chat history file
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         chat_from_file = None
         
@@ -2638,7 +2638,7 @@ def save_gallery():
             return jsonify({"error": "No data provided"}), 400
             
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         data_dir.mkdir(exist_ok=True)
         
         # Save to JSON file
@@ -2671,7 +2671,7 @@ def load_gallery():
     """Load gallery data from the JSON file in the data directory"""
     try:
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         
         # Create data directory if it doesn't exist
         try:
@@ -2730,7 +2730,7 @@ def clear_gallery():
     """Clear all creations from the gallery"""
     try:
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         data_dir.mkdir(exist_ok=True)
         
         # Gallery file path
@@ -2773,7 +2773,7 @@ def save_chats():
             return jsonify({"error": "No data provided"}), 400
             
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         data_dir.mkdir(exist_ok=True)
         
         # Save to JSON file
@@ -2840,7 +2840,7 @@ def load_chats():
     """Load chat history data from the chats.json file in the data directory"""
     try:
         # Ensure data directory exists using absolute paths
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         
         # Create data directory if it doesn't exist
         try:
@@ -2999,7 +2999,7 @@ def update_chat_details(chat_id):
             return jsonify({"error": "No valid fields to update"}), 400
             
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         if not chats_file.exists():
@@ -3067,7 +3067,7 @@ def create_chat_entry():
         }
         
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         data_dir.mkdir(exist_ok=True)
         chats_file = data_dir / "chats.json"
         
@@ -3106,7 +3106,7 @@ def export_chat_history():
     """Export the entire chat history as a downloadable JSON file"""
     try:
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         if not chats_file.exists():
@@ -3186,7 +3186,7 @@ def import_chat_history():
             return jsonify({"error": "Invalid backup format ('chats' is not an array)"}), 400
             
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         data_dir.mkdir(exist_ok=True)
         chats_file = data_dir / "chats.json"
         
@@ -3270,7 +3270,7 @@ def get_chat_stats():
     """Get statistics about chat history"""
     try:
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         if not chats_file.exists():
@@ -3397,7 +3397,7 @@ def bulk_delete_chats():
             return jsonify({"error": "No chat IDs provided"}), 400
             
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         if not chats_file.exists():
@@ -3469,7 +3469,7 @@ def clear_all_chats():
             return jsonify({"error": "Confirmation required to delete all chats"}), 400
         
         # Ensure data directory exists
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         
         # Count how many chats were in history
@@ -3560,7 +3560,7 @@ def reset_chat_messages(chat_id):
         chat_found_in_history = False
         try:
             # Load chat history
-            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
             chats_file = data_dir / "chats.json"
             
             if chats_file.exists():
