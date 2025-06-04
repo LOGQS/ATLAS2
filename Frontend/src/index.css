@@ -286,6 +286,23 @@ button:focus-visible {
   cursor: not-allowed;
 }
 
+/* Chat summary button styling */
+.summary-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background-color: var(--accent);
+  color: white;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  border-radius: 0.5rem;
+  border: none;
+}
+
+.summary-button:hover {
+  background-color: var(--accent-hover);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.8; }
   50% { opacity: 0.4; }

@@ -814,6 +814,35 @@ class ChatManager {
       };
     }
   }
+
+  /**
+   * Retrieve an LLM-generated summary for the given chat
+   * @param id Chat ID
+   * @param model Model to use for summarization
+   */
+  public async getChatSummary(id: string, model: string): Promise<string | null> {
+    try {
+      if (!this.backendAvailable) {
+        console.log('Backend not available, cannot summarize chat');
+        return null;
+      }
+
+      const response = await fetch(`/api/chat/${id}/summary?model=${encodeURIComponent(model)}`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to summarize chat: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.summary as string;
+    } catch (error) {
+      console.error('Error fetching chat summary:', error);
+      return null;
+    }
+  }
 }
 
 // Export the singleton instance

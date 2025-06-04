@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
 import Message from './Message';
+import SummaryModal from './SummaryModal';
+import chatManager from '../utils/chatManager';
 
 interface FileAttachment {
   file_id: string;
@@ -92,6 +94,10 @@ const Chat = () => {
   const [isProcessingSpeech, setIsProcessingSpeech] = useState(false);
   // Add state for showing settings
   const [showSettings, setShowSettings] = useState(false);
+  // Add state for chat summarization
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+  const [summaryContent, setSummaryContent] = useState('');
   // Add state for microphone settings
   const [micSettings, setMicSettings] = useState({
     silenceThreshold: 10, // Default threshold value (0-255)
@@ -865,6 +871,22 @@ const Chat = () => {
       }
     }, 0);
   }, [attachments, chatId]); // Added dependencies
+
+  // Fetch and display a summary of the current chat
+  const summarizeChat = async () => {
+    if (!chatId) return;
+    setIsSummarizing(true);
+    try {
+      const summary = await chatManager.getChatSummary(chatId, model);
+      setSummaryContent(summary || 'No summary available.');
+    } catch (error) {
+      console.error('Failed to summarize chat:', error);
+      setSummaryContent('Failed to generate summary.');
+    } finally {
+      setIsSummarizing(false);
+      setSummaryModalOpen(true);
+    }
+  };
 
   // Enhanced send function to handle document caching and chat history
   const handleSend = async () => {
@@ -1949,8 +1971,16 @@ const Chat = () => {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
-          <button 
-            onClick={resetChat} 
+          <button
+            onClick={summarizeChat}
+            className="summary-button"
+            title="Summarize chat"
+            disabled={isSummarizing}
+          >
+            {isSummarizing ? 'Summarizing...' : 'Summarize'}
+          </button>
+          <button
+            onClick={resetChat}
             className={`reset-button ${isCanceling ? 'canceling' : ''}`}
             title="Clear all messages"
             disabled={isCanceling}
@@ -2214,6 +2244,11 @@ const Chat = () => {
           )}
         </button>
       </div>
+      <SummaryModal
+        isOpen={summaryModalOpen}
+        onClose={() => setSummaryModalOpen(false)}
+        summary={summaryContent}
+      />
     </div>
   );
 };
