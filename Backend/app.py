@@ -17,6 +17,16 @@ from datetime import datetime
 from faster_whisper import WhisperModel
 from pathlib import Path
 from utils.prompts import creations_system_instruction
+from utils.profile_manager import (
+    load_profiles,
+    create_profile,
+    update_profile,
+    delete_profile,
+    list_files as profile_list_files,
+    save_file as profile_save_file,
+    delete_file as profile_delete_file,
+    get_knowledge,
+)
 import gc
 import ctypes
 import signal
@@ -1487,6 +1497,7 @@ def chat():
                 # Use safe truncation and logging for message content
                 safe_content = latest_message["content"][:50].replace('\n', ' ') if latest_message["content"] else ""
                 safe_debug(f"Adding message content: {safe_content}...", safe_content)
+
                 
             # Check if the message has attachments
             if "attachments" in latest_message and latest_message["attachments"]:
@@ -1565,13 +1576,20 @@ def chat():
                 parts = [text_content]
                 
             try:
-                # Add the user message to our unified history
-                user_message_content = parts[0] if parts and isinstance(parts[0], str) else ""
+                # Add the user message to our unified history (without knowledge attachments)
+                user_message_content = latest_message["content"] if latest_message and "content" in latest_message else ""
                 if user_message_content:
                     chat.add_message("user", user_message_content)
                 
                 # Get history for the current provider
                 history_for_provider = chat.get_history_for_provider(model_name)
+
+                # Append profile knowledge as a system message if available
+                profile_id = data.get("profile")
+                if profile_id:
+                    knowledge = get_knowledge(profile_id, user_message_content)
+                    if knowledge:
+                        history_for_provider.append({"role": "system", "content": knowledge})
                 
                 # Create response using unified approach
                 safe_debug(f"Using unified interface for model: {model_name}")
@@ -2359,6 +2377,83 @@ def transcribe_audio():
             "error": "Error processing audio file request",
             "details": str(e)
         }), 500
+
+# Profile management endpoints
+@app.route("/api/profiles", methods=["GET"])
+def get_profiles():
+    try:
+        return jsonify({"profiles": load_profiles()})
+    except Exception as e:
+        safe_exception("Error loading profiles", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles", methods=["POST"])
+def create_new_profile():
+    try:
+        data = request.json or {}
+        name = data.get("name", "Profile")
+        profile = create_profile(name)
+        return jsonify(profile)
+    except Exception as e:
+        safe_exception("Error creating profile", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles/<profile_id>", methods=["PUT"])
+def update_existing_profile(profile_id):
+    try:
+        data = request.json or {}
+        name = data.get("name")
+        vectorize = data.get("vectorize")
+        update_profile(profile_id, name, vectorize)
+        return jsonify({"success": True})
+    except Exception as e:
+        safe_exception("Error updating profile", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles/<profile_id>", methods=["DELETE"])
+def delete_existing_profile(profile_id):
+    try:
+        delete_profile(profile_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        safe_exception("Error deleting profile", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles/<profile_id>/files", methods=["GET"])
+def list_profile_files(profile_id):
+    try:
+        files = profile_list_files(profile_id)
+        return jsonify({"files": files})
+    except Exception as e:
+        safe_exception("Error listing profile files", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles/<profile_id>/files", methods=["POST"])
+def upload_profile_file(profile_id):
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        file = request.files['file']
+        filename = profile_save_file(profile_id, file)
+        return jsonify({"file": filename})
+    except Exception as e:
+        safe_exception("Error uploading profile file", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/profiles/<profile_id>/files/<filename>", methods=["DELETE"])
+def delete_profile_file_endpoint(profile_id, filename):
+    try:
+        profile_delete_file(profile_id, filename)
+        return jsonify({"success": True})
+    except Exception as e:
+        safe_exception("Error deleting profile file", e)
+        return jsonify({"error": str(e)}), 500
 
 # Gallery data endpoints
 @app.route("/api/gallery/save", methods=["POST"])
