@@ -26,6 +26,7 @@ yarn.lock # Exclude if using npm, include if using yarn.
 Backend/data/
 Backend/logs/
 Frontend/dist/ # Vite build output
+data/
 
 # IDE / OS specific
 .vscode/
