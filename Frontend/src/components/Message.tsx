@@ -145,7 +145,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   // New state for tracking content parts during streaming
   const [streamingContentParts, setStreamingContentParts] = useState<{isCreation: boolean; content: string; creation?: Creation}[]>([]);
   
-  const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<number | null>(null);
+  const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<ReturnType<typeof window.setTimeout> | null>(null);
   
   // Memoize the regex patterns to prevent re-creating them on each render
   const creationStartPattern = useMemo(() => /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$/, []);

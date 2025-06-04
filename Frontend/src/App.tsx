@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { getActiveChatKey, getOpenChatsKey } from './utils/tabUtils';
 import './App.css';
 import './styles/creations.css';
 import './styles/enhanced-creations.css';
@@ -23,9 +24,12 @@ interface ImportResult {
 }
 
 function App() {
+  const activeChatKey = getActiveChatKey();
+  const openChatsKey = getOpenChatsKey();
   const [isEnhancedViewerOpen, setIsEnhancedViewerOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [openChatIds, setOpenChatIds] = useState<(string | null)[]>([]);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [selectedChatIds, setSelectedChatIds] = useState<string[]>([]);
   const [bulkOperationsOpen, setBulkOperationsOpen] = useState(false);
@@ -101,12 +105,15 @@ function App() {
     
     // Listen for chat events
     const handleChatCreated = (event: Event) => {
-      
+
       // Cast to custom event to access the chat ID
       const customEvent = event as CustomEvent<{ chatId: string }>;
       if (customEvent.detail?.chatId) {
         // Set the active chat ID to the newly created chat
         setActiveChatId(customEvent.detail.chatId);
+        setOpenChatIds(prev =>
+          prev.map(id => (id === null ? customEvent.detail.chatId : id))
+        );
       }
       
       // Refresh the chat history
@@ -258,9 +265,12 @@ function App() {
   const handleNewChat = () => {
     // Set loading state
     setIsLoadingChat(true);
-    
+
     // Clear active chat ID
     setActiveChatId(null);
+
+    // Add a placeholder for the new chat
+    setOpenChatIds(prev => [...prev, null]);
     
     // Dispatch event to reset the chat *interface* (not delete the data)
     // This will create a new chat session without erasing existing ones
@@ -368,12 +378,14 @@ function App() {
     }
     
     const success = await chatManager.deleteChat(chatToDelete);
-    
+
     if (success) {
       // If the deleted chat was active, create a new chat
       if (activeChatId === chatToDelete) {
         handleNewChat();
       }
+      // Remove from open chat list
+      setOpenChatIds(prev => prev.filter(id => id !== chatToDelete));
     } else {
       alert('Failed to delete chat. Please try again.');
       setIsLoadingChat(false);
@@ -395,6 +407,9 @@ function App() {
     
     // Set the active chat ID
     setActiveChatId(chatId);
+
+    // Ensure this chat is in the list of open chats
+    setOpenChatIds(prev => (prev.includes(chatId) ? prev : [...prev, chatId]));
     
     // Dispatch an event to load this chat
     window.dispatchEvent(new CustomEvent('load-chat', {
@@ -416,6 +431,47 @@ function App() {
       setLoadingChatIds(prev => ({ ...prev, [chatId]: false }));
     }, 3000);
   }, [loadingChatIds]);
+
+  // Load the last active chat for this tab on mount
+  useEffect(() => {
+    const openChats = localStorage.getItem(openChatsKey);
+    if (openChats) {
+      try {
+        const parsed = JSON.parse(openChats) as (string | null)[];
+        setOpenChatIds(parsed);
+      } catch {
+        // ignore
+      }
+    }
+
+    const savedId = localStorage.getItem(activeChatKey);
+    if (savedId && chatManager.getChatById(savedId)) {
+      handleLoadChat(savedId);
+    }
+  }, [handleLoadChat, activeChatKey, openChatsKey]);
+
+  // Persist the active chat ID for this tab
+  useEffect(() => {
+    if (activeChatId) {
+      localStorage.setItem(activeChatKey, activeChatId);
+    } else {
+      localStorage.removeItem(activeChatKey);
+    }
+  }, [activeChatId, activeChatKey]);
+
+  // Persist the list of open chats for this tab
+  useEffect(() => {
+    localStorage.setItem(openChatsKey, JSON.stringify(openChatIds));
+  }, [openChatIds, openChatsKey]);
+
+  // Clean up stored chat ID when the tab unloads
+  useEffect(() => {
+    const handleUnload = () => {
+      localStorage.removeItem(activeChatKey);
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, [activeChatKey]);
 
   // Memoize the ChatHistoryItem component to prevent unnecessary re-renders
   const ChatHistoryItem = useCallback(({ chat }: { chat: ChatHistoryItem }) => {
@@ -976,7 +1032,11 @@ function App() {
         </div>
       </LeftSidebar>
 
-      <Chat />
+      {openChatIds.map(id => (
+        <div key={id ?? 'new'} style={{ display: id === activeChatId ? 'block' : 'none' }}>
+          <Chat initialChatId={id} isActive={id === activeChatId} />
+        </div>
+      ))}
       <HtmlPreview />
       
       {/* Enhanced Creation Viewer */}

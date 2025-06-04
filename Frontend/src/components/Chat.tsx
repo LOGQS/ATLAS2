@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
+import React, { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
 import Message from './Message';
 
 interface FileAttachment {
@@ -51,7 +51,12 @@ interface ChatDebugInfo {
   error?: string;
 }
 
-const Chat = () => {
+interface ChatProps {
+  initialChatId: string | null;
+  isActive: boolean;
+}
+
+const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -73,7 +78,7 @@ const Chat = () => {
   // Add state for tracking thinking mode (specific to Gemini 2.5 Pro)
   const [isThinking, setIsThinking] = useState(false);
   // Add ref to track thinking timeout
-  const thinkingTimeoutRef = useRef<number | null>(null);
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Add state for current attachments
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   // Add state for tracking if file is uploading
@@ -85,7 +90,11 @@ const Chat = () => {
   // Add state for caching
   const [documentCache, setDocumentCache] = useState<string | null>(null);
   const [isCachingDocuments, setIsCachingDocuments] = useState(false);
-  const [chatId, setChatId] = useState<string | null>(null);
+  const [chatId, setChatId] = useState<string | null>(initialChatId);
+
+  useEffect(() => {
+    setChatId(initialChatId);
+  }, [initialChatId]);
   // Add state for recording audio
   const [isRecording, setIsRecording] = useState(false);
   // Add state for processing speech to text
@@ -106,7 +115,7 @@ const Chat = () => {
   // Add ref for animation frame
   const animationFrameRef = useRef<number | null>(null);
   // Add ref for silence detection interval
-  const silenceDetectionIntervalRef = useRef<number | null>(null);
+  const silenceDetectionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Add ref for media recorder
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   // Add ref for audio chunks
@@ -158,7 +167,60 @@ const Chat = () => {
     }
     
     return { supported: false };
-  };
+  }; 
+  // Load messages whenever the chat ID changes
+  useEffect(() => {
+    if (chatId === null) {
+      setMessages([]);
+      setIsStreaming(false);
+      setIsThinking(false);
+      accumulatedContentRef.current = '';
+      return;
+    }
+
+    console.log(`Loading chat with ID: ${chatId}`);
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    setLoading(true);
+    setIsStreaming(false);
+    setIsThinking(false);
+    userInteractedWithScrollRef.current = false;
+    accumulatedContentRef.current = '';
+
+    fetch(`/api/chat/${chatId}`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    })
+      .then(r => {
+        if (!r.ok) {
+          throw new Error(`Failed to load chat history: ${r.status} ${r.statusText}`);
+        }
+        return r.json();
+      })
+      .then(data => {
+        if (data && data.messages) {
+          const historyMessages = data.messages.map((m: ChatMessage) => ({ ...m, isHistory: true }));
+          setMessages(historyMessages);
+        } else {
+          setMessages([{ role: 'assistant', content: 'This chat history has been loaded. You can continue your conversation.', isHistory: true }]);
+        }
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      })
+      .catch(e => {
+        console.error('Error loading chat history:', e);
+        setMessages([{ role: 'assistant', content: `Sorry, I couldn't load this chat. ${e.message}`, isHistory: true }]);
+      })
+      .finally(() => {
+        setLoading(false);
+        window.dispatchEvent(new CustomEvent('chat-load-complete'));
+      });
+  }, [chatId]);
   
   // Function to check file processing state
   const checkFileState = async (fileId: string): Promise<{state: string, ready: boolean}> => {
@@ -959,9 +1021,9 @@ const Chat = () => {
       // Add a placeholder message for the thinking state
       setMessages(prev => [...prev, { role: 'assistant', content: '', isHistory: false }]);
       // Add a minimum thinking time to ensure animation shows (at least 1 second)
-      thinkingTimeoutRef.current = window.setTimeout(() => {
+      thinkingTimeoutRef.current = setTimeout(() => {
         thinkingTimeoutRef.current = null;
-      }, 1000) as unknown as number; // TypeScript casting for setTimeout
+      }, 1000);
     } else {
       // For other models, start streaming immediately
       setIsStreaming(true);
@@ -1296,12 +1358,14 @@ const Chat = () => {
     
     // Handle the reset-chat event - resets the current chat UI
     const handleResetChat = () => {
+      if (!isActive) return;
       console.log('Received reset-chat event, resetting current chat');
       resetChat();
     };
     
     // Handle the new-chat event - creates a new chat without erasing history
     const handleNewChat = () => {
+      if (!isActive) return;
       console.log('Received new-chat event, creating a new chat');
       
       // If there's an active request, show canceling state and abort it
@@ -1355,7 +1419,7 @@ const Chat = () => {
       window.removeEventListener('reset-chat', handleResetChat);
       window.removeEventListener('new-chat', handleNewChat);
     };
-  }, [checkDebugInfo, resetChat, attachments, setChatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling]);
+  }, [checkDebugInfo, resetChat, attachments, setChatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling, isActive]);
 
   // Load microphone settings from localStorage on component mount
   useEffect(() => {
@@ -1651,7 +1715,7 @@ const Chat = () => {
       });
       
       // Setup silence detection interval
-      silenceDetectionIntervalRef.current = window.setInterval(() => {
+      silenceDetectionIntervalRef.current = setInterval(() => {
         // Get current audio levels
         analyser.getByteFrequencyData(dataArray);
         
@@ -1767,108 +1831,10 @@ const Chat = () => {
     }
   };
 
-  // Add load-chat event handler
-  useEffect(() => {
-    const handleLoadChat = (event: Event) => {
-      const customEvent = event as CustomEvent<{ chatId: string }>;
-      if (customEvent.detail && customEvent.detail.chatId) {
-        const selectedChatId = customEvent.detail.chatId;
-        console.log(`Loading chat with ID: ${selectedChatId}`);
-        
-        // If there's an active request, cancel it first
-        if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-          abortControllerRef.current = null;
-        }
-        
-        // Set loading state while we fetch the chat
-        setLoading(true);
-        
-        // Reset some states
-        setIsStreaming(false);
-        setIsThinking(false);
-        // setShouldAutoScroll(true); // Respect user's scroll choice
-        userInteractedWithScrollRef.current = false; // On load, assume fresh state
-        accumulatedContentRef.current = '';
-        
-        // Set the chat ID to the one from the event
-        setChatId(selectedChatId);
-        
-        // Since the backend maintains the chat session state, we need to make a GET request 
-        // to retrieve the chat messages for this chat ID
-        fetch(`/api/chat/${selectedChatId}`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        })
-        .then(response => {
-          if (!response.ok) {
-            throw new Error(`Failed to load chat history: ${response.status} ${response.statusText}`);
-          }
-          return response.json();
-        })
-        .then(data => {
-          // Set the messages from the loaded chat
-          if (data && data.messages) {
-            console.log(`Loaded ${data.messages.length} messages for chat ${selectedChatId}`);
-            // Mark each message as a history message by adding an isHistory flag
-            const historyMessages = data.messages.map((msg: ChatMessage) => ({
-              ...msg,
-              isHistory: true // Add flag to identify messages from history
-            }));
-            setMessages(historyMessages);
-          } else {
-            // If no messages were found, display a helpful message
-            setMessages([{
-              role: 'assistant',
-              content: 'This chat history has been loaded. You can continue your conversation.',
-              isHistory: true
-            }]);
-          }
-          // Scroll to bottom after loading chat
-          setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          }, 100);
-          
-          // Emit the load-complete event
-          window.dispatchEvent(new CustomEvent('chat-load-complete'));
-        })
-        .catch(error => {
-          console.error('Error loading chat history:', error);
-          // Display error message
-          setMessages([{
-            role: 'assistant',
-            content: `Sorry, I couldn't load this chat. ${error.message}`,
-            isHistory: true
-          }]);
-          
-          // Still emit the load-complete event
-          window.dispatchEvent(new CustomEvent('chat-load-complete'));
-        })
-        .finally(() => {
-          setLoading(false);
-        });
-      }
-    };
-    
-    window.addEventListener('load-chat', handleLoadChat);
-    
-    return () => {
-      window.removeEventListener('load-chat', handleLoadChat);
-    };
-  }, [
-    setChatId, 
-    setMessages, 
-    setLoading, 
-    setIsStreaming, 
-    setIsThinking, 
-    setShouldAutoScroll
-  ]);
-
   // Add handler for active chat deletion
   useEffect(() => {
     const handleDeleteActiveChat = () => {
+      if (!isActive) return;
       console.log('Active chat has been deleted, clearing chat view');
       
       // If there's an active request, cancel it
@@ -1899,7 +1865,7 @@ const Chat = () => {
     return () => {
       window.removeEventListener('delete-active-chat', handleDeleteActiveChat);
     };
-  }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId]);
+  }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId, isActive]);
 
   return (
     <div className="chat-container">
