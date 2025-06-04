@@ -16,7 +16,7 @@ import tempfile
 from datetime import datetime
 from faster_whisper import WhisperModel
 from pathlib import Path
-from utils.prompts import creations_system_instruction
+from utils.prompts import creations_system_instruction, summary_system_instruction
 import gc
 import ctypes
 import signal
@@ -593,6 +593,26 @@ def get_openai_client_for_model(model_name):
         )
     else:
         raise Exception(f"No client available for model: {model_name}")
+
+def generate_chat_summary(messages, model_name):
+    """Generate a summary of the conversation using the given model"""
+    client = get_openai_client_for_model(model_name)
+
+    openai_messages = [{"role": "system", "content": summary_system_instruction}]
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role in ["user", "assistant"]:
+            openai_messages.append({"role": role, "content": content})
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=openai_messages,
+        stream=False,
+    )
+
+    return response.choices[0].message.content.strip()
 
 def create_unified_chat_response(messages, model_name, system_instruction=None, files=None):
     """
@@ -2007,6 +2027,44 @@ def get_chat(chat_id):
                 return jsonify({"error": "Chat not found", "chat_id": chat_id}), 404
     except Exception as e:
         safe_exception(f"Error in get_chat: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+# Summarize a chat conversation
+@app.route("/api/chat/<chat_id>/summary", methods=["GET"])
+def summarize_chat(chat_id):
+    """Return an LLM generated summary of a chat"""
+    try:
+        model_name = request.args.get("model", settings.get("model"))
+
+        # Try to retrieve messages from active chats first
+        messages = []
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            if hasattr(chat, "unified_history"):
+                messages = chat.unified_history
+            elif hasattr(chat, "external_history"):
+                messages = chat.external_history
+
+        if not messages:
+            # Load from history file
+            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+            chats_file = data_dir / "chats.json"
+            if chats_file.exists():
+                with open(chats_file, "r", encoding="utf-8") as f:
+                    chat_history = json.load(f)
+                for chat_entry in chat_history.get("chats", []):
+                    if chat_entry.get("id") == chat_id:
+                        messages = chat_entry.get("messages", [])
+                        break
+
+        if not messages:
+            return jsonify({"error": "Chat not found"}), 404
+
+        summary = generate_chat_summary(messages, model_name)
+
+        return jsonify({"chat_id": chat_id, "summary": summary})
+    except Exception as e:
+        safe_exception(f"Error summarizing chat {chat_id}: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
 # Generate image endpoint
