@@ -15,6 +15,7 @@ import TaskSystem from './components/TaskSystem';
 import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
 import creationManager from './utils/creationManager';
+import ChatSearchModal from './components/ChatSearchModal';
 
 interface ImportResult {
   success: boolean;
@@ -55,6 +56,8 @@ function App() {
   
   // Add state for task system
   const [isTaskSystemOpen, setIsTaskSystemOpen] = useState(false);
+
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
 
   // Add creation modal state
   const [addCreationModalOpen, setAddCreationModalOpen] = useState(false);
@@ -831,8 +834,8 @@ function App() {
           <ul className="sidebar-nav">
             {/* Gallery Button - now triggers the enhanced viewer */}
             <li>
-              <button 
-                className="sidebar-link sidebar-button" 
+              <button
+                className="sidebar-link sidebar-button"
                 onClick={() => setIsEnhancedViewerOpen(true)}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -841,6 +844,18 @@ function App() {
                   <polyline points="21 15 16 10 5 21"></polyline>
                 </svg>
                 <span>Gallery</span>
+              </button>
+            </li>
+            <li>
+              <button
+                className="sidebar-link sidebar-button"
+                onClick={() => setSearchModalOpen(true)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>Search</span>
               </button>
             </li>
             <li>
@@ -1318,10 +1333,11 @@ function App() {
       )}
 
       {/* Add Task System component */}
-      <TaskSystem 
+      <TaskSystem
         isOpen={isTaskSystemOpen}
         onClose={handleCloseTaskSystem}
       />
+      <ChatSearchModal isOpen={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
     </div>
   );
 }

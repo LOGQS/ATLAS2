@@ -25,6 +25,8 @@ interface ChatMessage {
   attachments?: FileAttachment[];
   isHistory?: boolean; // Add this flag to identify messages from history
   reasoning?: string; // For reasoning tokens from OpenRouter models
+  timestamp?: string;
+  tags?: string[];
 }
 
 interface Model {
@@ -598,10 +600,12 @@ const Chat = () => {
                 };
               } else {
                 // Create new assistant message with reasoning
-                updatedMessages.push({ 
-                  role: 'assistant', 
+                updatedMessages.push({
+                  role: 'assistant',
                   content: '',
-                  reasoning: newBuffer
+                  reasoning: newBuffer,
+                  timestamp: new Date().toISOString(),
+                  tags: []
                 });
               }
               
@@ -633,10 +637,12 @@ const Chat = () => {
                 };
               } else {
                 // Create new assistant message if needed
-                updatedMessages.push({ 
-                  role: 'assistant', 
+                updatedMessages.push({
+                  role: 'assistant',
                   content: accumulatedContentRef.current,
-                  reasoning: reasoningBuffer || undefined
+                  reasoning: reasoningBuffer || undefined,
+                  timestamp: new Date().toISOString(),
+                  tags: []
                 });
               }
               
@@ -670,9 +676,11 @@ const Chat = () => {
                   content: accumulatedContentRef.current
                 };
               } else {
-                updatedMessages.push({ 
-                  role: 'assistant', 
-                  content: accumulatedContentRef.current 
+                updatedMessages.push({
+                  role: 'assistant',
+                  content: accumulatedContentRef.current,
+                  timestamp: new Date().toISOString(),
+                  tags: []
                 });
               }
               
@@ -715,7 +723,9 @@ const Chat = () => {
             console.log('🧠 Setting final reasoning on message:', reasoningBuffer.substring(0, 100) + '...');
             updatedMessages[lastIndex] = {
               ...lastMessage,
-              reasoning: reasoningBuffer
+              reasoning: reasoningBuffer,
+              timestamp: lastMessage.timestamp || new Date().toISOString(),
+              tags: lastMessage.tags || []
             };
           }
           
@@ -896,8 +906,8 @@ const Chat = () => {
       }
     }
     
-    const userMessage: ChatMessage = { 
-      role: 'user', 
+    const userMessage: ChatMessage = {
+      role: 'user',
       content: input.trim(),
       attachments: attachments.length > 0 ? attachments.map(a => ({
         // Map only necessary fields for the message
@@ -908,7 +918,9 @@ const Chat = () => {
         original_name: a.original_name,
         // Do not include local_url, uploading, upload_progress etc.
       })) : undefined,
-      isHistory: false 
+      isHistory: false,
+      timestamp: new Date().toISOString(),
+      tags: []
     };
     
     // Auto-scroll logic BEFORE adding the message to the state
@@ -957,7 +969,7 @@ const Chat = () => {
       // First set the thinking state
       setIsThinking(true);
       // Add a placeholder message for the thinking state
-      setMessages(prev => [...prev, { role: 'assistant', content: '', isHistory: false }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: '', isHistory: false, timestamp: new Date().toISOString(), tags: [] }]);
       // Add a minimum thinking time to ensure animation shows (at least 1 second)
       thinkingTimeoutRef.current = window.setTimeout(() => {
         thinkingTimeoutRef.current = null;
