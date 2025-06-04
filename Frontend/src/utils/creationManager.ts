@@ -478,7 +478,32 @@ class CreationManager {
     this.notifyListeners('update', creation, this.getCreations());
     
     console.log(`Creation renamed: ${id}`);
-    
+
+    return true;
+  }
+
+  /**
+   * Update creation content or other fields by ID
+   */
+  public updateCreation(id: string, updates: Partial<Creation>): boolean {
+    const creation = this.getCreationById(id);
+    if (!creation) return false;
+
+    Object.assign(creation, updates);
+
+    // Save to session storage
+    this.saveToSessionStorage();
+
+    // Only save to file storage if backend is available
+    if (this.backendAvailable) {
+      this.saveToFileStorage();
+    }
+
+    // Notify listeners with the updated creation
+    this.notifyListeners('update', creation, this.getCreations());
+
+    console.log(`Creation updated: ${id}`);
+
     return true;
   }
 

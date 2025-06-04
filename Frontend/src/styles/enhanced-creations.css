@@ -299,6 +299,25 @@
   color: var(--danger-color);
 }
 
+.creation-item-edit {
+  background: transparent;
+  border: none;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  margin-right: 4px;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.creation-item-edit:hover {
+  background-color: var(--selection-color);
+  color: var(--primary-color);
+}
+
 .creation-item-rename {
   background: transparent;
   border: none;
