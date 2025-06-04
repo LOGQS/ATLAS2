@@ -1000,6 +1000,11 @@ const Chat = () => {
       } else {
         console.log('Starting a new conversation');
       }
+
+      const activeProfile = localStorage.getItem('atlas_active_profile');
+      if (activeProfile) {
+        (requestData as any).profile = activeProfile;
+      }
       
       // Make the POST request
       const response = await fetch('/api/chat', {
