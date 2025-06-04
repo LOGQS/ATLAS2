@@ -113,6 +113,13 @@
   color: rgba(255, 255, 255, 0.9);
 }
 
+.selection-help {
+  padding: 4px 0 8px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
 .chat-history-item.selected {
   background-color: rgba(78, 115, 237, 0.1);
   border-left-color: rgba(78, 115, 237, 0.5);
