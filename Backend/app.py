@@ -594,7 +594,7 @@ def get_openai_client_for_model(model_name):
     else:
         raise Exception(f"No client available for model: {model_name}")
 
-def create_unified_chat_response(messages, model_name, system_instruction=None, files=None):
+def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None):
     """
     Create a chat response using unified OpenAI-compatible APIs for all providers
     """
@@ -633,6 +633,10 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
         "messages": openai_messages,
         "stream": True
     }
+    if temperature is not None:
+        params["temperature"] = float(temperature)
+    if max_tokens is not None:
+        params["max_tokens"] = int(max_tokens)
     
     # Add reasoning tokens for OpenRouter models that support it
     if is_openrouter_model(model_name):
@@ -644,7 +648,7 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
     # Return the response object that can be iterated over for streaming
     return response
 
-def create_openai_compatible_chat_response(messages, model_name, system_instruction=None):
+def create_openai_compatible_chat_response(messages, model_name, system_instruction=None, temperature=None, max_tokens=None):
     """
     Create a chat response using OpenAI-compatible APIs (OpenRouter, Groq, etc.)
     """
@@ -683,6 +687,10 @@ def create_openai_compatible_chat_response(messages, model_name, system_instruct
         "messages": openai_messages,
         "stream": True
     }
+    if temperature is not None:
+        params["temperature"] = float(temperature)
+    if max_tokens is not None:
+        params["max_tokens"] = int(max_tokens)
     
     # Add reasoning tokens for OpenRouter models that support it
     if is_openrouter_model(model_name):
@@ -1251,6 +1259,8 @@ def chat():
         messages = data.get("messages", [])
         model_name = data.get("model", settings["model"])
         # We'll ignore cache_id since caching is removed
+        temperature = data.get("temperature")
+        max_tokens = data.get("max_tokens")
         
         # Validate that we have the necessary client for the requested model
         if is_openrouter_model(model_name):
@@ -1576,9 +1586,12 @@ def chat():
                 # Create response using unified approach
                 safe_debug(f"Using unified interface for model: {model_name}")
                 response = create_unified_chat_response(
-                    history_for_provider, 
-                    model_name, 
-                    creations_system_instruction
+                    history_for_provider,
+                    model_name,
+                    creations_system_instruction,
+                    None,
+                    temperature,
+                    max_tokens
                 )
                 
                 # Use raw stream directly (fastest approach)
