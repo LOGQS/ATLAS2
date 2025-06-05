@@ -814,6 +814,67 @@ class ChatManager {
       };
     }
   }
+
+  /**
+   * Retrieve an LLM-generated summary for the given chat
+   * @param id Chat ID
+   * @param model Model to use for summarization
+   */
+  public async getChatSummary(id: string, model: string): Promise<string | null> {
+    try {
+      if (!this.backendAvailable) {
+        console.log('Backend not available, cannot summarize chat');
+        return null;
+      }
+
+      const response = await fetch(`/api/chat/${id}/summary?model=${encodeURIComponent(model)}`, {
+        method: 'GET',
+        headers: { 'Cache-Control': 'no-cache' },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to summarize chat: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.summary as string;
+    } catch (error) {
+      console.error('Error fetching chat summary:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Replace chat history with a condensed summary
+   * @param id Chat ID
+   * @param summary Summary text
+   * @param model Model name
+   */
+  public async condenseChat(id: string, summary: string, model: string): Promise<boolean> {
+    try {
+      if (!this.backendAvailable) {
+        console.log('Backend not available, cannot condense chat');
+        return false;
+      }
+
+      const response = await fetch(`/api/chat/${id}/condense`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary, model })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to condense chat: ${response.status} ${response.statusText}`);
+      }
+
+      // Refresh chats list after condensing
+      await this.refreshChats();
+      return true;
+    } catch (error) {
+      console.error('Error condensing chat:', error);
+      return false;
+    }
+  }
 }
 
 // Export the singleton instance

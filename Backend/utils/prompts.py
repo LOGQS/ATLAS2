@@ -246,3 +246,5 @@ $$externalend$$
 ⚠️ FINAL REMINDER: NEVER WRAP CREATION BLOCKS IN MARKDOWN CODE BLOCKS OR ANY OTHER SYNTAX! ⚠️
 =================================================
 """
+# System instruction for summarizing chat history
+summary_system_instruction = "Summarize the conversation in concise bullet points."
