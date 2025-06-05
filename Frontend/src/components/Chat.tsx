@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, ChangeEvent, useCallback } from 're
 import Message from './Message';
 import SummaryModal from './SummaryModal';
 import chatManager from '../utils/chatManager';
+import ImageAnnotationModal from './ImageAnnotationModal';
 
 interface FileAttachment {
   file_id: string;
@@ -102,6 +103,10 @@ const Chat: React.FC = () => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
+  // Queue for image annotation before upload
+  const [annotationQueue, setAnnotationQueue] = useState<{ file: File; index: number; total: number; }[]>([]);
+  const [annotationFile, setAnnotationFile] = useState<File | null>(null);
+  const [annotationInfo, setAnnotationInfo] = useState<{ index: number; total: number } | null>(null);
   // Add state for microphone settings
   const [micSettings, setMicSettings] = useState({
     silenceThreshold: 10, // Default threshold value (0-255)
@@ -314,214 +319,266 @@ const Chat: React.FC = () => {
       };
     }
   };
-
-  // Process an arbitrary list of files (used for input selection and drag/drop)
-  const processFiles = async (files: FileList) => {
+  
+  // Enhanced file selection handler
+  const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
     if (!files || files.length === 0) return;
-
+    
+    // Process all selected files
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      console.log(`Selected file ${i + 1}/${files.length}: ${file.name}, type: ${file.type}, size: ${file.size} bytes`);
-
+      console.log(`Selected file ${i+1}/${files.length}: ${file.name}, type: ${file.type}, size: ${file.size} bytes`);
+      
+      // Check if file type is supported
       const { supported, type } = isFileTypeSupported(file);
       if (!supported) {
-        alert(`Unsupported file type: ${file.name}. Please upload an image, video, audio file, or document (PDF, text, etc.)`);
-        continue;
+          alert(`Unsupported file type: ${file.name}. Please upload an image, video, audio file, or document (PDF, text, etc.)`);
+          continue; // Skip this file and process the next one
       }
-
-      if (file.size > 300 * 1024 * 1024) {
-        const confirmLargeUpload = window.confirm(
-          `The file ${file.name} is very large (${Math.round(file.size / (1024 * 1024))}MB) and may take a long time to upload. ` +
-            `Files larger than 20MB use the Gemini File API and can be up to 2GB, but may take longer to process. ` +
-            `Continue with upload?`
-        );
-        if (!confirmLargeUpload) {
-          continue;
-        }
+      
+      // Enhanced size warning for large files
+      if (file.size > 300 * 1024 * 1024) { // 300MB
+          const confirmLargeUpload = window.confirm(
+              `The file ${file.name} is very large (${Math.round(file.size / (1024 * 1024))}MB) and may take a long time to upload. ` +
+              `Files larger than 20MB use the Gemini File API and can be up to 2GB, but may take longer to process. ` +
+              `Continue with upload?`
+          );
+          if (!confirmLargeUpload) {
+              continue; // Skip this file
+          }
       }
-
+      
+      // Create unique ID for this attachment
       const attachmentId = `${Date.now()}-${i}`;
+      
+      // Create a temporary local attachment with uploading status
       const localAttachment: FileAttachment = {
-        file_id: attachmentId,
-        file_type: type as 'image' | 'video' | 'audio' | 'document',
-        mime_type: file.type,
-        filename: file.name,
-        original_name: file.name,
-        uploading: true,
-        upload_progress: 0,
-        local_url: URL.createObjectURL(file),
-        size: file.size
+          file_id: attachmentId, // Use temp ID until we get real one from server
+          file_type: type as 'image' | 'video' | 'audio' | 'document',
+          mime_type: file.type,
+          filename: file.name,
+          original_name: file.name,
+          uploading: true,
+          upload_progress: 0,
+          local_url: URL.createObjectURL(file),
+          size: file.size
       };
-
+      
+      // Add to attachments
       setAttachments(prev => [...prev, localAttachment]);
       setIsUploading(true);
-
+      
+      // Use IIFE (Immediately Invoked Function Expression) to process uploads in parallel
       (async (currentFile, currentAttachmentId) => {
+        // Create FormData for upload
         const formData = new FormData();
         formData.append('file', currentFile);
-
+        
+        // Create abort controller
         const controller = new AbortController();
         uploadControllersRef.current.set(currentAttachmentId, controller);
-
+        
         try {
-          console.log(`Starting file upload for ${currentFile.name}...`);
-
-          const response = await fetch('/api/upload', {
-            method: 'POST',
-            body: formData,
-            signal: controller.signal
-          });
-
-          console.log(`Upload response status for ${currentFile.name}: ${response.status}`);
-
-          const responseText = await response.text();
-          console.log(`Raw response for ${currentFile.name}: ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`);
-
-          let data;
-          try {
-            data = JSON.parse(responseText);
-          } catch (parseError) {
-            console.error(`Failed to parse response as JSON for ${currentFile.name}:`, parseError);
-            throw new Error(`Invalid server response: ${responseText.substring(0, 100)}...`);
-          }
-
-          if (!response.ok) {
-            const errorMessage = data?.error || data?.message || 'Unknown upload error';
-            if (data?.details) {
-              console.error(`Upload error details for ${currentFile.name}:`, data.details);
+            console.log(`Starting file upload for ${currentFile.name}...`);
+            
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData,
+                signal: controller.signal
+            });
+            
+            console.log(`Upload response status for ${currentFile.name}: ${response.status}`);
+            
+            // Get response as text first to debug any issues
+            const responseText = await response.text();
+            console.log(`Raw response for ${currentFile.name}: ${responseText.substring(0, 200)}${responseText.length > 200 ? '...' : ''}`);
+            
+            // Parse the text to JSON
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (parseError) {
+                console.error(`Failed to parse response as JSON for ${currentFile.name}:`, parseError);
+                throw new Error(`Invalid server response: ${responseText.substring(0, 100)}...`);
             }
-            throw new Error(errorMessage);
-          }
-
-          console.log(`Upload successful for ${currentFile.name}:`, data);
-
-          if (!data.file_id && !data.name) {
-            throw new Error('Server response missing file_id');
-          }
-
-          const isStillProcessing = data.needs_processing === true && data.processing_complete === false;
-
-          const responseWithFileId = {
-            ...data,
-            file_id: data.file_id || data.name
-          };
-
-          setAttachments(prev =>
-            prev.map(attachment =>
-              attachment.file_id === currentAttachmentId
-                ? {
-                    ...responseWithFileId,
-                    uploading: false,
-                    upload_progress: 100,
-                    local_url: attachment.local_url,
-                    processing: isStillProcessing,
-                    needs_processing: data.needs_processing
-                  }
-                : attachment
-            )
-          );
-
-          if (isStillProcessing) {
-            const fileId = responseWithFileId.file_id;
-            console.log(`File ${fileId} (${currentFile.name}) is still processing. Will check status periodically.`);
-
-            const pollFileState = async () => {
-              const maxAttempts = 10;
-              let attempts = 0;
-              let processingComplete = false;
-
-              const pollInterval = setInterval(async () => {
-                if (attempts >= maxAttempts || processingComplete) {
-                  clearInterval(pollInterval);
-                  return;
+            
+            if (!response.ok) {
+                // Handle error response
+                const errorMessage = data?.error || data?.message || 'Unknown upload error';
+                if (data?.details) {
+                    console.error(`Upload error details for ${currentFile.name}:`, data.details);
                 }
-
-                attempts++;
-                try {
-                  const stateResult = await checkFileState(fileId);
-                  console.log(`File ${fileId} (${currentFile.name}) state check (${attempts}/${maxAttempts}): ${stateResult.state}`);
-
-                  if (stateResult.ready) {
-                    console.log(`File ${fileId} (${currentFile.name}) is now ready for use`);
-                    processingComplete = true;
-
-                    setAttachments(prev =>
-                      prev.map(attachment =>
-                        attachment.file_id === fileId
-                          ? { ...attachment, processing: false, state: stateResult.state }
-                          : attachment
-                      )
-                    );
-
-                    clearInterval(pollInterval);
-                  }
-                } catch (error) {
-                  console.error(`Error checking file state for ${currentFile.name}:`, error);
-                }
-              }, 5000);
+                throw new Error(errorMessage);
+            }
+            
+            console.log(`Upload successful for ${currentFile.name}:`, data);
+            
+            // Make sure we have a valid file_id
+            if (!data.file_id && !data.name) {
+                throw new Error('Server response missing file_id');
+            }
+            
+            // Determine file processing status - applies to all file types now
+            const isStillProcessing = data.needs_processing === true && data.processing_complete === false;
+            
+            // Handle the response - make sure we have a file_id
+            const responseWithFileId = {
+                ...data,
+                file_id: data.file_id || data.name
             };
-
-            pollFileState();
-
-            if (i === 0) {
-              const processingMessage = files.length > 1
-                ? 'Some files are still being processed after upload. They may take a moment before they can be used in the chat.'
-                : 'File uploaded successfully but is still being processed. It may take a moment before it can be used in the chat.';
-              alert(processingMessage);
+            
+            // Update attachments
+            setAttachments(prev => 
+                prev.map(attachment => 
+                    attachment.file_id === currentAttachmentId
+                        ? { 
+                            ...responseWithFileId, 
+                            uploading: false, 
+                            upload_progress: 100,
+                            local_url: attachment.local_url, // Keep the local URL for display
+                            processing: isStillProcessing,
+                            needs_processing: data.needs_processing
+                          }
+                        : attachment
+                )
+            );
+            
+            // If file needs processing, check its state periodically
+            if (isStillProcessing) {
+                const fileId = responseWithFileId.file_id;
+                console.log(`File ${fileId} (${currentFile.name}) is still processing. Will check status periodically.`);
+                
+                // Function to poll file state
+                const pollFileState = async () => {
+                    const maxAttempts = 10;
+                    let attempts = 0;
+                    let processingComplete = false;
+                    
+                    // Set up polling interval
+                    const pollInterval = setInterval(async () => {
+                        if (attempts >= maxAttempts || processingComplete) {
+                            clearInterval(pollInterval);
+                            return;
+                        }
+                        
+                        attempts++;
+                        try {
+                            const stateResult = await checkFileState(fileId);
+                            console.log(`File ${fileId} (${currentFile.name}) state check (${attempts}/${maxAttempts}): ${stateResult.state}`);
+                            
+                            if (stateResult.ready) {
+                                console.log(`File ${fileId} (${currentFile.name}) is now ready for use`);
+                                processingComplete = true;
+                                
+                                // Update attachment state to indicate processing is complete
+                                setAttachments(prev => 
+                                    prev.map(attachment => 
+                                        attachment.file_id === fileId
+                                            ? { ...attachment, processing: false, state: stateResult.state }
+                                            : attachment
+                                    )
+                                );
+                                
+                                clearInterval(pollInterval);
+                            }
+                        } catch (error) {
+                            console.error(`Error checking file state for ${currentFile.name}:`, error);
+                        }
+                    }, 5000); // Check every 5 seconds
+                };
+                
+                // Start polling the file state
+                pollFileState();
+                
+                // For the first file that needs processing, show a notification
+                if (i === 0) {
+                    const processingMessage = files.length > 1 
+                        ? "Some files are still being processed after upload. They may take a moment before they can be used in the chat."
+                        : "File uploaded successfully but is still being processed. It may take a moment before it can be used in the chat.";
+                    alert(processingMessage);
+                }
             }
-          }
         } catch (error) {
-          console.error(`File upload error for ${currentFile.name}:`, error);
-
-          if (error instanceof DOMException && error.name === 'AbortError') {
-            console.log(`Upload cancelled by user for ${currentFile.name}`);
-            setAttachments(prev => prev.filter(a => a.file_id !== currentAttachmentId));
-            return;
-          }
-
-          let errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-          if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
-            errorMessage = 'The upload timed out. This file may be too large or your network connection may be slow. Try a smaller file or check your connection.';
-          }
-
-          setAttachments(prev =>
-            prev.map(attachment =>
-              attachment.file_id === currentAttachmentId
-                ? {
-                    ...attachment,
-                    uploading: false,
-                    upload_error: errorMessage
-                  }
-                : attachment
-            )
-          );
-
-          if (i === 0) {
-            alert(`File upload failed for ${currentFile.name}: ${errorMessage}`);
-          }
+            console.error(`File upload error for ${currentFile.name}:`, error);
+            
+            // Check if this was an abort error (user cancelled)
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                console.log(`Upload cancelled by user for ${currentFile.name}`);
+                // Remove the attachment completely
+                setAttachments(prev => prev.filter(a => a.file_id !== currentAttachmentId));
+                return;
+            }
+            
+            // Handle specific error types
+            let errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            
+            // Special handling for timeout errors
+            if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+                errorMessage = 'The upload timed out. This file may be too large or your network connection may be slow. Try a smaller file or check your connection.';
+            }
+            
+            // Update the attachment with the error
+            setAttachments(prev =>
+              prev.map(a =>
+                a.file_id === currentAttachmentId ? { ...a, uploading: false, upload_error: errorMessage } : a
+              )
+            );
+            
+            // Show error to user (only for the first error to avoid multiple alerts)
+            if (i === 0) {
+                alert(`File upload failed for ${currentFile.name}: ${errorMessage}`);
+            }
         } finally {
-          uploadControllersRef.current.delete(currentAttachmentId);
-
-          if (uploadControllersRef.current.size === 0) {
-            setIsUploading(false);
-          }
+            // Clean up controller
+            uploadControllersRef.current.delete(currentAttachmentId);
+            
+            // Only update isUploading if no more uploads are in progress
+            if (uploadControllersRef.current.size === 0) {
+                setIsUploading(false);
+            }
         }
       })(file, attachmentId);
-    }
-
+    };
+    
+    // Enhanced file selection handler
+    const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+  
+      const fileArray = Array.from(files);
+  
+      fileArray.forEach((file, index) => {
+        const { supported, type } = isFileTypeSupported(file);
+        if (!supported || !type) {
+          alert(`Unsupported file type: ${file.name}. Please upload an image, video, audio file, or document (PDF, text, etc.)`);
+          return;
+        }
+  
+        if (file.size > 300 * 1024 * 1024) {
+          const confirmLargeUpload = window.confirm(
+            `The file ${file.name} is very large (${Math.round(file.size / (1024 * 1024))}MB) and may take a long time to upload. ` +
+              `Files larger than 20MB use the Gemini File API and can be up to 2GB, but may take longer to process. ` +
+              `Continue with upload?`
+          );
+          if (!confirmLargeUpload) {
+            return;
+          }
+        }
+  
+        if (type === 'image') {
+          setAnnotationQueue(q => [...q, { file, index, total: fileArray.length }]);
+        } else {
+          addAttachmentAndUpload(file, type, index, fileArray.length);
+        }
+      });
+  
+    // Reset the file input to allow selecting the same files again
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
   
-  // Enhanced file selection handler
-  const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      await processFiles(e.target.files);
-    }
-  };
-
   // Drag-and-drop handlers
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -577,6 +634,22 @@ const Chat: React.FC = () => {
         setIsUploading(false);
       }
     }, 0);
+  };
+
+  const handleAnnotationSave = (edited: File) => {
+    if (annotationInfo) {
+      addAttachmentAndUpload(edited, 'image', annotationInfo.index, annotationInfo.total);
+    }
+    setAnnotationFile(null);
+    setAnnotationInfo(null);
+  };
+
+  const handleAnnotationCancel = () => {
+    if (annotationFile && annotationInfo) {
+      addAttachmentAndUpload(annotationFile, 'image', annotationInfo.index, annotationInfo.total);
+    }
+    setAnnotationFile(null);
+    setAnnotationInfo(null);
   };
 
   // Detect scroll events
@@ -648,6 +721,16 @@ const Chat: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Process queued images for annotation one at a time
+  useEffect(() => {
+    if (!annotationFile && annotationQueue.length > 0) {
+      const next = annotationQueue[0];
+      setAnnotationFile(next.file);
+      setAnnotationInfo({ index: next.index, total: next.total });
+      setAnnotationQueue(q => q.slice(1));
+    }
+  }, [annotationQueue, annotationFile]);
 
   // Auto-grow textarea based on content
   useEffect(() => {
@@ -2275,6 +2358,15 @@ const Chat: React.FC = () => {
         </div>
       )}
 
+
+      {annotationFile && (
+        <ImageAnnotationModal
+          isOpen={true}
+          file={annotationFile}
+          onSave={handleAnnotationSave}
+          onCancel={handleAnnotationCancel}
+        />
+      )}
 
       <div className="messages-container" ref={messagesContainerRef}>
         {messages.length === 0 && !loading && (
