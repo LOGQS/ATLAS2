@@ -3315,7 +3315,7 @@ def update_message_tags(chat_id, msg_index):
         if not isinstance(tags, list):
             return jsonify({"error": "Tags must be an array"}), 400
 
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
 
         if not chats_file.exists():
@@ -3701,7 +3701,7 @@ def search_chats():
         tags_param = request.args.get("tags")
         tag_list = [t.strip().lower() for t in tags_param.split(",") if t.strip()] if tags_param else []
 
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
 
         if not chats_file.exists():
