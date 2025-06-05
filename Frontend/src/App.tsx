@@ -30,6 +30,7 @@ function App() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [selectedChatIds, setSelectedChatIds] = useState<string[]>([]);
+  const [lastSelectedChatIndex, setLastSelectedChatIndex] = useState<number | null>(null);
   const [bulkOperationsOpen, setBulkOperationsOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -294,13 +295,39 @@ function App() {
   }, []);
 
   // Inside the App component, add new functions for bulk operations
-  const toggleChatSelection = useCallback((chatId: string) => {
-    setSelectedChatIds(prev => 
-      prev.includes(chatId) 
-        ? prev.filter(id => id !== chatId) 
-        : [...prev, chatId]
-    );
-  }, []);
+  const toggleChatSelection = useCallback(
+    (chatId: string, index: number, isShiftClick: boolean = false) => {
+      setSelectedChatIds(prev => {
+        const selectedSet = new Set(prev);
+
+        if (isShiftClick && lastSelectedChatIndex !== null && bulkOperationsOpen) {
+          const start = Math.min(lastSelectedChatIndex, index);
+          const end = Math.max(lastSelectedChatIndex, index);
+          const shouldSelect = !selectedSet.has(chatId);
+
+          for (let i = start; i <= end; i++) {
+            const id = chatHistory[i]?.id;
+            if (!id) continue;
+            if (shouldSelect) {
+              selectedSet.add(id);
+            } else {
+              selectedSet.delete(id);
+            }
+          }
+        } else {
+          if (selectedSet.has(chatId)) {
+            selectedSet.delete(chatId);
+          } else {
+            selectedSet.add(chatId);
+          }
+          setLastSelectedChatIndex(index);
+        }
+
+        return Array.from(selectedSet);
+      });
+    },
+    [lastSelectedChatIndex, bulkOperationsOpen, chatHistory]
+  );
 
   // Function to handle edit input changes
   const handleEditInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -426,7 +453,7 @@ function App() {
   }, [loadingChatIds]);
 
   // Memoize the ChatHistoryItem component to prevent unnecessary re-renders
-  const ChatHistoryItem = useCallback(({ chat }: { chat: ChatHistoryItem }) => {
+  const ChatHistoryItem = useCallback(({ chat, index }: { chat: ChatHistoryItem; index: number }) => {
     const isEditing = editingChatId === chat.id;
     const isLoading = loadingChatIds[chat.id] || false;
     const isActive = activeChatId === chat.id;
@@ -434,11 +461,11 @@ function App() {
     
     return (
       <li key={chat.id}>
-        <div 
+        <div
           className={`chat-history-item ${isActive ? 'active' : ''} ${isLoading ? 'loading' : ''} ${isSelected ? 'selected' : ''}`}
-          onClick={() => {
+          onClick={(e) => {
             if (bulkOperationsOpen) {
-              toggleChatSelection(chat.id);
+              toggleChatSelection(chat.id, index, e.shiftKey);
             } else if (!isLoading) {
               handleLoadChat(chat.id);
             }
@@ -451,7 +478,7 @@ function App() {
                 checked={isSelected}
                 onChange={(e) => {
                   e.stopPropagation();
-                  toggleChatSelection(chat.id);
+                  toggleChatSelection(chat.id, index, (e.nativeEvent as MouseEvent).shiftKey);
                 }}
               />
             </div>
@@ -540,11 +567,46 @@ function App() {
         <p className="sidebar-text">No chat history yet</p>
       </li>
     ) : (
-      chatHistory.map(chat => (
-        <ChatHistoryItem key={chat.id} chat={chat} />
+      chatHistory.map((chat, idx) => (
+        <ChatHistoryItem key={chat.id} chat={chat} index={idx} />
       ))
     );
   }, [chatHistory, ChatHistoryItem]);
+
+  // Keyboard shortcuts for bulk operations
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!bulkOperationsOpen) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        e.stopPropagation();
+        const allIds = chatHistory.map(c => c.id);
+        setSelectedChatIds(allIds);
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (selectedChatIds.length > 0) {
+          setSelectedChatIds([]);
+        } else {
+          setBulkOperationsOpen(false);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [bulkOperationsOpen, chatHistory, selectedChatIds.length]);
+
+  // Reset last selected index when bulk operations panel closes or chat history changes
+  useEffect(() => {
+    if (!bulkOperationsOpen) {
+      setLastSelectedChatIndex(null);
+    }
+  }, [bulkOperationsOpen, chatHistory]);
 
   const handleBulkDelete = async () => {
     if (selectedChatIds.length === 0) return;
@@ -890,7 +952,7 @@ function App() {
           {bulkOperationsOpen && (
             <div className="bulk-operations-panel">
               <div className="bulk-operations-buttons">
-                <button 
+                <button
                   className="bulk-op-button"
                   onClick={handleExportChats}
                   title="Export chat history as a JSON file"
@@ -914,7 +976,7 @@ function App() {
                   </svg>
                   <span>Import</span>
                 </button>
-                {selectedChatIds.length > 0 && (
+              {selectedChatIds.length > 0 && (
                   <button 
                     className="bulk-op-button delete-button"
                     onClick={handleBulkDelete}
@@ -929,8 +991,11 @@ function App() {
                   </button>
                 )}
               </div>
+              <div className="selection-help">
+                <span>Click to select • Shift+Click range • Ctrl+A to select all • Esc to cancel</span>
+              </div>
               {selectedChatIds.length > 0 && (
-                <button 
+                <button
                   className="clear-selection-button"
                   onClick={() => setSelectedChatIds([])}
                 >
