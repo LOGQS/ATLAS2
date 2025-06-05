@@ -143,7 +143,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 active_task_chats = {}
 
 # Define task_chats file path within the data directory
-data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+data_dir = data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
 task_chats_file = data_dir / "task_chats.json"
 
 # Ensure task_chats.json exists at startup

@@ -85,7 +85,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ children }) => {
       }, 300);
       
       // Store the timeout ID in a ref for cleanup
-      leaveTimeoutRef.current = timeout;
+      leaveTimeoutRef.current = timeout as unknown as number;
     }
   };
   

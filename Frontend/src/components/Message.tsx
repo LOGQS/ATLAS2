@@ -21,8 +21,6 @@ const backticksAfterEndPattern = /\$\$end\$\$\s*\n?```/;
 const jsxBackticksPattern = /```jsx\s*\n?\$\$creation:react\s+([^:\n]+)\$\$/;
 const pythonBackticksPattern = /```python\s*\n?\$\$creation:code\s+([^:\n]+)\$\$/;
 
-// Regex to detect URLs for preview cards
-const urlRegex = /(https?:\/\/[^\s]+)/g;
 
 // Helper function to clean backticks during streaming (simplified version of the utility function)
 const cleanBackticksForStreaming = (content: string): string => {
@@ -130,6 +128,37 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   const [codeBlockCopied, setCodeBlockCopied] = useState<{[key: string]: boolean}>({});
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
   
+  // Get copy button visibility setting from localStorage with live updates
+  const [showCopyButton, setShowCopyButton] = useState(() => {
+    const saved = localStorage.getItem('copyButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  
+  // Listen for settings changes to update immediately
+  useEffect(() => {
+    const handleSettingsChange = (event: Event) => {
+      const customEvent = event as CustomEvent<{ key: string; value: boolean }>;
+      if (customEvent.detail.key === 'copyButtonEnabled') {
+        setShowCopyButton(customEvent.detail.value);
+      }
+    };
+    
+    // Also listen for storage changes from other tabs/windows
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === 'copyButtonEnabled' && event.newValue !== null) {
+        setShowCopyButton(JSON.parse(event.newValue));
+      }
+    };
+    
+    window.addEventListener('settingsChanged', handleSettingsChange);
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('settingsChanged', handleSettingsChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+  
   // Refs to track completed creations during streaming
   const completedStreamCreationsRef = useRef<Creation[]>([]);
   
@@ -152,8 +181,6 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   const [creationSwitchTimeout, setCreationSwitchTimeout] =
     useState<ReturnType<typeof setTimeout> | null>(null);
 
-  // URLs extracted from the message for preview cards
-  const [urlPreviews, setUrlPreviews] = useState<string[]>([]);
   
   // Memoize the regex patterns to prevent re-creating them on each render
   const creationStartPattern = useMemo(() => /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$/, []);
@@ -301,15 +328,6 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
 
   }, [displayedContent, isStreaming, streamedCreation, creationComplete, safeSetDisplayedContent]);
 
-  // Extract URLs for preview cards once message is fully received
-  useEffect(() => {
-    if (!isStreaming && !isThinking && content) {
-      const cleaned = removeCreationDirectives(content);
-      const matches = cleaned.match(urlRegex) || [];
-      const unique = Array.from(new Set(matches.map(u => u.replace(/[.,]$/, ''))));
-      setUrlPreviews(unique);
-    }
-  }, [content, isStreaming, isThinking]);
   
   // Process any creations when content changes and streaming ends
   useEffect(() => {
@@ -1596,7 +1614,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         {displayedContent}
       </ReactMarkdown>
     );
-  }, [isUser, isCollectingCreation, content, isStreaming, streamedCreation, displayedContent, codeBlockCopied, toggleCreationWindow, streamingContentParts]);
+  }, [isUser, isCollectingCreation, content, isStreaming, streamedCreation, displayedContent, codeBlockCopied, isThinking, toggleCreationWindow, streamingContentParts]);
 
   // Render thinking animation directly for thinking state
   if (!isUser && isThinking) {
@@ -1731,7 +1749,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   return (
     <div className="message-wrapper">
       <div className={getMessageClass()}>
-        {!isUser && !isThinking && (
+        {!isUser && !isThinking && showCopyButton && (
           <button 
             className="copy-button" 
             onClick={copyToClipboard}

@@ -37,3 +37,7 @@
 .app-container.focus-mode .chat-container {
   max-width: 100%;
 }
+
+.app-container.focus-mode .copy-button {
+  display: none;
+}

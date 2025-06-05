@@ -704,7 +704,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                       }
                       
                       lastPlanUpdateTime = Date.now();
-                    }, planUpdateThrottle);
+                    }, planUpdateThrottle) as unknown as number;
                   }
                 }
               } 
@@ -770,7 +770,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                       }
                       
                       lastPlanUpdateTime = Date.now();
-                    }, planUpdateThrottle);
+                    }, planUpdateThrottle) as unknown as number;
                   }
                 }
               }
@@ -841,7 +841,7 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
                     )
                   );
                   lastUpdateTime = Date.now();
-                }, updateThrottle);
+                }, updateThrottle) as unknown as number;
               }
             }
           }

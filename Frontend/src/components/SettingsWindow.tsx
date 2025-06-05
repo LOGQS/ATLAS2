@@ -27,6 +27,10 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     const saved = localStorage.getItem('sttButtonEnabled');
     return saved ? JSON.parse(saved) : true;
   });
+  const [copyButtonEnabled, setCopyButtonEnabled] = useState(() => {
+    const saved = localStorage.getItem('copyButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('ttsVoice') || 'default';
   });
@@ -65,6 +69,14 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       detail: { key: 'sttButtonEnabled', value: sttEnabled } 
     }));
   }, [sttEnabled]);
+  
+  useEffect(() => {
+    localStorage.setItem('copyButtonEnabled', JSON.stringify(copyButtonEnabled));
+    // Dispatch custom event for same-window updates
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'copyButtonEnabled', value: copyButtonEnabled } 
+    }));
+  }, [copyButtonEnabled]);
   
   useEffect(() => {
     localStorage.setItem('ttsVoice', ttsVoice);
@@ -448,7 +460,19 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
               </p>
               
               <div className="settings-group">
-                <h4>Voice Controls</h4>
+                <h4>Interface Controls</h4>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={copyButtonEnabled}
+                      onChange={(e) => setCopyButtonEnabled(e.target.checked)}
+                    />
+                    <span>Show Copy Button on Messages</span>
+                  </label>
+                  <span className="setting-description">Display a copy button on assistant messages for easy copying</span>
+                </div>
                 
                 <div className="setting-item">
                   <label className="setting-label">

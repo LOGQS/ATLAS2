@@ -650,11 +650,11 @@ const CreationContent: React.FC<CreationContentProps> = ({
       if (accelerationTime >= 1000 && interval > 50) {
         interval = 50;
         clearInterval(continuousTimerRef.current!);
-        continuousTimerRef.current = setInterval(zoom, interval);
+        continuousTimerRef.current = setInterval(zoom, interval) as unknown as number;
       }
     };
     
-    continuousTimerRef.current = setInterval(zoom, interval);
+    continuousTimerRef.current = setInterval(zoom, interval) as unknown as number;
   };
 
   const handleZoomMouseDown = (direction: 'in' | 'out') => {
@@ -668,7 +668,7 @@ const CreationContent: React.FC<CreationContentProps> = ({
     // Start hold timer (300ms delay before continuous zoom)
     holdTimerRef.current = setTimeout(() => {
       startContinuousZoom(direction);
-    }, 300);
+    }, 300) as unknown as number;
   };
 
   const handleZoomMouseUp = () => {

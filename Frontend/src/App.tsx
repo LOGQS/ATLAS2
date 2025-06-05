@@ -1083,7 +1083,7 @@ function App() {
         </div>
       </LeftSidebar>
 
-      <Chat isFocusMode={isFocusMode} onToggleFocusMode={toggleFocusMode} />
+      <Chat />
       {isFocusMode && (
         <button
           className="focus-mode-floating"
