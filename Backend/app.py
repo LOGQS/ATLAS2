@@ -36,6 +36,8 @@ import atexit
 from groq import Groq
 from openai import OpenAI
 import time
+import requests
+from html.parser import HTMLParser
 
 # Set environment variables to handle OpenMP issues BEFORE importing any libraries
 # This prevents the "libiomp5md.dll already initialized" error from faster_whisper
@@ -1426,6 +1428,71 @@ def debug_chats():
     except Exception as e:
         logger.exception(f"Error in debug_chats: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+# Simple endpoint to fetch OpenGraph metadata for URL preview cards
+@app.route("/api/url-preview", methods=["GET"])
+def url_preview():
+    url = request.args.get("url")
+    if not url:
+        return jsonify({"error": "Missing url"}), 400
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code != 200:
+            return jsonify({"error": "Failed to retrieve URL"}), 400
+
+        html = resp.text
+
+        class MetaParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.meta = {}
+                self.in_title = False
+                self.title = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "meta":
+                    attr_dict = dict(attrs)
+                    prop = attr_dict.get("property") or attr_dict.get("name")
+                    if prop and "content" in attr_dict:
+                        self.meta[prop] = attr_dict["content"]
+                elif tag == "title":
+                    self.in_title = True
+
+            def handle_endtag(self, tag):
+                if tag == "title":
+                    self.in_title = False
+
+            def handle_data(self, data):
+                if self.in_title:
+                    if self.title is None:
+                        self.title = data.strip()
+                    else:
+                        self.title += data.strip()
+
+        parser = MetaParser()
+        parser.feed(html)
+
+        def get_meta(names):
+            for name in names:
+                if name in parser.meta:
+                    return parser.meta[name]
+            return None
+
+        title = get_meta(["og:title"]) or parser.title
+        description = get_meta(["og:description", "description"])
+        image = get_meta(["og:image"])
+
+        return jsonify({
+            "title": title,
+            "description": description,
+            "image": image,
+            "url": url
+        })
+    except Exception as e:
+        logger.exception(f"Error fetching preview for {url}: {str(e)}")
+        return jsonify({"error": "Failed to fetch preview"}), 500
 
 
 @app.route("/api/chat", methods=["POST"])

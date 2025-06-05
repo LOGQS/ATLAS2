@@ -10,6 +10,7 @@ import { detectCreations, showCreation, removeCreationDirectives, CreationType, 
 import creationManager from '../utils/creationManager';
 import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
+import UrlPreviewCard from './UrlPreviewCard';
 
 // Add new imports for streaming creation detection
 import { Creation } from '../utils/creationsHelper';
@@ -19,6 +20,9 @@ const backticksBeforeCreationPattern = /```(\w*)\s*\n?\$\$creation:(\w+)(?:\s+([
 const backticksAfterEndPattern = /\$\$end\$\$\s*\n?```/;
 const jsxBackticksPattern = /```jsx\s*\n?\$\$creation:react\s+([^:\n]+)\$\$/;
 const pythonBackticksPattern = /```python\s*\n?\$\$creation:code\s+([^:\n]+)\$\$/;
+
+// Regex to detect URLs for preview cards
+const urlRegex = /(https?:\/\/[^\s]+)/g;
 
 // Helper function to clean backticks during streaming (simplified version of the utility function)
 const cleanBackticksForStreaming = (content: string): string => {
@@ -145,7 +149,11 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   // New state for tracking content parts during streaming
   const [streamingContentParts, setStreamingContentParts] = useState<{isCreation: boolean; content: string; creation?: Creation}[]>([]);
   
-  const [creationSwitchTimeout, setCreationSwitchTimeout] = useState<number | null>(null);
+  const [creationSwitchTimeout, setCreationSwitchTimeout] =
+    useState<ReturnType<typeof setTimeout> | null>(null);
+
+  // URLs extracted from the message for preview cards
+  const [urlPreviews, setUrlPreviews] = useState<string[]>([]);
   
   // Memoize the regex patterns to prevent re-creating them on each render
   const creationStartPattern = useMemo(() => /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$/, []);
@@ -292,6 +300,16 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     
 
   }, [displayedContent, isStreaming, streamedCreation, creationComplete, safeSetDisplayedContent]);
+
+  // Extract URLs for preview cards once message is fully received
+  useEffect(() => {
+    if (!isStreaming && !isThinking && content) {
+      const cleaned = removeCreationDirectives(content);
+      const matches = cleaned.match(urlRegex) || [];
+      const unique = Array.from(new Set(matches.map(u => u.replace(/[.,]$/, ''))));
+      setUrlPreviews(unique);
+    }
+  }, [content, isStreaming, isThinking]);
   
   // Process any creations when content changes and streaming ends
   useEffect(() => {
@@ -1783,6 +1801,13 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           {attachments.length > 0 && (
             <div className="message-attachments">
               {attachments.map((attachment) => renderAttachment(attachment))}
+            </div>
+          )}
+          {urlPreviews.length > 0 && (
+            <div className="url-previews">
+              {urlPreviews.map((url) => (
+                <UrlPreviewCard key={url} url={url} />
+              ))}
             </div>
           )}
           {markdownContent}
