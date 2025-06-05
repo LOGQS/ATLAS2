@@ -283,3 +283,293 @@
   font-size: 11px;
   font-weight: 500;
 }
+
+/* Image Annotation Modal Styles */
+.annotation-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.9);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10001;
+  backdrop-filter: blur(8px);
+  padding: 10px;
+}
+
+.annotation-container {
+  background-color: var(--bg-secondary, #1e1e1e);
+  border-radius: 12px;
+  padding: 24px;
+  width: 95vw;
+  height: 95vh;
+  box-shadow: 0 20px 50px -5px rgba(0, 0, 0, 0.5), 0 10px 20px -5px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.annotation-canvas-area {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  overflow: hidden;
+}
+
+.annotation-canvas-wrapper {
+  position: relative;
+  display: block;
+  background-color: #2a2a2a;
+  border-radius: 8px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  line-height: 0;
+  width: 1200px;
+  height: 700px;
+}
+
+/* Override the conflicting styles from index.css */
+.annotation-canvas-wrapper .annotation-base {
+  display: block !important;
+  cursor: crosshair;
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  width: 1200px !important;
+  height: 700px !important;
+}
+
+.annotation-canvas-wrapper .annotation-draw {
+  display: block !important;
+  cursor: crosshair;
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  background-color: transparent;
+  pointer-events: auto;
+}
+
+.annotation-controls {
+  display: flex;
+  flex-direction: row;
+  gap: 24px;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(255, 255, 255, 0.05);
+  padding: 16px 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.annotation-controls label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-primary, #ffffff);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.annotation-controls input[type="color"] {
+  width: 50px;
+  height: 35px;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background-color: transparent;
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+
+.annotation-controls input[type="color"]:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.annotation-controls input[type="range"] {
+  width: 120px;
+  height: 6px;
+  border-radius: 3px;
+  background-color: rgba(255, 255, 255, 0.2);
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.annotation-controls input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: var(--primary-color, #007acc);
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+
+.annotation-controls input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  background-color: var(--primary-color-hover, #0066aa);
+}
+
+.annotation-controls input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: var(--primary-color, #007acc);
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+
+.annotation-action-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.annotation-action-buttons .modal-button {
+  min-width: 100px;
+  font-weight: 600;
+}
+
+.clear-button {
+  background-color: var(--warning, #f59e0b) !important;
+  color: white !important;
+}
+
+.clear-button:hover {
+  background-color: var(--warning-hover, #d97706) !important;
+}
+
+/* Zoom Controls */
+.zoom-controls-overlay {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(8px);
+  border-radius: 8px;
+  padding: 8px 12px;
+  z-index: 10;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.zoom-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.zoom-control-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.zoom-control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.zoom-level {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  min-width: 40px;
+  text-align: center;
+  padding: 0 4px;
+}
+
+.reset-btn {
+  background: rgba(239, 68, 68, 0.8) !important;
+}
+
+.reset-btn:hover {
+  background: rgba(239, 68, 68, 1) !important;
+}
+
+.zoom-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Responsive adjustments for annotation modal */
+@media (max-width: 768px) {
+  .annotation-overlay {
+    padding: 5px;
+  }
+  
+  .annotation-container {
+    padding: 12px;
+    gap: 12px;
+    width: 98vw;
+    height: 98vh;
+  }
+  
+  .annotation-canvas-wrapper {
+    padding: 10px;
+  }
+  
+  canvas.annotation-base,
+  canvas.annotation-draw {
+    max-width: calc(98vw - 40px);
+    max-height: calc(98vh - 180px);
+  }
+  
+  .annotation-controls {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 10px 16px;
+  }
+  
+  .annotation-controls label {
+    flex-direction: row;
+    gap: 8px;
+    font-size: 13px;
+  }
+  
+  .annotation-controls input[type="range"] {
+    width: 100px;
+  }
+  
+  .annotation-action-buttons {
+    gap: 8px;
+  }
+  
+  .annotation-action-buttons .modal-button {
+    min-width: 80px;
+    padding: 6px 12px;
+  }
+}

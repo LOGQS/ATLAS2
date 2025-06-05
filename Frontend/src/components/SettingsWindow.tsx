@@ -40,6 +40,14 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     const saved = localStorage.getItem('modelParametersEnabled');
     return saved ? JSON.parse(saved) : false;
   });
+  const [imageAnnotationEnabled, setImageAnnotationEnabled] = useState(() => {
+    const saved = localStorage.getItem('imageAnnotationEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const [summarizeButtonEnabled, setSummarizeButtonEnabled] = useState(() => {
+    const saved = localStorage.getItem('summarizeButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('ttsVoice') || 'default';
   });
@@ -122,6 +130,20 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       detail: { key: 'modelParametersEnabled', value: modelParametersEnabled } 
     }));
   }, [modelParametersEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('imageAnnotationEnabled', JSON.stringify(imageAnnotationEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'imageAnnotationEnabled', value: imageAnnotationEnabled } 
+    }));
+  }, [imageAnnotationEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('summarizeButtonEnabled', JSON.stringify(summarizeButtonEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'summarizeButtonEnabled', value: summarizeButtonEnabled } 
+    }));
+  }, [summarizeButtonEnabled]);
   
   useEffect(() => {
     localStorage.setItem('generationSettings', JSON.stringify(generationSettings));
@@ -636,6 +658,30 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                     <span>Customize Model Parameters</span>
                   </label>
                   <span className="setting-description">Enable advanced model parameters like temperature and max tokens</span>
+                </div>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={imageAnnotationEnabled}
+                      onChange={(e) => setImageAnnotationEnabled(e.target.checked)}
+                    />
+                    <span>Enable Image Annotation</span>
+                  </label>
+                  <span className="setting-description">Show annotation modal when uploading images to add drawings before sending</span>
+                </div>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={summarizeButtonEnabled}
+                      onChange={(e) => setSummarizeButtonEnabled(e.target.checked)}
+                    />
+                    <span>Show Summarize Button</span>
+                  </label>
+                  <span className="setting-description">Display the summarize button in the header for generating chat summaries</span>
                 </div>
               </div>
               
