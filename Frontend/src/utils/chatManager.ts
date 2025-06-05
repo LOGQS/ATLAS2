@@ -57,6 +57,16 @@ export interface BulkDeleteResult {
   };
 }
 
+export interface ChatSearchResult {
+  chat_id: string;
+  chat_title?: string;
+  message_index: number;
+  role: string;
+  content: string;
+  timestamp?: string;
+  tags?: string[];
+}
+
 export interface ChatBackupMeta {
   exported_at: string;
   version: string;
@@ -678,6 +688,47 @@ class ChatManager {
     } catch (error) {
       console.error('Error clearing all chats:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Search chat messages via backend
+   */
+  public async searchMessages(query: string, start?: string, end?: string, tags?: string[]): Promise<ChatSearchResult[]> {
+    try {
+      const params = new URLSearchParams();
+      if (query) params.append('q', query);
+      if (start) params.append('start', start);
+      if (end) params.append('end', end);
+      if (tags && tags.length) params.append('tags', tags.join(','));
+
+      const response = await fetch(`/api/chats/search?${params.toString()}`, { cache: 'no-cache' });
+      if (!response.ok) {
+        throw new Error(`Search failed: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.results as ChatSearchResult[];
+    } catch (error) {
+      console.error('Error searching messages:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Update tags for a specific message
+   */
+  public async updateMessageTags(chatId: string, index: number, tags: string[]): Promise<boolean> {
+    try {
+      const response = await fetch(`/api/chats/${chatId}/messages/${index}/tags`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags })
+      });
+      if (!response.ok) return false;
+      return true;
+    } catch (error) {
+      console.error('Error updating message tags:', error);
+      return false;
     }
   }
   

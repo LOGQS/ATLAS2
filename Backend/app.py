@@ -1979,13 +1979,15 @@ def chat():
                         
                         # Get formatted messages for saving to file
                         formatted_messages = chat.unified_history.copy()
-                        
-                        # Convert to the format expected by the frontend (remove metadata)
+
+                        # Convert to the format expected by the frontend while preserving metadata
                         simplified_messages = []
                         for msg in formatted_messages:
                             simplified_msg = {
                                 "role": msg["role"],
-                                "content": msg["content"]
+                                "content": msg["content"],
+                                "timestamp": datetime.fromtimestamp(msg.get("timestamp", time.time())).isoformat(),
+                                "tags": msg.get("tags", [])
                             }
                             if "reasoning" in msg:
                                 simplified_msg["reasoning"] = msg["reasoning"]
@@ -2233,7 +2235,9 @@ def get_chat(chat_id):
                     for msg in chat.unified_history:
                         formatted_msg = {
                             "role": msg["role"],
-                            "content": msg["content"]
+                            "content": msg["content"],
+                            "timestamp": datetime.fromtimestamp(msg.get("timestamp", time.time())).isoformat(),
+                            "tags": msg.get("tags", [])
                         }
                         if "reasoning" in msg:
                             formatted_msg["reasoning"] = msg["reasoning"]
@@ -2242,7 +2246,17 @@ def get_chat(chat_id):
                     safe_debug(f"Retrieved {len(messages)} messages from unified chat {chat_id}")
                 elif hasattr(chat, 'external_history'):
                     # Legacy external chat format
-                    messages = chat.external_history.copy()
+                    messages = []
+                    for msg in chat.external_history:
+                        formatted_msg = {
+                            "role": msg.get("role"),
+                            "content": msg.get("content", ""),
+                            "timestamp": datetime.now().isoformat(),
+                            "tags": msg.get("tags", [])
+                        }
+                        if "reasoning" in msg:
+                            formatted_msg["reasoning"] = msg["reasoning"]
+                        messages.append(formatted_msg)
                     model_type = "OpenRouter" if is_openrouter_model(getattr(chat, 'model', '')) else "Groq" if is_groq_model(getattr(chat, 'model', '')) else "External"
                     safe_debug(f"Retrieved {len(messages)} messages from legacy {model_type} chat {chat_id}")
                 else:
@@ -2274,7 +2288,9 @@ def get_chat(chat_id):
                                     # Add as a new message
                                     messages.append({
                                         "role": role,
-                                        "content": content
+                                        "content": content,
+                                        "timestamp": datetime.now().isoformat(),
+                                        "tags": []
                                     })
                                 
                                 previous_role = role
@@ -3288,6 +3304,47 @@ def update_chat_details(chat_id):
         safe_exception(f"Error updating chat details: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
+# Update tags for a specific message
+@app.route("/api/chats/<chat_id>/messages/<int:msg_index>/tags", methods=["PUT"])
+def update_message_tags(chat_id, msg_index):
+    """Update tags on a specific message"""
+    try:
+        data = request.json or {}
+        tags = data.get("tags", [])
+
+        if not isinstance(tags, list):
+            return jsonify({"error": "Tags must be an array"}), 400
+
+        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        chats_file = data_dir / "chats.json"
+
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        found = False
+        for chat in chat_history.get("chats", []):
+            if chat.get("id") == chat_id:
+                messages = chat.get("messages", [])
+                if 0 <= msg_index < len(messages):
+                    messages[msg_index]["tags"] = tags
+                    chat["updated_at"] = datetime.now().isoformat()
+                    found = True
+                break
+
+        if not found:
+            return jsonify({"error": "Message not found"}), 404
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        return jsonify({"success": True, "tags": tags})
+    except Exception as e:
+        safe_exception(f"Error updating message tags: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
 # Add endpoint to create a new chat entry in history without starting a conversation
 @app.route("/api/chats/create", methods=["POST"])
 def create_chat_entry():
@@ -3632,6 +3689,60 @@ def get_chat_stats():
             "total_chats": 0,
             "has_chat_history": False
         }), 500
+
+# Advanced search endpoint
+@app.route("/api/chats/search", methods=["GET"])
+def search_chats():
+    """Search chat messages with optional date range and tags"""
+    try:
+        query = request.args.get("q", "").lower()
+        start_date = request.args.get("start")
+        end_date = request.args.get("end")
+        tags_param = request.args.get("tags")
+        tag_list = [t.strip().lower() for t in tags_param.split(",") if t.strip()] if tags_param else []
+
+        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        chats_file = data_dir / "chats.json"
+
+        if not chats_file.exists():
+            return jsonify({"results": [], "total": 0})
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        results = []
+        for chat in chat_history.get("chats", []):
+            messages = chat.get("messages", [])
+            for idx, msg in enumerate(messages):
+                content = msg.get("content", "")
+
+                if query and query not in content.lower():
+                    continue
+
+                timestamp = msg.get("timestamp")
+                if start_date and timestamp and timestamp < start_date:
+                    continue
+                if end_date and timestamp and timestamp > end_date:
+                    continue
+
+                msg_tags = [t.lower() for t in msg.get("tags", [])]
+                if tag_list and not set(tag_list).issubset(msg_tags):
+                    continue
+
+                results.append({
+                    "chat_id": chat.get("id"),
+                    "chat_title": chat.get("title"),
+                    "message_index": idx,
+                    "role": msg.get("role"),
+                    "content": content,
+                    "timestamp": timestamp,
+                    "tags": msg.get("tags", [])
+                })
+
+        return jsonify({"results": results, "total": len(results)})
+    except Exception as e:
+        safe_exception(f"Error searching chats: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
 
 # Add endpoint for bulk deleting chats
 @app.route("/api/chats/bulk-delete", methods=["POST"])
