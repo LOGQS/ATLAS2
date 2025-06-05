@@ -17,6 +17,68 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   
   // Track knowledge base state separately from vectorization
   const [knowledgeBaseEnabled, setKnowledgeBaseEnabled] = useState<Record<string, boolean>>({});
+  
+  // General settings state
+  const [ttsEnabled, setTtsEnabled] = useState(() => {
+    const saved = localStorage.getItem('ttsButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const [sttEnabled, setSttEnabled] = useState(() => {
+    const saved = localStorage.getItem('sttButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const [ttsVoice, setTtsVoice] = useState(() => {
+    return localStorage.getItem('ttsVoice') || 'default';
+  });
+  const [ttsSpeed, setTtsSpeed] = useState(() => {
+    const saved = localStorage.getItem('ttsSpeed');
+    return saved ? parseFloat(saved) : 1.0;
+  });
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  // Load available TTS voices
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      const loadVoices = () => {
+        const voices = window.speechSynthesis.getVoices();
+        setAvailableVoices(voices);
+      };
+      
+      loadVoices();
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+  }, []);
+  
+  // Save general settings to localStorage and dispatch custom events
+  useEffect(() => {
+    localStorage.setItem('ttsButtonEnabled', JSON.stringify(ttsEnabled));
+    // Dispatch custom event for same-window updates
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'ttsButtonEnabled', value: ttsEnabled } 
+    }));
+  }, [ttsEnabled]);
+  
+  useEffect(() => {
+    localStorage.setItem('sttButtonEnabled', JSON.stringify(sttEnabled));
+    // Dispatch custom event for same-window updates
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'sttButtonEnabled', value: sttEnabled } 
+    }));
+  }, [sttEnabled]);
+  
+  useEffect(() => {
+    localStorage.setItem('ttsVoice', ttsVoice);
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'ttsVoice', value: ttsVoice } 
+    }));
+  }, [ttsVoice]);
+  
+  useEffect(() => {
+    localStorage.setItem('ttsSpeed', ttsSpeed.toString());
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'ttsSpeed', value: ttsSpeed } 
+    }));
+  }, [ttsSpeed]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -384,9 +446,78 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
               <p className="settings-description">
                 General application settings and preferences.
               </p>
-              <div className="settings-placeholder">
-                <p>General settings coming soon...</p>
+              
+              <div className="settings-group">
+                <h4>Voice Controls</h4>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={ttsEnabled}
+                      onChange={(e) => setTtsEnabled(e.target.checked)}
+                    />
+                    <span>Show Text-to-Speech Button</span>
+                  </label>
+                  <span className="setting-description">Enable the TTS button in chat for spoken responses</span>
+                </div>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={sttEnabled}
+                      onChange={(e) => setSttEnabled(e.target.checked)}
+                    />
+                    <span>Show Speech-to-Text Button</span>
+                  </label>
+                  <span className="setting-description">Enable the microphone button for voice input</span>
+                </div>
               </div>
+              
+              {ttsEnabled && (
+                <div className="settings-group">
+                  <h4>Text-to-Speech Settings</h4>
+                  
+                  <div className="setting-item">
+                    <label className="setting-label-block">
+                      <span>Voice</span>
+                      <select
+                        className="setting-select"
+                        value={ttsVoice}
+                        onChange={(e) => setTtsVoice(e.target.value)}
+                      >
+                        <option value="default">Default Browser Voice</option>
+                        {availableVoices.map((voice, index) => (
+                          <option key={index} value={voice.name}>
+                            {voice.name} ({voice.lang})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  
+                  <div className="setting-item">
+                    <label className="setting-label-block">
+                      <span>Speed: {ttsSpeed.toFixed(1)}x</span>
+                      <input
+                        type="range"
+                        className="setting-slider"
+                        min="0.2"
+                        max="5.0"
+                        step="0.1"
+                        value={ttsSpeed}
+                        onChange={(e) => setTtsSpeed(parseFloat(e.target.value))}
+                      />
+                      <div className="slider-labels">
+                        <span>0.2x</span>
+                        <span style={{ position: 'absolute', left: '16.67%', transform: 'translateX(-50%)' }}>1.0x</span>
+                        <span>5.0x</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

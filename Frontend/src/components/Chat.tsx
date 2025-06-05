@@ -119,6 +119,46 @@ const Chat = () => {
   const isProgrammaticScrollRef = useRef(false);
   // Track browser support for the SpeechSynthesis API
   const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+  
+  // Button visibility settings from localStorage
+  const [showTtsButton, setShowTtsButton] = useState(() => {
+    const saved = localStorage.getItem('ttsButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  const [showSttButton, setShowSttButton] = useState(() => {
+    const saved = localStorage.getItem('sttButtonEnabled');
+    return saved ? JSON.parse(saved) : true;
+  });
+  
+  // Listen for changes to button visibility settings
+  useEffect(() => {
+    // Handle storage events from other windows
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'ttsButtonEnabled' && e.newValue !== null) {
+        setShowTtsButton(JSON.parse(e.newValue));
+      } else if (e.key === 'sttButtonEnabled' && e.newValue !== null) {
+        setShowSttButton(JSON.parse(e.newValue));
+      }
+    };
+    
+    // Handle custom events from same window
+    const handleSettingsChange = (e: CustomEvent) => {
+      const { key, value } = e.detail;
+      if (key === 'ttsButtonEnabled') {
+        setShowTtsButton(value);
+      } else if (key === 'sttButtonEnabled') {
+        setShowSttButton(value);
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('settingsChanged', handleSettingsChange as EventListener);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('settingsChanged', handleSettingsChange as EventListener);
+    };
+  }, []);
 
   // State for enabling or disabling text-to-speech output
   const [ttsEnabled, setTtsEnabled] = useState(() => {
@@ -130,12 +170,48 @@ const Chat = () => {
   useEffect(() => {
     localStorage.setItem('ttsEnabled', JSON.stringify(ttsEnabled));
   }, [ttsEnabled]);
+  
+  // Force reload settings when window gains focus (settings might have changed)
+  useEffect(() => {
+    const handleFocus = () => {
+      // Check for button visibility changes
+      const newTtsButtonEnabled = JSON.parse(localStorage.getItem('ttsButtonEnabled') || 'true');
+      const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
+      
+      if (newTtsButtonEnabled !== showTtsButton) {
+        setShowTtsButton(newTtsButtonEnabled);
+      }
+      if (newSttButtonEnabled !== showSttButton) {
+        setShowSttButton(newSttButtonEnabled);
+      }
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [showTtsButton, showSttButton]);
 
   // Helper to speak assistant messages
   const speak = useCallback((text: string) => {
     if (!ttsSupported) return;
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'en-US';
+    
+    // Apply TTS settings from localStorage
+    const savedVoice = localStorage.getItem('ttsVoice');
+    const savedSpeed = localStorage.getItem('ttsSpeed');
+    
+    if (savedVoice && savedVoice !== 'default') {
+      const voices = window.speechSynthesis.getVoices();
+      const selectedVoice = voices.find(voice => voice.name === savedVoice);
+      if (selectedVoice) {
+        utter.voice = selectedVoice;
+      }
+    }
+    
+    if (savedSpeed) {
+      utter.rate = parseFloat(savedSpeed);
+    }
+    
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utter);
   }, [ttsSupported]);
@@ -1050,7 +1126,7 @@ const Chat = () => {
 
       const activeProfile = localStorage.getItem('atlas_active_profile');
       if (activeProfile) {
-        (requestData as any).profile = activeProfile;
+        (requestData as { profile?: string } & typeof requestData).profile = activeProfile;
       }
       
       // Make the POST request
@@ -2226,7 +2302,8 @@ const Chat = () => {
         </button>
         
         {/* Microphone button */}
-        <button 
+        {showSttButton && (
+          <button 
           className={`microphone-button ${isRecording ? 'recording' : ''} ${isProcessingSpeech ? 'processing' : ''}`}
           onClick={handleMicrophoneClick}
           disabled={loading || isUploading}
@@ -2244,11 +2321,13 @@ const Chat = () => {
             </svg>
           )}
         </button>
+        )}
 
         {/* Text-to-Speech toggle */}
-        <button
+        {showTtsButton && (
+          <button
           className={`tts-button ${ttsEnabled ? 'enabled' : ''}`}
-          onClick={() => setTtsEnabled(prev => !prev)}
+          onClick={() => setTtsEnabled((prev: boolean) => !prev)}
           disabled={!ttsSupported || loading}
           aria-label={ttsEnabled ? 'Disable speech output' : 'Enable speech output'}
           title={
@@ -2265,6 +2344,7 @@ const Chat = () => {
             <path d="M19.07 4.93a9 9 0 010 12.73"></path>
           </svg>
         </button>
+        )}
 
         <button
           className="send-button"
