@@ -623,24 +623,73 @@ def get_openai_client_for_model(model_name):
         raise Exception(f"No client available for model: {model_name}")
 
 def generate_chat_summary(messages, model_name):
-    """Generate a summary of the conversation using the given model"""
-    client = get_openai_client_for_model(model_name)
+    """Generate a summary of the conversation using Gemini Flash"""
+    # Always use Gemini Flash for summarization regardless of the chat model
+    summary_model = "gemini-2.5-flash-preview-05-20"
+    
+    try:
+        
+        # Use global client variable to avoid scoping issues
+        global client
+        
+        # Check if Gemini client is available
+        if client is None:
+            safe_error("Gemini client not available")
+            return "Failed to generate summary: Gemini client not available"
 
-    openai_messages = [{"role": "system", "content": summary_system_instruction}]
+        # Build the conversation history for the Gemini API
+        conversation_parts = [summary_system_instruction + "\n\nConversation to summarize:"]
 
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-        if role in ["user", "assistant"]:
-            openai_messages.append({"role": role, "content": content})
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ["user", "assistant"] and content.strip():
+                conversation_parts.append(f"{role.title()}: {content}")
 
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=openai_messages,
-        stream=False,
-    )
+        # Combine all parts into a single prompt
+        full_prompt = "\n\n".join(conversation_parts)
+        
+        # Use the native Gemini API for summarization
+        response = client.models.generate_content(
+            model=summary_model,
+            contents=[full_prompt],
+            config=types.GenerateContentConfig(
+                safety_settings=[
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE"
+                    }
+                ]
+            )
+        )
 
-    return response.choices[0].message.content.strip()
+        if response and response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts') and len(candidate.content.parts) > 0:
+                summary = candidate.content.parts[0].text.strip()
+                safe_debug(f"Summary generated successfully, length: {len(summary)} chars")
+                return summary
+            else:
+                safe_error("No content found in Gemini response")
+                return "Failed to generate summary: No content in response"
+        else:
+            safe_error(f"Invalid response format from Gemini API. Response: {response}")
+            return "Failed to generate summary: Invalid response format"
+    except Exception as e:
+        safe_exception(f"Error in generate_chat_summary: {str(e)}", e)
+        return f"Failed to generate summary: {str(e)}"
 
 class GeminiToOpenAIAdapter:
     """Adapter to make Gemini streaming responses compatible with OpenAI format"""
@@ -2236,7 +2285,7 @@ def summarize_chat(chat_id):
 
         if not messages:
             # Load from history file
-            data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
             chats_file = data_dir / "chats.json"
             if chats_file.exists():
                 with open(chats_file, "r", encoding="utf-8") as f:
@@ -2249,7 +2298,16 @@ def summarize_chat(chat_id):
         if not messages:
             return jsonify({"error": "Chat not found"}), 404
 
-        summary = generate_chat_summary(messages, model_name)
+        # Filter out system messages if they contain only metadata or are empty
+        filtered_messages = []
+        for msg in messages:
+            if msg.get("role") in ["user", "assistant"] and msg.get("content", "").strip():
+                filtered_messages.append(msg)
+        
+        if not filtered_messages:
+            return jsonify({"chat_id": chat_id, "summary": "No conversation content to summarize"})
+
+        summary = generate_chat_summary(filtered_messages, model_name)
 
         return jsonify({"chat_id": chat_id, "summary": summary})
     except Exception as e:
@@ -2280,7 +2338,7 @@ def condense_chat(chat_id):
             chat.last_updated = time.time()
 
         # Update history file
-        data_dir = Path(os.path.abspath(os.path.join(os.getcwd(), "data")))
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
         chat_history = {"chats": []}
         if chats_file.exists():

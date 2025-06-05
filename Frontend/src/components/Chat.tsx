@@ -587,10 +587,6 @@ const Chat = () => {
           console.log('User scrolled to bottom, enabling auto-scroll');
           setShouldAutoScroll(true);
           userInteractedWithScrollRef.current = false;
-          // Give smooth scroll feedback when user manually returns to bottom
-          if (!isStreaming) {
-            setTimeout(() => scrollToBottom(true), 50);
-          }
         }
       } else {
         if (shouldAutoScroll) {
