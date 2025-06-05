@@ -190,4 +190,10 @@
 .rename-modal {
   width: 350px;
   max-width: 90vw;
-} 
+}
+
+/* Edit Creation Modal Styles */
+.edit-modal {
+  width: 600px;
+  max-width: 90vw;
+}

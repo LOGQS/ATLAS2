@@ -83,9 +83,16 @@ function App() {
   const [creationToRename, setCreationToRename] = useState<Creation | null>(null);
   const [renameCreationTitle, setRenameCreationTitle] = useState('');
 
+  // Edit creation modal state
+  const [editCreationModalOpen, setEditCreationModalOpen] = useState(false);
+  const [creationToEdit, setCreationToEdit] = useState<Creation | null>(null);
+  const [editCreationContent, setEditCreationContent] = useState('');
+  const [editCreationLanguage, setEditCreationLanguage] = useState('');
+
   // Modal refs for click-outside handling
   const addCreationModalRef = useRef<HTMLDivElement>(null);
   const renameCreationModalRef = useRef<HTMLDivElement>(null);
+  const editCreationModalRef = useRef<HTMLDivElement>(null);
   
   // Load chat history when component mounts
   useEffect(() => {
@@ -804,6 +811,11 @@ function App() {
     setCreationToRename(null);
   }, []);
 
+  const cancelEditCreation = useCallback(() => {
+    setEditCreationModalOpen(false);
+    setCreationToEdit(null);
+  }, []);
+
   // Auto-focus the title input when add creation modal opens
   useEffect(() => {
     if (addCreationModalOpen) {
@@ -824,18 +836,20 @@ function App() {
           cancelAddCreation();
         } else if (renameCreationModalOpen) {
           cancelRenameCreation();
+        } else if (editCreationModalOpen) {
+          cancelEditCreation();
         }
       }
     };
     
-    if (addCreationModalOpen || renameCreationModalOpen) {
+    if (addCreationModalOpen || renameCreationModalOpen || editCreationModalOpen) {
       window.addEventListener('keydown', handleKeyDown);
     }
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen]);
+  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen, editCreationModalOpen, cancelEditCreation]);
 
   // Close modals on click outside
   useEffect(() => {
@@ -846,16 +860,19 @@ function App() {
       if (renameCreationModalOpen && renameCreationModalRef.current && !renameCreationModalRef.current.contains(event.target as Node)) {
         cancelRenameCreation();
       }
+      if (editCreationModalOpen && editCreationModalRef.current && !editCreationModalRef.current.contains(event.target as Node)) {
+        cancelEditCreation();
+      }
     };
     
-    if (addCreationModalOpen || renameCreationModalOpen) {
+    if (addCreationModalOpen || renameCreationModalOpen || editCreationModalOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen]); // Functions are stable so don't need to be dependencies
+  }, [addCreationModalOpen, cancelAddCreation, cancelRenameCreation, renameCreationModalOpen, editCreationModalOpen, cancelEditCreation]); // Functions are stable so don't need to be dependencies
 
   // Auto-focus the title input when rename modal opens
   useEffect(() => {
@@ -869,6 +886,17 @@ function App() {
       }, 100);
     }
   }, [renameCreationModalOpen]);
+
+  useEffect(() => {
+    if (editCreationModalOpen) {
+      setTimeout(() => {
+        const textarea = document.getElementById('edit-creation-content-textarea') as HTMLTextAreaElement;
+        if (textarea) {
+          textarea.focus();
+        }
+      }, 100);
+    }
+  }, [editCreationModalOpen]);
 
   // Handle keyboard events for add creation modal
   const handleAddCreationKeyDown = (e: React.KeyboardEvent) => {
@@ -899,6 +927,38 @@ function App() {
       // Close the modal
       setRenameCreationModalOpen(false);
       setCreationToRename(null);
+    }
+  };
+
+  // Edit creation modal handlers
+  const handleOpenEditModal = (creation: Creation) => {
+    setCreationToEdit(creation);
+    setEditCreationContent(creation.content);
+    setEditCreationLanguage(creation.language || '');
+    setEditCreationModalOpen(true);
+  };
+
+  const handleSaveEditedCreation = () => {
+    if (!creationToEdit?.id) return;
+
+    const updates: Partial<Creation> = { content: editCreationContent };
+    if (creationToEdit.type === 'code') {
+      updates.language = editCreationLanguage;
+    }
+
+    const success = creationManager.updateCreation(creationToEdit.id, updates);
+
+    if (success) {
+      setEditCreationModalOpen(false);
+      setCreationToEdit(null);
+    }
+  };
+
+  const handleEditCreationKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      cancelEditCreation();
+    } else if (e.key === 'Enter' && e.ctrlKey) {
+      handleSaveEditedCreation();
     }
   };
 
@@ -1113,12 +1173,17 @@ function App() {
             setRenameCreationModalOpen(false);
             setCreationToRename(null);
           }
+          if (editCreationModalOpen) {
+            setEditCreationModalOpen(false);
+            setCreationToEdit(null);
+          }
           
           // Close the enhanced viewer
           setIsEnhancedViewerOpen(false);
         }}
         onOpenAddModal={() => setAddCreationModalOpen(true)}
         onOpenRenameModal={handleOpenRenameModal}
+        onOpenEditModal={handleOpenEditModal}
       />
       
       {/* Creation Window */}
@@ -1291,6 +1356,84 @@ function App() {
                 disabled={renameCreationTitle.trim() === ''}
               >
                 Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Creation Modal - Only show when gallery is open */}
+      {editCreationModalOpen && isEnhancedViewerOpen && (
+        <div className="modal-overlay animate-fade-in">
+          <div ref={editCreationModalRef} className="modal-container edit-modal animate-fade-in">
+            <div className="modal-header">
+              <h3>Edit Creation</h3>
+              <button
+                className="close-button"
+                onClick={cancelEditCreation}
+                aria-label="Close dialog"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div className="modal-content">
+              {creationToEdit?.type === 'code' && (
+                <div className="form-group">
+                  <label className="form-label" htmlFor="edit-creation-language-select">
+                    Programming Language
+                  </label>
+                  <select
+                    id="edit-creation-language-select"
+                    value={editCreationLanguage}
+                    onChange={(e) => setEditCreationLanguage(e.target.value)}
+                    className="form-select"
+                  >
+                    <option value="javascript">JavaScript</option>
+                    <option value="typescript">TypeScript</option>
+                    <option value="python">Python</option>
+                    <option value="java">Java</option>
+                    <option value="cpp">C++</option>
+                    <option value="c">C</option>
+                    <option value="csharp">C#</option>
+                    <option value="php">PHP</option>
+                    <option value="ruby">Ruby</option>
+                    <option value="go">Go</option>
+                    <option value="rust">Rust</option>
+                    <option value="swift">Swift</option>
+                    <option value="kotlin">Kotlin</option>
+                    <option value="html">HTML</option>
+                    <option value="css">CSS</option>
+                    <option value="sql">SQL</option>
+                    <option value="bash">Bash</option>
+                    <option value="json">JSON</option>
+                    <option value="xml">XML</option>
+                    <option value="yaml">YAML</option>
+                  </select>
+                </div>
+              )}
+              <div className="form-group">
+                <label className="form-label" htmlFor="edit-creation-content-textarea">
+                  Content
+                </label>
+                <textarea
+                  id="edit-creation-content-textarea"
+                  value={editCreationContent}
+                  onChange={(e) => setEditCreationContent(e.target.value)}
+                  onKeyDown={handleEditCreationKeyDown}
+                  className="form-textarea"
+                  rows={12}
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="modal-button cancel-button" onClick={cancelEditCreation}>
+                Cancel
+              </button>
+              <button className="modal-button confirm-button" onClick={handleSaveEditedCreation}>
+                Save
               </button>
             </div>
           </div>
