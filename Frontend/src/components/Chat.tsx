@@ -1117,7 +1117,7 @@ const Chat: React.FC = () => {
     }, 0);
     
     // For Gemini 2.5 Pro, show thinking state before streaming
-    const isGemini25Pro = model === 'gemini-2.5-pro-exp-03-25';
+    const isGemini25Pro = model === 'gemini-2.5-pro-exp-03-25' || model === 'gemini-2.5-flash-preview-05-20';
     if (isGemini25Pro) {
       // First set the thinking state
       setIsThinking(true);

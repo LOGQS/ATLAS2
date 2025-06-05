@@ -12,10 +12,12 @@
   "dependencies": {
     "@babel/standalone": "^7.27.0",
     "@codesandbox/sandpack-react": "^2.20.0",
+    "ace-builds": "^1.42.0",
     "axios": "^1.8.4",
     "katex": "^0.16.22",
     "mermaid": "^11.6.0",
     "react": "^19.0.0",
+    "react-ace": "^14.0.1",
     "react-dom": "^19.0.0",
     "react-icons": "^5.5.0",
     "react-markdown": "^10.1.0",

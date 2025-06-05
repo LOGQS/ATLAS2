@@ -19,6 +19,32 @@ import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
 import creationManager from './utils/creationManager';
 import ChatSearchModal from './components/ChatSearchModal';
+import AceEditor from 'react-ace';
+
+// Import ace editor modes and themes
+import 'ace-builds/src-noconflict/mode-javascript';
+import 'ace-builds/src-noconflict/mode-typescript';
+import 'ace-builds/src-noconflict/mode-python';
+import 'ace-builds/src-noconflict/mode-java';
+import 'ace-builds/src-noconflict/mode-html';
+import 'ace-builds/src-noconflict/mode-css';
+import 'ace-builds/src-noconflict/mode-json';
+import 'ace-builds/src-noconflict/mode-xml';
+import 'ace-builds/src-noconflict/mode-yaml';
+import 'ace-builds/src-noconflict/mode-markdown';
+import 'ace-builds/src-noconflict/mode-sql';
+import 'ace-builds/src-noconflict/mode-sh';
+import 'ace-builds/src-noconflict/mode-c_cpp';
+import 'ace-builds/src-noconflict/mode-csharp';
+import 'ace-builds/src-noconflict/mode-php';
+import 'ace-builds/src-noconflict/mode-ruby';
+import 'ace-builds/src-noconflict/mode-golang';
+import 'ace-builds/src-noconflict/mode-rust';
+import 'ace-builds/src-noconflict/mode-swift';
+import 'ace-builds/src-noconflict/mode-kotlin';
+import 'ace-builds/src-noconflict/theme-monokai';
+import 'ace-builds/src-noconflict/theme-github';
+import 'ace-builds/src-noconflict/ext-language_tools';
 
 interface ImportResult {
   success: boolean;
@@ -88,11 +114,56 @@ function App() {
   const [creationToEdit, setCreationToEdit] = useState<Creation | null>(null);
   const [editCreationContent, setEditCreationContent] = useState('');
   const [editCreationLanguage, setEditCreationLanguage] = useState('');
+  
+  // Edit modal editor preferences
+  const [editModalTheme, setEditModalTheme] = useState<'dark' | 'light'>('dark');
+  const [editModalShowLineNumbers, setEditModalShowLineNumbers] = useState(true);
+  const [editModalFontSize, setEditModalFontSize] = useState(14);
 
   // Modal refs for click-outside handling
   const addCreationModalRef = useRef<HTMLDivElement>(null);
   const renameCreationModalRef = useRef<HTMLDivElement>(null);
   const editCreationModalRef = useRef<HTMLDivElement>(null);
+
+  // Helper function to map languages to Ace editor modes
+  const getAceMode = (creationType: string, language?: string) => {
+    if (creationType === 'code' && language) {
+      const modeMap: Record<string, string> = {
+        'javascript': 'javascript',
+        'typescript': 'typescript',
+        'python': 'python',
+        'java': 'java',
+        'cpp': 'c_cpp',
+        'c': 'c_cpp',
+        'csharp': 'csharp',
+        'php': 'php',
+        'ruby': 'ruby',
+        'go': 'go',
+        'rust': 'rust',
+        'swift': 'swift',
+        'kotlin': 'kotlin',
+        'html': 'html',
+        'css': 'css',
+        'sql': 'sql',
+        'bash': 'sh',
+        'json': 'json',
+        'xml': 'xml',
+        'yaml': 'yaml'
+      };
+      return modeMap[language.toLowerCase()] || 'javascript';
+    }
+    
+    // For other creation types
+    const typeMap: Record<string, string> = {
+      'html': 'html',
+      'css': 'css',
+      'markdown': 'markdown',
+      'json': 'json',
+      'xml': 'xml',
+      'yaml': 'yaml'
+    };
+    return typeMap[creationType] || 'javascript';
+  };
   
   // Load chat history when component mounts
   useEffect(() => {
@@ -1362,12 +1433,12 @@ function App() {
         </div>
       )}
 
-      {/* Edit Creation Modal - Only show when gallery is open */}
+      {/* Edit Creation Modal - Enhanced with code editor */}
       {editCreationModalOpen && isEnhancedViewerOpen && (
         <div className="modal-overlay animate-fade-in">
-          <div ref={editCreationModalRef} className="modal-container edit-modal animate-fade-in">
+          <div ref={editCreationModalRef} className="modal-container edit-modal animate-fade-in" onKeyDown={handleEditCreationKeyDown}>
             <div className="modal-header">
-              <h3>Edit Creation</h3>
+              <h3>Edit Creation - {creationToEdit?.title || `${creationToEdit?.type?.charAt(0).toUpperCase()}${creationToEdit?.type?.slice(1)} Creation`}</h3>
               <button
                 className="close-button"
                 onClick={cancelEditCreation}
@@ -1415,17 +1486,84 @@ function App() {
                 </div>
               )}
               <div className="form-group">
-                <label className="form-label" htmlFor="edit-creation-content-textarea">
+                <label className="form-label">
                   Content
                 </label>
-                <textarea
-                  id="edit-creation-content-textarea"
-                  value={editCreationContent}
-                  onChange={(e) => setEditCreationContent(e.target.value)}
-                  onKeyDown={handleEditCreationKeyDown}
-                  className="form-textarea"
-                  rows={12}
-                />
+                <div className="code-editor-container">
+                  <div className="code-editor-header">
+                    <div className="code-editor-info">
+                      <span className="language-badge">
+                        {creationToEdit?.type === 'code' ? editCreationLanguage || 'plaintext' : creationToEdit?.type || 'text'}
+                      </span>
+                      <span>{editCreationContent.split('\n').length} lines</span>
+                    </div>
+                    <div className="code-editor-controls">
+                      <button
+                        type="button"
+                        onClick={() => setEditModalTheme(editModalTheme === 'dark' ? 'light' : 'dark')}
+                        title={`Switch to ${editModalTheme === 'dark' ? 'light' : 'dark'} theme`}
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+                      >
+                        {editModalTheme === 'dark' ? '☀️' : '🌙'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditModalShowLineNumbers(!editModalShowLineNumbers)}
+                        title="Toggle line numbers"
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', fontSize: '12px' }}
+                      >
+                        #
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditModalFontSize(Math.max(10, editModalFontSize - 1))}
+                        title="Decrease font size"
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+                        disabled={editModalFontSize <= 10}
+                      >
+                        A-
+                      </button>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{editModalFontSize}px</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditModalFontSize(Math.min(24, editModalFontSize + 1))}
+                        title="Increase font size"
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+                        disabled={editModalFontSize >= 24}
+                      >
+                        A+
+                      </button>
+                    </div>
+                  </div>
+                  <AceEditor
+                    mode={getAceMode(creationToEdit?.type || 'code', editCreationLanguage)}
+                    theme={editModalTheme === 'dark' ? 'monokai' : 'github'}
+                    value={editCreationContent}
+                    onChange={setEditCreationContent}
+                    name="edit-creation-ace-editor"
+                    editorProps={{ $blockScrolling: true }}
+                    width="100%"
+                    height="100%"
+                    fontSize={editModalFontSize}
+                    showPrintMargin={false}
+                    showGutter={editModalShowLineNumbers}
+                    highlightActiveLine={true}
+                    setOptions={{
+                      enableBasicAutocompletion: true,
+                      enableLiveAutocompletion: true,
+                      enableSnippets: true,
+                      showLineNumbers: editModalShowLineNumbers,
+                      tabSize: 2,
+                      useSoftTabs: true,
+                      wrap: true,
+                      fontFamily: 'SF Mono, Monaco, Cascadia Code, Roboto Mono, Consolas, Courier New, monospace'
+                    }}
+                    style={{
+                      borderRadius: '4px',
+                      border: `1px solid var(--border-color)`
+                    }}
+                  />
+                </div>
               </div>
             </div>
             <div className="modal-footer">
@@ -1433,7 +1571,7 @@ function App() {
                 Cancel
               </button>
               <button className="modal-button confirm-button" onClick={handleSaveEditedCreation}>
-                Save
+                Save Changes
               </button>
             </div>
           </div>
