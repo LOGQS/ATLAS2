@@ -1074,6 +1074,20 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
             },
             p: ({ children }) => {
               return <p className={isStreaming ? 'streaming-paragraph' : ''}>{children}</p>;
+            },
+            a: ({ href, children, ...props }) => {
+              const isUrl = href && (href.startsWith('http://') || href.startsWith('https://'));
+              
+              if (isUrl && !isStreaming && !isThinking) {
+                return (
+                  <>
+                    <a href={href} {...props}>{children}</a>
+                    <UrlPreviewCard url={href} />
+                  </>
+                );
+              }
+              
+              return <a href={href} {...props}>{children}</a>;
             }
           }}
         >
@@ -1801,13 +1815,6 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           {attachments.length > 0 && (
             <div className="message-attachments">
               {attachments.map((attachment) => renderAttachment(attachment))}
-            </div>
-          )}
-          {urlPreviews.length > 0 && (
-            <div className="url-previews">
-              {urlPreviews.map((url) => (
-                <UrlPreviewCard key={url} url={url} />
-              ))}
             </div>
           )}
           {markdownContent}
