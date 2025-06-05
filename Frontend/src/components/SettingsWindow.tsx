@@ -6,6 +6,11 @@ interface SettingsWindowProps {
   onClose: () => void;
 }
 
+interface GenerationSettings {
+  temperature: number | undefined;
+  maxTokens: number | undefined;
+}
+
 const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfile, setActiveProfile] = useState<string | null>(profileManager.getActiveProfile());
@@ -31,6 +36,10 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     const saved = localStorage.getItem('copyButtonEnabled');
     return saved ? JSON.parse(saved) : true;
   });
+  const [modelParametersEnabled, setModelParametersEnabled] = useState(() => {
+    const saved = localStorage.getItem('modelParametersEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('ttsVoice') || 'default';
   });
@@ -39,6 +48,21 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     return saved ? parseFloat(saved) : 1.0;
   });
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  
+  // Generation parameters state
+  const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(() => {
+    const saved = localStorage.getItem('generationSettings');
+    return saved ? JSON.parse(saved) : {
+      temperature: undefined,
+      maxTokens: undefined,
+    };
+  });
+  
+  // Edit state for inline editing
+  const [editingTemperature, setEditingTemperature] = useState(false);
+  const [editingMaxTokens, setEditingMaxTokens] = useState(false);
+  const [tempTemperatureValue, setTempTemperatureValue] = useState('');
+  const [tempMaxTokensValue, setTempMaxTokensValue] = useState('');
 
   // Load available TTS voices
   useEffect(() => {
@@ -91,6 +115,20 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       detail: { key: 'ttsSpeed', value: ttsSpeed } 
     }));
   }, [ttsSpeed]);
+  
+  useEffect(() => {
+    localStorage.setItem('modelParametersEnabled', JSON.stringify(modelParametersEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'modelParametersEnabled', value: modelParametersEnabled } 
+    }));
+  }, [modelParametersEnabled]);
+  
+  useEffect(() => {
+    localStorage.setItem('generationSettings', JSON.stringify(generationSettings));
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'generationSettings', value: generationSettings } 
+    }));
+  }, [generationSettings]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -210,6 +248,96 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       } catch (error) {
         console.error('Failed to delete file:', error);
       }
+    }
+  };
+
+  const handleTemperatureChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = parseFloat(e.target.value);
+    setGenerationSettings((prev: GenerationSettings) => ({ ...prev, temperature: newValue }));
+  };
+
+  const handleMaxTokensChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let newValue = parseInt(e.target.value);
+    
+    // Handle the step logic: 1, 100, 200, 300, etc.
+    if (newValue === 1) {
+      // Keep as 1
+    } else if (newValue > 1 && newValue < 100) {
+      // Round up to 100 for any value between 1 and 100
+      newValue = 100;
+    } else {
+      // For values >= 100, round to nearest 100
+      newValue = Math.round(newValue / 100) * 100;
+    }
+    
+    setGenerationSettings((prev: GenerationSettings) => ({ ...prev, maxTokens: newValue }));
+  };
+
+  const handleResetParameters = () => {
+    setGenerationSettings({
+      temperature: undefined,
+      maxTokens: undefined,
+    });
+    setModelParametersEnabled(false);
+  };
+
+  const handleTemperatureLabelClick = () => {
+    setEditingTemperature(true);
+    setTempTemperatureValue(generationSettings.temperature?.toString() || '1.0');
+  };
+
+  const handleMaxTokensLabelClick = () => {
+    setEditingMaxTokens(true);
+    setTempMaxTokensValue(generationSettings.maxTokens?.toString() || '4096');
+  };
+
+  const handleTemperatureInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setTempTemperatureValue(e.target.value);
+  };
+
+  const handleMaxTokensInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setTempMaxTokensValue(e.target.value);
+  };
+
+  const handleTemperatureInputSubmit = () => {
+    const newValue = parseFloat(tempTemperatureValue);
+    if (!isNaN(newValue) && newValue >= 0 && newValue <= 2) {
+      setGenerationSettings(prev => ({ ...prev, temperature: newValue }));
+    }
+    setEditingTemperature(false);
+  };
+
+  const handleMaxTokensInputSubmit = () => {
+    let newValue = parseInt(tempMaxTokensValue);
+    if (!isNaN(newValue) && newValue >= 1 && newValue <= 1000000) {
+      // Apply the same stepping logic as the slider
+      if (newValue === 1) {
+        // Keep as 1
+      } else if (newValue > 1 && newValue < 100) {
+        // Round up to 100 for any value between 1 and 100
+        newValue = 100;
+      } else {
+        // For values >= 100, round to nearest 100
+        newValue = Math.round(newValue / 100) * 100;
+      }
+      setGenerationSettings(prev => ({ ...prev, maxTokens: newValue }));
+    }
+    setEditingMaxTokens(false);
+  };
+
+  const handleTemperatureKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleTemperatureInputSubmit();
+    } else if (e.key === 'Escape') {
+      setEditingTemperature(false);
+    }
+  };
+
+  const handleMaxTokensKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleMaxTokensInputSubmit();
+    } else if (e.key === 'Escape') {
+      setEditingMaxTokens(false);
     }
   };
 
@@ -497,6 +625,18 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   </label>
                   <span className="setting-description">Enable the microphone button for voice input</span>
                 </div>
+                
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={modelParametersEnabled}
+                      onChange={(e) => setModelParametersEnabled(e.target.checked)}
+                    />
+                    <span>Customize Model Parameters</span>
+                  </label>
+                  <span className="setting-description">Enable advanced model parameters like temperature and max tokens</span>
+                </div>
               </div>
               
               {ttsEnabled && (
@@ -539,6 +679,103 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                         <span>5.0x</span>
                       </div>
                     </label>
+                  </div>
+                </div>
+              )}
+              
+              {modelParametersEnabled && (
+                <div className="settings-group">
+                  <h4>Model Parameters</h4>
+                  <div className="setting-actions">
+                    <button 
+                      className="reset-button"
+                      onClick={handleResetParameters}
+                      title="Reset to default values"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  
+                  <div className="setting-item">
+                    <label className="setting-label-block">
+                      {editingTemperature ? (
+                        <input
+                          type="text"
+                          className="parameter-edit-input"
+                          value={tempTemperatureValue}
+                          onChange={handleTemperatureInputChange}
+                          onBlur={handleTemperatureInputSubmit}
+                          onKeyDown={handleTemperatureKeyDown}
+                          autoFocus
+                          placeholder="0.0 - 2.0"
+                        />
+                      ) : (
+                        <span 
+                          className="parameter-label-clickable"
+                          onClick={handleTemperatureLabelClick}
+                          title="Click to edit (0.0 - 2.0)"
+                        >
+                          Temperature: {generationSettings.temperature !== undefined ? generationSettings.temperature.toFixed(1) : 'Default'}
+                        </span>
+                      )}
+                      <input
+                        type="range"
+                        className="setting-slider"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        value={generationSettings.temperature ?? 1}
+                        onChange={handleTemperatureChange}
+                      />
+                      <div className="slider-labels">
+                        <span>Precise (0.0)</span>
+                        <span style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>Balanced (1.0)</span>
+                        <span>Creative (2.0)</span>
+                      </div>
+                    </label>
+                    <span className="setting-description">Controls randomness in responses. Lower values are more focused and deterministic.</span>
+                  </div>
+                  
+                  <div className="setting-item">
+                    <label className="setting-label-block">
+                      {editingMaxTokens ? (
+                        <input
+                          type="text"
+                          className="parameter-edit-input"
+                          value={tempMaxTokensValue}
+                          onChange={handleMaxTokensInputChange}
+                          onBlur={handleMaxTokensInputSubmit}
+                          onKeyDown={handleMaxTokensKeyDown}
+                          autoFocus
+                          placeholder="1 - 1,000,000"
+                        />
+                      ) : (
+                        <span 
+                          className="parameter-label-clickable"
+                          onClick={handleMaxTokensLabelClick}
+                          title="Click to edit (1 - 1,000,000)"
+                        >
+                          Max Tokens: {generationSettings.maxTokens !== undefined ? generationSettings.maxTokens.toLocaleString() : 'Default'}
+                        </span>
+                      )}
+                      <input
+                        type="range"
+                        className="setting-slider"
+                        min="1"
+                        max="1000000"
+                        step="1"
+                        value={generationSettings.maxTokens ?? 4096}
+                        onChange={handleMaxTokensChange}
+                      />
+                      <div className="slider-labels">
+                        <span>1</span>
+                        <span style={{ position: 'absolute', left: '25%', transform: 'translateX(-50%)' }}>250K</span>
+                        <span style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>500K</span>
+                        <span style={{ position: 'absolute', left: '75%', transform: 'translateX(-50%)' }}>750K</span>
+                        <span>1M</span>
+                      </div>
+                    </label>
+                    <span className="setting-description">Maximum number of tokens in the response. Higher values allow longer responses.</span>
                   </div>
                 </div>
               )}

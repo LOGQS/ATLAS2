@@ -102,7 +102,6 @@ const Chat: React.FC = () => {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
-  const [showParameters, setShowParameters] = useState(false);
   // Add state for microphone settings
   const [micSettings, setMicSettings] = useState({
     silenceThreshold: 10, // Default threshold value (0-255)
@@ -111,9 +110,12 @@ const Chat: React.FC = () => {
   const [generationSettings, setGenerationSettings] = useState<{
     temperature?: number;
     maxTokens?: number;
-  }>({
-    temperature: undefined,
-    maxTokens: undefined,
+  }>(() => {
+    const saved = localStorage.getItem('generationSettings');
+    return saved ? JSON.parse(saved) : {
+      temperature: undefined,
+      maxTokens: undefined,
+    };
   });
   // Add ref for the audio analyser
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -1575,24 +1577,6 @@ const Chat: React.FC = () => {
     }
   }, []);
 
-  // Function to save generation settings to localStorage
-  const saveGenerationSettings = (settings: typeof generationSettings) => {
-    localStorage.setItem('generationSettings', JSON.stringify(settings));
-    setGenerationSettings(settings);
-  };
-
-  const handleTemperatureChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = parseFloat(event.target.value);
-    const newSettings = { ...generationSettings, temperature: newValue };
-    saveGenerationSettings(newSettings);
-  };
-
-  const handleMaxTokensChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = parseInt(event.target.value, 10);
-    const newSettings = { ...generationSettings, maxTokens: newValue };
-    saveGenerationSettings(newSettings);
-  };
-
   // Function to handle threshold change
   const handleThresholdChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = parseInt(event.target.value, 10);
@@ -1985,9 +1969,6 @@ const Chat: React.FC = () => {
     }
   };
 
-  const toggleParameters = () => {
-    setShowParameters(!showParameters);
-  };
 
   // Add load-chat event handler
   useEffect(() => {
@@ -2123,6 +2104,20 @@ const Chat: React.FC = () => {
     };
   }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId]);
 
+  // Listen for generation settings changes from Settings Window
+  useEffect(() => {
+    const handleSettingsChange = (event: CustomEvent) => {
+      if (event.detail.key === 'generationSettings') {
+        setGenerationSettings(event.detail.value);
+      }
+    };
+
+    window.addEventListener('settingsChanged', handleSettingsChange as EventListener);
+    return () => {
+      window.removeEventListener('settingsChanged', handleSettingsChange as EventListener);
+    };
+  }, []);
+
   return (
     <div className="chat-container">
       <div className="header">
@@ -2161,32 +2156,6 @@ const Chat: React.FC = () => {
               </div>
             )}
           </div>
-          <button
-            onClick={toggleParameters}
-            className="parameters-button"
-            title="Generation Settings"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="parameters-icon"
-            >
-              <line x1="4" y1="21" x2="4" y2="14"></line>
-              <line x1="4" y1="10" x2="4" y2="3"></line>
-              <line x1="12" y1="21" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12" y2="3"></line>
-              <line x1="20" y1="21" x2="20" y2="16"></line>
-              <line x1="20" y1="12" x2="20" y2="3"></line>
-              <line x1="1" y1="14" x2="7" y2="14"></line>
-              <line x1="9" y1="8" x2="15" y2="8"></line>
-              <line x1="17" y1="16" x2="23" y2="16"></line>
-            </svg>
-          </button>
           <button
             onClick={toggleSettings}
             className="settings-button"
@@ -2306,63 +2275,6 @@ const Chat: React.FC = () => {
         </div>
       )}
 
-      {showParameters && (
-        <div className="settings-overlay">
-          <div className="settings-panel">
-            <div className="settings-header">
-              <h2>Generation Settings</h2>
-              <button className="close-button" onClick={toggleParameters}>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-              </button>
-            </div>
-            <div className="settings-content">
-              <div className="control-group">
-                <label htmlFor="temperature">Temperature: {generationSettings.temperature !== undefined ? generationSettings.temperature.toFixed(1) : 'Default'}</label>
-                <input
-                  type="range"
-                  id="temperature"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={generationSettings.temperature ?? 1}
-                  onChange={handleTemperatureChange}
-                />
-                <div className="range-labels">
-                  <span>Precise</span>
-                  <span>Creative</span>
-                </div>
-              </div>
-              <div className="control-group">
-                <label htmlFor="maxTokens">Max Tokens: {generationSettings.maxTokens !== undefined ? generationSettings.maxTokens : 'Default'}</label>
-                <input
-                  type="range"
-                  id="maxTokens"
-                  min="16"
-                  max="4096"
-                  step="16"
-                  value={generationSettings.maxTokens ?? 1024}
-                  onChange={handleMaxTokensChange}
-                />
-                <div className="range-labels">
-                  <span>Short</span>
-                  <span>Long</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="messages-container" ref={messagesContainerRef}>
         {messages.length === 0 && !loading && (

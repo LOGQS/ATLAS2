@@ -700,3 +700,68 @@
     transform: rotate(360deg);
   }
 }
+
+/* Model Parameters Settings */
+.setting-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.reset-button {
+  background-color: var(--secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reset-button:hover {
+  background-color: var(--hover-bg);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Editable Parameter Labels */
+.parameter-label-clickable {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+  display: inline-block;
+}
+
+.parameter-label-clickable:hover {
+  background-color: var(--hover-bg);
+  color: var(--text-primary);
+}
+
+.parameter-edit-input {
+  background-color: var(--secondary);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  outline: none;
+  width: 150px;
+  margin-bottom: 8px;
+}
+
+.parameter-edit-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
