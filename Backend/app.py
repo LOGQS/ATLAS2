@@ -727,7 +727,7 @@ class GeminiToOpenAIAdapter:
         content = getattr(gemini_chunk, 'text', '') if hasattr(gemini_chunk, 'text') else ''
         return MockChunk(content)
 
-def create_unified_chat_response(messages, model_name, system_instruction=None, files=None):
+def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None):
     """
     Create a chat response using unified OpenAI-compatible APIs for all providers
     """
@@ -766,6 +766,10 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
         "messages": openai_messages,
         "stream": True
     }
+    if temperature is not None:
+        params["temperature"] = float(temperature)
+    if max_tokens is not None:
+        params["max_tokens"] = int(max_tokens)
     
     # Add reasoning tokens for OpenRouter models that support it
     if is_openrouter_model(model_name):
@@ -825,7 +829,7 @@ def create_gemini_chat_with_files(parts, model_name, system_instruction=None):
     # Wrap Gemini response to be OpenAI-compatible
     return GeminiToOpenAIAdapter(response)
 
-def create_openai_compatible_chat_response(messages, model_name, system_instruction=None):
+def create_openai_compatible_chat_response(messages, model_name, system_instruction=None, temperature=None, max_tokens=None):
     """
     Create a chat response using OpenAI-compatible APIs (OpenRouter, Groq, etc.)
     """
@@ -864,6 +868,10 @@ def create_openai_compatible_chat_response(messages, model_name, system_instruct
         "messages": openai_messages,
         "stream": True
     }
+    if temperature is not None:
+        params["temperature"] = float(temperature)
+    if max_tokens is not None:
+        params["max_tokens"] = int(max_tokens)
     
     # Add reasoning tokens for OpenRouter models that support it
     if is_openrouter_model(model_name):
@@ -1504,6 +1512,8 @@ def chat():
         messages = data.get("messages", [])
         model_name = data.get("model", settings["model"])
         # We'll ignore cache_id since caching is removed
+        temperature = data.get("temperature")
+        max_tokens = data.get("max_tokens")
         
         # Validate that we have the necessary client for the requested model
         if is_openrouter_model(model_name):
@@ -1901,9 +1911,12 @@ def chat():
                     # Use unified OpenAI-compatible approach for text-only
                     safe_debug(f"Using unified OpenAI-compatible API for text-only chat")
                     response = create_unified_chat_response(
-                        history_for_provider, 
-                        model_name, 
-                        creations_system_instruction
+                        history_for_provider,
+                        model_name,
+                        creations_system_instruction,
+                    None,
+                    temperature,
+                    max_tokens
                     )
                 
                 # Use raw stream directly (fastest approach)
