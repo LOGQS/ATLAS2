@@ -1474,6 +1474,10 @@ button:focus-visible {
   position: relative;
 }
 
+.pdf-viewer-trigger {
+  cursor: pointer;
+}
+
 .attachment-image {
   max-width: 100%;
   display: block;
