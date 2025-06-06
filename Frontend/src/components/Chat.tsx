@@ -1436,9 +1436,17 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     
     // Emit completion event for other components
     if (chatId && !isAborted) {
-      window.dispatchEvent(new CustomEvent('chat-updated', { 
-        detail: { chatId } 
-      }));
+      if (isActive) {
+        // For active chats, use chat-updated event
+        window.dispatchEvent(new CustomEvent('chat-updated', { 
+          detail: { chatId } 
+        }));
+      } else {
+        // For background chats, use chat-background-updated to prevent auto-switching
+        window.dispatchEvent(new CustomEvent('chat-background-updated', { 
+          detail: { chatId } 
+        }));
+      }
     }
     
     // Only scroll to bottom for non-aborted messages
@@ -1812,16 +1820,28 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       
       // Also trigger refresh for existing chats
       setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('chat-updated', {
-          detail: { chatId }
-        }));
+        if (isActive) {
+          window.dispatchEvent(new CustomEvent('chat-updated', {
+            detail: { chatId }
+          }));
+        } else {
+          window.dispatchEvent(new CustomEvent('chat-background-updated', {
+            detail: { chatId }
+          }));
+        }
       }, 100);
     } else if (chatId) {
       // For existing chats, just update
       setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('chat-updated', {
-          detail: { chatId }
-        }));
+        if (isActive) {
+          window.dispatchEvent(new CustomEvent('chat-updated', {
+            detail: { chatId }
+          }));
+        } else {
+          window.dispatchEvent(new CustomEvent('chat-background-updated', {
+            detail: { chatId }
+          }));
+        }
       }, 100);
     }
     
@@ -1974,14 +1994,25 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
                   setChatExistsInBackend(true);
                   
                   // Update sidebar with authoritative backend data (this will replace optimistic UI)
-                  window.dispatchEvent(new CustomEvent('chat-updated', {
-                    detail: { 
-                      chatId: parsedData.chat_id,
-                      title: parsedData.title,
-                      model: parsedData.model,
-                      created_at: parsedData.created_at
-                    }
-                  }));
+                  if (isActive) {
+                    window.dispatchEvent(new CustomEvent('chat-updated', {
+                      detail: { 
+                        chatId: parsedData.chat_id,
+                        title: parsedData.title,
+                        model: parsedData.model,
+                        created_at: parsedData.created_at
+                      }
+                    }));
+                  } else {
+                    window.dispatchEvent(new CustomEvent('chat-background-updated', {
+                      detail: { 
+                        chatId: parsedData.chat_id,
+                        title: parsedData.title,
+                        model: parsedData.model,
+                        created_at: parsedData.created_at
+                      }
+                    }));
+                  }
                   
                   isMetadataEvent = true;
                 } else if (parsedData.type === 'chat_resumed') {
