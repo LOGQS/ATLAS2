@@ -553,12 +553,12 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
       let taskIdFromResponse: string | null = null;
 
       // Keep reading from the stream until it's done
-      let updateTimeout: number | null = null;
+      let updateTimeout: ReturnType<typeof window.setTimeout> | null = null;
       let lastUpdateTime = 0;
       const updateThrottle = 200; // Increased from 100ms to 200ms for fewer UI updates
       
       // Add debounce variables for plan updates
-      let planUpdateTimeout: number | null = null;
+      let planUpdateTimeout: ReturnType<typeof window.setTimeout> | null = null;
       const planUpdateThrottle = 500; // Only update plan-related UI every 500ms
       let lastPlanUpdateTime = 0;
       

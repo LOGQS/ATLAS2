@@ -110,8 +110,8 @@ const CreationContent: React.FC<CreationContentProps> = ({
   
   // Hold-to-zoom state
   const [holdingZoom, setHoldingZoom] = useState<'in' | 'out' | null>(null);
-  const holdTimerRef = useRef<number | null>(null);
-  const continuousTimerRef = useRef<number | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const continuousTimerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   
   // Alt key state for disabling iframe interactions
   const [altPressed, setAltPressed] = useState(false);
