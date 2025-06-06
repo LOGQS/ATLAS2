@@ -406,12 +406,17 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
       };
     } else {
       document.body.classList.remove('task-mode');
-      // Reset state when closing
+    }
+  }, [isOpen, isExpanded, planSteps.length, onClose]);
+  
+  // Reset state when closing - separate useEffect to avoid infinite loop
+  useEffect(() => {
+    if (!isOpen) {
       setIsExpanded(false);
       setInputValue('');
       setFileAttachments([]);
     }
-  }, [isOpen, isExpanded, planSteps.length, onClose]);
+  }, [isOpen]);
   
   // Handle submitting a message to the task chat
   const handleSubmit = (e: React.FormEvent) => {
@@ -552,19 +557,19 @@ const TaskSystem: React.FC<TaskSystemProps> = ({ isOpen, onClose }) => {
       let isPlanStarted = false;
       let taskIdFromResponse: string | null = null;
 
-      // Keep reading from the stream until it's done
-      let updateTimeout: ReturnType<typeof window.setTimeout> | null = null;
+      // To throttle UI updates for chat streaming
+      let updateTimeout: number | null = null;
       let lastUpdateTime = 0;
       const updateThrottle = 200; // Increased from 100ms to 200ms for fewer UI updates
-      
-      // Add debounce variables for plan updates
-      let planUpdateTimeout: ReturnType<typeof window.setTimeout> | null = null;
-      const planUpdateThrottle = 500; // Only update plan-related UI every 500ms
+
+      // To throttle UI updates for plan streaming
+      let planUpdateTimeout: number | null = null;
       let lastPlanUpdateTime = 0;
-      
+      const planUpdateThrottle = 500; // Only update plan-related UI every 500ms
+
       // Add buffer for incomplete SSE data
       let buffer = '';
-      
+
       console.log("Starting to read stream chunks...");
       
       while (true) {

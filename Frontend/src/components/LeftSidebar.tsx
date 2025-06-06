@@ -35,7 +35,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ children }) => {
   const [mode, setMode] = useState<SidebarMode>(getSavedMode());
   const sidebarRef = useRef<HTMLDivElement>(null);
   const triggerAreaRef = useRef<HTMLDivElement>(null);
-  const leaveTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const leaveTimeoutRef = useRef<number | null>(null);
   
   // Save mode to localStorage when it changes
   useEffect(() => {

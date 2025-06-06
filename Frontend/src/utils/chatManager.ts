@@ -1,3 +1,12 @@
+import { io, Socket } from 'socket.io-client';
+
+// Utility function to generate a unique chat ID
+export function generateChatId(): string {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const randomPart = Math.random().toString(36).substr(2, 8);
+  return `unified_${timestamp}_${randomPart}`;
+}
+
 export interface ChatHistoryItem {
   id: string;
   title: string;
@@ -83,6 +92,307 @@ export interface ChatBackupData {
 
 // Simple event types for our event system
 type EventCallback = (chats: ChatHistoryItem[]) => void;
+type WebSocketEventCallback = (data: Record<string, unknown>) => void;
+
+// Background chat processing interfaces
+interface BackgroundChatState {
+  chatId: string;
+  status: 'idle' | 'pending' | 'processing' | 'streaming' | 'completed' | 'error';
+  currentResponse: string;
+  lastUpdate: number;
+  messageSentAt?: number; // Track when the user message was sent
+  responseStartedAt?: number; // Track when response actually started
+  isThinking?: boolean; // Track thinking state for Gemini 2.5 Pro models
+}
+
+interface WebSocketMessage extends Record<string, unknown> {
+  type: string;
+  chat_id: string;
+  content?: string;
+  full_response?: string;
+  status?: string;
+  error?: string;
+}
+
+interface WebSocketSendMessage {
+  type: string;
+  chat_id?: string;
+  messages?: unknown[];
+  model?: string;
+  [key: string]: unknown;
+}
+
+// WebSocket manager for real-time communication using Socket.IO
+class WebSocketManager {
+  private static instance: WebSocketManager | null = null;
+  private socket: Socket | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelay = 1000;
+  private listeners: Map<string, WebSocketEventCallback[]> = new Map();
+  private isShutdown = false; // Flag to prevent reconnections after shutdown
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  
+  private constructor() {
+    console.log('🌐 [WebSocket] Initializing WebSocket Manager');
+    // Don't immediately connect - wait for first use
+  }
+
+  public static getInstance(): WebSocketManager {
+    if (!WebSocketManager.instance || WebSocketManager.instance.isShutdown) {
+      WebSocketManager.instance = new WebSocketManager();
+    }
+    return WebSocketManager.instance;
+  }
+  
+  private connect() {
+    if (this.isShutdown) {
+      console.log('🌐 [WebSocket] Connection blocked - manager is shut down');
+      return;
+    }
+    
+    if (this.socket?.connected) {
+      console.log('🌐 [WebSocket] Already connected');
+      return;
+    }
+
+    console.log('🌐 [WebSocket] Connecting to server...');
+    
+    // Determine the correct backend port
+    const backendPort = window.location.port === '5173' ? '5000' : (window.location.port || '5000');
+    const backendUrl = `http://${window.location.hostname}:${backendPort}`;
+    
+    // Clean up existing socket if any
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    
+    this.socket = io(backendUrl, {
+      transports: ['websocket', 'polling'],
+      timeout: 10000,
+      reconnection: false, // Disable built-in reconnection, we'll handle it manually
+      autoConnect: false // Don't auto-connect until we're ready
+    });
+
+    this.socket.on('connect', () => {
+      console.log('🌐 [WebSocket] Connected to server');
+      this.reconnectAttempts = 0;
+      
+      // Clear any pending reconnection timeout since we're connected
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+        this.reconnectTimeout = null;
+      }
+      
+      this.emit('connected', {});
+    });
+
+    this.socket.on('disconnect', (reason) => {
+      console.log('🌐 [WebSocket] Disconnected:', reason);
+      
+      // Only attempt to reconnect if disconnection wasn't intentional and we're not shut down
+      if (!this.isShutdown && reason !== 'io client disconnect') {
+        if (reason === 'io server disconnect') {
+          // Server initiated disconnect, reconnect manually
+          setTimeout(() => {
+            if (!this.isShutdown) {
+              this.handleReconnect();
+            }
+          }, this.reconnectDelay);
+        }
+      }
+    });
+
+    this.socket.on('connect_error', (error) => {
+      console.error('🌐 [WebSocket] Connection error:', error.message);
+      
+      // Only handle reconnection if not shut down
+      if (!this.isShutdown) {
+        this.handleReconnect();
+      }
+    });
+
+    // Listen for chat updates
+    this.socket.on('chat_update', (data) => {
+      this.emit('chat_update', data);
+    });
+
+    this.socket.on('chat_status', (data) => {
+      this.emit('chat_status', data);
+    });
+
+    this.socket.on('background_started', (data) => {
+      this.emit('background_started', data);
+    });
+
+    this.socket.on('error', (error) => {
+      console.error('🌐 [WebSocket] Socket error:', error);
+      this.emit('error', { error: error.message || error });
+    });
+
+    // Actually connect now
+    this.socket.connect();
+  }
+  
+  private handleReconnect() {
+    if (this.isShutdown) {
+      console.log('🌐 [WebSocket] Reconnection blocked - manager is shut down');
+      return;
+    }
+    
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
+      
+      // Clear any existing reconnection timeout
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+      }
+      
+      this.reconnectTimeout = setTimeout(() => {
+        if (!this.isShutdown) {
+          console.log(`🌐 [WebSocket] Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+          this.connect();
+        }
+      }, delay);
+    } else {
+      console.error('🌐 [WebSocket] Max reconnection attempts reached. Stopping all reconnection attempts.');
+      this.shutdown(); // Properly shutdown to stop all further attempts
+      this.emit('max_retries_reached', {});
+    }
+  }
+  
+  public send(message: WebSocketSendMessage) {
+    if (this.isShutdown) {
+      console.debug('🔌 [WebSocket] Cannot send message - manager is shut down');
+      return;
+    }
+    
+    if (this.socket && this.socket.connected) {
+      this.socket.emit(message.type, message);
+    } else {
+      console.debug('🔌 [WebSocket] Socket not connected, message dropped:', message.type);
+      // Don't attempt to reconnect here to avoid spam
+    }
+  }
+  
+  public on(event: string, callback: WebSocketEventCallback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event)!.push(callback);
+  }
+  
+  public off(event: string, callback: WebSocketEventCallback) {
+    const callbacks = this.listeners.get(event);
+    if (callbacks) {
+      const index = callbacks.indexOf(callback);
+      if (index > -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+  
+  private emit(event: string, data: Record<string, unknown>) {
+    const callbacks = this.listeners.get(event) || [];
+    callbacks.forEach(callback => {
+      try {
+        callback(data);
+      } catch (error) {
+        console.error('Error in WebSocket event listener:', error);
+      }
+    });
+  }
+  
+  public joinChat(chatId: string) {
+    if (this.isShutdown) {
+      console.debug('🔌 [WebSocket] Cannot join chat - manager is shut down');
+      return;
+    }
+    
+    // Ensure connection before sending
+    if (!this.socket?.connected) {
+      this.connect();
+      // Wait a bit for connection before sending
+      setTimeout(() => {
+        if (!this.isShutdown) {
+          this.send({
+            type: 'join_chat',
+            chat_id: chatId
+          });
+        }
+      }, 1000);
+    } else {
+      this.send({
+        type: 'join_chat',
+        chat_id: chatId
+      });
+    }
+  }
+  
+  public leaveChat(chatId: string) {
+    if (this.socket?.connected) {
+      this.send({
+        type: 'leave_chat',
+        chat_id: chatId
+      });
+    }
+  }
+  
+  public startBackgroundChat(chatId: string, messages: unknown[], model: string, options: Record<string, unknown> = {}) {
+    if (this.isShutdown) {
+      console.debug('🔌 [WebSocket] Cannot start background chat - manager is shut down');
+      return;
+    }
+    
+    if (!this.socket?.connected) {
+      this.connect();
+      // Queue the message for when connection is established
+      setTimeout(() => {
+        if (!this.isShutdown) {
+          this.send({
+            type: 'start_background_chat',
+            chat_id: chatId,
+            messages: messages,
+            model: model,
+            ...options
+          });
+        }
+      }, 1000);
+    } else {
+      this.send({
+        type: 'start_background_chat',
+        chat_id: chatId,
+        messages: messages,
+        model: model,
+        ...options
+      });
+    }
+  }
+  
+  public shutdown() {
+    console.log('🌐 [WebSocket] Shutting down WebSocket manager');
+    this.isShutdown = true;
+    
+    // Clear any pending reconnection timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
+    // Disconnect and cleanup socket
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    
+    // Clear all listeners
+    this.listeners.clear();
+    
+    console.log('🌐 [WebSocket] WebSocket manager shut down successfully');
+  }
+}
 
 // Update the interface for stats results
 interface ImportResult {
@@ -123,7 +433,7 @@ interface ImportedChat {
 
 /**
  * Chat Manager - Singleton class to manage chat history throughout the application
- * Provides methods to load and access chat history
+ * Provides methods to load and access chat history with background processing support
  */
 class ChatManager {
   private static instance: ChatManager;
@@ -135,10 +445,211 @@ class ChatManager {
   private retryTimeout: number | null = null;
   private listeners: Map<string, EventCallback[]> = new Map();
   
+  // Background processing state
+  private backgroundChats: Map<string, BackgroundChatState> = new Map();
+  private wsManager: WebSocketManager;
+  private backgroundProcessingEnabled: boolean = true;
+  
+  // Active chat tracking
+  private activeChatId: string | null = null;
+  
+  // Performance optimization
+  private maxBackgroundChats: number = 10;
+  private cleanupInterval: number | null = null;
+  private lastCleanup: number = Date.now();
+  
   private constructor() {
     // Initialize and load chats
     this.initializeChats();
     this.checkBackendHealth();
+    
+    // Initialize WebSocket manager for background processing using singleton
+    this.wsManager = WebSocketManager.getInstance();
+    this.setupWebSocketListeners();
+    
+    // Start cleanup interval for inactive chats
+    this.startCleanupInterval();
+  }
+  
+  /**
+   * Setup WebSocket event listeners for background chat processing
+   */
+  private setupWebSocketListeners() {
+    // Handle chat updates from background processing
+    this.wsManager.on('chat_update', (data: Record<string, unknown>) => {
+      if (data.chat_id && typeof data.chat_id === 'string') {
+        console.log(`📨 [ChatManager] Received chat update for ${data.chat_id.slice(-8)}:`, data.type);
+        this.handleBackgroundChatUpdate(data.chat_id, data as WebSocketMessage);
+      }
+    });
+    
+    // Handle background processing status
+    this.wsManager.on('chat_status', (data: Record<string, unknown>) => {
+      if (data.chat_id && typeof data.chat_id === 'string') {
+        const state = this.backgroundChats.get(data.chat_id) || {
+          chatId: data.chat_id,
+          status: 'idle',
+          currentResponse: '',
+          lastUpdate: Date.now()
+        };
+        if (typeof data.status === 'string') {
+          state.status = data.status as 'idle' | 'pending' | 'processing' | 'streaming' | 'completed' | 'error';
+        }
+        this.backgroundChats.set(data.chat_id, state);
+      }
+    });
+    
+    // Handle background processing start confirmation
+    this.wsManager.on('background_started', (data: Record<string, unknown>) => {
+      if (data.chat_id && typeof data.chat_id === 'string') {
+        this.backgroundChats.set(data.chat_id, {
+          chatId: data.chat_id,
+          status: 'processing',
+          currentResponse: '',
+          lastUpdate: Date.now()
+        });
+        console.log(`🚀 [ChatManager] Background processing started for chat ${data.chat_id.slice(-8)}`);
+        console.log(`🗂️ [ChatManager] Current background chats:`, Array.from(this.backgroundChats.keys()).map(id => id.slice(-8)));
+      }
+    });
+    
+    // Handle errors and recovery
+    this.wsManager.on('error', (data: Record<string, unknown>) => {
+      console.error('WebSocket error:', data);
+      // Emit error event for UI to handle
+      this.emit('websocket-error', this.chats);
+    });
+    
+    // Handle max retries reached
+    this.wsManager.on('max_retries_reached', () => {
+      console.error('WebSocket connection failed permanently');
+      // Disable background processing temporarily
+      this.backgroundProcessingEnabled = false;
+      this.emit('connection-lost', this.chats);
+    });
+    
+    // Handle reconnection success
+    this.wsManager.on('connected', () => {
+      console.log('WebSocket reconnected, re-enabling background processing');
+      this.backgroundProcessingEnabled = true;
+      
+      // Rejoin all active chat rooms
+      for (const [chatId, state] of this.backgroundChats) {
+        if (state.status === 'pending' || 
+            state.status === 'processing' || 
+            state.status === 'streaming') {
+          this.wsManager.joinChat(chatId);
+        }
+      }
+      
+      this.emit('connection-restored', this.chats);
+    });
+  }
+  
+  /**
+   * Handle background chat updates from WebSocket
+   */
+  private handleBackgroundChatUpdate(chatId: string, data: WebSocketMessage) {
+    if (!this.backgroundChats.has(chatId)) {
+      // Initialize background state if it doesn't exist
+      this.backgroundChats.set(chatId, {
+        chatId: chatId,
+        status: 'idle',
+        currentResponse: '',
+        lastUpdate: Date.now(),
+        isThinking: false
+      });
+    }
+    
+    const state = this.backgroundChats.get(chatId)!;
+    
+    console.log(`🌐 [CM-WS] Processing WebSocket update for ${chatId.slice(-8)}:`, {
+      type: data.type,
+      hasContent: !!data.content,
+      contentLength: data.content?.length || 0,
+      hasFullResponse: !!data.full_response,
+      fullResponseLength: data.full_response?.length || 0,
+      currentStatus: state.status,
+      currentResponseLength: state.currentResponse.length
+    });
+    
+    switch (data.type) {
+      case 'chunk':
+        // Handle streaming chunks - accumulate response content
+        if (data.content) {
+          state.currentResponse += data.content;
+          state.status = 'streaming';
+          state.lastUpdate = Date.now();
+          
+          // ISSUE 2 FIX: Clear thinking state when actual content starts arriving
+          if (state.isThinking && data.content.trim()) {
+            console.log(`🧠 [CM-WS] Clearing thinking state for ${chatId.slice(-8)} - content received`);
+            state.isThinking = false;
+          }
+          
+          console.log(`📝 [CM-WS] Background chat ${chatId.slice(-8)} streaming chunk, total response: ${state.currentResponse.length} chars`);
+        }
+        break;
+        
+      case 'complete':
+        // ISSUE 4 FIX: Properly handle completion with final response content
+        if (data.full_response) {
+          state.currentResponse = data.full_response;
+          console.log(`🏁 [CM-WS] Background chat ${chatId.slice(-8)} completed with final response: ${state.currentResponse.length} chars`);
+        } else if (data.content) {
+          state.currentResponse += data.content;
+          console.log(`🏁 [CM-WS] Background chat ${chatId.slice(-8)} completed with final chunk: ${state.currentResponse.length} chars total`);
+        }
+        
+        state.status = 'completed';
+        state.lastUpdate = Date.now();
+        state.isThinking = false; // Clear thinking state on completion
+        
+        // ISSUE 4 FIX: Don't immediately clear background state - let the UI handle completion
+        // Only clear after a reasonable delay to allow UI to show completion
+        setTimeout(() => {
+          console.log(`🧹 [CM-WS] Delayed clearing of background state for completed chat ${chatId.slice(-8)}`);
+          this.clearBackgroundStateForChat(chatId);
+        }, 3000); // 3 second delay
+        break;
+        
+      case 'thinking':
+        // ISSUE 1 FIX: Properly handle thinking state
+        state.isThinking = true;
+        if (state.status === 'idle' || state.status === 'pending') {
+          state.status = 'processing';
+        }
+        state.lastUpdate = Date.now();
+        console.log(`🧠 [CM-WS] Background chat ${chatId.slice(-8)} is thinking`);
+        break;
+        
+      case 'processing':
+        // Backend started processing but not streaming yet
+        if (state.status === 'pending') {
+          state.status = 'processing';
+          state.lastUpdate = Date.now();
+          console.log(`⚙️ [CM-WS] Background chat ${chatId.slice(-8)} moved to processing state`);
+        }
+        break;
+        
+      case 'error':
+        state.status = 'error';
+        state.lastUpdate = Date.now();
+        state.isThinking = false; // Clear thinking on error
+        console.error(`❌ [CM-WS] Background chat error for ${chatId.slice(-8)}:`, data.error);
+        break;
+    }
+    
+    this.backgroundChats.set(chatId, state);
+    console.log(`🗗️ [CM-STATE] Updated background state for ${chatId.slice(-8)}:`, {
+      status: state.status,
+      responseLength: state.currentResponse.length,
+      isThinking: state.isThinking,
+      totalBackgroundChats: this.backgroundChats.size
+    });
+    
+    // Emit update event for UI
+    this.emit('background-update', this.chats);
   }
   
   /**
@@ -321,6 +832,12 @@ class ChatManager {
         chats: this.chats,
         lastUpdated: new Date().toISOString()
       }));
+      
+      // Save background processing states separately
+      localStorage.setItem('atlas_background_states', JSON.stringify({
+        states: Array.from(this.backgroundChats.entries()),
+        lastUpdated: new Date().toISOString()
+      }));
     } catch (error) {
       console.error('Failed to save chat history to local storage:', error);
     }
@@ -338,6 +855,27 @@ class ChatManager {
         // Only load from local storage if we don't already have data
         if (this.chats.length === 0 && parsed.chats) {
           this.chats = parsed.chats || [];
+        }
+      }
+      
+      // Load background processing states
+      const backgroundData = localStorage.getItem('atlas_background_states');
+      if (backgroundData) {
+        const parsed = JSON.parse(backgroundData);
+        
+        // Restore background chat states
+        if (parsed.states && Array.isArray(parsed.states)) {
+          this.backgroundChats = new Map(parsed.states);
+          
+          // For any chats that were processing, try to reconnect to their state
+          for (const [chatId, state] of this.backgroundChats) {
+            if (state.status === 'pending' || 
+                state.status === 'processing' || 
+                state.status === 'streaming') {
+              // Join the chat room to continue receiving updates
+              this.wsManager.joinChat(chatId);
+            }
+          }
         }
       }
     } catch (error) {
@@ -752,6 +1290,267 @@ class ChatManager {
       this.listeners.set('update', updatedCallbacks);
     };
   }
+  
+  /**
+   * Subscribe to background chat updates
+   */
+  public subscribeToBackgroundUpdates(callback: (chats: ChatHistoryItem[]) => void): () => void {
+    const callbacks = this.listeners.get('background-update') || [];
+    callbacks.push(callback);
+    this.listeners.set('background-update', callbacks);
+    
+    return () => {
+      const callbacks = this.listeners.get('background-update') || [];
+      const updatedCallbacks = callbacks.filter(cb => cb !== callback);
+      this.listeners.set('background-update', updatedCallbacks);
+    };
+  }
+  
+  /**
+   * Start background processing for a chat
+   */
+  public async startBackgroundChat(chatId: string, messages: unknown[], model: string, options: Record<string, unknown> = {}): Promise<boolean> {
+    try {
+      if (!this.backgroundProcessingEnabled) {
+        console.warn('🚫 [CM-BG] Background processing is disabled');
+        return false;
+      }
+      
+      // Check if this chat is already processing in background
+      const currentState = this.backgroundChats.get(chatId);
+      console.log(`🚀 [CM-BG] Starting background chat for ${chatId.slice(-8)}:`, {
+        currentState: currentState?.status || 'none',
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+        model: model,
+        options: Object.keys(options),
+        totalBackgroundChats: this.backgroundChats.size
+      });
+      
+      if (currentState && (currentState.status === 'processing' || currentState.status === 'streaming')) {
+        console.log(`⚠️ [CM-BG] Chat ${chatId.slice(-8)} is already processing in background (${currentState.status})`);
+        return true; // Return true since it's already processing
+      }
+      
+      console.log(`🚀 [CM-BG] Initiating background processing for ${chatId.slice(-8)}`);
+      
+      // Join chat room via WebSocket for real-time updates
+      this.wsManager.joinChat(chatId);
+      console.log(`🌐 [CM-BG] Joined WebSocket room for ${chatId.slice(-8)}`);
+      
+      // Use HTTP request for background processing
+      const payload = {
+        chat_id: chatId,
+        messages: messages,
+        model: model,
+        background: true,
+        ...options
+      };
+      
+      console.log(`📤 [CM-BG] Sending background request for ${chatId.slice(-8)}:`, {
+        payloadSize: JSON.stringify(payload).length,
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+        backgroundFlag: payload.background
+      });
+      
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      console.log(`📡 [CM-BG] Received response for ${chatId.slice(-8)}:`, {
+        status: response.status,
+        ok: response.ok
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      console.log(`✅ [CM-BG] Background chat started successfully for ${chatId.slice(-8)}:`, {
+        success: result.success,
+        resultKeys: Object.keys(result)
+      });
+      return result.success || false;
+      
+    } catch (error) {
+      console.error(`❌ [CM-BG] Error starting background chat for ${chatId?.slice(-8) || 'unknown'}:`, error);
+      return false;
+    }
+  }
+  
+  /**
+   * Get background processing status for a chat
+   */
+  public getBackgroundStatus(chatId: string): BackgroundChatState | null {
+    const state = this.backgroundChats.get(chatId) || null;
+    if (state) {
+      console.log(`🔍 [CM-STATUS] Background status for ${chatId.slice(-8)}:`, {
+        status: state.status,
+        responseLength: state.currentResponse.length,
+        lastUpdate: new Date(state.lastUpdate).toISOString(),
+        ageMinutes: Math.round((Date.now() - state.lastUpdate) / 60000)
+      });
+    }
+    return state;
+  }
+  
+  /**
+   * Get current response from background processing
+   */
+  public getBackgroundResponse(chatId: string): string {
+    const state = this.backgroundChats.get(chatId);
+    return state?.currentResponse || '';
+  }
+  
+  /**
+   * Get streaming continuation data for a chat
+   */
+  public getStreamingContinuation(chatId: string): {
+    hasPartialResponse: boolean;
+    partialResponse: string;
+    isStreaming: boolean;
+    isPending: boolean;
+  } {
+    const state = this.backgroundChats.get(chatId);
+    return {
+      hasPartialResponse: !!(state?.currentResponse),
+      partialResponse: state?.currentResponse || '',
+      isStreaming: state?.status === 'streaming' || state?.status === 'processing',
+      isPending: state?.status === 'pending'
+    };
+  }
+  
+  /**
+   * Mark a chat as pending when user sends a message
+   * This ensures immediate background indication even before backend responds
+   */
+  public markChatAsPending(chatId: string, clearPreviousResponse = true) {
+    const now = Date.now();
+    const existingState = this.backgroundChats.get(chatId);
+    
+    const newState: BackgroundChatState = {
+      chatId: chatId,
+      status: 'pending',
+      currentResponse: clearPreviousResponse ? '' : (existingState?.currentResponse || ''),
+      lastUpdate: now,
+      messageSentAt: now,
+      responseStartedAt: undefined, // Reset response start time
+      isThinking: false // Reset thinking state
+    };
+    
+    this.backgroundChats.set(chatId, newState);
+    console.log(`📤 [CM-PENDING] Marked ${chatId.slice(-8)} as pending:`, {
+      previousStatus: existingState?.status || 'none',
+      clearedResponse: clearPreviousResponse,
+      totalBackgroundChats: this.backgroundChats.size,
+      allBackgroundChatIds: Array.from(this.backgroundChats.keys()).map(id => id.slice(-8))
+    });
+    
+    // Emit update to trigger UI changes immediately
+    this.emit('background-update', this.chats);
+    this.saveToLocalStorage();
+  }
+
+  /**
+   * Mark a chat as thinking (for Gemini 2.5 Pro models)
+   */
+  public markChatAsThinking(chatId: string) {
+    const existingState = this.backgroundChats.get(chatId);
+    
+    const newState: BackgroundChatState = {
+      chatId: chatId,
+      status: existingState?.status || 'processing',
+      currentResponse: existingState?.currentResponse || '',
+      lastUpdate: Date.now(),
+      messageSentAt: existingState?.messageSentAt,
+      responseStartedAt: existingState?.responseStartedAt,
+      isThinking: true
+    };
+    
+    this.backgroundChats.set(chatId, newState);
+    console.log(`🧠 [CM-THINKING] Marked ${chatId.slice(-8)} as thinking:`, {
+      status: newState.status,
+      totalBackgroundChats: this.backgroundChats.size
+    });
+    
+    this.emit('background-update', this.chats);
+    this.saveToLocalStorage();
+  }
+
+  /**
+   * Clear thinking state for a chat (when streaming starts)
+   */
+  public clearThinkingState(chatId: string) {
+    const existingState = this.backgroundChats.get(chatId);
+    if (existingState && existingState.isThinking) {
+      const newState: BackgroundChatState = {
+        ...existingState,
+        isThinking: false,
+        lastUpdate: Date.now()
+      };
+      
+      this.backgroundChats.set(chatId, newState);
+      console.log(`🧠 [CM-THINKING] Cleared thinking state for ${chatId.slice(-8)}`);
+      
+      this.emit('background-update', this.chats);
+      this.saveToLocalStorage();
+    }
+  }
+
+  /**
+   * Check if a chat is processing in background (includes pending state)
+   */
+  public isProcessingInBackground(chatId: string): boolean {
+    const state = this.backgroundChats.get(chatId);
+    const isProcessing = state?.status === 'pending' || 
+                        state?.status === 'processing' || 
+                        state?.status === 'streaming';
+    console.log(`🔍 [CM-CHECK] Is ${chatId.slice(-8)} processing in background:`, {
+      hasState: !!state,
+      status: state?.status || 'none',
+      isProcessing: isProcessing,
+      responseLength: state?.currentResponse?.length || 0
+    });
+    return isProcessing;
+  }
+  
+  /**
+   * Enable or disable background processing
+   */
+  public setBackgroundProcessingEnabled(enabled: boolean) {
+    this.backgroundProcessingEnabled = enabled;
+    console.log(`Background processing ${enabled ? 'enabled' : 'disabled'}`);
+  }
+  
+  /**
+   * Join a chat room for real-time updates
+   */
+  public joinChatRoom(chatId: string) {
+    // Only attempt WebSocket operations if backend is available
+    if (!this.backendAvailable) {
+      console.debug('🔌 [ChatManager] Backend not available, skipping chat room join for:', chatId.slice(-8));
+      return;
+    }
+    
+    this.wsManager.joinChat(chatId);
+  }
+  
+  /**
+   * Leave a chat room
+   */
+  public leaveChatRoom(chatId: string) {
+    // Only attempt WebSocket operations if backend is available
+    if (!this.backendAvailable) {
+      console.debug('🔌 [ChatManager] Backend not available, skipping chat room leave for:', chatId.slice(-8));
+      return;
+    }
+    
+    this.wsManager.leaveChat(chatId);
+  }
 
   /**
    * Import chat history from JSON data
@@ -926,8 +1725,234 @@ class ChatManager {
       return false;
     }
   }
+  
+  /**
+   * Start cleanup interval for performance optimization
+   */
+  private startCleanupInterval() {
+    // Run cleanup every 5 minutes
+    this.cleanupInterval = window.setInterval(() => {
+      this.cleanupInactiveChats();
+    }, 5 * 60 * 1000);
+  }
+  
+  /**
+   * Clean up inactive background chats to manage memory
+   */
+  private cleanupInactiveChats() {
+    const now = Date.now();
+    const inactiveThreshold = 30 * 60 * 1000; // 30 minutes
+    
+    // Don't run cleanup too frequently
+    if (now - this.lastCleanup < 60000) { // Only cleanup once per minute max
+      return;
+    }
+    
+    // Get inactive chats (idle and completed states that are old enough)
+    const inactiveChats: string[] = [];
+    for (const [chatId, state] of this.backgroundChats) {
+      if ((state.status === 'idle' || state.status === 'completed') && 
+          (now - state.lastUpdate) > inactiveThreshold) {
+        inactiveChats.push(chatId);
+      }
+    }
+    
+    // If we have too many background chats, remove the oldest inactive ones
+    if (this.backgroundChats.size > this.maxBackgroundChats) {
+      const sortedInactive = inactiveChats.sort((a, b) => {
+        const stateA = this.backgroundChats.get(a)!;
+        const stateB = this.backgroundChats.get(b)!;
+        return stateA.lastUpdate - stateB.lastUpdate;
+      });
+      
+      const toRemove = sortedInactive.slice(0, this.backgroundChats.size - this.maxBackgroundChats);
+      toRemove.forEach(chatId => {
+        this.backgroundChats.delete(chatId);
+        this.wsManager.leaveChat(chatId);
+        console.log(`Cleaned up inactive background chat: ${chatId}`);
+      });
+    }
+    
+    this.lastCleanup = now;
+    this.saveToLocalStorage();
+  }
+  
+  /**
+   * Clear background state for a specific chat
+   */
+  public clearBackgroundStateForChat(chatId: string) {
+    if (this.backgroundChats.has(chatId)) {
+      const state = this.backgroundChats.get(chatId);
+      this.backgroundChats.delete(chatId);
+      console.log(`🧹 [CM-CLEAR] Cleared background state for ${chatId.slice(-8)}:`, {
+        previousStatus: state?.status,
+        responseLength: state?.currentResponse?.length || 0,
+        remainingBackgroundChats: this.backgroundChats.size,
+        remainingChatIds: Array.from(this.backgroundChats.keys()).map(id => id.slice(-8))
+      });
+      this.emit('background-update', this.chats);
+      this.saveToLocalStorage();
+    } else {
+      console.log(`🧹 [CM-CLEAR] No background state to clear for ${chatId.slice(-8)}`);
+    }
+  }
+  
+  /**
+   * Force cleanup of all background processing state
+   */
+  public clearBackgroundState() {
+    this.backgroundChats.clear();
+    localStorage.removeItem('atlas_background_states');
+    console.log('Cleared all background processing state');
+  }
+  
+  /**
+   * Mark a chat as background streaming (when switching away from an active stream)
+   */
+  public markAsBackgroundStreaming(chatId: string) {
+    const existingState = this.backgroundChats.get(chatId);
+    const newState = {
+      chatId: chatId,
+      status: 'streaming' as const,
+      currentResponse: existingState?.currentResponse || '',
+      lastUpdate: Date.now()
+    };
+    
+    this.backgroundChats.set(chatId, newState);
+    console.log(`🔄 [CM-MARK] Marked ${chatId.slice(-8)} as background streaming:`, {
+      hadExistingState: !!existingState,
+      previousStatus: existingState?.status,
+      responseLength: newState.currentResponse.length,
+      totalBackgroundChats: this.backgroundChats.size,
+      allBackgroundChatIds: Array.from(this.backgroundChats.keys()).map(id => id.slice(-8))
+    });
+    this.emit('background-update', this.chats);
+  }
+  
+  /**
+   * Debug: Manually set a background state for testing
+   */
+  public debugSetBackgroundState(chatId: string) {
+    this.backgroundChats.set(chatId, {
+      chatId: chatId,
+      status: 'streaming',
+      currentResponse: 'Test response...',
+      lastUpdate: Date.now()
+    });
+    console.log(`🧪 [ChatManager] DEBUG: Set background state for ${chatId.slice(-8)}`);
+    this.emit('background-update', this.chats);
+  }
+  
+  /**
+   * Debug: Log comprehensive state of all chats
+   */
+  public logAllChatStates(context: string = 'DEBUG', activeChatId?: string) {
+    // Use provided activeChatId or fall back to internal tracking
+    const currentActiveChatId = activeChatId || this.activeChatId;
+    const allChatIds = this.chats.map(chat => chat.id);
+    const backgroundChatIds = Array.from(this.backgroundChats.keys());
+    
+    console.log(`\n🔍 [${context}] === CHAT STATES DEBUG ===`);
+    console.log(`🔍 [${context}] Active Chat ID: ${currentActiveChatId ? currentActiveChatId.slice(-8) : 'NONE'}`);
+    console.log(`🔍 [${context}] Total Chats: ${allChatIds.length}`);
+    console.log(`🔍 [${context}] Background Processing Chats: ${backgroundChatIds.length}`);
+    console.log(`🔍 [${context}] Backend Available: ${this.backendAvailable}`);
+    
+    // Log each loaded chat
+    this.chats.forEach((chat, index) => {
+      const isActive = currentActiveChatId === chat.id;
+      const backgroundState = this.getBackgroundStatus(chat.id);
+      const isProcessingInBackground = this.isProcessingInBackground(chat.id);
+      
+      console.log(`🔍 [${context}] Chat ${index + 1}/${this.chats.length}: ${chat.id.slice(-8)} | ${chat.title}`);
+      console.log(`    ├─ Active: ${isActive ? '✅ YES' : '❌ No'}`);
+      console.log(`    ├─ Background Processing: ${isProcessingInBackground ? '🔄 YES' : '❌ No'}`);
+      if (backgroundState) {
+        console.log(`    ├─ Background Status: ${backgroundState.status}`);
+        console.log(`    ├─ Background Response Length: ${backgroundState.currentResponse.length}`);
+        console.log(`    ├─ Background Thinking: ${backgroundState.isThinking ? '🧠 YES' : '❌ No'}`);
+        console.log(`    ├─ Last Update: ${new Date(backgroundState.lastUpdate).toLocaleTimeString()}`);
+      } else {
+        console.log(`    ├─ Background State: None`);
+      }
+      console.log(`    └─ Model: ${chat.model}`);
+    });
+    
+    // Log background-only chats
+    const backgroundOnlyChats = backgroundChatIds.filter(chatId => !allChatIds.includes(chatId));
+    if (backgroundOnlyChats.length > 0) {
+      console.log(`🔍 [${context}] Background-Only Chats (${backgroundOnlyChats.length}):`);
+      backgroundOnlyChats.forEach(chatId => {
+        const backgroundState = this.getBackgroundStatus(chatId);
+        console.log(`    🔄 ${chatId.slice(-8)}: ${backgroundState?.status} | Response: ${backgroundState?.currentResponse.length} chars${backgroundState?.isThinking ? ' | 🧠 Thinking' : ''}`);
+      });
+    }
+    
+    console.log(`🔍 [${context}] === END CHAT STATES DEBUG ===\n`);
+  }
+
+  /**
+   * Shutdown the ChatManager and clean up resources
+   */
+  public shutdown() {
+    // Clear cleanup interval
+    if (this.cleanupInterval !== null) {
+      window.clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    
+    // Clear retry timeout
+    if (this.retryTimeout !== null) {
+      window.clearTimeout(this.retryTimeout);
+      this.retryTimeout = null;
+    }
+    
+    // Shutdown WebSocket manager to stop reconnection loops
+    if (this.wsManager) {
+      this.wsManager.shutdown();
+    }
+    
+    // Clear all background states
+    this.clearBackgroundState();
+    
+    console.log('ChatManager shutdown completed');
+  }
+
+  /**
+   * Set the currently active chat ID (called from App component)
+   */
+  public setActiveChatId(chatId: string | null) {
+    const previousActiveId = this.activeChatId;
+    this.activeChatId = chatId;
+    console.log(`🎯 [CM-ACTIVE] Active chat changed:`, {
+      previous: previousActiveId?.slice(-8) || 'NONE',
+      current: chatId?.slice(-8) || 'NONE'
+    });
+  }
+
+  /**
+   * Get the currently active chat ID
+   */
+  public getActiveChatId(): string | null {
+    return this.activeChatId;
+  }
 }
 
 // Export the singleton instance
 const chatManager = ChatManager.getInstance();
-export default chatManager; 
+
+// Debug: Expose to window for testing
+if (typeof window !== 'undefined') {
+  (window as unknown as { debugChatManager: unknown }).debugChatManager = {
+    setBackgroundState: (chatId: string) => chatManager.debugSetBackgroundState(chatId),
+    clearBackgroundState: () => chatManager.clearBackgroundState(),
+    getBackgroundChats: () => {
+      const manager = chatManager as unknown as { backgroundChats: Map<string, BackgroundChatState> };
+      return Array.from(manager.backgroundChats.entries());
+    },
+    getChats: () => chatManager.getChats()
+  };
+}
+
+export default chatManager;
+export type { BackgroundChatState, WebSocketMessage }; 

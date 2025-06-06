@@ -58,8 +58,35 @@ function App() {
   const openChatsKey = getOpenChatsKey();
   const [isEnhancedViewerOpen, setIsEnhancedViewerOpen] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatHistoryItem[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [openChatIds, setOpenChatIds] = useState<(string | null)[]>([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(() => {
+    // Try to load from localStorage first, then use first open chat
+    const savedId = localStorage.getItem(getActiveChatKey());
+    return savedId || null; // Will be set to first openChatId in useEffect
+  });
+  // Initialize with a default chat ID to avoid empty state
+  const [openChatIds, setOpenChatIds] = useState<(string | null)[]>(() => {
+    // Try to load from localStorage first
+    const openChats = localStorage.getItem(getOpenChatsKey());
+    if (openChats) {
+      try {
+        const parsed = JSON.parse(openChats) as (string | null)[];
+        if (parsed.length > 0) {
+          console.log(`🔄 [APP-STATE] Loaded ${parsed.length} chat(s) from localStorage`);
+          return parsed;
+        }
+      } catch {
+        // ignore parsing errors
+        console.warn('🔄 [APP-STATE] Failed to parse saved chat IDs from localStorage');
+      }
+    }
+    
+    // Generate initial chat ID if no saved chats - use a more stable format
+    const timestamp = Math.floor(Date.now() / 1000);
+    const randomSuffix = Math.random().toString(36).substr(2, 8);
+    const initialChatId = `unified_${timestamp}_${randomSuffix}`;
+    console.log(`🆕 [APP-STATE] Initializing with new chat: ${initialChatId.slice(-8)}`);
+    return [initialChatId];
+  });
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [selectedChatIds, setSelectedChatIds] = useState<string[]>([]);
   const [lastSelectedChatIndex, setLastSelectedChatIndex] = useState<number | null>(null);
@@ -84,6 +111,12 @@ function App() {
   
   // Add a new state to track loading state per chat
   const [loadingChatIds, setLoadingChatIds] = useState<Record<string, boolean>>({});
+  
+  // Add state for background updates to force re-renders of chat list
+  const [backgroundUpdateCounter, setBackgroundUpdateCounter] = useState(0);
+  
+  // Add state for sidebar refresh loading
+  const [isSidebarRefreshing, setIsSidebarRefreshing] = useState(false);
   
   // Add state for right creation window
   const [creationWindowOpen, setCreationWindowOpen] = useState(false);
@@ -129,6 +162,25 @@ function App() {
   const renameCreationModalRef = useRef<HTMLDivElement>(null);
   const editCreationModalRef = useRef<HTMLDivElement>(null);
 
+  // Debug function to log all chat states - defined early so it can be used in effects
+  const logAllChatStates = useCallback((context: string, overrideActiveChatId?: string) => {
+    // Get fresh state values to avoid closure issues
+    const currentActiveChatId = overrideActiveChatId ?? activeChatId;
+    const currentOpenChatIds = openChatIds;
+    const currentIsLoadingChat = isLoadingChat;
+    const currentIsSidebarRefreshing = isSidebarRefreshing;
+    
+    console.log(`\n🎯 [${context}] === FRONTEND CHAT STATES ===`);
+    console.log(`🎯 [${context}] Active Chat ID: ${currentActiveChatId ? currentActiveChatId.slice(-8) : 'NONE'}`);
+    console.log(`🎯 [${context}] Open Chat IDs (${currentOpenChatIds.length}): ${currentOpenChatIds.map(id => id ? id.slice(-8) : 'NULL').join(', ')}`);
+    console.log(`🎯 [${context}] Loading Chat: ${currentIsLoadingChat ? 'YES' : 'NO'}`);
+    console.log(`🎯 [${context}] Sidebar Refreshing: ${currentIsSidebarRefreshing ? 'YES' : 'NO'}`);
+    console.log(`🎯 [${context}] === END FRONTEND STATES ===`);
+    
+    // Also log the chatManager states
+    chatManager.logAllChatStates(`${context}-CM`, currentActiveChatId || undefined);
+  }, [activeChatId, openChatIds, isLoadingChat, isSidebarRefreshing]);
+
   // Helper function to map languages to Ace editor modes
   const getAceMode = (creationType: string, language?: string) => {
     if (creationType === 'code' && language) {
@@ -171,7 +223,7 @@ function App() {
   
   // Load chat history when component mounts
   useEffect(() => {
-    // Initial load
+    // Initial load from cache
     setChatHistory(chatManager.getChats());
     
     // Subscribe to updates - prevent excessive rerenders 
@@ -190,28 +242,76 @@ function App() {
       });
     });
     
-    // Refresh chats from the backend on initial load only
-    chatManager.refreshChats().catch(err => {
-      console.log('Failed to refresh chat history, will use cached data:', err);
-    });
-    
-    // Listen for chat events
-    const handleChatCreated = (event: Event) => {
-
-      // Cast to custom event to access the chat ID
-      const customEvent = event as CustomEvent<{ chatId: string }>;
-      if (customEvent.detail?.chatId) {
-        // Set the active chat ID to the newly created chat
-        setActiveChatId(customEvent.detail.chatId);
-        setOpenChatIds(prev =>
-          prev.map(id => (id === null ? customEvent.detail.chatId : id))
-        );
+    // Subscribe to background updates to refresh streaming indicators
+    const unsubscribeBackground = chatManager.subscribeToBackgroundUpdates(() => {
+      // Update chat list indicators for background streaming
+      const allBackgroundStates = (chatManager as unknown as { backgroundChats: Map<string, { status: string; currentResponse: string; lastUpdate: number; chatId: string }> }).backgroundChats;
+      const backgroundChatCount = allBackgroundStates.size;
+      
+      if (backgroundChatCount > 0) {
+        console.log(`📋 [APP-SIDEBAR] Background streaming update: ${backgroundChatCount} chat(s) processing`);
       }
       
-      // Refresh the chat history
-      chatManager.refreshChats().catch(err => {
-        console.log('Failed to refresh chat history after creation:', err);
-      });
+      // Force a re-render of the chat list when background streaming state changes
+      setBackgroundUpdateCounter(prev => prev + 1);
+    });
+    
+    // Wait for backend to be available before attempting initial refresh
+    const waitForBackendAndRefresh = async () => {
+      console.log('🔄 [APP-SIDEBAR] Waiting for backend to be available before initial refresh...');
+      
+      // Wait a short time for backend health check to complete
+      setTimeout(async () => {
+        try {
+          await chatManager.refreshChats();
+          console.log('🔄 [APP-SIDEBAR] Initial chat refresh completed successfully');
+        } catch (error) {
+          console.warn('⚠️ [APP-SIDEBAR] Initial chat refresh failed (non-blocking):', error);
+        } finally {
+          setIsSidebarRefreshing(false);
+        }
+      }, 2000); // Wait 2 seconds for backend to be ready
+    };
+
+    setIsSidebarRefreshing(true);
+    waitForBackendAndRefresh();
+    
+    // Listen for chat events - refresh only when needed
+    const handleChatCreated = (event: Event) => {
+      // Cast to custom event to access the enhanced chat data
+      const customEvent = event as CustomEvent<{ 
+        chatId: string;
+        title?: string;
+        model?: string;
+        created_at?: string;
+      }>;
+      
+      if (customEvent.detail?.chatId) {
+        console.log(`🎉 [APP-SIDEBAR] Chat created event: ${customEvent.detail.chatId.slice(-8)} - refreshing sidebar`);
+        
+        // The chat ID should already be set and in openChatIds from handleNewChat
+        // We don't need to update anything here since we pre-generate the ID
+        
+        // Just verify the chat is in the open chats (safety check)
+        setOpenChatIds(prev => {
+          if (prev.includes(customEvent.detail.chatId)) {
+            return prev; // Already exists, no change needed
+          }
+          
+          // If somehow it's not there, add it
+          console.warn(`🚨 [APP-SIDEBAR] Chat ${customEvent.detail.chatId.slice(-8)} not found in openChatIds, adding it`);
+          return [...prev, customEvent.detail.chatId];
+        });
+        
+        // Force refresh to ensure sidebar updates immediately
+        console.log(`🔄 [APP-SIDEBAR] Refreshing chat list for created chat: ${customEvent.detail.chatId.slice(-8)}`);
+        setIsSidebarRefreshing(true);
+        chatManager.refreshChats().catch(error => {
+          console.warn('⚠️ [APP-SIDEBAR] Chat refresh failed after creation (non-blocking):', error);
+        }).finally(() => {
+          setIsSidebarRefreshing(false);
+        });
+      }
     };
     
     const handleChatUpdated = (event: Event) => {
@@ -219,18 +319,53 @@ function App() {
       if (customEvent.detail?.chatId) {
 
         
-        // If we have a chatId but no active chat selected, set this as the active chat
+        // Log chat states before making any decisions
+        logAllChatStates(`BEFORE-UPDATE-${customEvent.detail.chatId.slice(-8)}`);
+        
+        // ENHANCED FIX: Only set as active chat if no active chat AND this is a genuine new chat creation
+        // This prevents auto-switching when background chats complete their streams
         if (!activeChatId) {
-
-          setActiveChatId(customEvent.detail.chatId);
+          // Check if this chat was processing in background - if so, don't auto-switch
+          const backgroundState = chatManager.getBackgroundStatus(customEvent.detail.chatId);
+          const wasBackgroundProcessing = backgroundState && 
+            (backgroundState.status === 'streaming' || 
+             backgroundState.status === 'completed' ||
+             backgroundState.status === 'processing' ||
+             backgroundState.status === 'pending');
+          
+          // Also check if this chat is in our openChatIds - if not, it's likely a new chat
+          const isNewChat = !openChatIds.includes(customEvent.detail.chatId);
+          
+          if (!wasBackgroundProcessing && isNewChat) {
+            console.log(`🎯 [APP-UPDATE] Setting active chat to new updated chat: ${customEvent.detail.chatId.slice(-8)}`);
+            setActiveChatId(customEvent.detail.chatId);
+            // Also add to open chats if it's not there
+            setOpenChatIds(prev => prev.includes(customEvent.detail.chatId) ? prev : [...prev, customEvent.detail.chatId]);
+            // Use setTimeout to log the state after React has processed the state update
+            setTimeout(() => {
+              logAllChatStates(`AFTER-SET-ACTIVE-${customEvent.detail.chatId.slice(-8)}`, customEvent.detail.chatId);
+            }, 0);
+          } else if (wasBackgroundProcessing) {
+            console.log(`🚫 [APP-UPDATE] Preventing auto-switch to background processed chat: ${customEvent.detail.chatId.slice(-8)} (status: ${backgroundState?.status})`);
+          } else if (!isNewChat) {
+            console.log(`🚫 [APP-UPDATE] Preventing auto-switch to existing chat: ${customEvent.detail.chatId.slice(-8)}`);
+          }
+        } else {
+          // Additional protection: Never auto-switch if there's already an active chat
+          console.log(`🚫 [APP-UPDATE] Preventing auto-switch - already have active chat: ${activeChatId.slice(-8)}, update was for: ${customEvent.detail.chatId.slice(-8)}`);
         }
         
-        // Only refresh the specific chat that was updated, not the entire list
-        chatManager.refreshChats().catch(err => {
-          console.log('Failed to refresh chat history after update:', err);
+        // Refresh sidebar to show updated chat
+        console.log(`🔄 [APP-SIDEBAR] Refreshing chat list for updated chat: ${customEvent.detail.chatId.slice(-8)}`);
+        setIsSidebarRefreshing(true);
+        chatManager.refreshChats().catch(error => {
+          console.warn('⚠️ [APP-SIDEBAR] Chat refresh failed after update (non-blocking):', error);
+        }).finally(() => {
+          setIsSidebarRefreshing(false);
         });
       }
     };
+    
     
     const handleChatReset = (event: Event) => {
       const customEvent = event as CustomEvent<{ chatId: string }>;
@@ -242,21 +377,42 @@ function App() {
           setActiveChatId(customEvent.detail.chatId);
         }
         
-        // Refresh the chat history to update the UI with the reset chat
-        chatManager.refreshChats().catch(err => {
-          console.log('Failed to refresh chat history after reset:', err);
+        // Refresh sidebar to show reset chat
+        console.log(`🔄 [APP-SIDEBAR] Refreshing chat list for reset chat: ${customEvent.detail.chatId.slice(-8)}`);
+        setIsSidebarRefreshing(true);
+        chatManager.refreshChats().catch(error => {
+          console.warn('⚠️ [APP-SIDEBAR] Chat refresh failed after reset (non-blocking):', error);
+        }).finally(() => {
+          setIsSidebarRefreshing(false);
+        });
+      }
+    };
+    
+    const handleChatBackgroundUpdated = (event: Event) => {
+      const customEvent = event as CustomEvent<{ chatId: string }>;
+      if (customEvent.detail?.chatId) {
+        // Only refresh sidebar - no auto-switching for background chats
+        console.log(`🔄 [APP-BACKGROUND] Refreshing chat list for background updated chat: ${customEvent.detail.chatId.slice(-8)}`);
+        setIsSidebarRefreshing(true);
+        chatManager.refreshChats().catch(error => {
+          console.warn('⚠️ [APP-SIDEBAR] Chat refresh failed after background update (non-blocking):', error);
+        }).finally(() => {
+          setIsSidebarRefreshing(false);
         });
       }
     };
     
     window.addEventListener('chat-created', handleChatCreated);
     window.addEventListener('chat-updated', handleChatUpdated);
+    window.addEventListener('chat-background-updated', handleChatBackgroundUpdated);
     window.addEventListener('chat-reset', handleChatReset);
     
     return () => {
       unsubscribe();
+      unsubscribeBackground();
       window.removeEventListener('chat-created', handleChatCreated);
       window.removeEventListener('chat-updated', handleChatUpdated);
+      window.removeEventListener('chat-background-updated', handleChatBackgroundUpdated);
       window.removeEventListener('chat-reset', handleChatReset);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -368,18 +524,29 @@ function App() {
 
   // Function to start a new chat
   const handleNewChat = () => {
+    logAllChatStates('BEFORE-NEW-CHAT');
+    
     // Set loading state
     setIsLoadingChat(true);
 
-    // Clear active chat ID
-    setActiveChatId(null);
+    // Generate a new chat ID immediately - never use null
+    const newChatId = `unified_${Math.floor(Date.now() / 1000)}_${Math.random().toString(36).substr(2, 8)}`;
+    console.log(`🆕 [APP-NEW] Creating new chat with pre-generated ID: ${newChatId.slice(-8)}`);
 
-    // Add a placeholder for the new chat
-    setOpenChatIds(prev => [...prev, null]);
+    // Set the active chat ID to the new pre-generated ID
+    setActiveChatId(newChatId);
+
+    // Add the new chat ID to open chats (no more null placeholders)
+    setOpenChatIds(prev => [...prev, newChatId]);
     
     // Dispatch event to reset the chat *interface* (not delete the data)
     // This will create a new chat session without erasing existing ones
     window.dispatchEvent(new CustomEvent('new-chat'));
+    
+    // Use setTimeout to log the state after React has processed the state update
+    setTimeout(() => {
+      logAllChatStates(`AFTER-NEW-CHAT-${newChatId.slice(-8)}`, newChatId);
+    }, 0);
     
     // Set a timeout to clear loading state
     // This gives visual feedback even if the reset is quick
@@ -494,7 +661,7 @@ function App() {
     // Open the delete confirmation modal instead of using window.confirm
     setChatToDelete(chatId);
     setDeleteModalOpen(true);
-  }, []);
+      }, []);
   
   // Function that actually performs the deletion after confirmation
   const confirmDeleteChat = async () => {
@@ -531,40 +698,42 @@ function App() {
 
   // Function to load a chat
   const handleLoadChat = useCallback((chatId: string) => {
-    // Don't do anything if we're already loading this chat
-    if (loadingChatIds[chatId]) return;
+    // Skip if this chat is already active to prevent unnecessary operations
+    if (activeChatId === chatId) {
+      console.log(`📋 [APP-LOAD] Chat ${chatId.slice(-8)} already active, skipping`);
+      return;
+    }
     
-    // Set the specific chat as loading (instead of a global loading state)
+    logAllChatStates(`BEFORE-LOAD-${chatId.slice(-8)}`);
+    
+    console.log(`📋 [APP-LOAD] Loading chat ${chatId.slice(-8)} (${openChatIds.length} open)`);
+    
+    // Skip if already loading this chat
+    if (loadingChatIds[chatId]) {
+      console.log(`📋 [APP-LOAD] Chat ${chatId.slice(-8)} already loading, skipping`);
+      return;
+    }
+    
+    // Set the specific chat as loading
     setLoadingChatIds(prev => ({ ...prev, [chatId]: true }));
     
-    // Set the active chat ID
+    // Set the active chat ID and ensure it's in the list of open chats
+    // This is now completely non-blocking - Chat component handles the rest
     setActiveChatId(chatId);
-
-    // Ensure this chat is in the list of open chats
-    setOpenChatIds(prev => (prev.includes(chatId) ? prev : [...prev, chatId]));
+    setOpenChatIds(prev => prev.includes(chatId) ? prev : [...prev, chatId]);
     
-    // Dispatch an event to load this chat
-    window.dispatchEvent(new CustomEvent('load-chat', {
-      detail: { chatId }
-    }));
+    // Use setTimeout to log the state after React has processed the state update
+    setTimeout(() => {
+      logAllChatStates(`AFTER-LOAD-${chatId.slice(-8)}`, chatId);
+    }, 0);
     
-    // Listen for when loading completes
-    const handleLoadComplete = () => {
-      setLoadingChatIds(prev => ({ ...prev, [chatId]: false }));
-      // Remove this one-time listener after use
-      window.removeEventListener('chat-load-complete', handleLoadComplete);
-    };
-    
-    // Add a listener for the load-complete event
-    window.addEventListener('chat-load-complete', handleLoadComplete, { once: true });
-    
-    // Set a timeout to clear loading state in case we never get the completion event
+    // Clear loading state quickly since this is just a UI switch now
     setTimeout(() => {
       setLoadingChatIds(prev => ({ ...prev, [chatId]: false }));
-    }, 3000);
-  }, [loadingChatIds]);
+    }, 200);
+  }, [activeChatId, loadingChatIds, logAllChatStates]);
 
-  // Load the last active chat for this tab on mount
+  // Load the last active chat for this tab on mount (only once)
   useEffect(() => {
     const openChats = localStorage.getItem(openChatsKey);
     if (openChats) {
@@ -577,10 +746,34 @@ function App() {
     }
 
     const savedId = localStorage.getItem(activeChatKey);
-    if (savedId && chatManager.getChatById(savedId)) {
-      handleLoadChat(savedId);
+    if (savedId && !activeChatId) {
+      // Only restore if no active chat is already set
+      console.log(`🎯 [APP-RESTORE] Restoring saved active chat: ${savedId.slice(-8)}`);
+      setActiveChatId(savedId);
+      // Ensure it's in the open chats list
+      setOpenChatIds(prev => prev.includes(savedId) ? prev : [...prev, savedId]);
     }
-  }, [handleLoadChat, activeChatKey, openChatsKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array - run only once on mount
+
+  // Set active chat ID to first open chat if not already set
+  useEffect(() => {
+    const firstOpenChatId = openChatIds[0];
+    if (!activeChatId && openChatIds.length > 0 && firstOpenChatId) {
+      console.log(`🎯 [APP-INIT] Setting active chat to first open chat: ${firstOpenChatId.slice(-8)}`);
+      setActiveChatId(firstOpenChatId);
+      
+      // Log the state after the update with a small delay
+      setTimeout(() => {
+        logAllChatStates(`AFTER-INIT-ACTIVE-${firstOpenChatId.slice(-8)}`, firstOpenChatId);
+      }, 0);
+    }
+  }, [activeChatId, openChatIds, logAllChatStates]);
+
+  // Sync active chat ID with ChatManager for consistent state tracking
+  useEffect(() => {
+    chatManager.setActiveChatId(activeChatId);
+  }, [activeChatId]);
 
   // Persist the active chat ID for this tab
   useEffect(() => {
@@ -612,10 +805,28 @@ function App() {
     const isActive = activeChatId === chat.id;
     const isSelected = selectedChatIds.includes(chat.id);
     
+    // Check if this chat is streaming in the background (streaming but not active)
+    const backgroundState = chatManager.getBackgroundStatus(chat.id);
+    const isBackgroundStreaming = !isActive && backgroundState && 
+      (backgroundState.status === 'pending' || 
+       backgroundState.status === 'processing' || 
+       backgroundState.status === 'streaming');
+    
+    // Log background streaming detection for debugging
+    if (backgroundState) {
+      console.log(`📋 [APP-SIDEBAR] Chat ${chat.id.slice(-8)} background state:`, {
+        isActive: isActive,
+        backgroundStatus: backgroundState.status,
+        isBackgroundStreaming: isBackgroundStreaming,
+        responseLength: backgroundState.currentResponse?.length || 0,
+        lastUpdate: new Date(backgroundState.lastUpdate).toISOString()
+      });
+    }
+    
     return (
       <li key={chat.id}>
         <div
-          className={`chat-history-item ${isActive ? 'active' : ''} ${isLoading ? 'loading' : ''} ${isSelected ? 'selected' : ''}`}
+          className={`chat-history-item ${isActive ? 'active' : ''} ${isLoading ? 'loading' : ''} ${isSelected ? 'selected' : ''} ${isBackgroundStreaming ? 'background-streaming' : ''}`}
           onClick={(e) => {
             if (bulkOperationsOpen) {
               toggleChatSelection(chat.id, index, e.shiftKey);
@@ -648,6 +859,16 @@ function App() {
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
+          )}
+          
+          {isBackgroundStreaming && (
+            <div className="chat-streaming-indicator" title={`This chat is ${backgroundState?.status || 'processing'} in the background`}>
+              <div className="streaming-dots">
+                <div className="dot"></div>
+                <div className="dot"></div>
+                <div className="dot"></div>
+              </div>
+            </div>
           )}
           <div className="chat-item-details">
             {isEditing ? (
@@ -710,7 +931,8 @@ function App() {
     handleDeleteChat,
     handleEditChatTitle,
     toggleChatSelection,
-    formatChatDate
+    formatChatDate,
+    backgroundUpdateCounter
   ]);
 
   // Memoize the chat list so it only re-renders when chatHistory changes
@@ -724,7 +946,7 @@ function App() {
         <ChatHistoryItem key={chat.id} chat={chat} index={idx} />
       ))
     );
-  }, [chatHistory, ChatHistoryItem]);
+  }, [chatHistory, ChatHistoryItem, backgroundUpdateCounter]);
 
   // Keyboard shortcuts for bulk operations
   useEffect(() => {
@@ -1098,6 +1320,7 @@ function App() {
     }
   };
 
+
   return (
     <div className={`min-h-screen bg-primary text-white app-container ${isFocusMode ? 'focus-mode' : ''}`}>
       {/* Left Sidebar */}
@@ -1150,8 +1373,35 @@ function App() {
         <div className="sidebar-section">
           <div className="sidebar-heading-container">
             <h3 className="sidebar-heading">Chat History</h3>
-            {chatHistory.length > 0 && (
-              <div className="sidebar-actions">
+            <div className="sidebar-actions">
+              <button 
+                className={`sidebar-action-button ${isSidebarRefreshing ? 'refreshing' : ''}`}
+                onClick={() => {
+                  console.log('🔄 [APP-SIDEBAR] Manual refresh triggered');
+                  setIsSidebarRefreshing(true);
+                  chatManager.refreshChats().catch(error => {
+                    console.warn('⚠️ [APP-SIDEBAR] Manual refresh failed (non-blocking):', error);
+                  }).finally(() => {
+                    setIsSidebarRefreshing(false);
+                  });
+                }}
+                title="Refresh Chat History"
+                disabled={isSidebarRefreshing}
+              >
+                {isSidebarRefreshing ? (
+                  <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 6v2"></path>
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <polyline points="1 20 1 14 7 14"></polyline>
+                    <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"></path>
+                  </svg>
+                )}
+              </button>
+              {chatHistory.length > 0 && (
                 <button 
                   className="sidebar-action-button"
                   onClick={() => setBulkOperationsOpen(!bulkOperationsOpen)}
@@ -1163,8 +1413,8 @@ function App() {
                     <circle cx="5" cy="12" r="1"></circle>
                   </svg>
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           
           {bulkOperationsOpen && (
@@ -1270,11 +1520,15 @@ function App() {
         </div>
       </LeftSidebar>
 
-      {openChatIds.map(id => (
-        <div key={id ?? 'new'} style={{ display: id === activeChatId ? 'block' : 'none' }}>
-          <Chat initialChatId={id} isActive={id === activeChatId} />
-        </div>
-      ))}
+      {/* Render chat windows - no more null placeholders */}
+      {openChatIds.map((id) => {
+        const isActive = id === activeChatId;
+        return (
+          <div key={id} style={{ display: isActive ? 'block' : 'none' }}>
+            <Chat initialChatId={id} isActive={isActive} />
+          </div>
+        );
+      })}
       {isFocusMode && (
         <button
           className="focus-mode-floating"

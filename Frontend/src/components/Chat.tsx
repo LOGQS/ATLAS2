@@ -1,7 +1,7 @@
-import React, React, { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
+import React, { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
 import Message from './Message';
 import SummaryModal from './SummaryModal';
-import chatManager from '../utils/chatManager';
+import chatManager, { generateChatId } from '../utils/chatManager';
 import ImageAnnotationModal from './ImageAnnotationModal';
 
 interface FileAttachment {
@@ -97,11 +97,46 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   // Add state for caching
   const [documentCache, setDocumentCache] = useState<string | null>(null);
   const [isCachingDocuments, setIsCachingDocuments] = useState(false);
-  const [chatId, setChatId] = useState<string | null>(initialChatId);
+  // Initialize with a pre-generated ID to avoid null->ID transitions that break streaming
+  const [chatId, setChatId] = useState<string>(initialChatId || generateChatId());
+  // Track whether this chat actually exists in the backend
+  const [chatExistsInBackend, setChatExistsInBackend] = useState<boolean>(!!initialChatId);
+
+  // Use a ref to track previous initialChatId to prevent infinite loops
+  const prevInitialChatIdRef = useRef<string | null>(initialChatId);
+  
+  // Add a ref to prevent setChatId calls during initialization
+  const isInitializedRef = useRef(false);
+  
+  // Track which chats have been loaded to prevent re-loading
+  const loadedChatsRef = useRef<Set<string>>(new Set());
+  
+  // Track previous isActive state to detect transitions
+  const prevIsActiveRef = useRef<boolean>(isActive);
+  
+  // Log isActive changes for debugging
+  useEffect(() => {
+    console.log('🔄 [IS-ACTIVE] isActive changed:', {
+      chatId: chatId.slice(-8),
+      isActive: isActive,
+      prevIsActive: prevIsActiveRef.current,
+      isStreaming: isStreaming
+    });
+  }, [isActive, chatId, isStreaming]);
 
   useEffect(() => {
-    setChatId(initialChatId);
+    // Only update chatId if initialChatId actually changed and is not null
+    if (prevInitialChatIdRef.current !== initialChatId && initialChatId) {
+      prevInitialChatIdRef.current = initialChatId;
+      setChatId(initialChatId);
+      setChatExistsInBackend(true); // If we got an initialChatId, the chat exists
+    }
+    isInitializedRef.current = true;
   }, [initialChatId]);
+  
+  // Background processing state
+  const [backgroundProcessingEnabled, ] = useState(true);
+  const [showBackgroundPreview, setShowBackgroundPreview] = useState(false);
   // Add state for recording audio
   const [isRecording, setIsRecording] = useState(false);
   // Add state for processing speech to text
@@ -230,23 +265,16 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
       const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
       
-      if (newTtsButtonEnabled !== showTtsButton) {
-        setShowTtsButton(newTtsButtonEnabled);
-      }
-      if (newSttButtonEnabled !== showSttButton) {
-        setShowSttButton(newSttButtonEnabled);
-      }
-      if (newImageAnnotationEnabled !== imageAnnotationEnabled) {
-        setImageAnnotationEnabled(newImageAnnotationEnabled);
-      }
-      if (newSummarizeButtonEnabled !== showSummarizeButton) {
-        setShowSummarizeButton(newSummarizeButtonEnabled);
-      }
+      // Use functional updates to avoid stale closure issues
+      setShowTtsButton((prev: boolean) => prev !== newTtsButtonEnabled ? newTtsButtonEnabled : prev);
+      setShowSttButton((prev: boolean) => prev !== newSttButtonEnabled ? newSttButtonEnabled : prev);
+      setImageAnnotationEnabled((prev: boolean) => prev !== newImageAnnotationEnabled ? newImageAnnotationEnabled : prev);
+      setShowSummarizeButton((prev: boolean) => prev !== newSummarizeButtonEnabled ? newSummarizeButtonEnabled : prev);
     };
     
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
-  }, [showTtsButton, showSttButton, imageAnnotationEnabled, showSummarizeButton]);
+  }, []); // Empty dependency array to avoid infinite loop
 
   // Helper to speak assistant messages
   const speak = useCallback((text: string) => {
@@ -274,21 +302,21 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     window.speechSynthesis.speak(utter);
   }, [ttsSupported]);
 
-  // When toggling text-to-speech, speak the last assistant message if available
+  // Only speak when TTS is initially enabled
   useEffect(() => {
-    if (!ttsSupported) return;
-    if (!ttsEnabled) {
+    if (!ttsSupported || !ttsEnabled) {
       window.speechSynthesis.cancel();
       return;
     }
 
+    // Only speak the last message when TTS is first enabled, not on every message change
     if (!isStreaming && messages.length > 0) {
       const last = messages[messages.length - 1];
-      if (last.role === 'assistant' && last.content) {
+      if (last.role === 'assistant' && last.content && !last.isHistory) {
         speak(last.content);
       }
     }
-  }, [ttsEnabled, messages, isStreaming, speak, ttsSupported]);
+  }, [isStreaming, messages, speak, ttsEnabled, ttsSupported]); 
 
   // Available models with descriptions
   const models: Model[] = [
@@ -331,28 +359,81 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     
     return { supported: false };
   }; 
-  // Load messages whenever the chat ID changes
+  // Refs to store current values without causing re-renders
+  const currentMessagesRef = useRef<ChatMessage[]>([]);
+  const currentModelRef = useRef<string>(model);
+  const currentIsStreamingRef = useRef<boolean>(false);
+
+  // Update refs when values change
   useEffect(() => {
-    if (chatId === null) {
-      setMessages([]);
-      setIsStreaming(false);
-      setIsThinking(false);
-      accumulatedContentRef.current = '';
+    currentMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    currentModelRef.current = model;
+  }, [model]);
+
+  useEffect(() => {
+    currentIsStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  // Store previous chat ID to handle background processing on switch
+  const prevChatIdRef = useRef<string | null>(null);
+  const isInitialStreamRef = useRef(false); // Track if we're in the initial stream for a new chat
+  const hasActiveStreamRef = useRef(false); // Track if we have an active stream reader
+  // No longer need pendingChatIdRef since we pre-generate chat IDs
+  
+  // Get background state for this chat
+  const backgroundState = chatManager.getBackgroundStatus(chatId);
+  
+  // Remove all temporary placeholder logic - backend now provides immediate chat metadata
+
+  // Load chat history when chatId changes
+  useEffect(() => {
+    if (!chatId) {
+      console.log('🔄 [CHAT-LOAD] No chat ID provided - skipping load');
       return;
     }
 
-    console.log(`Loading chat with ID: ${chatId}`);
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    // Skip if already loaded AND not a forced reload
+    if (loadedChatsRef.current.has(chatId)) {
+      console.log(`🔄 [CHAT-LOAD] Chat ${chatId.slice(-8)} already loaded - skipping`);
+      prevChatIdRef.current = chatId;
+      return;
     }
 
+    // Prevent rapid successive loads of the same chat
+    const loadKey = `load-${chatId}`;
+    if (loadedChatsRef.current.has(loadKey)) {
+      console.log(`🔄 [CHAT-LOAD] Chat ${chatId.slice(-8)} load already in progress - skipping`);
+      return;
+    }
+
+    console.log(`🔄 [CHAT-LOAD] Loading chat: ${prevChatIdRef.current?.slice(-8) || 'null'} → ${chatId.slice(-8)}`);
+
+    // Mark load as in progress
+    loadedChatsRef.current.add(loadKey);
+
+    // When switching chats, register the previous chat as background streaming
+    if (prevChatIdRef.current && prevChatIdRef.current !== chatId) {
+      console.log(`🔄 [CHAT-SWITCH] Switching from ${prevChatIdRef.current.slice(-8)} to ${chatId.slice(-8)}`);
+      
+      // If the previous chat was streaming, mark it as background streaming
+      if (currentIsStreamingRef.current) {
+        console.log(`📡 [BACKGROUND] Previous chat ${prevChatIdRef.current.slice(-8)} was streaming, marking as background`);
+        chatManager.markAsBackgroundStreaming(prevChatIdRef.current);
+      }
+    }
+    
+    // Store current chat ID as previous for next switch
+    prevChatIdRef.current = chatId;
+
     setLoading(true);
+    // Reset streaming state for new chat (since chat IDs are now consistent, no need to preserve)
     setIsStreaming(false);
     setIsThinking(false);
-    userInteractedWithScrollRef.current = false;
     accumulatedContentRef.current = '';
+    userInteractedWithScrollRef.current = false;
 
     fetch(`/api/chat/${chatId}`, {
       method: 'GET',
@@ -360,6 +441,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     })
       .then(r => {
         if (!r.ok) {
+          if (r.status === 404) {
+            // 404 means this is a new chat that doesn't exist yet - just start with empty messages
+            console.log(`📝 [CHAT-LOAD] New chat detected (404): ${chatId.slice(-8)} - starting fresh`);
+            return { messages: [] };
+          }
           throw new Error(`Failed to load chat history: ${r.status} ${r.statusText}`);
         }
         return r.json();
@@ -367,24 +453,144 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       .then(data => {
         if (data && data.messages) {
           const historyMessages = data.messages.map((m: ChatMessage) => ({ ...m, isHistory: true }));
-          setMessages(historyMessages);
+          
+          // Check for streaming continuation
+          const continuation = chatManager.getStreamingContinuation(chatId);
+          console.log(`📡 [CONTINUATION] Checking streaming continuation for ${chatId}:`, {
+            hasPartialResponse: continuation.hasPartialResponse,
+            isStreaming: continuation.isStreaming,
+            isPending: continuation.isPending,
+            partialResponseLength: continuation.partialResponse.length,
+            currentlyStreaming: currentIsStreamingRef.current
+          });
+          
+          // Handle both streaming continuation and pending state
+          if (continuation.hasPartialResponse && (continuation.isStreaming || continuation.isPending)) {
+            // Check if the last message in history is incomplete (streaming)
+            const lastMessage = historyMessages[historyMessages.length - 1];
+            console.log(`📡 [CONTINUATION] Found streaming continuation, last message:`, {
+              lastMessageRole: lastMessage?.role,
+              lastMessageLength: lastMessage?.content?.length || 0,
+              willUpdateExisting: !!(lastMessage && lastMessage.role === 'assistant')
+            });
+            
+            if (lastMessage && lastMessage.role === 'assistant') {
+              // Update the last assistant message with the current streaming content
+              lastMessage.content = continuation.partialResponse;
+              lastMessage.isHistory = false; // Mark as actively streaming
+              if (!currentIsStreamingRef.current) {
+                console.log(`📡 [CONTINUATION] Setting messages with updated streaming content`);
+                setMessages(historyMessages);
+              } else {
+                console.log(`📡 [CONTINUATION] Skipping message update - already streaming`);
+              }
+            } else {
+              // Add new streaming message if no assistant message exists
+              const partialMessage: ChatMessage = {
+                role: 'assistant',
+                content: continuation.partialResponse,
+                isHistory: false
+              };
+              if (!currentIsStreamingRef.current) {
+                console.log(`📡 [CONTINUATION] Adding new streaming message`);
+                setMessages([...historyMessages, partialMessage]);
+              } else {
+                console.log(`📡 [CONTINUATION] Skipping new message - already streaming`);
+              }
+            }
+            
+            setIsStreaming(true);
+            accumulatedContentRef.current = continuation.partialResponse;
+            console.log(`📡 [CONTINUATION] Resumed streaming for chat ${chatId} with ${continuation.partialResponse.length} characters`);
+          } else {
+            // Set messages from history (streaming conflicts are now resolved)
+            console.log('📥 [HISTORY] Setting messages from history:', {
+              messageCount: historyMessages.length,
+              lastMessageRole: historyMessages[historyMessages.length - 1]?.role,
+              chatId: chatId.slice(-8)
+            });
+            setMessages(historyMessages);
+            
+            // Check if the last message is a user message without response
+            // BUT only start background processing if we're not currently streaming AND chat isn't already processing
+            // ALSO avoid starting for very recent chats to prevent race conditions with initial streaming
+            if (historyMessages.length > 0 && !isStreaming && !loading) {
+              const lastMessage = historyMessages[historyMessages.length - 1];
+              const isAlreadyProcessing = chatManager.isProcessingInBackground(chatId);
+              
+              console.log('📡 [BACKGROUND-CHECK] Checking if background processing needed:', {
+                chatId: chatId,
+                messageCount: historyMessages.length,
+                lastMessageRole: lastMessage?.role,
+                isStreaming: isStreaming,
+                loading: loading,
+                isAlreadyProcessing: isAlreadyProcessing
+              });
+              
+              if (lastMessage.role === 'user' && !isAlreadyProcessing) {
+                // Check if this is a very recent user message (likely still being processed by the initial call)
+                const messageAge = Date.now() - new Date(lastMessage.timestamp || 0).getTime();
+                const isRecentMessage = messageAge < 10000; // Less than 10 seconds old
+                
+                console.log('📡 [BACKGROUND-CHECK] User message analysis:', {
+                  messageAge: Math.round(messageAge/1000),
+                  isRecentMessage: isRecentMessage,
+                  messageTimestamp: lastMessage.timestamp,
+                  willStartBackground: !isRecentMessage
+                });
+                
+                if (!isRecentMessage) {
+                  console.log(`📡 [BACKGROUND-START] Found unprocessed user message in chat ${chatId}, starting background processing`);
+                  // Start background processing for this unprocessed message
+                  setTimeout(() => {
+                    chatManager.startBackgroundChat(chatId, historyMessages, model).catch(error => 
+                      console.warn('❌ [BACKGROUND-START] Failed to start background processing for loaded chat:', error)
+                    );
+                  }, 100);
+                } else {
+                  console.log(`📡 [BACKGROUND-SKIP] User message is recent (${Math.round(messageAge/1000)}s old), skipping background processing to avoid race condition`);
+                }
+              } else {
+                console.log('📡 [BACKGROUND-SKIP] No background processing needed:', {
+                  reason: lastMessage.role !== 'user' ? 'last message not from user' : 'already processing'
+                });
+              }
+            } else {
+              console.log('📡 [BACKGROUND-SKIP] Background processing check skipped:', {
+                messageCount: historyMessages.length,
+                isStreaming: isStreaming,
+                loading: loading
+              });
+            }
+          }
         } else {
-          setMessages([{ role: 'assistant', content: 'This chat history has been loaded. You can continue your conversation.', isHistory: true }]);
+          // For new chats, start with empty messages (no placeholder message)
+          console.log(`📝 [CHAT-LOAD] No messages found for ${chatId.slice(-8)} - starting fresh`);
+          setMessages([]);
         }
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }, 100);
       })
       .catch(e => {
-        console.error('Error loading chat history:', e);
-        setMessages([{ role: 'assistant', content: `Sorry, I couldn't load this chat. ${e.message}`, isHistory: true }]);
+        console.warn('Failed to load chat history (non-blocking):', e);
+        // Don't show error messages - just start with empty chat
+        // This ensures the app works even if backend has issues
+        console.log(`📝 [CHAT-LOAD] Starting fresh due to load error: ${chatId.slice(-8)}`);
+        setMessages([]);
       })
       .finally(() => {
         setLoading(false);
+        // Mark this chat as loaded
+        loadedChatsRef.current.add(chatId);
+        // Remove load progress marker
+        loadedChatsRef.current.delete(`load-${chatId}`);
         window.dispatchEvent(new CustomEvent('chat-load-complete'));
       });
-  }, [chatId]);
+  }, [chatId]); // Removed chatExistsInBackend dependency to prevent cascading re-renders
   
+
+
   // Function to check file processing state
   const checkFileState = async (fileId: string): Promise<{state: string, ready: boolean}> => {
     try {
@@ -716,41 +922,33 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     setAnnotationInfo(null);
   };
 
-  // Detect scroll events
-  useEffect(() => {
+  // Memoised scroll handler – NOT recreated on every render
+  const handleScroll = useCallback(() => {
+    if (isProgrammaticScrollRef.current) {
+      isProgrammaticScrollRef.current = false;
+      return;
+    }
+
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const handleScroll = () => {
-      if (isProgrammaticScrollRef.current) {
-        isProgrammaticScrollRef.current = false;
-        return;
-      }
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
 
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      const isAtBottom = scrollHeight - scrollTop - clientHeight <= 1;
+    // Safe – doesn't depend on shouldAutoScroll, just sets it based on scroll position
+    setShouldAutoScroll(isAtBottom);
+    userInteractedWithScrollRef.current = !isAtBottom;
+  }, []);
 
-      if (isAtBottom) {
-        if (!shouldAutoScroll) {
-          console.log('User scrolled to bottom, enabling auto-scroll');
-          setShouldAutoScroll(true);
-          userInteractedWithScrollRef.current = false;
-        }
-      } else {
-        if (shouldAutoScroll) {
-          console.log('User scrolled up, disabling auto-scroll');
-          setShouldAutoScroll(false);
-          userInteractedWithScrollRef.current = true;
-        } else if (!userInteractedWithScrollRef.current) {
-           userInteractedWithScrollRef.current = true;
-        }
-      }
-    };
-
+  // Attach scroll listener only when the chat tab is active
+  useEffect(() => {
     if (!isActive) return;
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, [isStreaming, shouldAutoScroll, isActive]);
+  }, [isActive, handleScroll]); // shouldAutoScroll is GONE here
 
   useEffect(() => {
     if (!isActive) return;
@@ -837,6 +1035,164 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     };
   }, [attachments]);
 
+  // WebSocket setup and background processing integration
+  useEffect(() => {
+    // Early return if chat doesn't exist or background processing is disabled
+    if (!chatId || !backgroundProcessingEnabled) {
+      console.log('🌐 [WS-SETUP] Skipping WebSocket setup:', {
+        chatId: chatId ? chatId.slice(-8) : 'null',
+        backgroundProcessingEnabled
+      });
+      return;
+    }
+
+    // Prevent excessive WebSocket setup for the same chat
+    const wsSetupKey = `ws-${chatId}`;
+    if (loadedChatsRef.current.has(wsSetupKey)) {
+      console.log('🌐 [WS-SETUP] WebSocket already configured for chat:', chatId.slice(-8));
+      return;
+    }
+
+    console.log('🌐 [WS-SETUP] Setting up WebSocket connection for chat:', {
+      chatId: chatId.slice(-8),
+      isActive: isActive,
+      backgroundProcessingEnabled: backgroundProcessingEnabled
+    });
+
+    // Join the chat room for background updates
+    try {
+      chatManager.joinChatRoom(chatId);
+      console.log('🌐 [WS-JOIN] Successfully joined WebSocket room for chat:', chatId.slice(-8));
+      // Mark as configured to prevent duplicate setups
+      loadedChatsRef.current.add(wsSetupKey);
+    } catch (error: unknown) {
+      console.warn('🌐 [WS-JOIN] Failed to join chat room:', error);
+      // Don't mark as configured if join failed - allow retry
+    }
+
+    // ISSUE 5 FIX: Cleanup function to prevent connection leaks
+    return () => {
+      // Only cleanup if chat is being unmounted/changed, not just inactive
+      console.log('🌐 [WS-CLEANUP] Cleaning up WebSocket for chat:', chatId.slice(-8));
+      // Remove the setup marker to allow re-setup if needed
+      loadedChatsRef.current.delete(wsSetupKey);
+    };
+  }, [chatId, backgroundProcessingEnabled]); // Removed isActive from dependencies to prevent recreation loops
+
+  // ISSUE 1 & 3 FIX: Enhanced thinking state preservation and restoration
+  useEffect(() => {
+    const hasAbortController = !!abortControllerRef.current;
+    const hasPendingState = chatManager.isProcessingInBackground(chatId);
+    const wasStreamingOrLoading = isStreaming || loading;
+    
+    console.log('🔄 [TRANSITION-CHECK] Checking transition state:', {
+      prevActive: prevIsActiveRef.current,
+      currentActive: isActive,
+      isStreaming: isStreaming,
+      loading: loading,
+      hasAbortController: hasAbortController,
+      hasPendingState: hasPendingState,
+      backgroundProcessingEnabled: backgroundProcessingEnabled,
+      isThinking: isThinking
+    });
+    
+    // ISSUE 1 FIX: When chat becomes inactive, preserve ALL states to background
+    if (prevIsActiveRef.current === true && isActive === false && (wasStreamingOrLoading || hasPendingState)) {
+      console.log('🔄 [CHAT-TRANSITION] Chat became inactive while processing, marking as background:', {
+        chatId: chatId.slice(-8),
+        wasActive: prevIsActiveRef.current,
+        nowActive: isActive,
+        isStreaming: isStreaming,
+        loading: loading,
+        hasAbortController: !!abortControllerRef.current,
+        hasPendingState: hasPendingState,
+        backgroundProcessingEnabled: backgroundProcessingEnabled,
+        isThinking: isThinking
+      });
+      
+      if (backgroundProcessingEnabled) {
+        // ISSUE 1 FIX: Save thinking state to background before marking as background streaming
+        if (isThinking) {
+          console.log('💭 [THINKING-PRESERVE] Preserving thinking state to background:', chatId.slice(-8));
+          chatManager.markChatAsThinking(chatId);
+        }
+        
+        chatManager.markAsBackgroundStreaming(chatId);
+        
+        // Ensure this chat won't trigger auto-switching by marking it as background-only
+        console.log('🔒 [BACKGROUND-LOCK] Chat locked to background processing, no auto-switching allowed:', chatId.slice(-8));
+      }
+    }
+    
+    // ISSUE 3 FIX: When chat becomes active, restore ALL states from background
+    if (prevIsActiveRef.current === false && isActive === true) {
+      const backgroundState = chatManager.getBackgroundStatus(chatId);
+      console.log('💭 [ACTIVATION-CHECK] Chat activated, checking background state:', {
+        chatId: chatId.slice(-8),
+        hasBackgroundState: !!backgroundState,
+        backgroundIsThinking: backgroundState?.isThinking,
+        backgroundStatus: backgroundState?.status,
+        currentIsThinking: isThinking
+      });
+      
+      if (backgroundState?.isThinking && !isThinking) {
+        console.log('💭 [THINKING-RESTORE] Restoring thinking state from background:', chatId.slice(-8));
+        setIsThinking(true);
+        
+        // Add placeholder message for thinking animation if no assistant message exists
+        setMessages(prevMessages => {
+          const lastMessage = prevMessages[prevMessages.length - 1];
+          if (lastMessage?.role !== 'assistant' || lastMessage.content.trim()) {
+            return [...prevMessages, { 
+              role: 'assistant', 
+              content: '', 
+              isHistory: false, 
+              timestamp: new Date().toISOString(), 
+              tags: [] 
+            }];
+          }
+          return prevMessages;
+        });
+        
+        // Don't clear the background thinking state yet - let it be cleared when stream actually starts
+      }
+      
+      // ISSUE 3 FIX: If background is streaming, restore streaming state
+      if (backgroundState?.status === 'streaming' && !isStreaming) {
+        console.log('🚀 [STREAMING-RESTORE] Restoring streaming state from background:', chatId.slice(-8));
+        setIsStreaming(true);
+        
+        // Restore accumulated content if any
+        if (backgroundState.currentResponse) {
+          setMessages(prevMessages => {
+            const updatedMessages = [...prevMessages];
+            const lastIndex = updatedMessages.length - 1;
+            const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+            
+            if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
+              updatedMessages[lastIndex] = {
+                ...lastMessage,
+                content: backgroundState.currentResponse
+              };
+            } else {
+              updatedMessages.push({
+                role: 'assistant',
+                content: backgroundState.currentResponse,
+                timestamp: new Date().toISOString(),
+                tags: []
+              });
+            }
+            
+            return updatedMessages;
+          });
+        }
+      }
+    }
+    
+    // Update the ref for next render
+    prevIsActiveRef.current = isActive;
+  }, [isActive, isStreaming, loading, chatId, backgroundProcessingEnabled, isThinking]);
+
   const scrollToBottom = (smooth = false) => {
     if (messagesContainerRef.current) {
       isProgrammaticScrollRef.current = true;
@@ -860,10 +1216,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       try {
         const data = JSON.parse(chunk);
         
-        // Store chat ID if received from server
-        if (data.chat_id && !chatId) {
-          setChatId(data.chat_id);
-        }
+        // Chat ID is now handled in the main SSE parsing loop above
+        // This prevents duplicate setChatId calls that could disrupt streaming
         
         if (data.reasoning) {
           
@@ -937,7 +1291,13 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           
           // Make sure streaming flag is set
           if (!isStreaming) {
+            console.log('🚀 [SSE] Setting streaming flag to true');
             setIsStreaming(true);
+            
+            // ISSUE 1 FIX: Clear thinking state from background when any stream starts (not just Gemini 2.5 Pro)
+            if (chatId) {
+              chatManager.clearThinkingState(chatId);
+            }
           }
         }
         
@@ -975,6 +1335,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           
           if (!isStreaming) {
             setIsStreaming(true);
+            
+            // ISSUE 1 FIX: Clear thinking state from background when any stream starts
+            if (chatId) {
+              chatManager.clearThinkingState(chatId);
+            }
           }
         }
       }
@@ -983,47 +1348,85 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   };
 
-  // Function to finalize the stream and add to message history
+  // Enhanced finalize function to handle proper completion detection
   const finalizeStream = (isAborted = false) => {
-    // If aborted, remove the partial assistant message
-    if (isAborted) {
-      setMessages(prev => {
-        // If the last message is an assistant message (streaming), remove it
-        if (prev.length > 0 && prev[prev.length - 1].role === 'assistant') {
-          return prev.slice(0, -1);
+    console.log('🏁 [FINALIZE] Starting stream finalization:', {
+      chatId: chatId?.slice(-8) || 'null',
+      isAborted: isAborted,
+      isActive: isActive,
+      isStreaming: isStreaming,
+      isThinking: isThinking,
+      messageCount: currentMessagesRef.current.length,
+      accumulatedContentLength: accumulatedContentRef.current.length
+    });
+    
+    setIsStreaming(false);
+    setIsThinking(false);
+    setLoading(false);
+    
+    // Finalize any accumulated content
+    if (accumulatedContentRef.current) {
+      setMessages(prevMessages => {
+        const updatedMessages = [...prevMessages];
+        const lastIndex = updatedMessages.length - 1;
+        
+        if (lastIndex >= 0 && updatedMessages[lastIndex]?.role === 'assistant') {
+          // Update the existing assistant message with final content
+          updatedMessages[lastIndex] = {
+            ...updatedMessages[lastIndex],
+            content: accumulatedContentRef.current,
+            reasoning: reasoningBuffer || updatedMessages[lastIndex].reasoning
+          };
+        } else {
+          // Add new assistant message if none exists
+          updatedMessages.push({
+            role: 'assistant',
+            content: accumulatedContentRef.current,
+            reasoning: reasoningBuffer || undefined,
+            timestamp: new Date().toISOString(),
+            tags: []
+          });
         }
-        return prev;
+        
+        // Update current messages ref for logging
+        currentMessagesRef.current = updatedMessages;
+        return updatedMessages;
       });
-    } else {
-      // Before clearing the reasoning buffer, make sure the final message has the complete reasoning
-      if (reasoningBuffer) {
-        console.log('🧠 Finalizing stream with reasoning buffer length:', reasoningBuffer.length);
-        setMessages(prevMessages => {
-          const updatedMessages = [...prevMessages];
-          const lastIndex = updatedMessages.length - 1;
-          const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
-          
-          if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-            // Update the final message with the complete reasoning buffer
-            console.log('🧠 Setting final reasoning on message:', reasoningBuffer.substring(0, 100) + '...');
-            updatedMessages[lastIndex] = {
-              ...lastMessage,
-              reasoning: reasoningBuffer,
-              timestamp: lastMessage.timestamp || new Date().toISOString(),
-              tags: lastMessage.tags || []
-            };
-          }
-          
-          return updatedMessages;
-        });
-              }
     }
     
-    // Reset streaming and loading states
-    setIsStreaming(false);
-    setLoading(false);
-    setIsThinking(false); // Also reset thinking state
-    setReasoningBuffer(''); // Clear reasoning buffer AFTER saving to the final message
+    // Save final state
+    accumulatedContentRef.current = '';
+    setReasoningBuffer('');
+    
+    // ISSUE 4 FIX: Improved completion handling based on active status
+    if (chatId) {
+      const backgroundState = chatManager.getBackgroundStatus(chatId);
+      console.log('🏁 [FINALIZE] Finalizing stream completion:', {
+        chatId: chatId.slice(-8),
+        hadBackgroundState: !!backgroundState,
+        backgroundStatus: backgroundState?.status,
+        isAborted: isAborted,
+        isActive: isActive,
+        messageCount: currentMessagesRef.current.length,
+        wasStreaming: isStreaming
+      });
+      
+      if (backgroundState && !isAborted) {
+        if (isActive) {
+          // ISSUE 4 FIX: For active chats, immediately clear background state since user can see completion
+          console.log(`🏁 [FINALIZE] Active chat ${chatId.slice(-8)} completed streaming, clearing background state immediately`);
+          chatManager.clearBackgroundStateForChat(chatId);
+          chatManager.clearThinkingState(chatId);
+        } else {
+          // ISSUE 4 FIX: For inactive chats, mark as completed but don't clear immediately
+          // This allows the UI to show completion status in sidebar
+          console.log(`🏁 [FINALIZE] Background chat ${chatId.slice(-8)} completed streaming, marking as completed`);
+          // The background state will be cleared by the WebSocket handler after a delay
+        }
+      } else if (isAborted && backgroundState) {
+        console.log(`🏁 [FINALIZE] Stream aborted for chat ${chatId.slice(-8)}, keeping background state for potential continuation`);
+      }
+    }
     
     // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
@@ -1031,11 +1434,18 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       thinkingTimeoutRef.current = null;
     }
     
+    // Emit completion event for other components
+    if (chatId && !isAborted) {
+      window.dispatchEvent(new CustomEvent('chat-updated', { 
+        detail: { chatId } 
+      }));
+    }
+    
     // Only scroll to bottom for non-aborted messages
     if (!isAborted && shouldAutoScroll) {
       setTimeout(() => {
         if (shouldAutoScroll && !userInteractedWithScrollRef.current) {
-          console.log('Finalize stream: Auto-scrolling to bottom');
+          console.log('🏁 [FINALIZE] Auto-scrolling to bottom after completion');
           scrollToBottom();
         }
       }, 50); // Small delay for rendering
@@ -1043,10 +1453,10 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
     // Refocus the textarea after response is complete
     setTimeout(() => {
-      if (textareaRef.current) {
+      if (textareaRef.current && isActive) {
         textareaRef.current.focus();
       }
-    }, 100); // Small delay to ensure UI updates are complete
+    }, 100);
   };
 
   /**
@@ -1089,16 +1499,38 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Modify the resetChat function to clear chat session on the server
   const resetChat = useCallback(() => {
-    // If there's an active request, show canceling state and abort it
+    // Check if this chat has any background processing state (including pending)
+    const hasBackgroundState = chatManager.isProcessingInBackground(chatId);
+    
+    // If there's an active request, check if we should transition to background instead of aborting
     if (abortControllerRef.current) {
-      setIsCanceling(true);
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      
-      // Reset canceling state after a short delay to show feedback
-      setTimeout(() => {
+      // If background processing is enabled and the chat is streaming OR has background state, transition to background
+      if (backgroundProcessingEnabled && (isStreaming || hasBackgroundState) && chatId && isActive) {
+        console.log(`🔄 [RESET-CHAT] Transitioning chat ${chatId.slice(-8)} to background processing (isStreaming: ${isStreaming}, hasBackgroundState: ${hasBackgroundState})`);
+        
+        // Mark this chat as background streaming to preserve the request
+        chatManager.markAsBackgroundStreaming(chatId);
+        
+        // Don't abort the request - let it continue in background
         setIsCanceling(false);
-      }, 800);
+        
+        console.log(`🔄 [RESET-CHAT] Chat ${chatId.slice(-8)} moved to background, request continues`);
+      } else {
+        // No background processing available or not streaming - abort as before
+        console.log(`🔄 [RESET-CHAT] Aborting request (background disabled: ${!backgroundProcessingEnabled}, not streaming: ${!isStreaming}, no background state: ${!hasBackgroundState})`);
+        setIsCanceling(true);
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+        
+        // Reset canceling state after a short delay to show feedback
+        setTimeout(() => {
+          setIsCanceling(false);
+        }, 800);
+      }
+    } else if (hasBackgroundState && backgroundProcessingEnabled && chatId && isActive) {
+      // Even if no active request, ensure background state is preserved when transitioning
+      console.log(`🔄 [RESET-CHAT] No active request but has background state, ensuring background processing continues for ${chatId.slice(-8)}`);
+      chatManager.markAsBackgroundStreaming(chatId);
     }
     
     // Clean up any object URLs
@@ -1163,7 +1595,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Fetch and display a summary of the current chat
   const summarizeChat = async () => {
-    if (!chatId) return;
+    if (!chatExistsInBackend) return;
     setIsSummarizing(true);
     try {
       const summary = await chatManager.getChatSummary(chatId, model);
@@ -1179,7 +1611,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Replace current chat history with the generated summary
   const useSummaryAsHistory = async () => {
-    if (!chatId || !summaryContent) return;
+    if (!chatExistsInBackend || !summaryContent) return;
     const success = await chatManager.condenseChat(chatId, summaryContent, model);
     if (success) {
       setMessages([{ role: 'system', content: summaryContent, isHistory: true }]);
@@ -1190,7 +1622,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   };
 
-  // Enhanced send function to handle document caching and chat history
+  // Enhanced send function to handle document caching, chat history, and background processing
   const handleSend = async () => {
     // Prevent sending if uploads are in progress
     if (isUploading) {
@@ -1200,6 +1632,96 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     
     // Require either text or at least one attachment to send a message
     if ((!input.trim() && attachments.length === 0) || loading) return;
+    
+    // Mark chat as pending immediately when user commits to sending
+    // This ensures background streaming indicator appears instantly
+    if (chatId) {
+      chatManager.markChatAsPending(chatId);
+      console.log(`📤 [SEND] Marked chat ${chatId.slice(-8)} as pending for immediate UI feedback`, {
+        isActive: isActive,
+        chatId: chatId.slice(-8),
+        currentBackgroundState: chatManager.getBackgroundStatus(chatId)?.status || 'none'
+      });
+      
+      // For very quick transitions, also ensure this state is immediately marked as background streaming
+      // if the chat is not active (edge case where user switches before this point)
+      if (!isActive && backgroundProcessingEnabled) {
+        console.log(`📤 [SEND] Chat ${chatId.slice(-8)} is not active, immediately marking as background streaming`);
+        chatManager.markAsBackgroundStreaming(chatId);
+      }
+    }
+    
+    // No more temporary placeholders - backend will provide immediate chat metadata
+    
+    // Check if we should process in background (if chat is not visible)
+    const shouldProcessInBackground = backgroundProcessingEnabled && !isActive && chatId;
+    
+    console.log('🎯 [SEND] Processing mode check:', { 
+      backgroundProcessingEnabled, 
+      isActive, 
+      chatId: chatId?.slice(-8) || 'null', 
+      shouldProcessInBackground,
+      inputLength: input.trim().length,
+      attachmentCount: attachments.length,
+      currentMessageCount: messages.length
+    });
+    
+    if (shouldProcessInBackground) {
+      console.log(`🚀 [BACKGROUND-SEND] Starting background processing for chat ${chatId}`);
+      
+      // Clear input but don't show loading state
+      const inputToSend = input.trim();
+      const attachmentsToSend = [...attachments];
+      setInput('');
+      setAttachments([]);
+      
+      // Build messages array for background processing
+      const messagesToSend = [
+        ...messages.filter(m => !m.isHistory).map(m => ({
+          role: m.role,
+          content: m.content,
+          attachments: m.attachments || []
+        })),
+        {
+          role: 'user' as const,
+          content: inputToSend,
+          attachments: attachmentsToSend
+        }
+      ];
+      
+      console.log(`🚀 [BACKGROUND-SEND] Message payload:`, {
+        chatId: chatId.slice(-8),
+        messageCount: messagesToSend.length,
+        lastUserMessage: inputToSend.substring(0, 50) + (inputToSend.length > 50 ? '...' : ''),
+        attachmentCount: attachmentsToSend.length,
+        model: model,
+        generationSettings: generationSettings
+      });
+      
+      // Start background processing
+      const success = await chatManager.startBackgroundChat(
+        chatId,
+        messagesToSend,
+        model,
+        {
+          temperature: generationSettings.temperature,
+          max_tokens: generationSettings.maxTokens
+        }
+      );
+      
+      if (success) {
+        console.log('✅ [BACKGROUND-SEND] Background processing started successfully');
+        // Optionally show a subtle notification that processing started
+      } else {
+        console.error('❌ [BACKGROUND-SEND] Failed to start background processing, falling back to foreground');
+        // Fall back to normal processing by continuing to regular flow
+      }
+      
+      if (success) {
+        console.log('🚀 [BACKGROUND-SEND] Background processing started successfully, exiting early');
+        return; // Exit early if background processing started successfully
+      }
+    }
 
     // Check if we have document attachments that could benefit from caching
     const documentAttachments = attachments.filter(
@@ -1270,6 +1792,39 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     accumulatedContentRef.current = ''; // Clear any accumulated assistant message content
     setLoading(true);
     
+    // Immediately create chat in sidebar for new chats (optimistic UI)
+    // This ensures the sidebar updates instantly, before backend confirmation
+    if (chatId && !chatExistsInBackend) {
+      console.log(`🎉 [SEND-OPTIMISTIC] Creating chat in sidebar immediately: ${chatId.slice(-8)}`);
+      
+      // Create the chat entry immediately for instant UI feedback
+      window.dispatchEvent(new CustomEvent('chat-created', {
+        detail: { 
+          chatId: chatId,
+          title: userMessage.content.length > 50 ? userMessage.content.substring(0, 50) + '...' : userMessage.content,
+          model: model,
+          created_at: new Date().toISOString()
+        }
+      }));
+      
+      // Force chatManager to refresh and pick up the new chat
+      chatManager.refreshChats();
+      
+      // Also trigger refresh for existing chats
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('chat-updated', {
+          detail: { chatId }
+        }));
+      }, 100);
+    } else if (chatId) {
+      // For existing chats, just update
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('chat-updated', {
+          detail: { chatId }
+        }));
+      }, 100);
+    }
+    
     // Maintain focus on the textarea after sending
     setTimeout(() => {
       if (textareaRef.current) {
@@ -1328,12 +1883,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         requestData.cache_id = cacheId;
       }
       
-      // Add chat_id if we have one (to continue the conversation)
-      if (chatId) {
-
-        requestData.chat_id = chatId;
-      } else {
+      // Always add chat_id, but determine if it's a new chat based on backend existence
+      requestData.chat_id = chatId;
+      
+      if (!chatExistsInBackend) {
         console.log('Starting a new conversation');
+        isInitialStreamRef.current = true; // Mark this as an initial stream
       }
 
       const activeProfile = localStorage.getItem('atlas_active_profile');
@@ -1342,6 +1897,13 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       }
       
       // Make the POST request
+      console.log('📡 [SEND-STREAM] Starting regular streaming mode with request data:', { 
+        chatId: requestData.chat_id?.slice(-8) || 'new',
+        messageCount: requestData.messages.length,
+        model: requestData.model,
+        hasCache: !!requestData.cache_id,
+        hasGenerationSettings: !!(requestData.temperature || requestData.max_tokens)
+      });
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -1362,6 +1924,18 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const reader = response.body?.getReader();
       if (!reader) {
         throw new Error('Failed to get reader from response');
+      }
+      
+      // Mark that we have an active stream
+      hasActiveStreamRef.current = true;
+      
+      // Set streaming flag immediately when we start reading
+      if (!chatId) {
+        console.log('🚀 [SSE] Setting streaming flag to true for new chat');
+        setIsStreaming(true);
+        currentIsStreamingRef.current = true;
+        // Also ensure the initial stream flag is set
+        isInitialStreamRef.current = true;
       }
       
       // When we get the first chunk for Gemini 2.5 Pro, switch from thinking to streaming
@@ -1388,39 +1962,62 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             try {
               const data = message.substring(5).trim();
               
-              // Check if this message contains a chat ID and update it if needed
+              // Handle chat metadata events from backend
+              let isMetadataEvent = false;
               try {
                 const parsedData = JSON.parse(data);
-                if (parsedData.chat_id && !chatId) {
-                  setChatId(parsedData.chat_id);
+                
+                if (parsedData.type === 'chat_created') {
+                  console.log(`🎉 [SSE-METADATA] Chat created metadata received: ${parsedData.chat_id.slice(-8)} - updating with backend data`);
                   
-                  // Trigger chat history refresh after getting a new chat ID
-                  setTimeout(() => {
-                    window.dispatchEvent(new CustomEvent('chat-created', {
-                      detail: { chatId: parsedData.chat_id }
-                    }));
-                  }, 500);
+                  // Mark that the chat now exists in backend
+                  setChatExistsInBackend(true);
+                  
+                  // Update sidebar with authoritative backend data (this will replace optimistic UI)
+                  window.dispatchEvent(new CustomEvent('chat-updated', {
+                    detail: { 
+                      chatId: parsedData.chat_id,
+                      title: parsedData.title,
+                      model: parsedData.model,
+                      created_at: parsedData.created_at
+                    }
+                  }));
+                  
+                  isMetadataEvent = true;
+                } else if (parsedData.type === 'chat_resumed') {
+                  console.log(`🔄 [SSE-CHAT-RESUMED] Chat resumed: ${parsedData.chat_id.slice(-8)}`);
+                  isMetadataEvent = true;
                 }
               } catch (e) {
                 // Ignore parse errors for non-JSON chunks
                 console.debug('Non-critical JSON parsing error in SSE stream:', e);
               }
               
-              // When receiving the first chunk, transition from thinking to streaming for Gemini 2.5 Pro
-              if (isGemini25Pro && !firstChunkReceived) {
-                setIsThinking(false);
-                setIsStreaming(true);
-                firstChunkReceived = true;
-                
-                // If thinking timeout is still active, clear it
-                if (thinkingTimeoutRef.current !== null) {
-                  clearTimeout(thinkingTimeoutRef.current);
-                  thinkingTimeoutRef.current = null;
+              // Only process as content chunk if it's not a metadata event
+              if (!isMetadataEvent) {
+                // When receiving the first chunk, transition from thinking to streaming for Gemini 2.5 Pro
+                if (isGemini25Pro && !firstChunkReceived) {
+                  setIsThinking(false);
+                  setIsStreaming(true);
+                  firstChunkReceived = true;
+                  
+                  // ISSUE 1 FIX: Clear thinking state from background when stream actually starts
+                  if (chatId) {
+                    chatManager.clearThinkingState(chatId);
+                  }
+                  
+                  // If thinking timeout is still active, clear it
+                  if (thinkingTimeoutRef.current !== null) {
+                    clearTimeout(thinkingTimeoutRef.current);
+                    thinkingTimeoutRef.current = null;
+                  }
                 }
+                
+                // Process the chunk as normal
+                processStreamChunk(data);
+              } else {
+                // Metadata events are processed separately, no content to stream
               }
-              
-              // Process the chunk as normal
-              processStreamChunk(data);
             } catch (e) {
               console.error('Error parsing SSE data:', e);
             }
@@ -1435,25 +2032,47 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       
       // After sending a message, refresh chat history
       if (chatId) {
-        setTimeout(() => {
+        if (isActive) {
+          // For active chats, use the normal chat-updated event
           window.dispatchEvent(new CustomEvent('chat-updated', {
             detail: { chatId }
           }));
-        }, 500);
+        } else {
+          // For background chats, use a different event that only refreshes sidebar without auto-switching
+          window.dispatchEvent(new CustomEvent('chat-background-updated', {
+            detail: { chatId }
+          }));
+        }
       }
       
     } catch (error) {
-      console.error('Error sending message:', error);
       // Check if this was an intentional abort
       const wasAborted = error instanceof DOMException && error.name === 'AbortError';
       
       if (wasAborted) {
-        // For aborted requests, remove the partial message
-        finalizeStream(true);
+        console.log(`❌ [ABORT] Request aborted for chat ${chatId?.slice(-8)}:`, {
+          isActive: isActive,
+          shouldTransitionToBackground: backgroundProcessingEnabled && !isActive
+        });
+        
+        // If this was an inactive chat that should have background processing, preserve the state
+        if (backgroundProcessingEnabled && !isActive && chatId) {
+          console.log(`🔄 [ABORT-RECOVER] Preserving background state for aborted inactive chat ${chatId.slice(-8)}`);
+          // Don't finalize the stream - let the background state remain
+          setLoading(false);
+          setIsThinking(false);
+        } else {
+          console.log(`🔄 [ABORT-FINALIZE] Finalizing aborted stream for chat ${chatId?.slice(-8)}`);
+          // For aborted requests that can't be background processed, remove the partial message
+          finalizeStream(true);
+        }
       } else {
+        console.error('Error sending message:', error);
         // For other errors, show an error message
         setLoading(false);
         setIsThinking(false); // Reset thinking state on error too
+        
+        // No more temporary placeholder cleanup needed - backend handles chat creation properly
         
         // Add error message as assistant message
         setMessages(prev => {
@@ -1595,7 +2214,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Update the checkDebugInfo function with useCallback
   const checkDebugInfo = useCallback(async () => {
-    if (!chatId) {
+    if (!chatExistsInBackend) {
       console.log('No active chat session to debug');
       return;
     }
@@ -1621,7 +2240,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     } catch (error) {
       console.error('Error fetching debug info:', error);
     }
-  }, [chatId]);
+  }, [chatId, chatExistsInBackend]);
 
   // Add key event listener for debug information
   useEffect(() => {
@@ -1647,16 +2266,39 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       if (!isActive) return;
       console.log('Received new-chat event, creating a new chat');
       
-      // If there's an active request, show canceling state and abort it
+      // Check if this chat has any background processing state (including pending)
+      const hasBackgroundState = chatManager.isProcessingInBackground(chatId);
+      
+      // If there's an active request, check if we should transition to background instead of aborting
       if (abortControllerRef.current) {
-        setIsCanceling(true);
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-        
-        // Reset canceling state after a short delay to show feedback
-        setTimeout(() => {
+        // If background processing is enabled and the chat is streaming OR has background state, transition to background
+        if (backgroundProcessingEnabled && (isStreaming || hasBackgroundState) && chatId) {
+          console.log(`🔄 [NEW-CHAT] Transitioning chat ${chatId.slice(-8)} to background processing (isStreaming: ${isStreaming}, hasBackgroundState: ${hasBackgroundState})`);
+          
+          // Mark this chat as background streaming to preserve the request
+          chatManager.markAsBackgroundStreaming(chatId);
+          
+          // Don't abort the request - let it continue in background
+          // Just clean up the UI state
           setIsCanceling(false);
-        }, 300);
+          
+          console.log(`🔄 [NEW-CHAT] Chat ${chatId.slice(-8)} moved to background, request continues`);
+        } else {
+          // No background processing available or not streaming - abort as before
+          console.log(`🔄 [NEW-CHAT] Aborting request (background disabled: ${!backgroundProcessingEnabled}, not streaming: ${!isStreaming}, no background state: ${!hasBackgroundState})`);
+          setIsCanceling(true);
+          abortControllerRef.current.abort();
+          abortControllerRef.current = null;
+          
+          // Reset canceling state after a short delay to show feedback
+          setTimeout(() => {
+            setIsCanceling(false);
+          }, 300);
+        }
+      } else if (hasBackgroundState && backgroundProcessingEnabled && chatId) {
+        // Even if no active request, ensure background state is preserved
+        console.log(`🔄 [NEW-CHAT] No active request but has background state, ensuring background processing continues for ${chatId.slice(-8)}`);
+        chatManager.markAsBackgroundStreaming(chatId);
       }
       
       // Clean up any object URLs
@@ -1668,9 +2310,6 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       
       // Reset document cache
       setDocumentCache(null);
-      
-      // Reset chat ID to start a new conversation (without deleting the old one)
-      setChatId(null);
       
       // Reset all UI states
       setMessages([]);
@@ -1698,7 +2337,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       window.removeEventListener('reset-chat', handleResetChat);
       window.removeEventListener('new-chat', handleNewChat);
     };
-  }, [checkDebugInfo, resetChat, attachments, setChatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling, isActive]);
+  }, [checkDebugInfo, resetChat, attachments, setChatId, setDocumentCache, setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setIsCanceling, isActive, chatId]);
 
   // Load microphone settings from localStorage on component mount
   useEffect(() => {
@@ -2128,12 +2767,19 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   useEffect(() => {
     if (!isActive) return;
     const handleDeleteActiveChat = () => {
-      console.log('Active chat has been deleted, clearing chat view');
+      console.log(`🗑️ [DELETE-CHAT] Active chat ${chatId?.slice(-8)} has been deleted, clearing chat view`);
       
-      // If there's an active request, cancel it
+      // If there's an active request, cancel it (chat is being deleted so no background processing)
       if (abortControllerRef.current) {
+        console.log(`🗑️ [DELETE-CHAT] Aborting streaming request for deleted chat ${chatId?.slice(-8)}`);
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
+      }
+      
+      // Clean up any background state for this chat since it's being deleted
+      if (chatId) {
+        console.log(`🗑️ [DELETE-CHAT] Cleaning up background state for deleted chat ${chatId.slice(-8)}`);
+        chatManager.clearBackgroundStateForChat(chatId);
       }
       
       // Reset all states
@@ -2144,8 +2790,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       // setShouldAutoScroll(true); // Respect user's scroll choice
       userInteractedWithScrollRef.current = false; // On delete, assume fresh state
       accumulatedContentRef.current = '';
-      setChatId(null);
-      
+
       // Show a message to the user
       setMessages([{
         role: 'assistant',
@@ -2158,7 +2803,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     return () => {
       window.removeEventListener('delete-active-chat', handleDeleteActiveChat);
     };
-  }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId, isActive]);
+  }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId, isActive, chatId]);
 
   // Listen for generation settings changes from Settings Window
   useEffect(() => {
@@ -2541,6 +3186,29 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           )}
         </button>
       </div>
+      
+      {/* Background Processing Status Indicator */}
+      {backgroundState && backgroundState.status !== 'idle' && !isActive && (
+        <div className="background-status-indicator">
+          <div className={`status-dot ${backgroundState.status}`}></div>
+          <span>Processing in background...</span>
+        </div>
+      )}
+
+      {/* Background Response Preview */}
+      {showBackgroundPreview && backgroundState && backgroundState.currentResponse && (
+        <div className="background-response-preview">
+          <div className="preview-header">
+            <span>Background Response Complete</span>
+            <button onClick={() => setShowBackgroundPreview(false)}>✕</button>
+          </div>
+          <div className="preview-content">
+            {backgroundState.currentResponse.slice(0, 200)}
+            {backgroundState.currentResponse.length > 200 && '...'}
+          </div>
+        </div>
+      )}
+      
       <SummaryModal
         isOpen={summaryModalOpen}
         onClose={() => setSummaryModalOpen(false)}

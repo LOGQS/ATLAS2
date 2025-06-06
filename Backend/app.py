@@ -6,9 +6,11 @@ import time
 import subprocess
 import sys
 import uuid
-import shutil
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import threading
+from queue import Queue
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -275,6 +277,320 @@ else:
 app = Flask(__name__)
 CORS(app)
 
+# Initialize SocketIO for real-time communication
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Background chat processing system
+class BackgroundChatProcessor:
+    def __init__(self):
+        self.processing_queue = Queue()
+        self.active_processors = {}
+        self.chat_states = {}
+        self.processor_threads = {}
+        self.shutdown_event = threading.Event()
+        
+    def start_background_processing(self, chat_id, messages, model_name, **kwargs):
+        """Start background processing for a chat"""
+        safe_info(f"Attempting to start background processing for chat {chat_id} with {len(messages) if messages else 0} messages")
+        
+        if chat_id in self.active_processors:
+            # Already processing, add to queue
+            safe_info(f"Chat {chat_id} already processing, adding to queue")
+            self.processing_queue.put({
+                'chat_id': chat_id,
+                'messages': messages,
+                'model_name': model_name,
+                'kwargs': kwargs
+            })
+            return
+            
+        try:
+            # Create new background processor
+            processor_thread = threading.Thread(
+                target=self._process_chat_background,
+                args=(chat_id, messages, model_name, kwargs),
+                daemon=True
+            )
+            
+            self.active_processors[chat_id] = {
+                'thread': processor_thread,
+                'status': 'starting',
+                'model': model_name
+            }
+            
+            processor_thread.start()
+            safe_info(f"Background processing thread started for chat {chat_id}")
+        except Exception as e:
+            safe_exception(f"Error starting background processing thread for {chat_id}", e)
+        
+    def _process_chat_background(self, chat_id, messages, model_name, kwargs):
+        """Background processing thread for a chat"""
+        safe_info(f"ENTERING background processing thread for chat {chat_id}")
+        try:
+            safe_info(f"Starting background processing for chat {chat_id} with model {model_name}")
+            safe_info(f"Messages type: {type(messages)}, count: {len(messages) if hasattr(messages, '__len__') else 'unknown'}")
+            
+            if chat_id not in self.active_processors:
+                safe_warning(f"Chat {chat_id} not found in active_processors!")
+                return
+                
+            self.active_processors[chat_id]['status'] = 'processing'
+            
+            # Update chat state
+            self.chat_states[chat_id] = {
+                'status': 'processing',
+                'current_response': '',
+                'last_update': time.time()
+            }
+            
+            # Create chat session if not exists
+            if chat_id not in active_chats:
+                chat = UnifiedChatSession(chat_id, model_name)
+                # Initialize with provided messages
+                for msg in messages:
+                    if msg['role'] in ['user', 'assistant']:
+                        chat.add_message(msg['role'], msg['content'])
+                active_chats[chat_id] = chat
+            
+            chat = active_chats[chat_id]
+            
+            # Check if there's an unprocessed user message (no assistant response after it)
+            latest_message = messages[-1] if messages else None
+            safe_info(f"Latest message: {latest_message['role'] if latest_message else 'None'}")
+            
+            if latest_message and latest_message['role'] == 'user':
+                # Check if this user message already has an assistant response
+                chat_messages = chat.unified_history
+                safe_info(f"Chat has {len(chat_messages)} messages")
+                
+                # If chat is empty or the last message is a user message, we need to process
+                needs_processing = False
+                if not chat_messages:
+                    needs_processing = True
+                    safe_info("Chat is empty, needs processing")
+                elif chat_messages[-1]['role'] == 'user':
+                    needs_processing = True
+                    safe_info("Last message is user message, needs processing")
+                else:
+                    safe_info("Last message is assistant response, no processing needed")
+                
+                if needs_processing:
+                    # Add user message to chat if it's not already there
+                    if not chat_messages or chat_messages[-1]['content'] != latest_message['content']:
+                        chat.add_message('user', latest_message['content'])
+                        safe_info(f"Added new user message to background chat {chat_id}")
+                        
+                        # Save user message immediately
+                        self._save_chat_state_incremental(chat_id, chat)
+                    
+                    # Get response using unified approach
+                    safe_info(f"Getting chat response for background chat {chat_id} with model {model_name}")
+                    response = self._get_chat_response(chat, model_name, latest_message, kwargs)
+                    
+                    if response:
+                        safe_info(f"Got response object for background chat {chat_id}, starting streaming")
+                        assistant_response = ""
+                        
+                        # Process streaming response
+                        for chunk in response:
+                            if self.shutdown_event.is_set():
+                                break
+                                
+                            chunk_text = self._extract_chunk_text(chunk, model_name)
+                            if chunk_text:
+                                assistant_response += chunk_text
+                                
+                                # Update state
+                                self.chat_states[chat_id]['current_response'] = assistant_response
+                                self.chat_states[chat_id]['last_update'] = time.time()
+                                
+                                # Emit real-time update via WebSocket
+                                socketio.emit('chat_update', {
+                                    'chat_id': chat_id,
+                                    'type': 'chunk',
+                                    'content': chunk_text,
+                                    'full_response': assistant_response
+                                }, room=f'chat_{chat_id}')
+                                
+                                # Save incrementally every 1000 characters
+                                if len(assistant_response) % 1000 == 0:
+                                    self._save_chat_state_incremental(chat_id, chat, assistant_response)
+                        
+                        # Add complete response to chat
+                        if assistant_response.strip():
+                            chat.add_message('assistant', assistant_response)
+                            
+                        # Final save
+                        self._save_chat_state_incremental(chat_id, chat)
+                        
+                        # Emit completion
+                        socketio.emit('chat_update', {
+                            'chat_id': chat_id,
+                            'type': 'complete',
+                            'final_response': assistant_response
+                        }, room=f'chat_{chat_id}')
+                        
+                        safe_info(f"Background processing completed for chat {chat_id}")
+                    else:
+                        safe_warning(f"No response generated for background chat {chat_id} - response object is None")
+                    
+        except Exception as e:
+            safe_exception(f"Error in background processing for chat {chat_id}", e)
+            
+            # Emit error
+            socketio.emit('chat_update', {
+                'chat_id': chat_id,
+                'type': 'error',
+                'error': str(e)
+            }, room=f'chat_{chat_id}')
+        finally:
+            # Clean up
+            if chat_id in self.active_processors:
+                del self.active_processors[chat_id]
+            if chat_id in self.chat_states:
+                self.chat_states[chat_id]['status'] = 'idle'
+                
+    def _get_chat_response(self, chat, model_name, latest_message, kwargs):
+        """Get chat response using existing unified approach"""
+        try:
+            safe_info(f"Starting _get_chat_response for model {model_name}")
+            
+            # Prepare message parts
+            parts = [latest_message['content']] if latest_message.get('content') else []
+            safe_info(f"Prepared {len(parts)} message parts")
+            
+            # Get history for provider
+            history_for_provider = chat.get_history_for_provider(model_name)
+            safe_info(f"Got {len(history_for_provider)} messages in history for provider")
+            
+            # Create response
+            if supports_file_attachments(model_name) and len(parts) > 1:
+                safe_info(f"Using create_gemini_chat_with_files")
+                return create_gemini_chat_with_files(
+                    parts, model_name, creations_system_instruction
+                )
+            else:
+                safe_info(f"Using create_unified_chat_response with history of {len(history_for_provider)} messages")
+                response = create_unified_chat_response(
+                    history_for_provider, model_name, creations_system_instruction,
+                    None, kwargs.get('temperature'), kwargs.get('max_tokens')
+                )
+                safe_info(f"create_unified_chat_response returned: {type(response)}")
+                return response
+        except Exception as e:
+            safe_exception(f"Error getting chat response", e)
+            return None
+            
+    def _extract_chunk_text(self, chunk, model_name):
+        """Extract text from response chunk"""
+        try:
+            if hasattr(chunk, 'choices') and chunk.choices:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, 'content') and delta.content:
+                    return delta.content
+            return ""
+        except Exception as e:
+            safe_warning(f"Error extracting chunk text: {e}")
+            return ""
+            
+    def _save_chat_state_incremental(self, chat_id, chat, partial_response=None):
+        """Save chat state incrementally to persistent storage"""
+        try:
+            # Load existing chat history
+            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+            chats_file = data_dir / "chats.json"
+            
+            chat_history = {"chats": []}
+            if chats_file.exists():
+                try:
+                    with open(chats_file, "r", encoding="utf-8") as f:
+                        chat_history = json.load(f)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Convert chat messages to save format
+            formatted_messages = []
+            for msg in chat.unified_history:
+                formatted_msg = {
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "timestamp": datetime.fromtimestamp(msg.get("timestamp", time.time())).isoformat(),
+                    "tags": msg.get("tags", [])
+                }
+                if "reasoning" in msg:
+                    formatted_msg["reasoning"] = msg["reasoning"]
+                formatted_messages.append(formatted_msg)
+                
+            # Add partial response if provided
+            if partial_response:
+                formatted_messages.append({
+                    "role": "assistant",
+                    "content": partial_response,
+                    "timestamp": datetime.now().isoformat(),
+                    "tags": [],
+                    "partial": True  # Mark as partial
+                })
+            
+            # Find and update chat entry
+            chat_updated = False
+            for chat_entry in chat_history.get("chats", []):
+                if chat_entry.get("id") == chat_id:
+                    chat_entry["updated_at"] = datetime.now().isoformat()
+                    chat_entry["messages"] = formatted_messages
+                    if partial_response:
+                        chat_entry["status"] = "streaming"
+                    else:
+                        chat_entry.pop("status", None)  # Remove streaming status
+                    chat_updated = True
+                    break
+            
+            # Create new entry if not found
+            if not chat_updated:
+                timestamp = datetime.now().isoformat()
+                new_entry = {
+                    "id": chat_id,
+                    "title": "Background Chat",
+                    "model": chat.current_model,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "first_message": formatted_messages[0]["content"][:100] if formatted_messages else "",
+                    "messages": formatted_messages
+                }
+                if partial_response:
+                    new_entry["status"] = "streaming"
+                chat_history.setdefault("chats", []).append(new_entry)
+            
+            # Save atomically
+            temp_file = chats_file.with_suffix('.tmp')
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(chat_history, f, indent=2, ensure_ascii=False)
+            temp_file.replace(chats_file)
+            
+        except Exception as e:
+            safe_warning(f"Error saving chat state incrementally: {e}")
+            
+    def get_chat_status(self, chat_id):
+        """Get current status of a chat"""
+        if chat_id in self.active_processors:
+            return self.active_processors[chat_id]['status']
+        return 'idle'
+        
+    def stop_background_processing(self, chat_id):
+        """Stop background processing for a chat"""
+        if chat_id in self.active_processors:
+            # Signal shutdown for this specific chat
+            # This is a simplified approach - in a more complex system,
+            # you'd have per-chat shutdown events
+            return True
+        return False
+        
+    def shutdown(self):
+        """Shutdown all background processing"""
+        self.shutdown_event.set()
+        
+# Global background processor
+background_processor = BackgroundChatProcessor()
+
 # Remove any content length limit
 app.config['MAX_CONTENT_LENGTH'] = None
 
@@ -315,7 +631,7 @@ chats_file = data_dir / "chats.json"
 try:
     if not chats_file.exists():
         with open(chats_file, 'w', encoding='utf-8') as f:
-            json.dump({}, f) # Start with an empty JSON object
+            json.dump({"chats": []}, f, indent=2) # Start with an empty JSON object
         logger.info(f"Created empty chats file at: {chats_file}")
     else:
         # Optional: Validate if the file is valid JSON, log if not
@@ -349,28 +665,30 @@ def safe_debug(message, data=None):
 def safe_info(message, data=None):
     """Safely log info messages with potentially problematic data"""
     try:
-        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        # Remove emojis and other Unicode characters that cause issues
+        safe_message = str(message).encode('ascii', errors='ignore').decode('ascii')
         if data is not None:
             safe_data = safe_log_data(data)
             logger.info(f"{safe_message}: {safe_data}")
         else:
             logger.info(safe_message)
-    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+    except Exception as e:
         simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
-        logger.info(f"[Unicode Error in Log] {simple_message}")
+        logger.info(f"[Log Error] {simple_message}")
         if data is not None:
             logger.info(f"[Data] {str(data)[:100]}...")
 
 def safe_warning(message, data=None):
     """Safely log warning messages with potentially problematic data"""
     try:
-        safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
+        # Remove emojis and other Unicode characters that cause issues
+        safe_message = str(message).encode('ascii', errors='ignore').decode('ascii')
         if data is not None:
             safe_data = safe_log_data(data)
             logger.warning(f"{safe_message}: {safe_data}")
         else:
             logger.warning(safe_message)
-    except (UnicodeEncodeError, UnicodeDecodeError) as e:
+    except Exception as e:
         simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
         logger.warning(f"[Unicode Error in Log] {simple_message}")
         if data is not None:
@@ -408,6 +726,67 @@ app.safe_exception = safe_exception
 
 # Dictionary to store chat sessions
 active_chats = {}
+
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    safe_info(f"Client connected: {request.sid}")
+    emit('connected', {'status': 'Connected to ATLAS backend'})
+    
+@socketio.on('disconnect')
+def handle_disconnect():
+    safe_info(f"Client disconnected: {request.sid}")
+    
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    chat_id = data.get('chat_id')
+    if chat_id:
+        join_room(f'chat_{chat_id}')
+        safe_info(f"Client {request.sid} joined chat room: {chat_id}")
+        
+        # Send current chat status
+        status = background_processor.get_chat_status(chat_id)
+        emit('chat_status', {
+            'chat_id': chat_id,
+            'status': status
+        })
+        
+@socketio.on('leave_chat')
+def handle_leave_chat(data):
+    chat_id = data.get('chat_id')
+    if chat_id:
+        leave_room(f'chat_{chat_id}')
+        safe_info(f"Client {request.sid} left chat room: {chat_id}")
+        
+@socketio.on('start_background_chat')
+def handle_start_background_chat(data):
+    """Start background processing for a chat"""
+    try:
+        chat_id = data.get('chat_id')
+        messages = data.get('messages', [])
+        model_name = data.get('model', settings['model'])
+        kwargs = {
+            'temperature': data.get('temperature'),
+            'max_tokens': data.get('max_tokens')
+        }
+        
+        if not chat_id or not messages:
+            emit('error', {'message': 'Invalid chat data'})
+            return
+            
+        # Start background processing
+        background_processor.start_background_processing(
+            chat_id, messages, model_name, **kwargs
+        )
+        
+        emit('background_started', {
+            'chat_id': chat_id,
+            'status': 'processing'
+        })
+        
+    except Exception as e:
+        safe_exception("Error starting background chat", e)
+        emit('error', {'message': str(e)})
 
 
 
@@ -1607,6 +1986,7 @@ def url_preview():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
+    """Enhanced chat endpoint with background processing support"""
     try:
         data = request.json
         safe_debug("Chat request received with data", data)
@@ -1616,6 +1996,8 @@ def chat():
         cache_id = data.get("cache_id")  # Document cache ID for optimized processing
         temperature = data.get("temperature")
         max_tokens = data.get("max_tokens")
+        
+        safe_info(f"🚀 [CHAT-START] Processing chat request - model: {model_name}, messages: {len(messages)}, cache_id: {cache_id}")
         
         if cache_id:
             safe_info(f"Using document cache: {cache_id}")
@@ -1635,7 +2017,28 @@ def chat():
         
         # Get or create chat session ID
         chat_id = data.get("chat_id")  # Frontend might send a chat ID to continue a conversation
+        background_mode = data.get("background", False)  # Whether to process in background
         new_chat = chat_id is None or chat_id not in active_chats
+        
+        safe_info(f"💭 [CHAT-ID] Chat ID: {chat_id}, new_chat: {new_chat}, background_mode: {background_mode}, active_chats: {len(active_chats)}")
+        
+        # If background mode is requested, delegate to background processor
+        if background_mode and chat_id:
+            try:
+                background_processor.start_background_processing(
+                    chat_id, messages, model_name,
+                    temperature=temperature, max_tokens=max_tokens
+                )
+                return jsonify({
+                    "success": True,
+                    "chat_id": chat_id,
+                    "message": "Background processing started",
+                    "background": True
+                })
+            except Exception as e:
+                safe_exception(f"Error starting background processing", e)
+                # Fall back to foreground processing
+                pass
         
         # Log more detailed information about active chats
         logger.debug(f"Chat ID: {chat_id}, New chat: {new_chat}, Active chats: {len(active_chats)}")
@@ -1732,9 +2135,11 @@ def chat():
         # Create a new chat or get the existing one
         if new_chat:
             logger.debug(f"Creating new chat with model: {model_name}")
+            safe_info(f"🆕 [NEW-CHAT] Creating new UnifiedChatSession - ID: {chat_id}, model: {model_name}")
             
             # Use unified chat session for all providers
             chat = UnifiedChatSession(chat_id, model_name)
+            safe_info(f"✅ [NEW-CHAT] UnifiedChatSession created successfully")
             
             # Initialize history if available
             if history_messages:
@@ -1747,10 +2152,12 @@ def chat():
             if not chat_id:
                 chat_id = f"unified_{int(time.time())}_{uuid.uuid4().hex[:8]}"
                 chat.id = chat_id
+                safe_info(f"🔑 [CHAT-ID] Generated new chat ID: {chat_id}")
             
             # Store the chat in our dictionary
             active_chats[chat_id] = chat
             logger.debug(f"New chat session created with ID: {chat_id}")
+            safe_info(f"🗃️ [ACTIVE-CHATS] Added to active_chats - total: {len(active_chats)}")
             
             # Save chat metadata to chat history file
             try:
@@ -1849,9 +2256,13 @@ def chat():
 
         # Get the latest user message
         latest_message = messages[-1] if messages and messages[-1]["role"] == "user" else None
+        safe_info(f"📨 [LATEST-MSG] Messages array length: {len(messages)}, latest_message: {latest_message['role'] if latest_message else None}")
+        if messages:
+            safe_info(f"📨 [LATEST-MSG] Last message details: role={messages[-1].get('role')}, content_length={len(messages[-1].get('content', ''))}")
         
         # If we have a latest user message
         if latest_message:
+            safe_info(f"✅ [LATEST-MSG] Latest user message found - proceeding with message processing")
             # Process message parts including any attachments
             parts = []
             
@@ -1981,8 +2392,72 @@ def chat():
             try:
                 # Add the user message to our unified history (without knowledge attachments)
                 user_message_content = latest_message["content"] if latest_message and "content" in latest_message else ""
+                safe_info(f"💬 [USER-MSG] User message content: '{user_message_content[:100]}...' (length: {len(user_message_content) if user_message_content else 0})")
                 if user_message_content:
+                    safe_info(f"✅ [USER-MSG] User message content exists - proceeding with chat flow")
                     chat.add_message("user", user_message_content)
+                    
+                    # Immediately save the user message to file to ensure persistence even if user switches chats
+                    try:
+                        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+                        chats_file = data_dir / "chats.json"
+                        
+                        chat_history = {"chats": []}
+                        if chats_file.exists():
+                            try:
+                                with open(chats_file, "r", encoding="utf-8") as f:
+                                    chat_history = json.load(f)
+                            except json.JSONDecodeError:
+                                safe_warning(f"Invalid JSON in chats file, starting with empty history")
+                                chat_history = {"chats": []}
+                        
+                        # Convert current unified history to save format
+                        formatted_messages = []
+                        for msg in chat.unified_history:
+                            formatted_msg = {
+                                "role": msg["role"],
+                                "content": msg["content"],
+                                "timestamp": datetime.fromtimestamp(msg.get("timestamp", time.time())).isoformat(),
+                                "tags": msg.get("tags", [])
+                            }
+                            if "reasoning" in msg:
+                                formatted_msg["reasoning"] = msg["reasoning"]
+                            formatted_messages.append(formatted_msg)
+                        
+                        # Find and update chat entry
+                        chat_updated = False
+                        for chat_entry in chat_history.get("chats", []):
+                            if chat_entry.get("id") == chat_id:
+                                chat_entry["updated_at"] = datetime.now().isoformat()
+                                chat_entry["messages"] = formatted_messages
+                                chat_updated = True
+                                break
+                        
+                        # Create new entry if not found (shouldn't normally happen)
+                        if not chat_updated:
+                            timestamp = datetime.now().isoformat()
+                            new_entry = {
+                                "id": chat_id,
+                                "title": "Chat",
+                                "model": model_name,
+                                "created_at": timestamp,
+                                "updated_at": timestamp,
+                                "first_message": user_message_content[:100] if user_message_content else "",
+                                "messages": formatted_messages
+                            }
+                            chat_history.setdefault("chats", []).append(new_entry)
+                        
+                        # Atomic save
+                        temp_file = chats_file.with_suffix('.tmp')
+                        with open(temp_file, "w", encoding="utf-8") as f:
+                            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+                        temp_file.replace(chats_file)
+                        
+                        safe_debug(f"User message immediately saved to chats.json for chat {chat_id}")
+                        
+                    except Exception as save_error:
+                        safe_warning(f"Error immediately saving user message: {save_error}")
+                        # Don't fail the request if save fails
                 
                 # Get history for the current provider
                 history_for_provider = chat.get_history_for_provider(model_name)
@@ -2026,9 +2501,10 @@ def chat():
                 
                 # Use raw stream directly (fastest approach)
                 delayed_response = response
+                safe_info(f"🎯 [RESPONSE] Successfully created response stream - type: {type(response)}")
                 
             except Exception as e:
-                safe_debug(f"Error during unified chat request: {str(e)}", e)
+                safe_error(f"❌ [RESPONSE] Error during unified chat request: {str(e)}", e)
                 return jsonify({"error": str(e)}), 500
             
             def generate():
@@ -2036,8 +2512,62 @@ def chat():
                 assistant_response = ""  # Track the complete assistant response
                 accumulated_reasoning = ""  # Track the complete reasoning for OpenRouter models
                 
+                safe_info(f"🔄 [GENERATE] Starting generate function - new_chat: {new_chat}, chat_id: {chat_id}")
+                
                 try:
+                    # FIRST: Send chat metadata immediately for new chats
+                    if new_chat:
+                        safe_info(f"📤 [METADATA] Preparing to send chat creation metadata for new chat")
+                        # Extract chat title for metadata
+                        chat_title = "New Chat"
+                        if messages and messages[-1]["role"] == "user" and "content" in messages[-1] and messages[-1]["content"]:
+                            content = messages[-1]["content"].strip()
+                            words = content.split()
+                            title_words = words[:5]
+                            chat_title = " ".join(title_words)
+                            if len(chat_title) > 30:
+                                chat_title = chat_title[:27] + "..."
+                        
+                        # Send chat creation metadata as first event
+                        metadata_event = {
+                            'type': 'chat_created',
+                            'chat_id': chat_id,
+                            'model': model_name,
+                            'title': chat_title,
+                            'created_at': datetime.now().isoformat(),
+                            'is_new_chat': True
+                        }
+                        safe_info(f"✉️ [METADATA] Created metadata event: {metadata_event}")
+                        try:
+                            json_data = json.dumps(metadata_event)
+                            yield f"data: {json_data}\n\n"
+                            safe_info(f"📤 [CHAT-INIT] ✅ Successfully sent chat metadata as first event: {chat_id}")
+                        except (UnicodeEncodeError, json.JSONDecodeError) as e:
+                            safe_warning(f"❌ [CHAT-INIT] Error encoding chat metadata: {str(e)}")
+                    else:
+                        # Send chat resume metadata for existing chats
+                        resume_event = {
+                            'type': 'chat_resumed',
+                            'chat_id': chat_id,
+                            'model': model_name,
+                            'is_new_chat': False
+                        }
+                        try:
+                            json_data = json.dumps(resume_event)
+                            yield f"data: {json_data}\n\n"
+                            safe_debug(f"[CHAT-RESUME] Sent chat resume metadata: {chat_id}")
+                        except (UnicodeEncodeError, json.JSONDecodeError) as e:
+                            safe_warning(f"Error encoding chat resume metadata: {str(e)}")
+                    
+                    # THEN: Continue with content streaming
+                    safe_info(f"🌊 [STREAMING] Starting to process response chunks from delayed_response")
+                    chunk_count = 0
                     for chunk in delayed_response:
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            safe_info(f"🌊 [STREAMING] Processing first chunk #{chunk_count}")
+                        elif chunk_count % 10 == 0:
+                            safe_info(f"🌊 [STREAMING] Processing chunk #{chunk_count}...")
                         try:
                             chunk_text = ""
                             
@@ -2068,6 +2598,39 @@ def chat():
                                 try:
                                     json_data = json.dumps(chunk_data)
                                     yield f"data: {json_data}\n\n"
+                                    
+                                    # Save incremental update every 500 characters to reduce I/O
+                                    if len(assistant_response) % 500 == 0 and len(assistant_response) > 0:
+                                        try:
+                                            # Quick incremental save
+                                            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+                                            chats_file = data_dir / "chats.json"
+                                            
+                                            if chats_file.exists():
+                                                with open(chats_file, "r", encoding="utf-8") as f:
+                                                    chat_history = json.load(f)
+                                                
+                                                # Update the specific chat
+                                                for chat_entry in chat_history.get("chats", []):
+                                                    if chat_entry.get("id") == chat_id:
+                                                        chat_entry["updated_at"] = datetime.now().isoformat()
+                                                        chat_entry["status"] = "streaming"
+                                                        # Add partial message marker
+                                                        chat_messages = chat_entry.get("messages", [])
+                                                        if chat_messages and chat_messages[-1].get("role") == "assistant":
+                                                            chat_messages[-1]["content"] = assistant_response
+                                                            chat_messages[-1]["partial"] = True
+                                                        break
+                                                
+                                                # Atomic save
+                                                temp_file = chats_file.with_suffix('.tmp')
+                                                with open(temp_file, "w", encoding="utf-8") as f:
+                                                    json.dump(chat_history, f, indent=2, ensure_ascii=False)
+                                                temp_file.replace(chats_file)
+                                        except Exception as save_error:
+                                            # Don't fail streaming for save errors
+                                            safe_warning(f"Incremental save error: {save_error}")
+                                    
                                 except UnicodeEncodeError as ue:
                                     # Handle Unicode encoding errors by replacing problematic characters
                                     safe_text = chunk_text.encode('utf-8', errors='replace').decode('utf-8')
@@ -2153,11 +2716,24 @@ def chat():
                                 }
                                 chat_history.setdefault("chats", []).append(new_chat_entry)
                             
-                            # Save updated chat history
+                            # Save updated chat history and clear streaming status
                             with open(chats_file, "w", encoding="utf-8") as f:
                                 json.dump(chat_history, f, indent=2, ensure_ascii=False)
                             
-                            safe_debug(f"Saved {len(simplified_messages)} messages for chat {chat_id}")
+                            # Clear streaming status
+                            for chat_entry in chat_history.get("chats", []):
+                                if chat_entry.get("id") == chat_id:
+                                    chat_entry.pop("status", None)  # Remove streaming status
+                                    # Remove partial flags from messages
+                                    for msg in chat_entry.get("messages", []):
+                                        msg.pop("partial", None)
+                                    break
+                            
+                            # Final save without streaming status
+                            with open(chats_file, "w", encoding="utf-8") as f:
+                                json.dump(chat_history, f, indent=2, ensure_ascii=False)
+                            
+                            safe_debug(f"Saved {len(simplified_messages)} messages for chat {chat_id} and cleared streaming status")
                         except Exception as e:
                             safe_error(f"Failed to save chat messages: {str(e)}", e)
                                 
@@ -2174,8 +2750,10 @@ def chat():
                     safe_error(f"Error in streaming response: {str(e)}", e)
                     yield f"data: {json.dumps({'error': str(e), 'chat_id': chat_id, 'done': True})}\n\n"
             
+            safe_info(f"🌊 [RETURN] Returning streaming Response with generate() function")
             return Response(stream_with_context(generate()), content_type='text/event-stream')
         else:
+            safe_warning(f"❌ [USER-MSG] No user message content found - returning error")
             return jsonify({"error": "No user message provided"}), 400
     
     except Exception as e:
@@ -4162,8 +4740,8 @@ def reinitialize_whisper():
 
 if __name__ == "__main__":
     try:
-        safe_debug("Starting Flask application")
-        app.run(debug=True, threaded=True, host="0.0.0.0", port=5000)
+        safe_debug("Starting Flask application with SocketIO")
+        socketio.run(app, debug=True, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
     except Exception as e:
         print(f"Error starting Flask application: {str(e)}")
         # Log to a separate file in case logging itself is the issue
