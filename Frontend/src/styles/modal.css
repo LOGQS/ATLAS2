@@ -458,7 +458,7 @@
 }
 
 /* Zoom Controls */
-.zoom-controls-overlay {
+.annotation-container .zoom-controls-overlay {
   position: absolute;
   top: 16px;
   right: 16px;
@@ -473,7 +473,7 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.zoom-control-btn {
+.annotation-container .zoom-control-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -488,18 +488,18 @@
   padding: 0;
 }
 
-.zoom-control-btn:hover:not(:disabled) {
+.annotation-container .zoom-control-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
   transform: translateY(-1px);
 }
 
-.zoom-control-btn:disabled {
+.annotation-container .zoom-control-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
 }
 
-.zoom-level {
+.annotation-container .zoom-level {
   font-size: 12px;
   font-weight: 600;
   color: rgba(255, 255, 255, 0.9);
@@ -508,15 +508,15 @@
   padding: 0 4px;
 }
 
-.reset-btn {
+.annotation-container .reset-btn {
   background: rgba(239, 68, 68, 0.8) !important;
 }
 
-.reset-btn:hover {
+.annotation-container .reset-btn:hover {
   background: rgba(239, 68, 68, 1) !important;
 }
 
-.zoom-wrapper {
+.annotation-container .zoom-wrapper {
   position: relative;
   width: 100%;
   height: 100%;

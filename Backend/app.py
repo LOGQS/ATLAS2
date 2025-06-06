@@ -6,6 +6,7 @@ import time
 import subprocess
 import sys
 import uuid
+import shutil
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -285,11 +286,27 @@ app.logger.setLevel(logging.DEBUG)
 
 # Ensure data directory exists at startup
 data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+temp_files_dir = data_dir / "temp_files"
 try:
     data_dir.mkdir(exist_ok=True)
+    temp_files_dir.mkdir(exist_ok=True)
     logger.info(f"Data directory created/verified at: {data_dir}")
+    logger.info(f"Temp files directory created/verified at: {temp_files_dir}")
+    
+    # Clean up any existing temp files on startup
+    import glob
+    temp_file_pattern = str(temp_files_dir / "*")
+    existing_temp_files = glob.glob(temp_file_pattern)
+    if existing_temp_files:
+        logger.info(f"Cleaning up {len(existing_temp_files)} existing temp files on startup")
+        for temp_file in existing_temp_files:
+            try:
+                os.remove(temp_file)
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp file {temp_file}: {cleanup_error}")
+    
 except Exception as e:
-    logger.error(f"Failed to create data directory: {str(e)}")
+    logger.error(f"Failed to create data/temp directories: {str(e)}")
 
 # Define chats file path within the data directory
 chats_file = data_dir / "chats.json"
@@ -1200,6 +1217,16 @@ def upload_file():
         with open(temp_path, 'wb') as f:
             f.write(file_content)
         
+        # For PDF files, save a local copy for direct serving (before Gemini processing)
+        local_file_path = None
+        if mime_type == "application/pdf":
+            try:
+                # We need to upload to Gemini first to get the file ID, then save locally
+                pass  # Will be handled after Gemini upload
+            except Exception as e:
+                logger.warning(f"Failed to save PDF locally: {str(e)}")
+                # Continue without local copy
+        
         # Use the client.files.upload method with the temporary file path
         logger.debug(f"Uploading file to Gemini API: {file.filename}")
         logger.debug(f"Using mime_type: {mime_type}")
@@ -1258,6 +1285,23 @@ def upload_file():
                     logger.warning(f"File processing timeout, returning file ID anyway")
                     processing_complete = False
             
+            # For PDF files, save a local copy for direct serving (immediately available for viewing)
+            local_file_path = None
+            if mime_type == "application/pdf":
+                try:
+                    # Create a safe filename using the file ID (without files/ prefix)
+                    clean_file_id = uploaded_file.name.replace("files/", "")
+                    safe_filename = f"{clean_file_id}.pdf"
+                    local_file_path = temp_files_dir / safe_filename
+                    
+                    # Save the file content directly
+                    with open(local_file_path, 'wb') as f:
+                        f.write(file_content)
+                    logger.info(f"Saved PDF copy to local storage: {local_file_path} ({len(file_content)} bytes)")
+                except Exception as e:
+                    logger.warning(f"Failed to save PDF locally: {str(e)}")
+                    # Continue without local copy - will fall back to download endpoint
+
             # Return the file details
             response_data = {
                 "success": True,
@@ -1269,6 +1313,10 @@ def upload_file():
                 "size": file_size,
                 "is_large_file": is_large_file
             }
+            
+            # Add local file path for PDFs
+            if local_file_path and local_file_path.exists():
+                response_data["local_file_available"] = True
             
             # Add processing status if relevant
             if needs_processing:
@@ -1313,41 +1361,95 @@ def upload_file():
                 "details": error_message
             }), 500
 
-# Download a file
+# Serve temp files (mainly for PDF viewing)
 @app.route("/api/download/<file_id>", methods=["GET"])
-def download_file(file_id):
-    """Download a file from the server"""
+def serve_temp_file(file_id):
+    """Serve a temporary file (PDF) directly from local storage"""
     try:
-        # Get the file from the API
-        file = client.files.get(name=file_id)
+        safe_info(f"Download request for file_id: {file_id}")
         
-        if not hasattr(file, 'name'):
-            return jsonify({"error": "File not found or invalid"}), 404
-            
-        # Get the file content
-        content = client.files.download_content(name=file_id)
+        # Clean file_id (remove files/ prefix if present)
+        clean_file_id = file_id.replace("files/", "")
+        safe_info(f"Clean file_id: {clean_file_id}")
         
-        if not content:
-            return jsonify({"error": "Could not download file content"}), 500
-            
-        # Determine file type for content-type header
-        content_type = "application/octet-stream"  # Default
-        if hasattr(file, 'mime_type') and file.mime_type:
-            content_type = file.mime_type
-            
-        # Create a response with the file content
-        response = make_response(content)
-        response.headers.set('Content-Type', content_type)
-        response.headers.set('Content-Disposition', f'attachment; filename="{file.name}"')
+        # Look for the file in temp storage
+        temp_file_path = temp_files_dir / f"{clean_file_id}.pdf"
+        safe_info(f"Looking for file at: {temp_file_path}")
+        safe_info(f"File exists: {temp_file_path.exists()}")
         
-        return response
+        if temp_file_path.exists():
+            safe_info(f"Serving PDF from local storage: {temp_file_path}")
+            
+            # Read the file content
+            with open(temp_file_path, 'rb') as f:
+                content = f.read()
+            
+            safe_info(f"Read {len(content)} bytes from local file")
+            
+            # Create response with proper headers for PDF
+            response = make_response(content)
+            response.headers.set('Content-Type', 'application/pdf')
+            response.headers.set('Content-Disposition', f'inline; filename="{clean_file_id}.pdf"')
+            response.headers.set('Cache-Control', 'no-cache')
+            
+            return response
+        else:
+            # File not found in local storage
+            safe_error(f"File not found in local storage: {temp_file_path}")
+            return jsonify({"error": "File not found"}), 404
+            
     except Exception as e:
-        logger.exception(f"Error downloading file {file_id}: {str(e)}")
-        return jsonify({"error": f"Failed to download file: {str(e)}"}), 500
+        safe_exception(f"Error serving file {file_id}: {str(e)}", e)
+        return jsonify({"error": f"Failed to serve file: {str(e)}"}), 500
 
-# Document caching functionality has been removed due to API compatibility issues
-# The /api/cache endpoint is no longer available
-# Any cache_id parameters sent by the frontend will be ignored
+# Document cache endpoint - Creates a cache for document processing
+@app.route("/api/cache", methods=["POST"])
+def create_document_cache():
+    """Create a document cache from a list of file IDs for optimized document processing"""
+    try:
+        data = request.json
+        file_ids = data.get("file_ids", [])
+        
+        if not file_ids:
+            return jsonify({"error": "file_ids parameter is required"}), 400
+            
+        # Check if Gemini client is available
+        error_response, status_code = check_gemini_client()
+        if error_response:
+            return jsonify(error_response), status_code
+        
+        # Validate that all files exist and are ready
+        valid_files = []
+        for file_id in file_ids:
+            try:
+                file_obj = client.files.get(name=file_id)
+                if hasattr(file_obj, 'state') and file_obj.state.name == 'ACTIVE':
+                    valid_files.append(file_id)
+                else:
+                    safe_warning(f"File {file_id} is not in ACTIVE state, skipping from cache")
+            except Exception as e:
+                safe_warning(f"Error validating file {file_id}: {str(e)}")
+        
+        if not valid_files:
+            return jsonify({"error": "No valid files found for caching"}), 400
+        
+        # Generate a cache ID (simple approach - use timestamp + hash of file IDs)
+        import hashlib
+        cache_content = "_".join(sorted(valid_files))
+        cache_hash = hashlib.md5(cache_content.encode()).hexdigest()[:8]
+        cache_id = f"cache_{int(time.time())}_{cache_hash}"
+        
+        safe_info(f"Created document cache {cache_id} for {len(valid_files)} files")
+        
+        return jsonify({
+            "cache_id": cache_id,
+            "file_count": len(valid_files),
+            "files": valid_files
+        })
+        
+    except Exception as e:
+        safe_exception(f"Error creating document cache: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
 
 # Check file processing state
 @app.route("/api/files/<file_id>/state", methods=["GET"])
@@ -1511,9 +1613,12 @@ def chat():
             
         messages = data.get("messages", [])
         model_name = data.get("model", settings["model"])
-        # We'll ignore cache_id since caching is removed
+        cache_id = data.get("cache_id")  # Document cache ID for optimized processing
         temperature = data.get("temperature")
         max_tokens = data.get("max_tokens")
+        
+        if cache_id:
+            safe_info(f"Using document cache: {cache_id}")
         
         # Validate that we have the necessary client for the requested model
         if is_openrouter_model(model_name):
@@ -2089,6 +2194,16 @@ def clear_chat(chat_id):
                 safe_debug(f"Deleting {len(chat.files)} files associated with chat {chat_id}", chat.files)
                 for file_id in list(chat.files):  # Create a copy of the set to avoid modification during iteration
                     try:
+                        # Clean file_id for local file lookup
+                        clean_file_id = file_id.replace("files/", "")
+                        local_file_path = temp_files_dir / f"{clean_file_id}.pdf"
+                        
+                        # Delete local temp file if it exists
+                        if local_file_path.exists():
+                            os.remove(local_file_path)
+                            safe_debug(f"Deleted local temp file: {local_file_path}")
+                        
+                        # Delete from Gemini API
                         safe_debug(f"Deleting file {file_id} from File API", file_id)
                         client.files.delete(name=file_id)
                         chat.files.remove(file_id)
@@ -3918,6 +4033,16 @@ def reset_chat_messages(chat_id):
                 safe_debug(f"Deleting {len(chat.files)} files associated with chat {chat_id}", chat.files)
                 for file_id in list(chat.files):  # Create a copy of the set to avoid modification during iteration
                     try:
+                        # Clean file_id for local file lookup
+                        clean_file_id = file_id.replace("files/", "")
+                        local_file_path = temp_files_dir / f"{clean_file_id}.pdf"
+                        
+                        # Delete local temp file if it exists
+                        if local_file_path.exists():
+                            os.remove(local_file_path)
+                            safe_debug(f"Deleted local temp file: {local_file_path}")
+                        
+                        # Delete from Gemini API
                         safe_debug(f"Deleting file {file_id} from File API", file_id)
                         client.files.delete(name=file_id)
                         chat.files.remove(file_id)

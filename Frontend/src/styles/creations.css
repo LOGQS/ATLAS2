@@ -2214,7 +2214,7 @@ button.sp-tab-button:active,
   position: relative;
   transition: transform 0.2s ease;
   transform-origin: center center !important;
-  padding-bottom: 20px; /* Add small padding to allow scroll to go further */
+  padding: 20px 20px 20px 20px; /* Add proper padding on all sides */
   box-sizing: border-box;
 }
 

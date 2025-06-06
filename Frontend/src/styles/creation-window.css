@@ -147,7 +147,7 @@
   overflow: hidden !important; /* Force prevent container from scrolling */
   display: flex;
   flex-direction: column;
-  padding: 16px; /* Move padding here */
+  padding: 8px; /* Reduced padding to give more width */
   box-sizing: border-box; /* Include padding in height calculation */
 }
 

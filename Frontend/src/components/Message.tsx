@@ -379,7 +379,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
                 }));
               }, 1000);
               
-              setCreationSwitchTimeout(previewTimeout);
+              setCreationSwitchTimeout(previewTimeout as unknown as number);
             }
           }
         }, 100);
@@ -412,7 +412,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
                   }));
                 }, 1000);
                 
-                setCreationSwitchTimeout(previewTimeout);
+                setCreationSwitchTimeout(previewTimeout as unknown as number);
               }
             }, 100);
           }
@@ -731,7 +731,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
                 detail: { creationId: completeCreation.id }
               }));
             }, 1000);
-            setCreationSwitchTimeout(timeout);
+            setCreationSwitchTimeout(timeout as unknown as number);
 
             const afterCreationContent = cleanedContent.substring(endTagIndex + '$$end$$'.length);
             if (afterCreationContent) {
@@ -1726,7 +1726,9 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       case 'document': {
         const openViewer = () => {
           if (isPdf) {
-            const url = attachment.local_url || `/api/download/${attachment.file_id}`;
+            // Strip 'files/' prefix from file_id if present for download URL
+            const cleanFileId = attachment.file_id?.replace(/^files\//, '') || attachment.file_id;
+            const url = attachment.local_url || `/api/download/${cleanFileId}`;
             setPdfUrl(url);
           }
         };
