@@ -545,11 +545,13 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       }
     };
 
+    if (!isActive) return;
     container.addEventListener('scroll', handleScroll);
     return () => container.removeEventListener('scroll', handleScroll);
-  }, [isStreaming, shouldAutoScroll]);
+  }, [isStreaming, shouldAutoScroll, isActive]);
 
   useEffect(() => {
+    if (!isActive) return;
     if (shouldAutoScroll && messages.length > 0) {
       if (!userInteractedWithScrollRef.current) {
         console.log('Auto-scrolling to bottom due to new message and shouldAutoScroll=true');
@@ -558,10 +560,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         scrollToBottom(!isStreaming);
       }
     }
-  }, [messages, shouldAutoScroll, isStreaming]);
+  }, [messages, shouldAutoScroll, isStreaming, isActive]);
 
   // Close model dropdown when clicking outside
   useEffect(() => {
+    if (!isActive) return;
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       if (!target.closest('.model-selector')) {
@@ -573,10 +576,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, []);
+  }, [isActive]);
 
   // Auto-grow textarea based on content
   useEffect(() => {
+    if (!isActive) return;
     const textarea = textareaRef.current;
     if (!textarea) return;
 
@@ -590,7 +594,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     adjustHeight(); // Initial adjustment
 
     return () => textarea.removeEventListener('input', adjustHeight);
-  }, [input]);
+  }, [input, isActive]);
 
   // Clean up thinking timeout on component unmount
   useEffect(() => {
@@ -1347,6 +1351,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Add key event listener for debug information
   useEffect(() => {
+    if (!isActive) return;
     // Add a hidden keypress handler for debugging
     const handleKeyPress = (e: KeyboardEvent) => {
       // Ctrl+Alt+D to show debug info
@@ -1833,8 +1838,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // Add handler for active chat deletion
   useEffect(() => {
+    if (!isActive) return;
     const handleDeleteActiveChat = () => {
-      if (!isActive) return;
       console.log('Active chat has been deleted, clearing chat view');
       
       // If there's an active request, cancel it
@@ -1861,7 +1866,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     };
     
     window.addEventListener('delete-active-chat', handleDeleteActiveChat);
-    
+
     return () => {
       window.removeEventListener('delete-active-chat', handleDeleteActiveChat);
     };
