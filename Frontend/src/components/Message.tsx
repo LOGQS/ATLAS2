@@ -349,32 +349,14 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     // This prevents clearing the ref when content temporarily becomes empty
     if (content !== rawContentRef.current && 
         (content.includes('$$creation:') || content.length > (rawContentRef.current?.length || 0))) {
-      console.log('🔄 [RAW-CONTENT] Updating rawContentRef:', {
-        previousLength: rawContentRef.current?.length || 0,
-        newLength: content.length,
-        hasCreationTags: content.includes('$$creation:'),
-        isUser,
-        isStreaming,
-        reason: content.includes('$$creation:') ? 'has creation tags' : 'content grew'
-      });
       rawContentRef.current = content;
-    } else if (content !== rawContentRef.current) {
-      console.log('🔄 [RAW-CONTENT] Skipping rawContentRef update:', {
-        previousLength: rawContentRef.current?.length || 0,
-        newLength: content.length,
-        hasCreationTags: content.includes('$$creation:'),
-        reason: content.length === 0 ? 'content is empty' : 'content shrunk without creation tags'
-      });
     }
     
     if (!isUser && !isThinking && (content || rawContentRef.current)) {
-      console.log('🔥 [AFTER-STREAM-START] ===========================================');
-      
       // CRITICAL: Reset processed flag only once when streaming just stopped
       // This prevents the infinite loop issue where useEffect runs twice
       if (!isStreaming && (content || rawContentRef.current)) {
         const contentToCheck = content || rawContentRef.current || '';
-        console.log(`🔍 RESET CHECK: hasCreations=${contentToCheck.includes('$$creation:')}, alreadyProcessed=${creationsProcessedRef.current}, finalizedCount=${finalizedCreations.length}`);
         if (contentToCheck.includes('$$creation:') && creationsProcessedRef.current) {
           // Only reset if we haven't actually added ALL the creations to the gallery yet
           // Check if the CreationManager has ALL of these creations
@@ -387,69 +369,28 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           const allCreationsInGallery = creationsInGallery.length === detectedCreationsPreview.length;
           
           if (!allCreationsInGallery && detectedCreationsPreview.length > 0) {
-            console.log(`🔄 [AFTER-STREAM] Resetting processed flag - only ${creationsInGallery.length}/${detectedCreationsPreview.length} creations in gallery`);
             creationsProcessedRef.current = false;
-          } else {
-            console.log(`⏭️ [AFTER-STREAM] Not resetting - ${allCreationsInGallery ? 'all creations already in gallery' : 'no creations detected'}`);
           }
         }
       }
       
-      console.log('🔥 [AFTER-STREAM] Processing creations after stream end:', {
-        contentLength: content.length,
-        rawContentLength: rawContentRef.current?.length || 0,
-        usingRawContent: !content && !!rawContentRef.current,
-        contentToProcessLength: contentToProcess.length,
-        contentPreview: contentToProcess.substring(0, 300) + (contentToProcess.length > 300 ? '...' : ''),
-        hasCreationTags: contentToProcess.includes('$$creation:'),
-        hasEndTags: contentToProcess.includes('$$end$$'),
-        hasExternalTags: contentToProcess.includes('$$external$$'),
-        isHistoryMessage,
-        isStreaming,
-        isThinking,
-        creationsProcessedRef: creationsProcessedRef.current,
-        finalizedCreationsCount: finalizedCreations.length
-      });
+
       
       // CRITICAL: Detect creations from raw content (same as refresh render)
       // Use rawContentRef when content is empty (similar to render logic)
       const creations = detectCreations(contentToProcess);
       
-      console.log('🔥 [AFTER-STREAM] Creation detection results:', {
-        detectedCount: creations.length,
-        creationTypes: creations.map(c => `${c.type}:${c.title || 'untitled'}`),
-        creationIds: creations.map(c => c.id),
-        firstCreation: creations[0] ? {
-          type: creations[0].type,
-          title: creations[0].title,
-          contentLength: creations[0].content.length,
-          hasExternalDeps: !!creations[0].externalDependencies,
-          contentPreview: creations[0].content.substring(0, 100) + '...'
-        } : null
-      });
-      
       // Update finalized creations
       setFinalizedCreations(creations);
-      console.log('🔥 [AFTER-STREAM] Updated finalizedCreations state:', creations.length);
       
       // Clean content for display
       const cleanedContent = removeCreationDirectives(contentToProcess);
-      console.log('🔥 [AFTER-STREAM] Content cleaning:', {
-        originalLength: contentToProcess.length,
-        cleanedLength: cleanedContent.length,
-        removedCharacters: contentToProcess.length - cleanedContent.length,
-        cleanedPreview: cleanedContent.substring(0, 200) + (cleanedContent.length > 200 ? '...' : '')
-      });
       safeSetDisplayedContent(cleanedContent);
       
       // Only add to gallery if this is NOT a history message and we haven't processed it yet
       if (creations.length > 0 && !isHistoryMessage && !creationsProcessedRef.current) {
-        console.log(`🎯 GALLERY: Starting to add ${creations.length} creations to gallery`);
-        
         // Add each creation to our CreationManager
-        let addedCount = 0;
-        let skippedCount = 0;
-        creations.forEach((creation, index) => {
+        creations.forEach((creation) => {
           // Check if this creation already exists in the CreationManager
           const existingCreation = creationManager.getCreations().find(
             c => c.content === creation.content && c.type === creation.type
@@ -458,20 +399,13 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           // Only add the creation if it doesn't already exist
           if (!existingCreation) {
             const addedCreation = creationManager.addCreation(creation);
-            addedCount++;
-            console.log(`✅ GALLERY: Added creation ${index + 1}/${creations.length} - ${creation.type}: ${creation.title}`);
             
             // Track in view history
             if (addedCreation.id) {
               creationManager.viewCreation(addedCreation.id);
             }
-          } else {
-            skippedCount++;
-            console.log(`⏭️ GALLERY: Skipped creation ${index + 1}/${creations.length} - ${creation.type}: ${creation.title} (already exists)`);
           }
         });
-        
-        console.log(`🎯 GALLERY SUMMARY: Added ${addedCount}, Skipped ${skippedCount}, Total detected ${creations.length}`);
         
         // Automatically show the first creation in the right window
         // Use a small timeout to ensure the creation is fully processed
@@ -496,16 +430,8 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         
         // Mark that we've processed creations for this message
         creationsProcessedRef.current = true;
-        console.log('🔥 [AFTER-STREAM] Gallery processing complete:', {
-          addedToGallery: true,
-          markedAsProcessed: true
-        });
       } else if (creations.length > 0 && isHistoryMessage) {
         // For history messages, display the creations without adding to gallery
-        console.log('🔥 [AFTER-STREAM] History message - not adding to gallery:', {
-          creationCount: creations.length,
-          isHistoryMessage: true
-        });
         
         // If there are creations, we still want to show them, just not add them to gallery
         if (!creationsProcessedRef.current) {
@@ -536,25 +462,9 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
           
           creationsProcessedRef.current = true;
         }
-      } else {
-        const reason = creations.length === 0 ? 'no creations detected' : 
-                      isHistoryMessage ? 'history message' : 
-                      creationsProcessedRef.current ? 'already processed' : 'unknown';
-        console.log(`❌ GALLERY: Skipped adding ${creations.length} creations - ${reason}`);
+              }
       }
-      console.log('🔥 [AFTER-STREAM-END] ===========================================');
-    } else {
-      console.log('🔥 [AFTER-STREAM] Skipping creation processing:', {
-        isUser,
-        isStreaming,
-        isThinking,
-        hasContent: !!content,
-        reason: isUser ? 'user message' : 
-               isStreaming ? 'still streaming' : 
-               isThinking ? 'still thinking' : 
-               !content ? 'no content' : 'unknown'
-      });
-    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isStreaming, isThinking, content, isHistoryMessage, safeSetDisplayedContent are read for logging only and adding them causes infinite loops
   }, [isUser, isStreaming, isThinking, content, isHistoryMessage, safeSetDisplayedContent]);
   
   // New useEffect for detecting creations during streaming
@@ -1170,26 +1080,8 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     // Use finalized creations as fallback if fresh detection fails (ensures reliability)
     const creations = detectedCreations.length > 0 ? detectedCreations : finalizedCreations;
     
-    console.log('🎨 [RENDER-START] ===========================================');
-    console.log('🎨 [RENDER] Markdown content rendering:', {
-      isUser,
-      isCollectingCreation,
-      isStreaming,
-      isThinking,
-      detectedCreationsCount: detectedCreations.length,
-      finalizedCreationsCount: finalizedCreations.length,
-      finalCreationsCount: creations.length,
-      usingDetected: detectedCreations.length > 0,
-      contentHasCreationTags: content.includes('$$creation:'),
-      renderingCreations: creations.length > 0,
-      displayedContentLength: displayedContent.length,
-      contentLength: content.length
-    });
-    
     // If we're not displaying any creations, just render the content normally
     if (creations.length === 0 && !isCollectingCreation) {
-      console.log('🎨 [RENDER] No creations to render - using plain markdown');
-      console.log('🎨 [RENDER-END] ===========================================');
     return (
       <ReactMarkdown
           key={isStreaming ? 'streaming' : 'static'}
@@ -1306,18 +1198,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     
     // REFRESH RENDER PATH: Handle the case where we need to position creation indicators inline
     if (!isStreaming && !isCollectingCreation && creations.length > 0) {
-      console.log('🟢 [REFRESH-RENDER] *** ENTERING REFRESH RENDER PATH ***');
-      console.log('🟢 [REFRESH-RENDER] Rendering with inline creation indicators:', {
-        creationCount: creations.length,
-        willPositionInline: true,
-        isStreaming,
-        isCollectingCreation,
-        conditions: {
-          notStreaming: !isStreaming,
-          notCollecting: !isCollectingCreation,
-          hasCreations: creations.length > 0
-        }
-      });
+
       // Extract creation positions from original raw content (not cleaned content)
       const creationPositions: {start: number; end: number; creation: Creation}[] = [];
       const creationPattern = /\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$([\s\S]*?)\$\$end\$\$/g;
@@ -1325,13 +1206,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       // CRITICAL: Use rawContentRef which has the original content with creation tags
       const rawContent = rawContentRef.current || content;
       
-      console.log('🔍 [POSITION-EXTRACT] Using content source:', {
-        usingRawContentRef: !!rawContentRef.current && rawContentRef.current === rawContent,
-        rawContentLength: rawContent.length,
-        hasCreationTags: rawContent.includes('$$creation:'),
-        creationMatches: (rawContent.match(/\$\$creation:/g) || []).length,
-        fallbackToContentProp: !rawContentRef.current
-      });
+
       
       let match;
       while ((match = creationPattern.exec(rawContent)) !== null) {
@@ -1350,19 +1225,11 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         }
       }
       
-      console.log('🟢 [REFRESH-RENDER] Creation position extraction:', {
-        foundPositions: creationPositions.length,
-        positions: creationPositions.map(p => ({ start: p.start, end: p.end, type: p.creation.type, title: p.creation.title })),
-        rawContentLength: rawContent.length,
-        hasRawContent: !!rawContentRef.current,
-        rawContentPreview: rawContent.substring(0, 100) + '...'
-      });
+
 
       // If we didn't find any positions, fall back to displaying them at the end
       if (creationPositions.length === 0) {
-        console.log('🟢 [REFRESH-RENDER] No positions found - fallback to end display');
-        console.log('🟢 [REFRESH-RENDER] *** EXITING REFRESH RENDER PATH ***');
-        console.log('🎨 [RENDER-END] ===========================================');
+
         return (
           <>
             <ReactMarkdown
@@ -1474,7 +1341,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
 
       // Sort positions to ensure correct order
       creationPositions.sort((a, b) => a.start - b.start);
-      console.log('🟢 [REFRESH-RENDER] Sorted positions:', creationPositions.map(p => ({ start: p.start, end: p.end })));
+
 
       // Now we need to split the displayedContent at those positions
       const contentParts: {isCreation: boolean; content: string; creation?: Creation}[] = [];
@@ -1516,12 +1383,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       }
       
       // Now render each part
-      console.log('🟢 [REFRESH-RENDER] Final content parts:', {
-        totalParts: contentParts.length,
-        partTypes: contentParts.map((p, i) => ({ index: i, isCreation: p.isCreation, contentLength: p.content?.length || 0 }))
-      });
-      console.log('🟢 [REFRESH-RENDER] *** EXITING REFRESH RENDER PATH ***');
-      console.log('🎨 [RENDER-END] ===========================================');
+
       return (
         <>
           {contentParts.map((part, index) => 
