@@ -432,7 +432,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     // Reset streaming state for new chat (since chat IDs are now consistent, no need to preserve)
     setIsStreaming(false);
     setIsThinking(false);
-    accumulatedContentRef.current = '';
+    // Don't clear accumulated content here - wait until after checking for continuation
     userInteractedWithScrollRef.current = false;
 
     fetch(`/api/chat/${chatId}`, {
@@ -510,6 +510,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               chatId: chatId.slice(-8)
             });
             setMessages(historyMessages);
+            // Clear accumulated content only after we've handled continuation
+            accumulatedContentRef.current = '';
             
             // Check if the last message is a user message without response
             // BUT only start background processing if we're not currently streaming AND chat isn't already processing
@@ -1159,7 +1161,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       
       // ISSUE 3 FIX: If background is streaming, restore streaming state
       if (backgroundState?.status === 'streaming' && !isStreaming) {
-        console.log('🚀 [STREAMING-RESTORE] Restoring streaming state from background:', chatId.slice(-8));
+        console.log('🚀 [STREAMING-RESTORE] Restoring streaming state from background:', chatId.slice(-8), {
+          hasCurrentResponse: !!backgroundState.currentResponse,
+          responseLength: backgroundState.currentResponse?.length || 0,
+          responsePreview: backgroundState.currentResponse?.substring(0, 50) || 'EMPTY'
+        });
         setIsStreaming(true);
         
         // Restore accumulated content if any
@@ -1170,9 +1176,19 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
             
             if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
+              // Only update content if background has actual content
+              // This prevents overwriting existing content with empty string
+              const newContent = backgroundState.currentResponse || lastMessage.content;
+              console.log('🔄 [CONTENT-RESTORE] Updating assistant message content:', {
+                chatId: chatId.slice(-8),
+                existingContentLength: lastMessage.content?.length || 0,
+                backgroundContentLength: backgroundState.currentResponse?.length || 0,
+                newContentLength: newContent?.length || 0,
+                willUpdate: backgroundState.currentResponse !== lastMessage.content
+              });
               updatedMessages[lastIndex] = {
                 ...lastMessage,
-                content: backgroundState.currentResponse
+                content: newContent
               };
             } else {
               updatedMessages.push({

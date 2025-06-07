@@ -587,7 +587,11 @@ class ChatManager {
             state.isThinking = false;
           }
           
-          console.log(`📝 [CM-WS] Background chat ${chatId.slice(-8)} streaming chunk, total response: ${state.currentResponse.length} chars`);
+          console.log(`📝 [CM-WS] Background chat ${chatId.slice(-8)} streaming chunk:`, {
+            chunkLength: data.content.length,
+            totalResponse: state.currentResponse.length,
+            preview: state.currentResponse.substring(0, 50) + '...'
+          });
         }
         break;
         
