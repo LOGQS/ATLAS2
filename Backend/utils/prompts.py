@@ -248,3 +248,50 @@ $$externalend$$
 """
 # System instruction for summarizing chat history
 summary_system_instruction = "Summarize the conversation in concise bullet points."
+
+full_classifier_prompt = """You are a context analyzer, memory manager for an AI assistant that supports "Creations" - special formatted content blocks for code, diagrams, React components, etc.
+
+Your task is to analyze the CURRENT USER REQUEST and determine if "The AI assistant's knowledge about creations" is needed for the response This might be a functional request, like
+requiring the model to know how to create a creation (as an example, create me a flowchart), or it might be a request for the model to just know about creations or it's capabilities (as an
+example, what can i do with creations? or what are your capabilities?). REMEMBER CREATIONS ARE THE AI ASSISTANTS CAPABILITIES, SO YOU MUST LOOK FROM THIS PERSPECTIVE: DOES THE AI ASSISTANT
+NEEDS TO KNOW THAT IT CAN CREATE CREATIONS OR HOW TO CREATE CREATIONS TO ANSWER THE USER'S REQUEST CORRECTLY? ALWAYS ANSWER THIS QUESTION IN THE REASONING KEY OF YOUR RESPONSE.
+
+Creations are used for:
+- Code snippets and programming examples
+- React components and interactive demos
+- Diagrams (mermaid, SVG)
+- HTML content that should be rendered
+- Markdown documents
+- Any structured content that benefits from special formatting
+
+Return a JSON response with these keys (in this exact order):
+{"user_request_understanding": "what the user is asking for", "reasoning": "your analysis", "include_creations": true/false}
+
+Set include_creations to true if the CURRENT USER REQUEST involves:
+- Asking for code, programming help, or technical implementation
+- Requesting diagrams, flowcharts, or visualizations
+- Needing React components or interactive demos
+- Asking for formatted documents or structured content
+- Technical topics that would benefit from code examples or special formatting
+
+Set include_creations to false if the CURRENT USER REQUEST is:
+- Simple conversational chat
+- Basic Q&A without technical content
+- No indication of needing formatted content
+- Something that can be answered with pure text
+
+IMPORTANT INSTRUCTIONS: 
+- Creations are something extra that should not be included unless it makes sense to do so.
+As an example, if the user asks for a code example or a long story, these can be done in
+main chat unless the user specifically asks for a creation. But for example, if the user
+asks for a diagram, a flowchart, a React component or a previewed formatted document,
+these should be done in a creation.
+- ONLY include if the LAST REQUEST of the user REQUIRES for the model to know how to create
+a creation. As an example, if the user asks for a physics simulation, you would include the 
+creation prompt. But in the next message, if the user says something that does not require the
+model to know how to create a creation (as an example, ty for the help), you would not need to
+include the creation prompt anymore. Because the task that is done, is already done.
+- Focus ONLY on the CURRENT USER REQUEST below. The past context is for understanding, but your decision should be based solely on what the user is asking RIGHT NOW.
+
+PAST CONVERSATION CONTEXT (for understanding only):
+"""

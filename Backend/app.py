@@ -19,7 +19,7 @@ import tempfile
 from datetime import datetime
 from faster_whisper import WhisperModel
 from pathlib import Path
-from utils.prompts import creations_system_instruction, summary_system_instruction
+from utils.prompts import creations_system_instruction, summary_system_instruction, full_classifier_prompt
 from utils.profile_manager import (
     load_profiles,
     create_profile,
@@ -1122,6 +1122,123 @@ class GeminiToOpenAIAdapter:
         # Extract text from Gemini chunk
         content = getattr(gemini_chunk, 'text', '') if hasattr(gemini_chunk, 'text') else ''
         return MockChunk(content)
+
+def should_include_creations_prompt(messages):
+    """
+    Use gemini-2.0-flash-lite as a classifier to determine if creations prompt should be included
+    Returns True if creations prompt should be included, False otherwise
+    """
+    try:
+        # Skip classifier if no messages or Gemini client not available
+        if not messages or not client:
+            return True  # Default to including creations prompt
+        
+        safe_info("[CLASSIFIER] Starting creations prompt classification")
+        
+        # Build conversation history for the classifier
+        conversation_parts = []
+        current_user_request = ""
+        
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ["user", "assistant"] and content.strip():
+                # Limit content length to avoid too large input
+                truncated_content = content[:500] + "..." if len(content) > 500 else content
+                conversation_parts.append(f"{role.title()}: {truncated_content}")
+                
+                # Keep track of the last user message as the current request
+                if role == "user":
+                    current_user_request = content
+        
+        # Prepare the classifier prompt with clear separation
+        classifier_prompt = full_classifier_prompt
+        
+        # Add past context (excluding the last user message)
+        past_context = "\n".join(conversation_parts[:-1]) if len(conversation_parts) > 1 else "No previous context"
+        
+        # Add current request section
+        current_request_section = f"""
+
+CURRENT USER REQUEST (make your decision based on THIS):
+User: {current_user_request}
+
+Analyze the CURRENT USER REQUEST above and return your JSON response:"""
+        
+        full_prompt = classifier_prompt + past_context + current_request_section
+        
+        # Make the classification request using Gemini native API
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-lite",
+            contents=[full_prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.1,  # Low temperature for consistent classification
+                response_mime_type="application/json"
+            )
+        )
+        
+        if response and response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts') and len(candidate.content.parts) > 0:
+                result_text = candidate.content.parts[0].text.strip()
+                safe_info(f"[CLASSIFIER] Raw response: {result_text[:200]}...")
+                
+                # Extract JSON from potential markdown wrapper (handles both objects and arrays)
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```', result_text, re.DOTALL)
+                if json_match:
+                    result_text = json_match.group(1)
+                    safe_info("[CLASSIFIER] Extracted JSON from markdown wrapper")
+                
+                # Parse the JSON response
+                try:
+                    result = json.loads(result_text)
+                    
+                    # Handle both array and object responses
+                    if isinstance(result, list):
+                        # If it's an array, look for the first object with include_creations
+                        for item in result:
+                            if isinstance(item, dict) and "include_creations" in item:
+                                include_creations = item.get("include_creations", True)
+                                user_understanding = item.get("user_request_understanding", "No understanding provided")
+                                reasoning = item.get("reasoning", "No reasoning provided")
+                                safe_info(f"[CLASSIFIER] Decision from array: include_creations = {include_creations}")
+                                safe_info(f"[CLASSIFIER] User Request Understanding: {user_understanding}")
+                                safe_info(f"[CLASSIFIER] Reasoning: {reasoning}")
+                                return include_creations
+                        # If no valid object found in array, try regex fallback
+                        safe_warning("[CLASSIFIER] No valid object found in JSON array, trying regex fallback")
+                    elif isinstance(result, dict):
+                        include_creations = result.get("include_creations", True)
+                        user_understanding = result.get("user_request_understanding", "No understanding provided")
+                        reasoning = result.get("reasoning", "No reasoning provided")
+                        safe_info(f"[CLASSIFIER] Decision from object: include_creations = {include_creations}")
+                        safe_info(f"[CLASSIFIER] User Request Understanding: {user_understanding}")
+                        safe_info(f"[CLASSIFIER] Reasoning: {reasoning}")
+                        return include_creations
+                    else:
+                        safe_warning(f"[CLASSIFIER] Unexpected JSON type: {type(result)}, trying regex fallback")
+                    
+                except json.JSONDecodeError as e:
+                    safe_warning(f"[CLASSIFIER] Failed to parse JSON response: {e}, trying regex fallback")
+                
+                # Robust regex fallback to find the include_creations value
+                # Look for patterns like "include_creations": true/false or 'include_creations': true/false
+                include_pattern = re.search(r'["\']include_creations["\']\s*:\s*(true|false)', result_text, re.IGNORECASE)
+                if include_pattern:
+                    include_creations = include_pattern.group(1).lower() == 'true'
+                    safe_info(f"[CLASSIFIER] Decision from regex extraction: include_creations = {include_creations}")
+                    return include_creations
+                
+                safe_warning("[CLASSIFIER] Could not extract include_creations value, defaulting to True")
+                return True  # Default to including on extraction failure
+        
+        safe_warning("[CLASSIFIER] No valid response from classifier, defaulting to include")
+        return True  # Default to including if no valid response
+        
+    except Exception as e:
+        safe_warning(f"[CLASSIFIER] Error in classification: {e}")
+        return True  # Default to including on any error
 
 def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None):
     """
@@ -2475,6 +2592,21 @@ def chat():
                             history_for_provider.append({"role": "system", "content": knowledge})
                             safe_debug(f"Added vectorized knowledge to system message ({len(knowledge)} chars)")
                 
+                # Determine if creations prompt should be included
+                include_creations = should_include_creations_prompt(history_for_provider)
+                system_instruction_to_use = creations_system_instruction if include_creations else None
+                
+                # Log which prompts are being attached
+                attached_prompts = []
+                if include_creations:
+                    attached_prompts.append("creations_system_instruction")
+                    safe_info("[CHAT] Including creations system instruction based on classifier decision")
+                else:
+                    safe_info("[CHAT] Excluding creations system instruction based on classifier decision")
+                
+                # Log summary of attached prompts
+                safe_info(f"📎 [PROMPTS] Accepted prompts to attach: {attached_prompts if attached_prompts else ['none']}")
+                
                 # Create response using unified approach
                 safe_debug(f"Using unified interface for model: {model_name}")
                 
@@ -2485,7 +2617,7 @@ def chat():
                     response = create_gemini_chat_with_files(
                         parts, 
                         model_name, 
-                        creations_system_instruction
+                        system_instruction_to_use
                     )
                 else:
                     # Use unified OpenAI-compatible approach for text-only
@@ -2493,7 +2625,7 @@ def chat():
                     response = create_unified_chat_response(
                         history_for_provider,
                         model_name,
-                        creations_system_instruction,
+                        system_instruction_to_use,
                     None,
                     temperature,
                     max_tokens
