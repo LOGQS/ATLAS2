@@ -65,7 +65,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState('gemini-2.5-flash-preview-05-20');
+  const [model, setModel] = useState(() => {
+    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -219,6 +221,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         setImageAnnotationEnabled(JSON.parse(e.newValue));
       } else if (e.key === 'summarizeButtonEnabled' && e.newValue !== null) {
         setShowSummarizeButton(JSON.parse(e.newValue));
+      } else if (e.key === 'defaultModel' && e.newValue !== null) {
+        setModel(e.newValue);
       }
     };
     
@@ -233,6 +237,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         setImageAnnotationEnabled(value);
       } else if (key === 'summarizeButtonEnabled') {
         setShowSummarizeButton(value);
+      } else if (key === 'defaultModel') {
+        setModel(value);
       }
     };
     
@@ -264,12 +270,14 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
       const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
       const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
+      const newDefaultModel = localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
       
       // Use functional updates to avoid stale closure issues
       setShowTtsButton((prev: boolean) => prev !== newTtsButtonEnabled ? newTtsButtonEnabled : prev);
       setShowSttButton((prev: boolean) => prev !== newSttButtonEnabled ? newSttButtonEnabled : prev);
       setImageAnnotationEnabled((prev: boolean) => prev !== newImageAnnotationEnabled ? newImageAnnotationEnabled : prev);
       setShowSummarizeButton((prev: boolean) => prev !== newSummarizeButtonEnabled ? newSummarizeButtonEnabled : prev);
+      setModel((prev: string) => prev !== newDefaultModel ? newDefaultModel : prev);
     };
     
     window.addEventListener('focus', handleFocus);
@@ -1119,7 +1127,27 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           chatManager.markChatAsThinking(chatId);
         }
         
+        // STREAMING FIX: Preserve current streaming content to background before clearing frontend state
+        if (isStreaming && accumulatedContentRef.current) {
+          console.log('📡 [FRONTEND-CLEANUP] Preserving accumulated content to background before frontend cleanup:', {
+            chatId: chatId.slice(-8),
+            contentLength: accumulatedContentRef.current.length,
+            contentPreview: accumulatedContentRef.current.substring(0, 50) + '...'
+          });
+        }
+        
         chatManager.markAsBackgroundStreaming(chatId);
+        
+        // STREAMING FIX: Clean up frontend streaming state when going to background
+        // This prevents interference with the next active chat's streaming
+        if (isStreaming || isThinking) {
+          console.log('🧹 [FRONTEND-CLEANUP] Cleaning up frontend streaming state for inactive chat:', chatId.slice(-8));
+          setIsStreaming(false);
+          setIsThinking(false);
+          setLoading(false);
+          // Keep accumulated content in ref so it can be restored when chat becomes active again
+          // Don't clear accumulatedContentRef.current here - it will be restored from background state
+        }
         
         // Ensure this chat won't trigger auto-switching by marking it as background-only
         console.log('🔒 [BACKGROUND-LOCK] Chat locked to background processing, no auto-switching allowed:', chatId.slice(-8));
@@ -1221,6 +1249,13 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
   // More stable approach to handling SSE data from the server
   const processStreamChunk = (chunk: string) => {
+    // STREAMING FIX: Only process chunks if this chat has an active stream request
+    // Check if we have an active abort controller (meaning this chat initiated the current stream)
+    if (!abortControllerRef.current) {
+      console.log('🚫 [STREAMING-GUARD] Ignoring stream chunk for chat without active request:', chatId.slice(-8));
+      return;
+    }
+    
     // Process each message from the server
     try {
       if (chunk.trim() === '[DONE]') {

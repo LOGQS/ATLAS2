@@ -322,37 +322,22 @@ function App() {
         // Log chat states before making any decisions
         logAllChatStates(`BEFORE-UPDATE-${customEvent.detail.chatId.slice(-8)}`);
         
-        // ENHANCED FIX: Only set as active chat if no active chat AND this is a genuine new chat creation
-        // This prevents auto-switching when background chats complete their streams
-        if (!activeChatId) {
-          // Check if this chat was processing in background - if so, don't auto-switch
-          const backgroundState = chatManager.getBackgroundStatus(customEvent.detail.chatId);
-          const wasBackgroundProcessing = backgroundState && 
-            (backgroundState.status === 'streaming' || 
-             backgroundState.status === 'completed' ||
-             backgroundState.status === 'processing' ||
-             backgroundState.status === 'pending');
-          
-          // Also check if this chat is in our openChatIds - if not, it's likely a new chat
-          const isNewChat = !openChatIds.includes(customEvent.detail.chatId);
-          
-          if (!wasBackgroundProcessing && isNewChat) {
-            console.log(`🎯 [APP-UPDATE] Setting active chat to new updated chat: ${customEvent.detail.chatId.slice(-8)}`);
-            setActiveChatId(customEvent.detail.chatId);
-            // Also add to open chats if it's not there
-            setOpenChatIds(prev => prev.includes(customEvent.detail.chatId) ? prev : [...prev, customEvent.detail.chatId]);
-            // Use setTimeout to log the state after React has processed the state update
-            setTimeout(() => {
-              logAllChatStates(`AFTER-SET-ACTIVE-${customEvent.detail.chatId.slice(-8)}`, customEvent.detail.chatId);
-            }, 0);
-          } else if (wasBackgroundProcessing) {
-            console.log(`🚫 [APP-UPDATE] Preventing auto-switch to background processed chat: ${customEvent.detail.chatId.slice(-8)} (status: ${backgroundState?.status})`);
-          } else if (!isNewChat) {
-            console.log(`🚫 [APP-UPDATE] Preventing auto-switch to existing chat: ${customEvent.detail.chatId.slice(-8)}`);
-          }
+        // STREAMING FIX: Only auto-switch chats during initial app load, never during normal operation
+        // This prevents race conditions when switching chats during active streaming
+        const isInitialLoad = !activeChatId && openChatIds.length === 0;
+        const isNewChat = !openChatIds.includes(customEvent.detail.chatId);
+        
+        if (isInitialLoad && isNewChat) {
+          console.log(`🎯 [APP-UPDATE] Setting active chat on initial load: ${customEvent.detail.chatId.slice(-8)}`);
+          setActiveChatId(customEvent.detail.chatId);
+          setOpenChatIds(prev => prev.includes(customEvent.detail.chatId) ? prev : [...prev, customEvent.detail.chatId]);
+          // Use setTimeout to log the state after React has processed the state update
+          setTimeout(() => {
+            logAllChatStates(`AFTER-SET-ACTIVE-${customEvent.detail.chatId.slice(-8)}`, customEvent.detail.chatId);
+          }, 0);
         } else {
-          // Additional protection: Never auto-switch if there's already an active chat
-          console.log(`🚫 [APP-UPDATE] Preventing auto-switch - already have active chat: ${activeChatId.slice(-8)}, update was for: ${customEvent.detail.chatId.slice(-8)}`);
+          // Never auto-switch during normal operation - prevents streaming interference
+          console.log(`🚫 [APP-UPDATE] Preventing auto-switch - normal operation mode. Active: ${activeChatId?.slice(-8) || 'NONE'}, Update for: ${customEvent.detail.chatId.slice(-8)}, OpenChats: ${openChatIds.length}`);
         }
         
         // Refresh sidebar to show updated chat

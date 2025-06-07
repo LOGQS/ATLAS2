@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import profileManager, { Profile } from '../utils/profileManager';
 
+interface Model {
+  id: string;
+  name: string;
+  description: string;
+}
+
 interface SettingsWindowProps {
   isOpen: boolean;
   onClose: () => void;
@@ -56,6 +62,40 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     return saved ? parseFloat(saved) : 1.0;
   });
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  
+  // Default model setting
+  const [defaultModel, setDefaultModel] = useState(() => {
+    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
+  });
+  
+  // Available models (same as in Chat.tsx)
+  const models: Model[] = [
+    { 
+      id: 'gemini-2.5-flash-preview-05-20', 
+      name: 'Gemini 2.5 Flash',
+      description: 'Fast responses, ideal for simple queries'
+    },
+    { 
+      id: 'gemini-2.5-pro-exp-03-25', 
+      name: 'Gemini 2.5 Pro',
+      description: 'Advanced model with superior reasoning capabilities'
+    },
+    { 
+      id: 'deepseek/deepseek-r1-0528:free', 
+      name: 'DeepSeek R1',
+      description: 'Advanced reasoning model via OpenRouter'
+    },
+    { 
+      id: 'tngtech/deepseek-r1t-chimera:free', 
+      name: 'DeepSeek R1T',
+      description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
+    },
+    { 
+      id: 'llama-3.3-70b-versatile', 
+      name: 'Llama 3.3 70B',
+      description: 'Really fast model via Groq'
+    }
+  ];
   
   // Generation parameters state
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(() => {
@@ -151,6 +191,13 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       detail: { key: 'generationSettings', value: generationSettings } 
     }));
   }, [generationSettings]);
+
+  useEffect(() => {
+    localStorage.setItem('defaultModel', defaultModel);
+    window.dispatchEvent(new CustomEvent('settingsChanged', { 
+      detail: { key: 'defaultModel', value: defaultModel } 
+    }));
+  }, [defaultModel]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -608,6 +655,28 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
               <p className="settings-description">
                 General application settings and preferences.
               </p>
+              
+              <div className="settings-group">
+                <h4>Default Model</h4>
+                
+                <div className="setting-item">
+                  <label className="setting-label-block">
+                    <span>Default Model for New Chats</span>
+                    <select
+                      className="setting-select"
+                      value={defaultModel}
+                      onChange={(e) => setDefaultModel(e.target.value)}
+                    >
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name} - {model.description}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <span className="setting-description">Choose the model that will be selected by default when starting new chats</span>
+                </div>
+              </div>
               
               <div className="settings-group">
                 <h4>Interface Controls</h4>
