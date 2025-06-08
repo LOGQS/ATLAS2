@@ -507,6 +507,39 @@ class CreationManager {
     return true;
   }
 
+  /** Get a creation by title (case insensitive) */
+  public getCreationByTitle(title: string): Creation | undefined {
+    return this.creations.find(c => c.title?.toLowerCase() === title.toLowerCase());
+  }
+
+  /** Edit a creation's content by title */
+  public editCreationByTitle(title: string, content: string, mode: 'replace' | 'append' = 'replace'): Creation | null {
+    const creation = this.getCreationByTitle(title);
+    if (!creation || !creation.id) return null;
+
+    const newContent = mode === 'append' ? creation.content + content : content;
+    this.updateCreation(creation.id, { content: newContent });
+    return creation;
+  }
+
+  /** Replace a specific snippet within a creation by title */
+  public patchCreationByTitle(title: string, target: string, replacement: string): Creation | null {
+    const creation = this.getCreationByTitle(title);
+    if (!creation || !creation.id) return null;
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(target, 'g');
+    } catch {
+      const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regex = new RegExp(escaped, 'g');
+    }
+
+    const newContent = creation.content.replace(regex, replacement);
+    this.updateCreation(creation.id, { content: newContent });
+    return creation;
+  }
+
   /**
    * Remove a creation by ID
    */
