@@ -255,6 +255,18 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     const saved = localStorage.getItem('summarizeButtonEnabled');
     return saved ? JSON.parse(saved) : true;
   });
+  const [geminiCodeExecutionEnabled, setGeminiCodeExecutionEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiCodeExecutionEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [geminiUrlContextEnabled, setGeminiUrlContextEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiUrlContextEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [geminiGroundingEnabled, setGeminiGroundingEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiGroundingEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
   
   // Listen for changes to button visibility settings
   useEffect(() => {
@@ -268,6 +280,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         setImageAnnotationEnabled(JSON.parse(e.newValue));
       } else if (e.key === 'summarizeButtonEnabled' && e.newValue !== null) {
         setShowSummarizeButton(JSON.parse(e.newValue));
+      } else if (e.key === 'geminiCodeExecutionEnabled' && e.newValue !== null) {
+        setGeminiCodeExecutionEnabled(JSON.parse(e.newValue));
+      } else if (e.key === 'geminiUrlContextEnabled' && e.newValue !== null) {
+        setGeminiUrlContextEnabled(JSON.parse(e.newValue));
+      } else if (e.key === 'geminiGroundingEnabled' && e.newValue !== null) {
+        setGeminiGroundingEnabled(JSON.parse(e.newValue));
       } else if (e.key === 'defaultModel' && e.newValue !== null) {
         setModel(e.newValue);
       }
@@ -284,6 +302,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         setImageAnnotationEnabled(value);
       } else if (key === 'summarizeButtonEnabled') {
         setShowSummarizeButton(value);
+      } else if (key === 'geminiCodeExecutionEnabled') {
+        setGeminiCodeExecutionEnabled(value);
+      } else if (key === 'geminiUrlContextEnabled') {
+        setGeminiUrlContextEnabled(value);
+      } else if (key === 'geminiGroundingEnabled') {
+        setGeminiGroundingEnabled(value);
       } else if (key === 'defaultModel') {
         setModel(value);
       }
@@ -381,6 +405,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
       const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
       const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
+      const newGeminiCode = JSON.parse(localStorage.getItem('geminiCodeExecutionEnabled') || 'false');
+      const newGeminiUrl = JSON.parse(localStorage.getItem('geminiUrlContextEnabled') || 'false');
+      const newGeminiGround = JSON.parse(localStorage.getItem('geminiGroundingEnabled') || 'false');
       const newDefaultModel = localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
       
       // Use functional updates to avoid stale closure issues
@@ -388,6 +415,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       setShowSttButton((prev: boolean) => prev !== newSttButtonEnabled ? newSttButtonEnabled : prev);
       setImageAnnotationEnabled((prev: boolean) => prev !== newImageAnnotationEnabled ? newImageAnnotationEnabled : prev);
       setShowSummarizeButton((prev: boolean) => prev !== newSummarizeButtonEnabled ? newSummarizeButtonEnabled : prev);
+      setGeminiCodeExecutionEnabled((prev: boolean) => prev !== newGeminiCode ? newGeminiCode : prev);
+      setGeminiUrlContextEnabled((prev: boolean) => prev !== newGeminiUrl ? newGeminiUrl : prev);
+      setGeminiGroundingEnabled((prev: boolean) => prev !== newGeminiGround ? newGeminiGround : prev);
       setModel((prev: string) => prev !== newDefaultModel ? newDefaultModel : prev);
     };
     
@@ -1988,6 +2018,16 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const activeProfile = localStorage.getItem('atlas_active_profile');
       if (activeProfile) {
         (requestData as { profile?: string } & typeof requestData).profile = activeProfile;
+      }
+
+      if (geminiCodeExecutionEnabled) {
+        (requestData as { code_execution?: boolean } & typeof requestData).code_execution = true;
+      }
+      if (geminiUrlContextEnabled) {
+        (requestData as { url_context?: boolean } & typeof requestData).url_context = true;
+      }
+      if (geminiGroundingEnabled) {
+        (requestData as { grounding?: boolean } & typeof requestData).grounding = true;
       }
       
       // Make the POST request

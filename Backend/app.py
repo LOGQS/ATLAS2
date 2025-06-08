@@ -467,10 +467,13 @@ class BackgroundChatProcessor:
             safe_info(f"Got {len(history_for_provider)} messages in history for provider")
             
             # Create response
-            if supports_file_attachments(model_name) and len(parts) > 1:
+            tools = kwargs.get('tools')
+            use_gemini_native = supports_file_attachments(model_name) and (len(parts) > 1 or tools)
+            if use_gemini_native:
                 safe_info(f"Using create_gemini_chat_with_files")
                 return create_gemini_chat_with_files(
-                    parts, model_name, creations_system_instruction
+                    parts, model_name, creations_system_instruction, tools,
+                    kwargs.get('temperature'), kwargs.get('max_tokens')
                 )
             else:
                 safe_info(f"Using create_unified_chat_response with history of {len(history_for_provider)} messages")
@@ -771,9 +774,18 @@ def handle_start_background_chat(data):
         chat_id = data.get('chat_id')
         messages = data.get('messages', [])
         model_name = data.get('model', settings['model'])
+        tools_list = []
+        if data.get('code_execution'):
+            tools_list.append(types.Tool(code_execution=types.ToolCodeExecution()))
+        if data.get('url_context'):
+            tools_list.append(types.Tool(url_context=types.UrlContext()))
+        if data.get('grounding'):
+            tools_list.append(types.Tool(google_search=types.GoogleSearch()))
+
         kwargs = {
             'temperature': data.get('temperature'),
-            'max_tokens': data.get('max_tokens')
+            'max_tokens': data.get('max_tokens'),
+            'tools': tools_list
         }
         
         if not chat_id or not messages:
@@ -1302,7 +1314,7 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
     # Return the response object that can be iterated over for streaming
     return response
 
-def create_gemini_chat_with_files(parts, model_name, system_instruction=None):
+def create_gemini_chat_with_files(parts, model_name, system_instruction=None, tools=None, temperature=None, max_tokens=None):
     """
     Create a Gemini chat response with files using native API
     Returns OpenAI-compatible format for streaming
@@ -1337,7 +1349,10 @@ def create_gemini_chat_with_files(parts, model_name, system_instruction=None):
     # Configure the model with safety settings and system instruction
     config = types.GenerateContentConfig(
         safety_settings=safety_settings,
-        system_instruction=system_instruction if system_instruction else None
+        system_instruction=system_instruction if system_instruction else None,
+        tools=tools,
+        temperature=float(temperature) if temperature is not None else None,
+        max_output_tokens=int(max_tokens) if max_tokens is not None else None
     )
     
     # For Gemini with files, use the native API with files as parts
@@ -2138,6 +2153,9 @@ def chat():
         cache_id = data.get("cache_id")  # Document cache ID for optimized processing
         temperature = data.get("temperature")
         max_tokens = data.get("max_tokens")
+        code_execution = data.get("code_execution", False)
+        url_context = data.get("url_context", False)
+        grounding = data.get("grounding", False)
         
         safe_info(f"🚀 [CHAT-START] Processing chat request - model: {model_name}, messages: {len(messages)}, cache_id: {cache_id}")
         
@@ -2167,9 +2185,18 @@ def chat():
         # If background mode is requested, delegate to background processor
         if background_mode and chat_id:
             try:
+                tools_list = []
+                if code_execution:
+                    tools_list.append(types.Tool(code_execution=types.ToolCodeExecution()))
+                if url_context:
+                    tools_list.append(types.Tool(url_context=types.UrlContext()))
+                if grounding:
+                    tools_list.append(types.Tool(google_search=types.GoogleSearch()))
+
                 background_processor.start_background_processing(
                     chat_id, messages, model_name,
-                    temperature=temperature, max_tokens=max_tokens
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools_list
                 )
                 return jsonify({
                     "success": True,
@@ -2646,14 +2673,24 @@ def chat():
                 # Create response using unified approach
                 safe_debug(f"Using unified interface for model: {model_name}")
                 
-                # Check if we need to use Gemini native API for file attachments
-                if supports_file_attachments(model_name) and len(parts) > 1:
-                    # Use Gemini native API for files (parts include text + files)
-                    safe_debug(f"Using Gemini native API with {len(parts)} parts for file support")
+                tools = []
+                if code_execution:
+                    tools.append(types.Tool(code_execution=types.ToolCodeExecution()))
+                if url_context:
+                    tools.append(types.Tool(url_context=types.UrlContext()))
+                if grounding:
+                    tools.append(types.Tool(google_search=types.GoogleSearch()))
+
+                use_gemini_native = supports_file_attachments(model_name) and (len(parts) > 1 or tools)
+                if use_gemini_native:
+                    safe_debug(f"Using Gemini native API with {len(parts)} parts for file/tool support")
                     response = create_gemini_chat_with_files(
-                        parts, 
-                        model_name, 
-                        system_instruction_to_use
+                        parts,
+                        model_name,
+                        system_instruction_to_use,
+                        tools if tools else None,
+                        temperature,
+                        max_tokens
                     )
                 else:
                     # Use unified OpenAI-compatible approach for text-only
@@ -2662,9 +2699,9 @@ def chat():
                         history_for_provider,
                         model_name,
                         system_instruction_to_use,
-                    None,
-                    temperature,
-                    max_tokens
+                        None,
+                        temperature,
+                        max_tokens
                     )
                 
                 # Use raw stream directly (fastest approach)
