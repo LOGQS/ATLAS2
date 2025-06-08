@@ -34,6 +34,7 @@ from utils.profile_manager import (
     get_profile_file_paths,
     should_attach_files_directly,
 )
+from utils.rate_limiter import rate_limiter
 import gc
 import ctypes
 import signal
@@ -888,11 +889,20 @@ DEFAULT_SETTINGS = {
         "hate_speech": "BLOCK_NONE",
         "sexually_explicit": "BLOCK_NONE",
         "dangerous_content": "BLOCK_NONE"
+    },
+    "rate_limits": {
+        "gemini": {"global": {"enabled": False, "rpm": None, "rph": None, "rpd": None, "tpm": None, "tph": None, "tpd": None}, "models": {}},
+        "openrouter": {"global": {"enabled": False, "rpm": None, "rph": None, "rpd": None, "tpm": None, "tph": None, "tpd": None}, "models": {}},
+        "groq": {"global": {"enabled": False, "rpm": None, "rph": None, "rpd": None, "tpm": None, "tph": None, "tpd": None}, "models": {}}
     }
 }
 
 # Global settings
 settings = DEFAULT_SETTINGS.copy()
+
+# Configure rate limiter with default settings
+for provider, limits in settings.get("rate_limits", {}).items():
+    rate_limiter.configure_provider(provider, limits)
 
 def load_whisper_model():
     """
@@ -946,6 +956,61 @@ def supports_file_attachments(model_name):
     Check if the model supports file attachments
     """
     return is_gemini_model(model_name)
+
+# Helper to apply rate limits based on provider
+def apply_rate_limit_for_model(model_name, tokens: int = 0):
+    provider = None
+    if is_gemini_model(model_name):
+        provider = "gemini"
+    elif is_openrouter_model(model_name):
+        provider = "openrouter"
+    elif is_groq_model(model_name):
+        provider = "groq"
+    if provider:
+        rate_limiter.wait(provider, tokens, model_name)
+
+
+def _validate_rate_limits(limits: dict) -> dict:
+    """Validate and normalize rate limit settings."""
+
+    def clean_limits(vals: dict) -> dict:
+        out = {}
+        for k in ["enabled", "rpm", "rph", "rpd", "tpm", "tph", "tpd"]:
+            v = vals.get(k)
+            if k == "enabled":
+                out[k] = bool(v)
+            else:
+                try:
+                    out[k] = int(v) if v is not None and v != "" else None
+                except (TypeError, ValueError):
+                    out[k] = None
+        for low, high in [("rpm", "rph"), ("rph", "rpd")]:
+            l, h = out.get(low), out.get(high)
+            if l is not None and h is not None and h < l:
+                out[high] = l
+        for low, high in [("tpm", "tph"), ("tph", "tpd")]:
+            l, h = out.get(low), out.get(high)
+            if l is not None and h is not None and h < l:
+                out[high] = l
+        return out
+
+    validated = {}
+    for provider, vals in limits.items():
+        if not isinstance(vals, dict):
+            continue
+        prov = {}
+        if "global" in vals or "models" in vals:
+            prov["global"] = clean_limits(vals.get("global", {}))
+            model_clean = {}
+            for m, mvals in vals.get("models", {}).items():
+                if isinstance(mvals, dict):
+                    model_clean[m] = clean_limits(mvals)
+            prov["models"] = model_clean
+        else:
+            prov["global"] = clean_limits(vals)
+            prov["models"] = {}
+        validated[provider] = prov
+    return validated
 
 class UnifiedChatSession:
     """
@@ -1072,6 +1137,7 @@ def generate_chat_summary(messages, model_name):
         full_prompt = "\n\n".join(conversation_parts)
         
         # Use the native Gemini API for summarization
+        apply_rate_limit_for_model(summary_model, 0)
         response = client.models.generate_content(
             model=summary_model,
             contents=[full_prompt],
@@ -1201,6 +1267,7 @@ Analyze the CURRENT USER REQUEST above and return your JSON response:"""
         full_prompt = classifier_prompt + past_context + current_request_section
         
         # Make the classification request using Gemini native API
+        apply_rate_limit_for_model("gemini-2.0-flash-lite", 0)
         response = client.models.generate_content(
             model="gemini-2.0-flash-lite",
             contents=[full_prompt],
@@ -1325,7 +1392,8 @@ def create_unified_chat_response(messages, model_name, system_instruction=None, 
     if is_openrouter_model(model_name):
         params["extra_body"] = {"include_reasoning": True}
     
-    # Use the OpenAI client to create the response
+    # Apply rate limit and create the response
+    apply_rate_limit_for_model(model_name, int(params.get("max_tokens", 0) or 0))
     response = client_for_model.chat.completions.create(**params)
     
     # Return the response object that can be iterated over for streaming
@@ -1378,6 +1446,7 @@ def create_gemini_chat_with_files(parts, model_name, system_instruction=None, to
     )
     
     # For Gemini with files, use the native API with files as parts
+    apply_rate_limit_for_model(model_name, int(max_tokens or 0))
     response = client.models.generate_content_stream(
         model=model_name,
         contents=parts,  # parts contains the array with text and file objects
@@ -1435,7 +1504,8 @@ def create_openai_compatible_chat_response(messages, model_name, system_instruct
     if is_openrouter_model(model_name):
         params["extra_body"] = {"include_reasoning": True}
     
-    # Use the OpenAI client to create the response
+    # Use the OpenAI client with rate limiting
+    apply_rate_limit_for_model(model_name, int(params.get("max_tokens", 0) or 0))
     response = client.chat.completions.create(**params)
     
     # Return the response object that can be iterated over for streaming
@@ -1482,12 +1552,17 @@ def get_settings():
 @app.route("/api/settings", methods=["POST"])
 def update_settings():
     data = request.json
-    
+
     # Update only valid settings
     for key in data:
-        if key in settings:
+        if key == "rate_limits" and isinstance(data[key], dict):
+            validated = _validate_rate_limits(data[key])
+            settings["rate_limits"] = validated
+            for provider, lim in validated.items():
+                rate_limiter.update_limits(provider, lim)
+        elif key in settings:
             settings[key] = data[key]
-    
+
     return jsonify(settings)
 
 # Switch model for an existing chat
@@ -3448,6 +3523,7 @@ def generate_image():
             
         # Use gemini-2.0-flash-exp-image-generation model for image generation with proper config
         safe_debug(f"Generating image with prompt: {prompt[:50]}...", prompt)
+        apply_rate_limit_for_model("gemini-2.0-flash-preview-image-generation", 0)
         response = client.models.generate_content(
             model="gemini-2.0-flash-preview-image-generation",
             contents=prompt,

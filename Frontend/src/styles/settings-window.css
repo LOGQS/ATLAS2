@@ -765,3 +765,37 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
+
+.rate-limit-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.rate-limit-provider {
+  flex: 1 1 150px;
+}
+
+.rate-limit-provider h5 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.rate-limit-models {
+  margin-top: 8px;
+}
+
+.rate-limit-model {
+  margin-bottom: 8px;
+}
+
+.rate-limit-model-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: 16px;
+  margin-top: 4px;
+}

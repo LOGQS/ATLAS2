@@ -7,6 +7,20 @@ interface Model {
   description: string;
 }
 
+interface RateLimitValues {
+  rpm: string;
+  rph: string;
+  rpd: string;
+  tpm: string;
+  tph: string;
+  tpd: string;
+}
+
+interface RateLimitProviderSettings {
+  global: RateLimitValues;
+  models: Record<string, RateLimitValues>;
+}
+
 interface SettingsWindowProps {
   isOpen: boolean;
   onClose: () => void;
@@ -108,13 +122,41 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       description: 'Really fast model via Groq'
     }
   ];
-  
+
+  const providerForModel = (id: string): 'gemini' | 'openrouter' | 'groq' => {
+    if (id.startsWith('gemini-')) return 'gemini';
+    if (id === 'llama-3.3-70b-versatile') return 'groq';
+    return 'openrouter';
+  };
+
+  const providerModels: Record<string, string[]> = {
+    gemini: models.filter(m => providerForModel(m.id) === 'gemini').map(m => m.id),
+    openrouter: models.filter(m => providerForModel(m.id) === 'openrouter').map(m => m.id),
+    groq: models.filter(m => providerForModel(m.id) === 'groq').map(m => m.id)
+  };
+
   // Generation parameters state
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(() => {
     const saved = localStorage.getItem('generationSettings');
     return saved ? JSON.parse(saved) : {
       temperature: undefined,
       maxTokens: undefined,
+    };
+  });
+
+  // Rate limit settings
+  const [rateLimitsEnabled, setRateLimitsEnabled] = useState(() => {
+    const saved = localStorage.getItem('rateLimitsEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const emptyLimits = { rpm: '', rph: '', rpd: '', tpm: '', tph: '', tpd: '' };
+  const [rateLimitSettings, setRateLimitSettings] = useState<Record<string, RateLimitProviderSettings>>(() => {
+    const saved = localStorage.getItem('rateLimitSettings');
+    if (saved) return JSON.parse(saved);
+    return {
+      gemini: { global: { ...emptyLimits }, models: {} },
+      openrouter: { global: { ...emptyLimits }, models: {} },
+      groq: { global: { ...emptyLimits }, models: {} }
     };
   });
   
@@ -227,10 +269,58 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     localStorage.setItem('defaultModel', defaultModel);
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'defaultModel', value: defaultModel } 
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'defaultModel', value: defaultModel }
     }));
   }, [defaultModel]);
+
+  useEffect(() => {
+    localStorage.setItem('rateLimitsEnabled', JSON.stringify(rateLimitsEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'rateLimitsEnabled', value: rateLimitsEnabled }
+    }));
+    const payload: Record<string, any> = {};
+    Object.keys(rateLimitSettings).forEach(prov => {
+      const p = rateLimitSettings[prov];
+      const models: Record<string, any> = {};
+      Object.keys(p.models).forEach(m => {
+        models[m] = { ...p.models[m], enabled: rateLimitsEnabled };
+      });
+      payload[prov] = {
+        global: { ...p.global, enabled: rateLimitsEnabled },
+        models
+      };
+    });
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rate_limits: payload })
+    }).catch(() => {});
+  }, [rateLimitsEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('rateLimitSettings', JSON.stringify(rateLimitSettings));
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'rateLimitSettings', value: rateLimitSettings }
+    }));
+    const payload: Record<string, any> = {};
+    Object.keys(rateLimitSettings).forEach(prov => {
+      const p = rateLimitSettings[prov];
+      const models: Record<string, any> = {};
+      Object.keys(p.models).forEach(m => {
+        models[m] = { ...p.models[m], enabled: rateLimitsEnabled };
+      });
+      payload[prov] = {
+        global: { ...p.global, enabled: rateLimitsEnabled },
+        models
+      };
+    });
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rate_limits: payload })
+    }).catch(() => {});
+  }, [rateLimitSettings]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -427,12 +517,44 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     setEditingMaxTokens(false);
   };
 
+  const handleRateLimitChange = (
+    provider: string,
+    scope: 'global' | 'model',
+    field: string,
+    value: string,
+    modelId?: string
+  ) => {
+    setRateLimitSettings(prev => {
+      const p = { ...prev[provider] };
+      if (scope === 'global') {
+        p.global = { ...p.global, [field]: value };
+      } else if (modelId) {
+        p.models = { ...p.models, [modelId]: { ...(p.models[modelId] || emptyLimits), [field]: value } };
+      }
+      return { ...prev, [provider]: p };
+    });
+  };
+
   const handleTemperatureKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleTemperatureInputSubmit();
     } else if (e.key === 'Escape') {
       setEditingTemperature(false);
     }
+  };
+
+  const handleModelToggle = (provider: string, modelId: string, enabled: boolean) => {
+    setRateLimitSettings(prev => {
+      const p = { ...prev[provider] };
+      if (enabled) {
+        p.models = { ...p.models, [modelId]: p.models[modelId] || { ...emptyLimits } };
+      } else {
+        const modelsCopy = { ...p.models };
+        delete modelsCopy[modelId];
+        p.models = modelsCopy;
+      }
+      return { ...prev, [provider]: p };
+    });
   };
 
   const handleMaxTokensKeyDown = (e: React.KeyboardEvent) => {
@@ -965,6 +1087,79 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                     </label>
                     <span className="setting-description">Maximum number of tokens in the response. Higher values allow longer responses.</span>
                   </div>
+                </div>
+              )}
+
+              {rateLimitsEnabled !== undefined && (
+                <div className="settings-group">
+                  <h4>Rate Limits</h4>
+                  <div className="setting-item">
+                    <label className="setting-label">
+                      <input
+                        type="checkbox"
+                        checked={rateLimitsEnabled}
+                        onChange={(e) => setRateLimitsEnabled(e.target.checked)}
+                      />
+                      <span>Enable Rate Limiting</span>
+                    </label>
+                    <span className="setting-description">Queue requests when limits are exceeded</span>
+                  </div>
+                  {rateLimitsEnabled && (
+                    <div className="rate-limit-settings">
+                      {['gemini','openrouter','groq'].map((prov) => (
+                        <div key={prov} className="rate-limit-provider">
+                          <h5>{prov.charAt(0).toUpperCase() + prov.slice(1)}</h5>
+                          {['rpm','rph','rpd','tpm','tph','tpd'].map((field) => (
+                            <div key={field} className="setting-item">
+                              <label className="setting-label-block">
+                                <span>{field.toUpperCase()}</span>
+                                <input
+                                  type="number"
+                                  className="parameter-edit-input"
+                                  value={rateLimitSettings[prov].global[field]}
+                                  onChange={(e) => handleRateLimitChange(prov, 'global', field, e.target.value)}
+                                />
+                              </label>
+                            </div>
+                          ))}
+                          <div className="rate-limit-models">
+                            {providerModels[prov].map((mId) => {
+                              const checked = mId in rateLimitSettings[prov].models;
+                              return (
+                                <div key={mId} className="rate-limit-model">
+                                  <label className="setting-label">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={(e) => handleModelToggle(prov, mId, e.target.checked)}
+                                    />
+                                    <span>{models.find(m => m.id === mId)?.name || mId}</span>
+                                  </label>
+                                  {checked && (
+                                    <div className="rate-limit-model-fields">
+                                      {['rpm','rph','rpd','tpm','tph','tpd'].map((field) => (
+                                        <div key={field} className="setting-item">
+                                          <label className="setting-label-block">
+                                            <span>{field.toUpperCase()}</span>
+                                            <input
+                                              type="number"
+                                              className="parameter-edit-input"
+                                              value={rateLimitSettings[prov].models[mId][field]}
+                                              onChange={(e) => handleRateLimitChange(prov, 'model', field, e.target.value, mId)}
+                                            />
+                                          </label>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
