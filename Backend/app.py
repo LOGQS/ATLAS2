@@ -3051,9 +3051,23 @@ def chat():
                         # Get formatted messages for saving to file
                         formatted_messages = chat.unified_history.copy()
 
+                        # Load existing chat history to preserve attachments
+                        existing_messages = []
+                        try:
+                            data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+                            chats_file = data_dir / "chats.json"
+                            if chats_file.exists():
+                                with open(chats_file, "r", encoding="utf-8") as f:
+                                    existing_history = json.load(f)
+                                chat_entry = next((c for c in existing_history.get("chats", []) if c.get("id") == chat_id), None)
+                                if chat_entry:
+                                    existing_messages = chat_entry.get("messages", [])
+                        except Exception as e:
+                            safe_warning(f"Failed to load existing chat history for attachments: {e}")
+
                         # Convert to the format expected by the frontend while preserving metadata
                         simplified_messages = []
-                        for msg in formatted_messages:
+                        for idx, msg in enumerate(formatted_messages):
                             simplified_msg = {
                                 "role": msg["role"],
                                 "content": msg["content"],
@@ -3062,6 +3076,11 @@ def chat():
                             }
                             if "reasoning" in msg:
                                 simplified_msg["reasoning"] = msg["reasoning"]
+                            # Preserve any existing attachments for this message
+                            if idx < len(existing_messages):
+                                existing_att = existing_messages[idx].get("attachments")
+                                if existing_att:
+                                    simplified_msg["attachments"] = existing_att
                             simplified_messages.append(simplified_msg)
                         
                         safe_debug(f"Unified chat {chat_id} history after response - length: {len(simplified_messages)}")
