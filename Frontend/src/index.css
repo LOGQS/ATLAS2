@@ -428,6 +428,37 @@ button:focus-visible {
   color: white;
 }
 
+.message-wrapper {
+  position: relative;
+}
+
+.message-actions {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.message-wrapper:hover .message-actions {
+  opacity: 1;
+}
+
+.message-action-btn {
+  background: transparent;
+  border: none;
+  color: #e8eaed;
+  padding: 0.25rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.message-action-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* Streaming message styling */
 .streaming-message::after {
   content: '|';

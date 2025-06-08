@@ -296,6 +296,70 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     };
   }, []);
 
+  const applyHistoryUpdate = (newMessages: ChatMessage[]) => {
+    setMessages(newMessages);
+    setLoading(false);
+    setIsStreaming(false);
+    setIsThinking(false);
+  };
+
+  const handleEditMessageAction = async (index: number) => {
+    const original = messages[index];
+    const edited = window.prompt('Edit message', original.content);
+    if (edited === null || !chatId) return;
+    try {
+      const res = await fetch(`/api/chats/${chatId}/messages/${index}/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: edited })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        applyHistoryUpdate(data.messages);
+        setInput(edited);
+        setAttachments(original.attachments || []);
+        handleSend();
+      } else {
+        alert(data.error || 'Failed to edit message');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteMessageAction = async (index: number) => {
+    if (!chatId || !window.confirm('Delete this message and all following?')) return;
+    try {
+      const res = await fetch(`/api/chats/${chatId}/messages/${index}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        applyHistoryUpdate(data.messages);
+      } else {
+        alert(data.error || 'Failed to delete');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleRefreshMessageAction = async (index: number) => {
+    if (!chatId) return;
+    try {
+      const res = await fetch(`/api/chats/${chatId}/messages/${index}/refresh`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        applyHistoryUpdate(data.messages);
+        setInput(data.refresh_content || '');
+        setAttachments(messages[index].attachments || []);
+        handleSend();
+      } else {
+        alert(data.error || 'Failed to refresh');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // State for enabling or disabling text-to-speech output
   const [ttsEnabled, setTtsEnabled] = useState(() => {
     const saved = localStorage.getItem('ttsEnabled');
@@ -2977,15 +3041,18 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               messages[index - 1]?.role === 'user'; // Make sure it's paired with the previous user message
           
           return (
-            <Message 
-              key={`message-${index}`} 
-              content={message.content} 
+            <Message
+              key={`message-${index}`}
+              content={message.content}
               isUser={message.role === 'user'}
               isStreaming={isCurrentlyStreaming}
               isThinking={isCurrentlyThinking}
               attachments={message.attachments}
               isHistoryMessage={message.isHistory} // Add this flag to indicate this is from chat history
               reasoning={message.reasoning} // Pass reasoning tokens to Message component
+              onEdit={message.role === 'user' ? () => handleEditMessageAction(index) : undefined}
+              onDelete={message.role === 'user' ? () => handleDeleteMessageAction(index) : undefined}
+              onRefresh={message.role === 'assistant' ? () => handleRefreshMessageAction(index - 1) : undefined}
             />
           );
         })}

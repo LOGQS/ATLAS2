@@ -4183,6 +4183,226 @@ def update_message_tags(chat_id, msg_index):
         safe_exception(f"Error updating message tags: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
+# New endpoints for message editing, deletion, and refresh with versioning
+
+@app.route("/api/chats/<chat_id>/messages/<int:msg_index>/edit", methods=["POST"])
+def edit_message(chat_id, msg_index):
+    """Edit a user message at the given index and truncate history"""
+    try:
+        data = request.json or {}
+        new_content = data.get("content")
+        if new_content is None:
+            return jsonify({"error": "No content provided"}), 400
+
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        messages = chat_entry.get("messages", [])
+        if msg_index < 0 or msg_index >= len(messages):
+            return jsonify({"error": "Invalid message index"}), 400
+
+        # Save current messages as a version before modifying
+        versions = chat_entry.setdefault("versions", [])
+        versions.append({
+            "timestamp": datetime.now().isoformat(),
+            "messages": messages,
+            "action": "edit",
+            "index": msg_index
+        })
+
+        # Truncate history before the edited message
+        truncated = messages[:msg_index]
+        chat_entry["messages"] = truncated
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        # Update active chat if loaded
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            chat.unified_history = truncated
+            chat.last_updated = time.time()
+
+        return jsonify({"success": True, "messages": truncated, "new_content": new_content})
+    except Exception as e:
+        safe_exception(f"Error editing message: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<chat_id>/messages/<int:msg_index>", methods=["DELETE"])
+def delete_messages(chat_id, msg_index):
+    """Delete messages starting from the given index"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        messages = chat_entry.get("messages", [])
+        if msg_index < 0 or msg_index > len(messages):
+            return jsonify({"error": "Invalid message index"}), 400
+
+        versions = chat_entry.setdefault("versions", [])
+        versions.append({
+            "timestamp": datetime.now().isoformat(),
+            "messages": messages,
+            "action": "delete",
+            "index": msg_index
+        })
+
+        truncated = messages[:msg_index]
+        chat_entry["messages"] = truncated
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            chat.unified_history = truncated
+            chat.last_updated = time.time()
+
+        return jsonify({"success": True, "messages": truncated})
+    except Exception as e:
+        safe_exception(f"Error deleting messages: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<chat_id>/messages/<int:msg_index>/refresh", methods=["POST"])
+def refresh_message(chat_id, msg_index):
+    """Refresh the model response starting from a user message"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        messages = chat_entry.get("messages", [])
+        if msg_index < 0 or msg_index >= len(messages):
+            return jsonify({"error": "Invalid message index"}), 400
+
+        user_msg = messages[msg_index]
+        if user_msg.get("role") != "user":
+            return jsonify({"error": "Can only refresh user messages"}), 400
+
+        versions = chat_entry.setdefault("versions", [])
+        versions.append({
+            "timestamp": datetime.now().isoformat(),
+            "messages": messages,
+            "action": "refresh",
+            "index": msg_index
+        })
+
+        truncated = messages[:msg_index]
+        chat_entry["messages"] = truncated
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            chat.unified_history = truncated
+            chat.last_updated = time.time()
+
+        return jsonify({"success": True, "messages": truncated, "refresh_content": user_msg.get("content", "")})
+    except Exception as e:
+        safe_exception(f"Error refreshing message: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<chat_id>/versions", methods=["GET"])
+def list_chat_versions(chat_id):
+    """List saved versions for a chat"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        versions = chat_entry.get("versions", [])
+        return jsonify({"versions": versions})
+    except Exception as e:
+        safe_exception(f"Error listing versions: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<chat_id>/versions/<int:version_index>/restore", methods=["POST"])
+def restore_chat_version(chat_id, version_index):
+    """Restore a specific version of a chat"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        versions = chat_entry.get("versions", [])
+        if version_index < 0 or version_index >= len(versions):
+            return jsonify({"error": "Invalid version index"}), 400
+
+        current_messages = chat_entry.get("messages", [])
+        versions.append({
+            "timestamp": datetime.now().isoformat(),
+            "messages": current_messages,
+            "action": "restore",
+            "index": version_index
+        })
+
+        restored_messages = versions[version_index]["messages"]
+        chat_entry["messages"] = restored_messages
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        if chat_id in active_chats:
+            chat = active_chats[chat_id]
+            chat.unified_history = restored_messages
+            chat.last_updated = time.time()
+
+        return jsonify({"success": True, "messages": restored_messages})
+    except Exception as e:
+        safe_exception(f"Error restoring version: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
 # Add endpoint to create a new chat entry in history without starting a conversation
 @app.route("/api/chats/create", methods=["POST"])
 def create_chat_entry():

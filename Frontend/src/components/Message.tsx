@@ -109,6 +109,9 @@ interface MessageProps {
   attachments?: FileAttachment[];
   isHistoryMessage?: boolean;
   reasoning?: string;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  onRefresh?: () => void;
 }
 
 // New interface for tracking streamed creation state
@@ -122,9 +125,10 @@ interface StreamedCreation {
   forwarded: number;   // NEW – bytes already sent to the creation window
 }
 
-const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning }) => {
+const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning, onEdit, onDelete, onRefresh }) => {
   const isMountedRef = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [isHovered, setIsHovered] = useState(false);
   const [copied, setCopied] = useState(false);
   const [codeBlockCopied, setCodeBlockCopied] = useState<{[key: string]: boolean}>({});
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
@@ -2146,8 +2150,44 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
 
   return (
     <>
-    <div className="message-wrapper">
+    <div
+      className="message-wrapper"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
       <div className={getMessageClass()}>
+        {isHovered && (
+          <div className="message-actions">
+            {isUser ? (
+              <>
+                {onEdit && (
+                  <button className="message-action-btn" onClick={onEdit} title="Edit message">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+                      <path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" />
+                      <path fillRule="evenodd" d="M2 15.5A1.5 1.5 0 003.5 17h13a.5.5 0 000-1h-13a.5.5 0 01-.5-.5v-13a.5.5 0 00-1 0v13z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                )}
+                {onDelete && (
+                  <button className="message-action-btn" onClick={onDelete} title="Delete to here">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+                      <path d="M6 2a1 1 0 00-1 1v1H3.5a.5.5 0 000 1h13a.5.5 0 000-1H15V3a1 1 0 00-1-1H6z" />
+                      <path d="M5 6a1 1 0 011-1h8a1 1 0 011 1v9a2 2 0 01-2 2H7a2 2 0 01-2-2V6z" />
+                    </svg>
+                  </button>
+                )}
+              </>
+            ) : (
+              onRefresh && (
+                <button className="message-action-btn" onClick={onRefresh} title="Refresh">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+                    <path d="M3 10a7 7 0 0112-4.9V3a1 1 0 112 0v5h-5a1 1 0 110-2h2.026A5 5 0 105 10a1 1 0 11-2 0z" />
+                  </svg>
+                </button>
+              )
+            )}
+          </div>
+        )}
         {!isUser && !isThinking && showCopyButton && (
           <button 
             className="copy-button" 
