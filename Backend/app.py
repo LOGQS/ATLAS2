@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import logging
 import time
 import subprocess
@@ -21,7 +20,7 @@ import tempfile
 from datetime import datetime
 from faster_whisper import WhisperModel
 from pathlib import Path
-from utils.prompts import creations_system_instruction, summary_system_instruction, full_classifier_prompt
+from utils.prompts import creations_system_instruction, summary_system_instruction, full_classifier_prompt, image_generation_prompt
 from utils.profile_manager import (
     load_profiles,
     create_profile,
@@ -282,7 +281,15 @@ app = Flask(__name__)
 CORS(app)
 
 # Initialize SocketIO for real-time communication
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='threading',
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=30,
+    ping_interval=10
+)
 
 # Background chat processing system
 class BackgroundChatProcessor:
@@ -608,6 +615,17 @@ app.logger.handlers = []
 for handler in logger.handlers:
     app.logger.addHandler(handler)
 app.logger.setLevel(logging.DEBUG)
+
+# Add error handler to catch WSGI errors
+@app.errorhandler(500)
+def handle_internal_error(error):
+    safe_error(f"Internal server error: {error}")
+    return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    safe_error(f"Unhandled exception: {error}")
+    return jsonify({"error": "An unexpected error occurred"}), 500
 
 # Ensure data directory exists at startup
 data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
@@ -1344,10 +1362,69 @@ Analyze the CURRENT USER REQUEST above and return your JSON response:"""
         safe_warning(f"[CLASSIFIER] Error in classification: {e}")
         return {"include_creations": True, "include_image_generation": False}
 
-def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None):
+def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None, tools=None):
     """
     Create a chat response using unified OpenAI-compatible APIs for all providers
     """
+    # If tools are provided for Gemini models, use native Gemini API
+    if tools and is_gemini_model(model_name):
+        contents = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            if role == "user":
+                contents.append(types.Content(role="user", parts=[types.Part(text=content)]))
+            elif role == "assistant":
+                contents.append(types.Content(role="model", parts=[types.Part(text=content)]))
+        
+        # Prepare safety settings
+        safety_settings = []
+        if settings.get("safety_settings"):
+            safety_settings = [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": settings.get("safety_settings", {}).get("harassment", "BLOCK_NONE")
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                    "threshold": settings.get("safety_settings", {}).get("hate_speech", "BLOCK_NONE")
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": settings.get("safety_settings", {}).get("sexually_explicit", "BLOCK_NONE")
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": settings.get("safety_settings", {}).get("dangerous_content", "BLOCK_NONE")
+                }
+            ]
+
+        # Configure the model with safety settings and system instruction
+        thinking_conf = None
+        if is_gemini_25_model(model_name):
+            thinking_conf = types.ThinkingConfig(include_thoughts=True)
+
+        config = types.GenerateContentConfig(
+            safety_settings=safety_settings,
+            system_instruction=system_instruction if system_instruction else None,
+            tools=tools,
+            temperature=float(temperature) if temperature is not None else None,
+            max_output_tokens=int(max_tokens) if max_tokens is not None else None,
+            thinking_config=thinking_conf
+        )
+        
+        # Apply rate limiting and create the response using native Gemini API
+        apply_rate_limit_for_model(model_name, int(max_tokens or 0))
+        response = client.models.generate_content_stream(
+            model=model_name,
+            contents=contents,
+            config=config
+        )
+        
+        # Wrap Gemini response to be OpenAI-compatible
+        return GeminiToOpenAIAdapter(response)
+    
     client_for_model = get_openai_client_for_model(model_name)
     
     # Convert messages to OpenAI format
@@ -2778,9 +2855,9 @@ def chat():
                 if grounding:
                     tools.append(types.Tool(google_search=types.GoogleSearch()))
 
-                use_gemini_native = supports_file_attachments(model_name) and (len(parts) > 1 or tools)
+                use_gemini_native = supports_file_attachments(model_name) and len(parts) > 1 and not tools
                 if use_gemini_native:
-                    safe_debug(f"Using Gemini native API with {len(parts)} parts for file/tool support")
+                    safe_debug(f"Using Gemini native API with {len(parts)} parts for file support (no tools)")
                     response = create_gemini_chat_with_files(
                         parts,
                         model_name,
@@ -2790,7 +2867,7 @@ def chat():
                         max_tokens
                     )
                 else:
-                    # Use unified OpenAI-compatible approach for text-only
+                    # Use unified approach for text-only OR when tools are present (to preserve chat history)
                     safe_debug(f"Using unified OpenAI-compatible API for text-only chat")
                     response = create_unified_chat_response(
                         history_for_provider,
@@ -2798,7 +2875,8 @@ def chat():
                         system_instruction_to_use,
                         None,
                         temperature,
-                        max_tokens
+                        max_tokens,
+                        tools if tools else None
                     )
                 
                 # Use raw stream directly (fastest approach)
@@ -2841,7 +2919,7 @@ def chat():
                         }
                         safe_info(f"✉️ [METADATA] Created metadata event: {metadata_event}")
                         try:
-                            json_data = json.dumps(metadata_event)
+                            json_data = json.dumps(metadata_event, ensure_ascii=False)
                             yield f"data: {json_data}\n\n"
                             safe_info(f"📤 [CHAT-INIT] ✅ Successfully sent chat metadata as first event: {chat_id}")
                         except (UnicodeEncodeError, json.JSONDecodeError) as e:
@@ -2855,7 +2933,7 @@ def chat():
                             'is_new_chat': False
                         }
                         try:
-                            json_data = json.dumps(resume_event)
+                            json_data = json.dumps(resume_event, ensure_ascii=False)
                             yield f"data: {json_data}\n\n"
                             safe_debug(f"[CHAT-RESUME] Sent chat resume metadata: {chat_id}")
                         except (UnicodeEncodeError, json.JSONDecodeError) as e:
@@ -2884,7 +2962,7 @@ def chat():
                                     accumulated_reasoning += delta.reasoning
                                     safe_debug(f"[REASONING] Backend sending reasoning chunk: {delta.reasoning[:100]}...")
                                     try:
-                                        json_data = json.dumps(reasoning_data)
+                                        json_data = json.dumps(reasoning_data, ensure_ascii=False)
                                         yield f"data: {json_data}\n\n"
                                     except (UnicodeEncodeError, json.JSONDecodeError) as e:
                                         safe_warning(f"Error encoding reasoning chunk: {str(e)}")
@@ -2893,7 +2971,7 @@ def chat():
                                 if hasattr(delta, 'thought') and delta.thought and is_gemini_model(model_name):
                                     thought_data = {'thought': delta.thought, 'chat_id': chat_id}
                                     try:
-                                        json_data = json.dumps(thought_data)
+                                        json_data = json.dumps(thought_data, ensure_ascii=False)
                                         yield f"data: {json_data}\n\n"
                                     except (UnicodeEncodeError, json.JSONDecodeError) as e:
                                         safe_warning(f"Error encoding thought chunk: {str(e)}")
@@ -2907,8 +2985,9 @@ def chat():
                                 # Safely encode the chunk to prevent JSON errors
                                 chunk_data = {'chunk': chunk_text, 'chat_id': chat_id}
                                 try:
-                                    json_data = json.dumps(chunk_data)
-                                    yield f"data: {json_data}\n\n"
+                                    json_data = json.dumps(chunk_data, ensure_ascii=False)
+                                    data_line = f"data: {json_data}\n\n"
+                                    yield data_line
                                     
                                     # Save incremental update every 500 characters to reduce I/O
                                     if len(assistant_response) % 500 == 0 and len(assistant_response) > 0:
@@ -2946,10 +3025,10 @@ def chat():
                                     # Handle Unicode encoding errors by replacing problematic characters
                                     safe_text = chunk_text.encode('utf-8', errors='replace').decode('utf-8')
                                     safe_warning(f"Unicode encoding error in response chunk: {str(ue)}", safe_text)
-                                    yield f"data: {json.dumps({'chunk': safe_text, 'chat_id': chat_id})}\n\n"
+                                    yield f"data: {json.dumps({'chunk': safe_text, 'chat_id': chat_id}, ensure_ascii=False)}\n\n"
                                 except json.JSONDecodeError as je:
                                     safe_error(f"JSON decode error in response chunk: {str(je)}", je)
-                                    yield f"data: {json.dumps({'error': 'Error encoding response chunk', 'chat_id': chat_id})}\n\n"
+                                    yield f"data: {json.dumps({'error': 'Error encoding response chunk', 'chat_id': chat_id}, ensure_ascii=False)}\n\n"
                         except json.JSONDecodeError as je:
                             safe_error(f"JSON decode error in response chunk: {str(je)}", je)
                             # Send a safe error message
@@ -3051,18 +3130,22 @@ def chat():
                     except Exception as e:
                         safe_error(f"Error getting history after response: {str(e)}", e)
                     
-                    yield f"data: {json.dumps({'done': True, 'chat_id': chat_id})}\n\n"
+                    yield f"data: {json.dumps({'done': True, 'chat_id': chat_id}, ensure_ascii=False)}\n\n"
                 
                 # Catch any errors that might occur during the entire streaming process
                 except json.JSONDecodeError as je:
                     safe_error(f"JSON decode error in streaming response: {str(je)}", je)
-                    yield f"data: {json.dumps({'error': 'JSON decode error in streaming response', 'chat_id': chat_id, 'done': True})}\n\n"
+                    yield f"data: {json.dumps({'error': 'JSON decode error in streaming response', 'chat_id': chat_id, 'done': True}, ensure_ascii=False)}\n\n"
                 except Exception as e:
                     safe_error(f"Error in streaming response: {str(e)}", e)
-                    yield f"data: {json.dumps({'error': str(e), 'chat_id': chat_id, 'done': True})}\n\n"
+                    yield f"data: {json.dumps({'error': str(e), 'chat_id': chat_id, 'done': True}, ensure_ascii=False)}\n\n"
             
             safe_info(f"🌊 [RETURN] Returning streaming Response with generate() function")
-            return Response(stream_with_context(generate()), content_type='text/event-stream')
+            response = Response(stream_with_context(generate()), content_type='text/event-stream')
+            response.headers.set('Cache-Control', 'no-cache')
+            response.headers.set('Connection', 'keep-alive')
+            response.headers.set('X-Accel-Buffering', 'no')
+            return response
         else:
             safe_warning(f"❌ [USER-MSG] No user message content found - returning error")
             return jsonify({"error": "No user message provided"}), 400
@@ -3479,7 +3562,7 @@ def condense_chat(chat_id):
         safe_exception(f"Error condensing chat {chat_id}: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
-# Generate image endpoint
+# Fixed generate_image function
 @app.route("/api/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -3489,105 +3572,188 @@ def generate_image():
         message_index = data.get("message_index")
         file_id = data.get("file_id")
         
+        # New parameters for Pollinations.AI
+        model = data.get("model", "flux")
+        width = data.get("width", 1024)
+        height = data.get("height", 1024)
+        enhance = data.get("enhance", True)
+        
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
         
-        # Use safety settings from global settings
-        safety_settings = []
-        if settings.get("safety_settings"):
-            safety_settings = [
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": settings.get("safety_settings", {}).get("harassment", "BLOCK_NONE")
-                },
-                {
-                    "category": "HARM_CATEGORY_HATE_SPEECH",
-                    "threshold": settings.get("safety_settings", {}).get("hate_speech", "BLOCK_NONE")
-                },
-                {
-                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "threshold": settings.get("safety_settings", {}).get("sexually_explicit", "BLOCK_NONE")
-                },
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": settings.get("safety_settings", {}).get("dangerous_content", "BLOCK_NONE")
-                }
-            ]
+        # Validate model
+        valid_models = ["flux", "flux-realism", "flux-anime", "flux-3d", "flux-cablyai", "any-dark", "turbo"]
+        if model not in valid_models:
+            model = "flux"
             
-        # Create configuration with proper comma placement
-        config = types.GenerateContentConfig(
-            response_modalities=["TEXT", "IMAGE"],
-            safety_settings=safety_settings,
-            system_instruction=image_generation_prompt
-        )
-            
-        # Use gemini-2.0-flash-exp-image-generation model for image generation with proper config
-        safe_debug(f"Generating image with prompt: {prompt[:50]}...", prompt)
-        apply_rate_limit_for_model("gemini-2.0-flash-preview-image-generation", 0)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-preview-image-generation",
-            contents=prompt,
-            config=config
-        )
+        # Generate image using Pollinations.AI
+        safe_debug(f"Generating image with prompt: {prompt[:50]}...", {
+            "model": model,
+            "dimensions": f"{width}x{height}",
+            "enhance": enhance
+        })
         
-        result = {
-            "text": "",
-            "images": []
-        }
+        # Build URL with parameters
+        base_url = "https://image.pollinations.ai/prompt"
+        encoded_prompt = requests.utils.quote(prompt)
         
-        # Process the parts to extract text and images
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'text') and part.text is not None:
-                result["text"] += part.text
-            elif hasattr(part, 'inline_data') and part.inline_data is not None:
-                image_data = part.inline_data.data
-                mime = part.inline_data.mime_type or "image/png"
-                filename = file_id if file_id else f"{uuid.uuid4().hex}.png"
-                file_path = img_dir / filename
+        # Try different URL formats based on what works
+        url_formats = [
+            # Format 1: Standard with encoded prompt in path
+            (f"{base_url}/{encoded_prompt}", {
+                "model": model,
+                "width": width,
+                "height": height,
+                "nologo": "false",
+                "enhance": str(enhance).lower()
+            }),
+            # Format 2: Simpler format with just dimensions
+            (f"{base_url}/{encoded_prompt}", {
+                "width": width,
+                "height": height
+            }),
+            # Format 3: Most basic format
+            (f"{base_url}/{encoded_prompt}", {})
+        ]
+        
+        # Retry logic with different URL formats
+        result = None
+        last_error = None
+        
+        for url, params in url_formats:
+            for attempt in range(2):  # 2 attempts per format
                 try:
-                    img = Image.open(BytesIO(image_data))
-                    img.save(file_path)
-                except Exception:
-                    with open(file_path, "wb") as f:
-                        f.write(image_data)
-                result["images"].append({
-                    "url": f"/api/images/{filename}",
-                    "mime_type": mime,
-                    "file_id": filename
-                })
-
-                # Update chat history if chat_id and message_index provided
-                if chat_id is not None and message_index is not None:
-                    try:
-                        chats_file = data_dir / "chats.json"
-                        if chats_file.exists():
-                            with open(chats_file, "r", encoding="utf-8") as f:
-                                chat_history = json.load(f)
+                    # Log the full URL for debugging
+                    full_url = f"{url}?{'&'.join([f'{k}={v}' for k, v in params.items()])}" if params else url
+                    safe_debug(f"Attempting image generation with URL: {full_url}")
+                    
+                    response = requests.get(url, params=params, timeout=30)
+                
+                    # Check if we got a valid image response
+                    if response.status_code == 200 and response.headers.get('content-type', '').startswith('image/'):
+                        # Process the image
+                        image_data = response.content
+                        mime = response.headers.get('content-type', 'image/png')
+                        # Ensure filename has .png extension
+                        if file_id:
+                            filename = file_id if file_id.endswith('.png') else f"{file_id}.png"
                         else:
-                            chat_history = {"chats": []}
+                            filename = f"{uuid.uuid4().hex}.png"
+                        file_path = img_dir / filename
+                        
+                        # Save the image
+                        try:
+                            img = Image.open(BytesIO(image_data))
+                            img.save(file_path, format='PNG')
+                        except Exception as e:
+                            safe_debug(f"PIL save failed, using direct write: {e}")
+                            with open(file_path, "wb") as f:
+                                f.write(image_data)
+                                
+                        result = {
+                            "text": "",
+                            "images": [{
+                                "url": f"/api/images/{filename}",
+                                "mime_type": mime,
+                                "file_id": filename
+                            }]
+                        }
+                        break  # Success - break inner loop
+                    else:
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        if response.status_code >= 500 and attempt == 0:
+                            safe_warning(f"Server error {response.status_code}, retrying...")
+                            time.sleep(1)
+                            continue
+                        
+                except requests.exceptions.Timeout as e:
+                    last_error = f"Timeout: {str(e)}"
+                    if attempt == 0:
+                        safe_warning("Request timeout, retrying...")
+                        time.sleep(1)
+                        continue
+                        
+                except requests.exceptions.RequestException as e:
+                    last_error = f"Request error: {str(e)}"
+                    if "502" in str(e) and attempt == 0:
+                        safe_warning("Gateway error, retrying...")
+                        time.sleep(1)
+                        continue
+                        
+                # If we get here, this format/attempt failed
+                break  # Move to next format
+                
+            if result:
+                break  # Success - break outer loop
+        
+        # If no format worked, raise error
+        if not result:
+            safe_debug(f"All image generation attempts failed. Last error: {last_error}")
+            return jsonify({"error": f"Failed to generate image: {last_error or 'Unknown error'}"}), 500
 
-                        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
-                        if chat_entry:
-                            messages = chat_entry.setdefault("messages", [])
-                            if 0 <= message_index < len(messages):
-                                attachments = messages[message_index].setdefault("attachments", [])
-                                attachments.append({
-                                    "file_id": filename,
-                                    "file_type": "image",
-                                    "mime_type": mime,
-                                    "filename": filename,
-                                    "original_name": filename,
-                                    "local_url": f"/api/images/{filename}"
-                                })
-                                # Replace the first image generation function call with a token
-                                msg_content = messages[message_index].get("content", "")
-                                pattern = re.compile(r"\$\$function_call: image_generation\$\$.*?\$\$function_end\$\$", re.DOTALL)
-                                messages[message_index]["content"], _ = pattern.subn(f"[[IMAGE:{filename}]]", msg_content, count=1)
-                                chat_entry["updated_at"] = datetime.now().isoformat()
-                                with open(chats_file, "w", encoding="utf-8") as f:
-                                    json.dump(chat_history, f, indent=2, ensure_ascii=False)
-                    except Exception as e:
-                        safe_warning(f"Failed to update chat history with generated image: {e}")
+        # Update chat history if chat_id and message_index provided
+        if chat_id is not None and message_index is not None and result:
+            try:
+                chats_file = data_dir / "chats.json"
+                if chats_file.exists():
+                    with open(chats_file, "r", encoding="utf-8") as f:
+                        chat_history = json.load(f)
+                else:
+                    chat_history = {"chats": []}
+
+                chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+                if chat_entry:
+                    messages = chat_entry.setdefault("messages", [])
+                    if 0 <= message_index < len(messages):
+                        # Get filename from result
+                        filename = result["images"][0]["file_id"]
+                        mime = result["images"][0]["mime_type"]
+                        
+                        # Check if this attachment already exists to prevent duplicates
+                        attachments = messages[message_index].setdefault("attachments", [])
+                        attachment_exists = any(
+                            att.get("file_id") == filename or att.get("filename") == filename 
+                            for att in attachments
+                        )
+                        
+                        if not attachment_exists:
+                            attachments.append({
+                                "file_id": filename,
+                                "file_type": "image",
+                                "mime_type": mime,
+                                "filename": filename,
+                                "original_name": filename,
+                                "local_url": f"/api/images/{filename}"
+                            })
+                        
+                        # Replace the specific image generation function call with a token
+                        msg_content = messages[message_index].get("content", "")
+                        
+                        # Find and replace the first unreplaced function call
+                        pattern = re.compile(r"\$\$function_call: image_generation\$\$.*?\$\$function_end\$\$", re.DOTALL)
+                        matches = list(pattern.finditer(msg_content))
+                        
+                        # Replace the first unreplaced function call
+                        replacement_count = 0
+                        if matches:
+                            for match in matches:
+                                # Check if this function call has already been replaced with an [[IMAGE:]] token
+                                if "[[IMAGE:" not in match.group(0):
+                                    # Replace this specific function call with the image token
+                                    msg_content = msg_content[:match.start()] + f"[[IMAGE:{filename}]]" + msg_content[match.end():]
+                                    replacement_count = 1
+                                    break
+                        
+                        messages[message_index]["content"] = msg_content
+                        
+                        # Only update if we actually made a replacement
+                        if replacement_count > 0:
+                            safe_debug(f"Replaced function call with [[IMAGE:{filename}]] token")
+                        chat_entry["updated_at"] = datetime.now().isoformat()
+                        with open(chats_file, "w", encoding="utf-8") as f:
+                            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                safe_warning(f"Failed to update chat history with generated image: {e}")
         
         safe_debug("Image generation successful", result)
         return jsonify(result)
@@ -5317,7 +5483,16 @@ def reinitialize_whisper():
 if __name__ == "__main__":
     try:
         safe_debug("Starting Flask application with SocketIO")
-        socketio.run(app, debug=True, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
+        # Use more conservative settings to avoid WSGI issues
+        socketio.run(
+            app, 
+            debug=False,  # Disable debug mode to prevent conflicts
+            host="0.0.0.0", 
+            port=5000, 
+            allow_unsafe_werkzeug=True,
+            use_reloader=False,  # Disable reloader to prevent double initialization
+            log_output=False  # Disable werkzeug logging to avoid conflicts
+        )
     except Exception as e:
         print(f"Error starting Flask application: {str(e)}")
         # Log to a separate file in case logging itself is the issue

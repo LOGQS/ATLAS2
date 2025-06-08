@@ -14,6 +14,7 @@ interface RateLimitValues {
   tpm: string;
   tph: string;
   tpd: string;
+  [key: string]: string; // Add index signature to allow string indexing
 }
 
 interface RateLimitProviderSettings {
@@ -279,10 +280,10 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     window.dispatchEvent(new CustomEvent('settingsChanged', {
       detail: { key: 'rateLimitsEnabled', value: rateLimitsEnabled }
     }));
-    const payload: Record<string, any> = {};
+    const payload: Record<string, { global: RateLimitValues & { enabled: boolean }; models: Record<string, RateLimitValues & { enabled: boolean }> }> = {};
     Object.keys(rateLimitSettings).forEach(prov => {
       const p = rateLimitSettings[prov];
-      const models: Record<string, any> = {};
+      const models: Record<string, RateLimitValues & { enabled: boolean }> = {};
       Object.keys(p.models).forEach(m => {
         models[m] = { ...p.models[m], enabled: rateLimitsEnabled };
       });
@@ -296,17 +297,17 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rate_limits: payload })
     }).catch(() => {});
-  }, [rateLimitsEnabled]);
+  }, [rateLimitSettings, rateLimitsEnabled]);
 
   useEffect(() => {
     localStorage.setItem('rateLimitSettings', JSON.stringify(rateLimitSettings));
     window.dispatchEvent(new CustomEvent('settingsChanged', {
       detail: { key: 'rateLimitSettings', value: rateLimitSettings }
     }));
-    const payload: Record<string, any> = {};
+    const payload: Record<string, { global: RateLimitValues & { enabled: boolean }; models: Record<string, RateLimitValues & { enabled: boolean }> }> = {};
     Object.keys(rateLimitSettings).forEach(prov => {
       const p = rateLimitSettings[prov];
-      const models: Record<string, any> = {};
+      const models: Record<string, RateLimitValues & { enabled: boolean }> = {};
       Object.keys(p.models).forEach(m => {
         models[m] = { ...p.models[m], enabled: rateLimitsEnabled };
       });
@@ -320,7 +321,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rate_limits: payload })
     }).catch(() => {});
-  }, [rateLimitSettings]);
+  }, [rateLimitSettings, rateLimitsEnabled]);
 
   useEffect(() => {
     if (!isOpen) return;

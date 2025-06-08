@@ -1253,10 +1253,10 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         </ReactMarkdown>
             ) : (
               <div key={`img-${idx}`} className="inline-generated-image">
-                {(!attachments?.find(a => a.file_id === p.id) && !imageUrls?.[p.id] && pendingImages?.[p.id]) ? (
+                {(p.id && !attachments?.find(a => a.file_id === p.id) && !imageUrls?.[p.id] && pendingImages?.[p.id]) ? (
                   <ImagePlaceholder />
                 ) : (
-                  <img src={imageUrls?.[p.id] || attachments?.find(a => a.file_id === p.id)?.local_url || `/api/images/${p.id}`} className="inline-generated-image" alt="generated" />
+                  <img src={p.id ? (imageUrls?.[p.id] || attachments?.find(a => a.file_id === p.id)?.local_url || `/api/images/${p.id}`) : ''} className="inline-generated-image" alt="generated" />
                 )}
               </div>
             )
@@ -1282,7 +1282,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         const startPos = match.index;
         const endPos = match.index + match[0].length;
         const creation = creations.find(c => 
-          rawContent.substr(startPos, endPos - startPos).includes(c.content)
+          rawContent.substring(startPos, endPos - startPos).includes(c.content)
         );
         
         if (creation) {
@@ -2072,7 +2072,7 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         {displayedContent}
       </ReactMarkdown>
     );
-  }, [isUser, isCollectingCreation, content, isStreaming, streamedCreation, displayedContent, codeBlockCopied, isThinking, toggleCreationWindow, streamingContentParts, finalizedCreations]);
+  }, [isUser, isCollectingCreation, content, finalizedCreations, isStreaming, streamedCreation, displayedContent, attachments, imageUrls, pendingImages, codeBlockCopied, isThinking, toggleCreationWindow, streamingContentParts]);
 
   // Render thinking animation directly for thinking state
   if (!isUser && isThinking) {

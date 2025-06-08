@@ -277,14 +277,30 @@ image_generation_prompt = """
 =================================================
 IMAGE GENERATION PROMPT:
 
-To create an image, respond with the following format inside the chat message:
+To create an image, respond with the following format inside the chat message, YOU MUST INCLUDE EVERY SINGLE PARAMETER:
 
 $$function_call: image_generation$$
-<describe the image you want generated>
+prompt: <describe the image you want generated>
+model: <flux|flux-realism|flux-anime|flux-3d|flux-cablyai|any-dark|turbo>
+width: <width in pixels, default 1024>
+height: <height in pixels, default 1024>
+enhance: <true|false, default true>
 $$function_end$$
 
-The text between the tags is the prompt that will be sent to the image generation model.
-Only use this format when the user specifically requests an image.
+AVAILABLE MODELS:
+- flux: High-quality general purpose model (default)
+- flux-realism: Optimized for photorealistic images
+- flux-anime: Anime and manga style
+- flux-3d: 3D rendered style
+- flux-cablyai: Creative and artistic style
+- any-dark: Dark themed images
+- turbo: Fast generation with good quality
+
+NOTES:
+- All parameters except 'prompt' are optional
+- Common dimensions: 1024x1024, 1024x768, 768x1024, 768x768
+- enhance=true improves prompt quality for better results
+- Only use this format when the user specifically requests an image
 =================================================
 """
 

@@ -64,6 +64,17 @@ interface ChatProps {
   isActive: boolean;
 }
 
+interface ImageGenerationParams {
+  prompt: string;
+  model?: string;
+  width?: number;
+  height?: number;
+  enhance?: boolean;
+}
+
+// Global set to track active image generation requests
+const activeImageRequests = new Set<string>();
+
 const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -594,20 +605,29 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       })
       .then(data => {
         if (data && data.messages) {
-          const historyMessages = data.messages.map((m: ChatMessage) => ({ ...m, isHistory: true }));
+          let historyMessages = data.messages.map((m: ChatMessage) => ({ ...m, isHistory: true }));
+          
+          // Restore image state for messages with [[IMAGE:]] tokens
+          historyMessages = restoreImageState(historyMessages);
           
           // Check for streaming continuation
           const continuation = chatManager.getStreamingContinuation(chatId);
           
-          // Handle both streaming continuation and pending state
+          // Handle both streaming continuation and pending state  
           if (continuation.hasPartialResponse && (continuation.isStreaming || continuation.isPending)) {
             // Check if the last message in history is incomplete (streaming)
             const lastMessage = historyMessages[historyMessages.length - 1];
             
             if (lastMessage && lastMessage.role === 'assistant') {
-              // Update the last assistant message with the current streaming content
-              lastMessage.content = continuation.partialResponse;
-              lastMessage.isHistory = false; // Mark as actively streaming
+              // CRITICAL FIX: Preserve all existing properties when updating streaming content
+              // This prevents losing attachments, imageUrls, and other data during streaming
+              const preservedMessage = {
+                ...lastMessage,
+                content: continuation.partialResponse,
+                isHistory: false // Mark as actively streaming
+              };
+              historyMessages[historyMessages.length - 1] = preservedMessage;
+              
               if (!currentIsStreamingRef.current) {
                 setMessages(historyMessages);
               }
@@ -626,7 +646,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             setIsStreaming(true);
             accumulatedContentRef.current = continuation.partialResponse;
           } else {
-            // Set messages from history (streaming conflicts are now resolved)
+            // Always use the messages from chats.json when not actively streaming
             setMessages(historyMessages);
             // Clear accumulated content only after we've handled continuation
             accumulatedContentRef.current = '';
@@ -1209,6 +1229,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               // Only update content if background has actual content
               // This prevents overwriting existing content with empty string
               const newContent = backgroundState.currentResponse || lastMessage.content;
+              // CRITICAL FIX: Preserve attachments, imageUrls, and other properties from the loaded message
               updatedMessages[lastIndex] = {
                 ...lastMessage,
                 content: newContent
@@ -1242,22 +1263,141 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   };
 
+  // Function to restore image state when loading chats from backend
+  const restoreImageState = useCallback((messages: ChatMessage[]): ChatMessage[] => {
+    return messages.map((msg) => {
+      if (msg.role !== 'assistant') return msg;
+      
+      const imageTokenPattern = /\[\[IMAGE:([^\]]+)\]\]/g;
+      let match;
+      const updatedMsg = { ...msg };
+      
+      // Scan for [[IMAGE:]] tokens in the message content
+      while ((match = imageTokenPattern.exec(msg.content)) !== null) {
+        const filename = match[1];
+        
+        // Initialize imageUrls if not exists
+        if (!updatedMsg.imageUrls) {
+          updatedMsg.imageUrls = {} as Record<string, string>;
+        }
+        
+        // Check if there's a corresponding attachment with this filename
+        const attachment = msg.attachments?.find(att => 
+          att.filename === filename || 
+          att.original_name === filename ||
+          att.file_id === filename
+        );
+        
+        // Set the URL - prefer attachment's local_url, fallback to API endpoint
+        if (attachment && attachment.local_url) {
+          updatedMsg.imageUrls[filename] = attachment.local_url;
+        } else {
+          // Always set the API endpoint URL for images, even without attachments
+          // This ensures that generated images show up after page refresh
+          updatedMsg.imageUrls[filename] = `/api/images/${filename}`;
+        }
+      }
+      
+      return updatedMsg;
+    });
+  }, []);
+
   const processImageCalls = useCallback((msg: ChatMessage, index: number): ChatMessage => {
     let newContent = msg.content;
     const pattern = /\$\$function_call: image_generation\$\$(.*?)\$\$function_end\$\$/gs;
     let match;
+    
+    // Don't skip processing entirely if [[IMAGE:]] tokens exist - just skip individual processed calls
+    // This allows multiple image generation calls in the same message to be processed independently
+    
+    // Track processed calls to prevent duplicates within the same function call
+    const processedCalls = new Set<string>();
+    
     while ((match = pattern.exec(newContent)) !== null) {
-      const prompt = match[1].trim();
-      const fileId = `img-${Date.now()}-${Math.random().toString(36).substring(2,8)}`;
+      // Check if this specific function call has already been replaced (contains [[IMAGE:]] inside it)
+      if (match[0].includes('[[IMAGE:')) {
+        continue; // This specific call has already been processed
+      }
+      
+      const paramsContent = match[1].trim();
+      
+      // Parse parameters from the new format
+      const lines = paramsContent.split('\n').map(line => line.trim()).filter(line => line);
+      const params: ImageGenerationParams = {
+        prompt: '',
+        model: 'flux',
+        width: 1024,
+        height: 1024,
+        enhance: true
+      };
+      
+      lines.forEach(line => {
+        const colonIndex = line.indexOf(':');
+        if (colonIndex > -1) {
+          const key = line.substring(0, colonIndex).trim();
+          const value = line.substring(colonIndex + 1).trim();
+          
+          switch (key) {
+            case 'prompt':
+              params.prompt = value;
+              break;
+            case 'model':
+              params.model = value;
+              break;
+            case 'width':
+              params.width = parseInt(value) || 1024;
+              break;
+            case 'height':
+              params.height = parseInt(value) || 1024;
+              break;
+            case 'enhance':
+              params.enhance = value.toLowerCase() === 'true';
+              break;
+          }
+        }
+      });
+      
+      // For backward compatibility, if no prompt key found, use entire content as prompt
+      if (!params.prompt && lines.length > 0 && !lines[0].includes(':')) {
+        params.prompt = paramsContent;
+      }
+      
+      // Create a deterministic fileId based on prompt, message index, and pattern position
+      // This ensures the same image generation call always gets the same ID
+      const promptHash = btoa(params.prompt + index + match.index).replace(/[^a-zA-Z0-9]/g, '').substring(0, 8);
+      const fileId = `img-${index}-${promptHash}`;
+      
+      // Check if we've already processed this exact call
+      if (processedCalls.has(fileId)) {
+        continue; // Skip duplicate processing
+      }
+      processedCalls.add(fileId);
+      
+      // Check if this fileId is already being processed
+      if (msg.pendingImages?.[fileId] || msg.imageUrls?.[fileId] || activeImageRequests.has(fileId)) {
+        // Replace the pattern but don't make a new request
+        newContent = newContent.replace(match[0], `[[IMAGE:${fileId}]]`);
+        continue;
+      }
+      
       newContent = newContent.replace(match[0], `[[IMAGE:${fileId}]]`);
 
       if (!msg.pendingImages) msg.pendingImages = {} as Record<string, boolean>;
       msg.pendingImages[fileId] = true;
+      
+      // Track this request globally to prevent duplicates
+      activeImageRequests.add(fileId);
+      console.log(`🎨 Starting image generation for ${fileId}, active requests:`, activeImageRequests.size);
 
       fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, chat_id: chatId, message_index: index, file_id: fileId })
+        body: JSON.stringify({ 
+          ...params,
+          chat_id: chatId, 
+          message_index: index, 
+          file_id: fileId 
+        })
       })
         .then(r => r.ok ? r.json() : Promise.reject())
         .then(data => {
@@ -1272,9 +1412,15 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             return copy;
           });
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          // Remove from active requests when done (success or failure)
+          activeImageRequests.delete(fileId);
+          console.log(`✅ Completed image generation for ${fileId}, remaining active:`, activeImageRequests.size);
+        });
     }
     msg.content = newContent;
+    // Note: This function preserves all other message properties including attachments
     return msg;
   }, [chatId]);
 
@@ -1373,6 +1519,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
               if (lastIndex >= 0 && msg?.role === 'assistant') {
                 const finalReasoning = reasoningBuffer || msg.reasoning;
+                // Preserve existing attachments and other properties
                 msg = { ...msg, content: accumulatedContentRef.current, reasoning: finalReasoning };
                 msg = processImageCalls(msg, lastIndex);
                 updatedMessages[lastIndex] = msg;
@@ -1419,6 +1566,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               let msg = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
 
               if (lastIndex >= 0 && msg?.role === 'assistant') {
+                // Preserve existing attachments and other properties when updating content
                 msg = { ...msg, content: accumulatedContentRef.current };
                 msg = processImageCalls(msg, lastIndex);
                 updatedMessages[lastIndex] = msg;
