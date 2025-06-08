@@ -272,6 +272,22 @@ Always keep the title exactly as it was originally generated.
 # System instruction for summarizing chat history
 summary_system_instruction = "Summarize the conversation in concise bullet points."
 
+# System instruction for image generation feature
+image_generation_prompt = """
+=================================================
+IMAGE GENERATION PROMPT:
+
+To create an image, respond with the following format inside the chat message:
+
+$$function_call: image_generation$$
+<describe the image you want generated>
+$$function_end$$
+
+The text between the tags is the prompt that will be sent to the image generation model.
+Only use this format when the user specifically requests an image.
+=================================================
+"""
+
 full_classifier_prompt = """You are a context analyzer, memory manager for an AI assistant that supports "Creations" - special formatted content blocks for code, diagrams, React components, etc.
 
 Your task is to analyze the CURRENT USER REQUEST and determine if "The AI assistant's knowledge about creations" is needed for the response This might be a functional request, like
@@ -288,7 +304,7 @@ Creations are used for:
 - Any structured content that benefits from special formatting
 
 Return a JSON response with these keys (in this exact order):
-{"user_request_understanding": "what the user is asking for", "reasoning": "your analysis", "include_creations": true/false}
+{"user_request_understanding": "what the user is asking for", "reasoning": "your analysis", "include_creations": true/false, "include_image_generation": true/false}
 
 Set include_creations to true if the CURRENT USER REQUEST involves:
 - Asking for code, programming help, or technical implementation
@@ -302,6 +318,8 @@ Set include_creations to false if the CURRENT USER REQUEST is:
 - Basic Q&A without technical content
 - No indication of needing formatted content
 - Something that can be answered with pure text
+
+Set include_image_generation to true if the user explicitly requests an image, picture, drawing or other visual output. Otherwise set it to false.
 
 IMPORTANT INSTRUCTIONS: 
 - Creations are something extra that should not be included unless it makes sense to do so.

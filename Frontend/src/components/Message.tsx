@@ -12,6 +12,7 @@ import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
 import UrlPreviewCard from './UrlPreviewCard';
 import PDFViewer from './PDFViewer';
+import ImagePlaceholder from './ImagePlaceholder';
 
 // Add new imports for streaming creation detection
 import { Creation } from '../utils/creationsHelper';
@@ -107,6 +108,8 @@ interface MessageProps {
   isStreaming?: boolean;
   isThinking?: boolean;
   attachments?: FileAttachment[];
+  pendingImages?: Record<string, boolean>;
+  imageUrls?: Record<string, string>;
   isHistoryMessage?: boolean;
   reasoning?: string;
   onEdit?: () => void;
@@ -125,7 +128,7 @@ interface StreamedCreation {
   forwarded: number;   // NEW – bytes already sent to the creation window
 }
 
-const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], isHistoryMessage = false, reasoning, onEdit, onDelete, onRefresh }) => {
+const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], pendingImages = {}, imageUrls = {}, isHistoryMessage = false, reasoning, onEdit, onDelete, onRefresh }) => {
   const isMountedRef = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -1116,23 +1119,41 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
     // Use finalized creations as fallback if fresh detection fails (ensures reliability)
     const creations = detectedCreations.length > 0 ? detectedCreations : finalizedCreations;
     
-    // If we're not displaying any creations, just render the content normally
+    // If we're not displaying any creations, render the content normally with inline images
     if (creations.length === 0 && !isCollectingCreation) {
-    return (
-      <ReactMarkdown
-          key={isStreaming ? 'streaming' : 'static'}
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={{
-          code({ className, children, ...props }) {
-              const match = /language-(\w+)/.exec(className || '');
-              const language = match ? match[1] : '';
-              const codeContent = String(children).replace(/\n$/, '');
-              const blockId = `code-${Math.random().toString(36).substring(2, 9)}`;
-              const isHtml = language === 'html';
-              
-              // Check if this is a creation directive
-              const isCreation = codeContent.startsWith('creation:');
+      const parts: { text?: string; id?: string }[] = [];
+      const regex = /\[\[IMAGE:([^\]]+)\]\]/g;
+      let last = 0;
+      let m: RegExpExecArray | null;
+      while ((m = regex.exec(displayedContent)) !== null) {
+        if (m.index > last) {
+          parts.push({ text: displayedContent.slice(last, m.index) });
+        }
+        parts.push({ id: m[1] });
+        last = regex.lastIndex;
+      }
+      if (last < displayedContent.length) {
+        parts.push({ text: displayedContent.slice(last) });
+      }
+
+      return (
+        <>
+          {parts.map((p, idx) =>
+            p.text !== undefined ? (
+              <ReactMarkdown
+                key={`text-${idx}`}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  code({ className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || '');
+                      const language = match ? match[1] : '';
+                      const codeContent = String(children).replace(/\n$/, '');
+                      const blockId = `code-${Math.random().toString(36).substring(2, 9)}`;
+                      const isHtml = language === 'html';
+
+                      // Check if this is a creation directive
+                      const isCreation = codeContent.startsWith('creation:');
               
               if (isCreation) {
                 // For any remaining creation blocks that weren't cleaned,
@@ -1227,8 +1248,19 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
             }
           }}
         >
-          {displayedContent}
+          {p.text}
         </ReactMarkdown>
+            ) : (
+              <div key={`img-${idx}`} className="inline-generated-image">
+                {(!attachments?.find(a => a.file_id === p.id) && !imageUrls?.[p.id] && pendingImages?.[p.id]) ? (
+                  <ImagePlaceholder />
+                ) : (
+                  <img src={imageUrls?.[p.id] || attachments?.find(a => a.file_id === p.id)?.local_url || `/api/images/${p.id}`} className="inline-generated-image" alt="generated" />
+                )}
+              </div>
+            )
+          )}
+        </>
       );
     }
     
