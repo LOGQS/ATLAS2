@@ -30,6 +30,8 @@ interface ChatMessage {
   reasoning?: string; // For reasoning tokens from OpenRouter models
   timestamp?: string;
   tags?: string[];
+  pendingImages?: Record<string, boolean>;
+  imageUrls?: Record<string, string>;
 }
 
 interface Model {
@@ -1206,6 +1208,42 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   };
 
+  const processImageCalls = useCallback((msg: ChatMessage, index: number): ChatMessage => {
+    let newContent = msg.content;
+    const pattern = /\$\$function_call: image_generation\$\$(.*?)\$\$function_end\$\$/gs;
+    let match;
+    while ((match = pattern.exec(newContent)) !== null) {
+      const prompt = match[1].trim();
+      const fileId = `img-${Date.now()}-${Math.random().toString(36).substring(2,8)}`;
+      newContent = newContent.replace(match[0], `[[IMAGE:${fileId}]]`);
+
+      if (!msg.pendingImages) msg.pendingImages = {} as any;
+      msg.pendingImages[fileId] = true;
+
+      fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, chat_id: chatId, message_index: index, file_id: fileId })
+      })
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(data => {
+          const url = data.images && data.images[0] ? data.images[0].url : '';
+          setMessages(cur => {
+            const copy = [...cur];
+            const m = copy[index];
+            if (!m) return cur;
+            if (!m.imageUrls) m.imageUrls = {} as any;
+            m.imageUrls[fileId] = url;
+            if (m.pendingImages) delete m.pendingImages[fileId];
+            return copy;
+          });
+        })
+        .catch(() => {});
+    }
+    msg.content = newContent;
+    return msg;
+  }, [chatId]);
+
   // More stable approach to handling SSE data from the server
   const processStreamChunk = (chunk: string) => {
     // STREAMING FIX: Only process chunks if this chat has an active stream request
@@ -1273,27 +1311,25 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             setMessages(prevMessages => {
               const updatedMessages = [...prevMessages];
               const lastIndex = updatedMessages.length - 1;
-              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
-              
-              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-                // Update existing message with new content and reasoning
-                const finalReasoning = reasoningBuffer || lastMessage.reasoning;
-                updatedMessages[lastIndex] = {
-                  ...lastMessage,
-                  content: accumulatedContentRef.current,
-                  reasoning: finalReasoning
-                };
+              let msg = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+
+              if (lastIndex >= 0 && msg?.role === 'assistant') {
+                const finalReasoning = reasoningBuffer || msg.reasoning;
+                msg = { ...msg, content: accumulatedContentRef.current, reasoning: finalReasoning };
+                msg = processImageCalls(msg, lastIndex);
+                updatedMessages[lastIndex] = msg;
               } else {
-                // Create new assistant message if needed
-                updatedMessages.push({
+                msg = {
                   role: 'assistant',
                   content: accumulatedContentRef.current,
                   reasoning: reasoningBuffer || undefined,
                   timestamp: new Date().toISOString(),
                   tags: []
-                });
+                } as ChatMessage;
+                msg = processImageCalls(msg, updatedMessages.length);
+                updatedMessages.push(msg);
               }
-              
+
               return updatedMessages;
             });
           });
@@ -1321,22 +1357,23 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             setMessages(prevMessages => {
               const updatedMessages = [...prevMessages];
               const lastIndex = updatedMessages.length - 1;
-              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
-              
-              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
-                updatedMessages[lastIndex] = {
-                  ...lastMessage,
-                  content: accumulatedContentRef.current
-                };
+              let msg = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+
+              if (lastIndex >= 0 && msg?.role === 'assistant') {
+                msg = { ...msg, content: accumulatedContentRef.current };
+                msg = processImageCalls(msg, lastIndex);
+                updatedMessages[lastIndex] = msg;
               } else {
-                updatedMessages.push({
+                msg = {
                   role: 'assistant',
                   content: accumulatedContentRef.current,
                   timestamp: new Date().toISOString(),
                   tags: []
-                });
+                } as ChatMessage;
+                msg = processImageCalls(msg, updatedMessages.length);
+                updatedMessages.push(msg);
               }
-              
+
               return updatedMessages;
             });
           });
@@ -1466,6 +1503,19 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           detail: { chatId } 
         }));
       }
+    }
+
+    // After message finalized, check for image generation function calls
+    if (!isAborted) {
+      setMessages(prev => {
+        const updated = [...prev];
+        const index = updated.length - 1;
+        const msg = updated[index];
+        if (msg && msg.role === 'assistant') {
+          updated[index] = processImageCalls({ ...msg }, index);
+        }
+        return updated;
+      });
     }
     
     // Only scroll to bottom for non-aborted messages
@@ -3048,6 +3098,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               isStreaming={isCurrentlyStreaming}
               isThinking={isCurrentlyThinking}
               attachments={message.attachments}
+              pendingImages={message.pendingImages}
+              imageUrls={message.imageUrls}
               isHistoryMessage={message.isHistory} // Add this flag to indicate this is from chat history
               reasoning={message.reasoning} // Pass reasoning tokens to Message component
               onEdit={message.role === 'user' ? () => handleEditMessageAction(index) : undefined}

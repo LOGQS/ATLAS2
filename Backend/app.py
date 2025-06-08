@@ -14,6 +14,8 @@ from queue import Queue
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from PIL import Image
+from io import BytesIO
 from logging.handlers import RotatingFileHandler
 import tempfile
 from datetime import datetime
@@ -41,6 +43,7 @@ from openai import OpenAI
 import time
 import requests
 from html.parser import HTMLParser
+import re
 
 # Set environment variables to handle OpenMP issues BEFORE importing any libraries
 # This prevents the "libiomp5md.dll already initialized" error from faster_whisper
@@ -603,11 +606,14 @@ app.logger.setLevel(logging.DEBUG)
 # Ensure data directory exists at startup
 data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
 temp_files_dir = data_dir / "temp_files"
+img_dir = data_dir / "imgs"
 try:
     data_dir.mkdir(exist_ok=True)
     temp_files_dir.mkdir(exist_ok=True)
+    img_dir.mkdir(exist_ok=True)
     logger.info(f"Data directory created/verified at: {data_dir}")
     logger.info(f"Temp files directory created/verified at: {temp_files_dir}")
+    logger.info(f"Image directory created/verified at: {img_dir}")
     
     # Clean up any existing temp files on startup
     import glob
@@ -1123,17 +1129,15 @@ class GeminiToOpenAIAdapter:
         content = getattr(gemini_chunk, 'text', '') if hasattr(gemini_chunk, 'text') else ''
         return MockChunk(content)
 
-def should_include_creations_prompt(messages):
-    """
-    Use gemini-2.0-flash-lite as a classifier to determine if creations prompt should be included
-    Returns True if creations prompt should be included, False otherwise
-    """
+def classify_prompts(messages):
+    """Use gemini-2.0-flash-lite as a classifier to decide whether to include the creations and image generation prompts.
+    Returns a dictionary {"include_creations": bool, "include_image_generation": bool}"""
     try:
         # Skip classifier if no messages or Gemini client not available
         if not messages or not client:
-            return True  # Default to including creations prompt
+            return {"include_creations": True, "include_image_generation": False}
         
-        safe_info("[CLASSIFIER] Starting creations prompt classification")
+        safe_info("[CLASSIFIER] Starting prompt classification")
         
         # Build conversation history for the classifier
         conversation_parts = []
@@ -1200,22 +1204,24 @@ Analyze the CURRENT USER REQUEST above and return your JSON response:"""
                         for item in result:
                             if isinstance(item, dict) and "include_creations" in item:
                                 include_creations = item.get("include_creations", True)
+                                include_image = item.get("include_image_generation", False)
                                 user_understanding = item.get("user_request_understanding", "No understanding provided")
                                 reasoning = item.get("reasoning", "No reasoning provided")
-                                safe_info(f"[CLASSIFIER] Decision from array: include_creations = {include_creations}")
+                                safe_info(f"[CLASSIFIER] Decision from array: include_creations = {include_creations}, include_image_generation = {include_image}")
                                 safe_info(f"[CLASSIFIER] User Request Understanding: {user_understanding}")
                                 safe_info(f"[CLASSIFIER] Reasoning: {reasoning}")
-                                return include_creations
+                                return {"include_creations": include_creations, "include_image_generation": include_image}
                         # If no valid object found in array, try regex fallback
                         safe_warning("[CLASSIFIER] No valid object found in JSON array, trying regex fallback")
                     elif isinstance(result, dict):
                         include_creations = result.get("include_creations", True)
+                        include_image = result.get("include_image_generation", False)
                         user_understanding = result.get("user_request_understanding", "No understanding provided")
                         reasoning = result.get("reasoning", "No reasoning provided")
-                        safe_info(f"[CLASSIFIER] Decision from object: include_creations = {include_creations}")
+                        safe_info(f"[CLASSIFIER] Decision from object: include_creations = {include_creations}, include_image_generation = {include_image}")
                         safe_info(f"[CLASSIFIER] User Request Understanding: {user_understanding}")
                         safe_info(f"[CLASSIFIER] Reasoning: {reasoning}")
-                        return include_creations
+                        return {"include_creations": include_creations, "include_image_generation": include_image}
                     else:
                         safe_warning(f"[CLASSIFIER] Unexpected JSON type: {type(result)}, trying regex fallback")
                     
@@ -1225,20 +1231,22 @@ Analyze the CURRENT USER REQUEST above and return your JSON response:"""
                 # Robust regex fallback to find the include_creations value
                 # Look for patterns like "include_creations": true/false or 'include_creations': true/false
                 include_pattern = re.search(r'["\']include_creations["\']\s*:\s*(true|false)', result_text, re.IGNORECASE)
-                if include_pattern:
-                    include_creations = include_pattern.group(1).lower() == 'true'
-                    safe_info(f"[CLASSIFIER] Decision from regex extraction: include_creations = {include_creations}")
-                    return include_creations
+                image_pattern = re.search(r'["\']include_image_generation["\']\s*:\s*(true|false)', result_text, re.IGNORECASE)
+                if include_pattern or image_pattern:
+                    include_creations = include_pattern.group(1).lower() == 'true' if include_pattern else True
+                    include_image = image_pattern.group(1).lower() == 'true' if image_pattern else False
+                    safe_info(f"[CLASSIFIER] Decision from regex extraction: include_creations = {include_creations}, include_image_generation = {include_image}")
+                    return {"include_creations": include_creations, "include_image_generation": include_image}
                 
                 safe_warning("[CLASSIFIER] Could not extract include_creations value, defaulting to True")
                 return True  # Default to including on extraction failure
         
         safe_warning("[CLASSIFIER] No valid response from classifier, defaulting to include")
-        return True  # Default to including if no valid response
+        return {"include_creations": True, "include_image_generation": False}
         
     except Exception as e:
         safe_warning(f"[CLASSIFIER] Error in classification: {e}")
-        return True  # Default to including on any error
+        return {"include_creations": True, "include_image_generation": False}
 
 def create_unified_chat_response(messages, model_name, system_instruction=None, files=None, temperature=None, max_tokens=None):
     """
@@ -1897,6 +1905,23 @@ def serve_temp_file(file_id):
     except Exception as e:
         safe_exception(f"Error serving file {file_id}: {str(e)}", e)
         return jsonify({"error": f"Failed to serve file: {str(e)}"}), 500
+
+# Serve generated images
+@app.route("/api/images/<filename>", methods=["GET"])
+def serve_generated_image(filename):
+    try:
+        file_path = img_dir / filename
+        if not file_path.exists():
+            return jsonify({"error": "Image not found"}), 404
+        with open(file_path, "rb") as f:
+            content = f.read()
+        response = make_response(content)
+        response.headers.set('Content-Type', 'image/png')
+        response.headers.set('Cache-Control', 'no-cache')
+        return response
+    except Exception as e:
+        safe_exception(f"Error serving image {filename}: {e}", e)
+        return jsonify({"error": "Failed to serve image"}), 500
 
 # Document cache endpoint - Creates a cache for document processing
 @app.route("/api/cache", methods=["POST"])
@@ -2592,9 +2617,16 @@ def chat():
                             history_for_provider.append({"role": "system", "content": knowledge})
                             safe_debug(f"Added vectorized knowledge to system message ({len(knowledge)} chars)")
                 
-                # Determine if creations prompt should be included
-                include_creations = should_include_creations_prompt(history_for_provider)
-                system_instruction_to_use = creations_system_instruction if include_creations else None
+                # Determine if special prompts should be included
+                prompt_decisions = classify_prompts(history_for_provider)
+                include_creations = prompt_decisions.get("include_creations", True)
+                include_image_prompt = prompt_decisions.get("include_image_generation", False)
+                system_instructions = []
+                if include_creations:
+                    system_instructions.append(creations_system_instruction)
+                if include_image_prompt:
+                    system_instructions.append(image_generation_prompt)
+                system_instruction_to_use = "\n\n".join(system_instructions) if system_instructions else None
                 
                 # Log which prompts are being attached
                 attached_prompts = []
@@ -2603,6 +2635,10 @@ def chat():
                     safe_info("[CHAT] Including creations system instruction based on classifier decision")
                 else:
                     safe_info("[CHAT] Excluding creations system instruction based on classifier decision")
+
+                if include_image_prompt:
+                    attached_prompts.append("image_generation_prompt")
+                    safe_info("[CHAT] Including image generation prompt based on classifier decision")
                 
                 # Log summary of attached prompts
                 safe_info(f"📎 [PROMPTS] Accepted prompts to attach: {attached_prompts if attached_prompts else ['none']}")
@@ -3306,6 +3342,9 @@ def generate_image():
     try:
         data = request.json
         prompt = data.get("prompt", "")
+        chat_id = data.get("chat_id")
+        message_index = data.get("message_index")
+        file_id = data.get("file_id")
         
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
@@ -3334,15 +3373,15 @@ def generate_image():
             
         # Create configuration with proper comma placement
         config = types.GenerateContentConfig(
-            response_modalities=['Text', 'Image'],
+            response_modalities=["TEXT", "IMAGE"],
             safety_settings=safety_settings,
-            system_instruction=creations_system_instruction
+            system_instruction=image_generation_prompt
         )
             
         # Use gemini-2.0-flash-exp-image-generation model for image generation with proper config
         safe_debug(f"Generating image with prompt: {prompt[:50]}...", prompt)
         response = client.models.generate_content(
-            model="gemini-2.0-flash-exp-image-generation",
+            model="gemini-2.0-flash-preview-image-generation",
             contents=prompt,
             config=config
         )
@@ -3357,13 +3396,54 @@ def generate_image():
             if hasattr(part, 'text') and part.text is not None:
                 result["text"] += part.text
             elif hasattr(part, 'inline_data') and part.inline_data is not None:
-                # Convert image data to base64 for sending to the frontend
                 image_data = part.inline_data.data
-                base64_image = base64.b64encode(image_data).decode('utf-8')
+                mime = part.inline_data.mime_type or "image/png"
+                filename = file_id if file_id else f"{uuid.uuid4().hex}.png"
+                file_path = img_dir / filename
+                try:
+                    img = Image.open(BytesIO(image_data))
+                    img.save(file_path)
+                except Exception:
+                    with open(file_path, "wb") as f:
+                        f.write(image_data)
                 result["images"].append({
-                    "data": base64_image,
-                    "mime_type": part.inline_data.mime_type
+                    "url": f"/api/images/{filename}",
+                    "mime_type": mime,
+                    "file_id": filename
                 })
+
+                # Update chat history if chat_id and message_index provided
+                if chat_id is not None and message_index is not None:
+                    try:
+                        chats_file = data_dir / "chats.json"
+                        if chats_file.exists():
+                            with open(chats_file, "r", encoding="utf-8") as f:
+                                chat_history = json.load(f)
+                        else:
+                            chat_history = {"chats": []}
+
+                        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+                        if chat_entry:
+                            messages = chat_entry.setdefault("messages", [])
+                            if 0 <= message_index < len(messages):
+                                attachments = messages[message_index].setdefault("attachments", [])
+                                attachments.append({
+                                    "file_id": filename,
+                                    "file_type": "image",
+                                    "mime_type": mime,
+                                    "filename": filename,
+                                    "original_name": filename,
+                                    "local_url": f"/api/images/{filename}"
+                                })
+                                # Replace the first image generation function call with a token
+                                msg_content = messages[message_index].get("content", "")
+                                pattern = re.compile(r"\$\$function_call: image_generation\$\$.*?\$\$function_end\$\$", re.DOTALL)
+                                messages[message_index]["content"], _ = pattern.subn(f"[[IMAGE:{filename}]]", msg_content, count=1)
+                                chat_entry["updated_at"] = datetime.now().isoformat()
+                                with open(chats_file, "w", encoding="utf-8") as f:
+                                    json.dump(chat_history, f, indent=2, ensure_ascii=False)
+                    except Exception as e:
+                        safe_warning(f"Failed to update chat history with generated image: {e}")
         
         safe_debug("Image generation successful", result)
         return jsonify(result)

@@ -1484,6 +1484,13 @@ button:focus-visible {
   max-width: 300px;
 }
 
+.inline-generated-image {
+  display: block;
+  max-width: 300px;
+  margin: 12px 0;
+  border-radius: 6px;
+}
+
 .message-video {
   max-width: 400px;
   width: 100%;
