@@ -469,6 +469,8 @@ class BackgroundChatProcessor:
             # Create response
             tools = kwargs.get('tools')
             use_gemini_native = supports_file_attachments(model_name) and (len(parts) > 1 or tools)
+            if is_gemini_25_model(model_name):
+                use_gemini_native = True
             if use_gemini_native:
                 safe_info(f"Using create_gemini_chat_with_files")
                 return create_gemini_chat_with_files(
@@ -935,6 +937,10 @@ def is_gemini_model(model_name):
     # More flexible detection - any model starting with "gemini-" is a Gemini model
     return model_name.startswith("gemini-")
 
+def is_gemini_25_model(model_name):
+    """Check if the model is part of the Gemini 2.5 series"""
+    return model_name.startswith("gemini-2.5")
+
 def supports_file_attachments(model_name):
     """
     Check if the model supports file attachments
@@ -1110,36 +1116,47 @@ def generate_chat_summary(messages, model_name):
 class GeminiToOpenAIAdapter:
     """Adapter to make Gemini streaming responses compatible with OpenAI format"""
     def __init__(self, gemini_stream):
-        self.gemini_stream = gemini_stream
+        self.gemini_stream = iter(gemini_stream)
+        self.part_queue = []
     
     def __iter__(self):
         return self
     
     def __next__(self):
         try:
-            chunk = next(self.gemini_stream)
-            # Convert Gemini chunk to OpenAI-compatible format
-            return self._convert_chunk(chunk)
+            while not self.part_queue:
+                chunk = next(self.gemini_stream)
+                self._enqueue_parts(chunk)
+            return self.part_queue.pop(0)
         except StopIteration:
             raise
-    
-    def _convert_chunk(self, gemini_chunk):
-        """Convert Gemini chunk to OpenAI-compatible chunk"""
-        class MockChoice:
-            def __init__(self, content):
-                self.delta = MockDelta(content)
-        
-        class MockDelta:
-            def __init__(self, content):
-                self.content = content
-        
-        class MockChunk:
-            def __init__(self, content):
-                self.choices = [MockChoice(content)]
-        
-        # Extract text from Gemini chunk
-        content = getattr(gemini_chunk, 'text', '') if hasattr(gemini_chunk, 'text') else ''
-        return MockChunk(content)
+
+    def _enqueue_parts(self, gemini_chunk):
+        if hasattr(gemini_chunk, 'candidates') and gemini_chunk.candidates:
+            parts = getattr(gemini_chunk.candidates[0].content, 'parts', [])
+            for part in parts:
+                text = getattr(part, 'text', '')
+                if not text:
+                    continue
+                thought_flag = getattr(part, 'thought', False)
+
+                class MockChoice:
+                    def __init__(self, content, thought=False):
+                        self.delta = MockDelta(content, thought)
+
+                class MockDelta:
+                    def __init__(self, content, thought=False):
+                        if thought:
+                            self.thought = content
+                            self.content = None
+                        else:
+                            self.content = content
+
+                class MockChunk:
+                    def __init__(self, content, thought=False):
+                        self.choices = [MockChoice(content, thought)]
+
+                self.part_queue.append(MockChunk(text, thought_flag))
 
 def classify_prompts(messages):
     """Use gemini-2.0-flash-lite as a classifier to decide whether to include the creations and image generation prompts.
@@ -1347,12 +1364,17 @@ def create_gemini_chat_with_files(parts, model_name, system_instruction=None, to
         ]
 
     # Configure the model with safety settings and system instruction
+    thinking_conf = None
+    if is_gemini_25_model(model_name):
+        thinking_conf = types.ThinkingConfig(include_thoughts=True)
+
     config = types.GenerateContentConfig(
         safety_settings=safety_settings,
         system_instruction=system_instruction if system_instruction else None,
         tools=tools,
         temperature=float(temperature) if temperature is not None else None,
-        max_output_tokens=int(max_tokens) if max_tokens is not None else None
+        max_output_tokens=int(max_tokens) if max_tokens is not None else None,
+        thinking_config=thinking_conf
     )
     
     # For Gemini with files, use the native API with files as parts
@@ -2791,6 +2813,15 @@ def chat():
                                         yield f"data: {json_data}\n\n"
                                     except (UnicodeEncodeError, json.JSONDecodeError) as e:
                                         safe_warning(f"Error encoding reasoning chunk: {str(e)}")
+
+                                # Handle thought summary tokens (Gemini 2.5)
+                                if hasattr(delta, 'thought') and delta.thought and is_gemini_model(model_name):
+                                    thought_data = {'thought': delta.thought, 'chat_id': chat_id}
+                                    try:
+                                        json_data = json.dumps(thought_data)
+                                        yield f"data: {json_data}\n\n"
+                                    except (UnicodeEncodeError, json.JSONDecodeError) as e:
+                                        safe_warning(f"Error encoding thought chunk: {str(e)}")
                                 
                                 # Handle content tokens
                                 if hasattr(delta, 'content') and delta.content:

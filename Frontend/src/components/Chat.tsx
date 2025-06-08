@@ -28,6 +28,7 @@ interface ChatMessage {
   attachments?: FileAttachment[];
   isHistory?: boolean; // Add this flag to identify messages from history
   reasoning?: string; // For reasoning tokens from OpenRouter models
+  thoughts?: string; // Streaming thought summaries for Gemini models
   timestamp?: string;
   tags?: string[];
   pendingImages?: Record<string, boolean>;
@@ -77,6 +78,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [reasoningBuffer, setReasoningBuffer] = useState('');
+  const [thoughtBuffer, setThoughtBuffer] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Add a ref to track accumulated message content
   const accumulatedContentRef = useRef<string>('');
@@ -1171,17 +1173,19 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       
         if (backgroundState?.isThinking && !isThinking) {
           setIsThinking(true);
-        
+          setThoughtBuffer('');
+
         // Add placeholder message for thinking animation if no assistant message exists
         setMessages(prevMessages => {
           const lastMessage = prevMessages[prevMessages.length - 1];
           if (lastMessage?.role !== 'assistant' || lastMessage.content.trim()) {
-            return [...prevMessages, { 
-              role: 'assistant', 
-              content: '', 
-              isHistory: false, 
-              timestamp: new Date().toISOString(), 
-              tags: [] 
+            return [...prevMessages, {
+              role: 'assistant',
+              content: '',
+              thoughts: '',
+              isHistory: false,
+              timestamp: new Date().toISOString(),
+              tags: []
             }];
           }
           return prevMessages;
@@ -1247,7 +1251,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const fileId = `img-${Date.now()}-${Math.random().toString(36).substring(2,8)}`;
       newContent = newContent.replace(match[0], `[[IMAGE:${fileId}]]`);
 
-      if (!msg.pendingImages) msg.pendingImages = {} as any;
+      if (!msg.pendingImages) msg.pendingImages = {} as Record<string, boolean>;
       msg.pendingImages[fileId] = true;
 
       fetch('/api/generate-image', {
@@ -1262,7 +1266,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             const copy = [...cur];
             const m = copy[index];
             if (!m) return cur;
-            if (!m.imageUrls) m.imageUrls = {} as any;
+            if (!m.imageUrls) m.imageUrls = {} as Record<string, string>;
             m.imageUrls[fileId] = url;
             if (m.pendingImages) delete m.pendingImages[fileId];
             return copy;
@@ -1320,6 +1324,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
                   role: 'assistant',
                   content: '',
                   reasoning: newBuffer,
+                  thoughts: thoughtBuffer || undefined,
                   timestamp: new Date().toISOString(),
                   tags: []
                 });
@@ -1328,6 +1333,29 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               return updatedMessages;
             });
             
+            return newBuffer;
+          });
+        }
+
+        if (data.thought) {
+          setThoughtBuffer(prev => {
+            const newBuffer = prev + data.thought;
+
+            setMessages(prevMessages => {
+              const updatedMessages = [...prevMessages];
+              const lastIndex = updatedMessages.length - 1;
+              const lastMessage = lastIndex >= 0 ? updatedMessages[lastIndex] : null;
+
+              if (lastIndex >= 0 && lastMessage?.role === 'assistant') {
+                updatedMessages[lastIndex] = {
+                  ...lastMessage,
+                  thoughts: newBuffer
+                } as ChatMessage;
+              }
+
+              return updatedMessages;
+            });
+
             return newBuffer;
           });
         }
@@ -1353,6 +1381,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
                   role: 'assistant',
                   content: accumulatedContentRef.current,
                   reasoning: reasoningBuffer || undefined,
+                  thoughts: thoughtBuffer || undefined,
                   timestamp: new Date().toISOString(),
                   tags: []
                 } as ChatMessage;
@@ -1483,11 +1512,13 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       requestAnimationFrame(() => {
         accumulatedContentRef.current = '';
         setReasoningBuffer('');
+        setThoughtBuffer('');
       });
     } else {
       // No content to save or aborted, clear immediately
       accumulatedContentRef.current = '';
       setReasoningBuffer('');
+      setThoughtBuffer('');
     }
     
     setIsStreaming(false);
@@ -1678,6 +1709,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     accumulatedContentRef.current = '';
     setAttachments([]);
     setReasoningBuffer('');
+    setThoughtBuffer('');
     
     // Clear thinking timeout if exists
     if (thinkingTimeoutRef.current !== null) {
@@ -1962,8 +1994,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     if (isGemini25Pro) {
       // First set the thinking state
       setIsThinking(true);
+      setThoughtBuffer('');
       // Add a placeholder message for the thinking state
-      setMessages(prev => [...prev, { role: 'assistant', content: '', isHistory: false, timestamp: new Date().toISOString(), tags: [] }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: '', thoughts: '', isHistory: false, timestamp: new Date().toISOString(), tags: [] }]);
       // Add a minimum thinking time to ensure animation shows (at least 1 second)
       thinkingTimeoutRef.current = setTimeout(() => {
         thinkingTimeoutRef.current = null;
@@ -2134,6 +2167,15 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
                   setIsThinking(false);
                   setIsStreaming(true);
                   firstChunkReceived = true;
+                  setThoughtBuffer('');
+                  setMessages(prev => {
+                    const copy = [...prev];
+                    const lastIndex = copy.length - 1;
+                    if (lastIndex >= 0 && copy[lastIndex].role === 'assistant') {
+                      delete copy[lastIndex].thoughts;
+                    }
+                    return copy;
+                  });
                   
                   // ISSUE 1 FIX: Clear thinking state from background when stream actually starts
                   if (chatId) {
@@ -2198,6 +2240,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         // For other errors, show an error message
         setLoading(false);
         setIsThinking(false); // Reset thinking state on error too
+        setThoughtBuffer('');
         
         // No more temporary placeholder cleanup needed - backend handles chat creation properly
         
@@ -3142,6 +3185,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               imageUrls={message.imageUrls}
               isHistoryMessage={message.isHistory} // Add this flag to indicate this is from chat history
               reasoning={message.reasoning} // Pass reasoning tokens to Message component
+              thoughts={message.thoughts}
               onEdit={message.role === 'user' ? () => handleEditMessageAction(index) : undefined}
               onDelete={message.role === 'user' ? () => handleDeleteMessageAction(index) : undefined}
               onRefresh={message.role === 'assistant' ? () => handleRefreshMessageAction(index - 1) : undefined}

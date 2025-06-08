@@ -112,6 +112,7 @@ interface MessageProps {
   imageUrls?: Record<string, string>;
   isHistoryMessage?: boolean;
   reasoning?: string;
+  thoughts?: string;
   onEdit?: () => void;
   onDelete?: () => void;
   onRefresh?: () => void;
@@ -128,7 +129,7 @@ interface StreamedCreation {
   forwarded: number;   // NEW – bytes already sent to the creation window
 }
 
-const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], pendingImages = {}, imageUrls = {}, isHistoryMessage = false, reasoning, onEdit, onDelete, onRefresh }) => {
+const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThinking = false, attachments = [], pendingImages = {}, imageUrls = {}, isHistoryMessage = false, reasoning, thoughts, onEdit, onDelete, onRefresh }) => {
   const isMountedRef = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -2080,6 +2081,13 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         <div className={getMessageClass()}>
           <div ref={contentRef} className="message-content">
             {thinkingAnimation}
+            {thoughts && (
+              <div className="thought-stream">
+                {thoughts.split(/\n+/).map((t, i) => (
+                  <p key={i}>{t}</p>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
