@@ -54,6 +54,18 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     const saved = localStorage.getItem('summarizeButtonEnabled');
     return saved ? JSON.parse(saved) : true;
   });
+  const [geminiCodeExecutionEnabled, setGeminiCodeExecutionEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiCodeExecutionEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [geminiUrlContextEnabled, setGeminiUrlContextEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiUrlContextEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
+  const [geminiGroundingEnabled, setGeminiGroundingEnabled] = useState(() => {
+    const saved = localStorage.getItem('geminiGroundingEnabled');
+    return saved ? JSON.parse(saved) : false;
+  });
   const [ttsVoice, setTtsVoice] = useState(() => {
     return localStorage.getItem('ttsVoice') || 'default';
   });
@@ -180,10 +192,31 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
 
   useEffect(() => {
     localStorage.setItem('summarizeButtonEnabled', JSON.stringify(summarizeButtonEnabled));
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'summarizeButtonEnabled', value: summarizeButtonEnabled } 
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'summarizeButtonEnabled', value: summarizeButtonEnabled }
     }));
   }, [summarizeButtonEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('geminiCodeExecutionEnabled', JSON.stringify(geminiCodeExecutionEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'geminiCodeExecutionEnabled', value: geminiCodeExecutionEnabled }
+    }));
+  }, [geminiCodeExecutionEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('geminiUrlContextEnabled', JSON.stringify(geminiUrlContextEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'geminiUrlContextEnabled', value: geminiUrlContextEnabled }
+    }));
+  }, [geminiUrlContextEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('geminiGroundingEnabled', JSON.stringify(geminiGroundingEnabled));
+    window.dispatchEvent(new CustomEvent('settingsChanged', {
+      detail: { key: 'geminiGroundingEnabled', value: geminiGroundingEnabled }
+    }));
+  }, [geminiGroundingEnabled]);
   
   useEffect(() => {
     localStorage.setItem('generationSettings', JSON.stringify(generationSettings));
@@ -753,7 +786,47 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <span className="setting-description">Display the summarize button in the header for generating chat summaries</span>
                 </div>
               </div>
-              
+
+              <div className="settings-group">
+                <h4>Gemini Tools</h4>
+
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={geminiCodeExecutionEnabled}
+                      onChange={(e) => setGeminiCodeExecutionEnabled(e.target.checked)}
+                    />
+                    <span>Enable Code Execution</span>
+                  </label>
+                  <span className="setting-description">Allow Gemini models to generate and run Python code when needed</span>
+                </div>
+
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={geminiUrlContextEnabled}
+                      onChange={(e) => setGeminiUrlContextEnabled(e.target.checked)}
+                    />
+                    <span>Enable URL Context</span>
+                  </label>
+                  <span className="setting-description">Let Gemini read content from provided URLs for additional context</span>
+                </div>
+
+                <div className="setting-item">
+                  <label className="setting-label">
+                    <input
+                      type="checkbox"
+                      checked={geminiGroundingEnabled}
+                      onChange={(e) => setGeminiGroundingEnabled(e.target.checked)}
+                    />
+                    <span>Enable Google Grounding</span>
+                  </label>
+                  <span className="setting-description">Allow Gemini to use Google Search for more accurate answers</span>
+                </div>
+              </div>
+
               {ttsEnabled && (
                 <div className="settings-group">
                   <h4>Text-to-Speech Settings</h4>
