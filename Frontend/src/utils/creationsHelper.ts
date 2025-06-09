@@ -21,6 +21,15 @@ export interface Creation {
   externalDependencies?: Record<string, string>; // External dependencies for React components
 }
 
+// Edit directive interface
+export interface CreationEdit {
+  title: string;
+  mode: 'replace' | 'append' | 'patch';
+  content?: string; // for replace/append
+  target?: string; // for patch
+  replacement?: string; // for patch
+}
+
 // Custom event for showing a Creation
 export type ShowCreationEvent = CustomEvent<Creation>;
 export type ShowCreationSidebarEvent = CustomEvent<Creation>;
@@ -190,6 +199,30 @@ export function detectCreations(content: string): Creation[] {
   return creations;
 }
 
+// Detect edit directives like $$editcreation:title$$...$$end$$
+export function detectCreationEdits(content: string): CreationEdit[] {
+  const cleanedContent = cleanTripleBackticksAroundCreations(content);
+  const edits: CreationEdit[] = [];
+
+  // Full replace or append
+  const simplePattern = /\$\$(editcreation|appendcreation):([^$]+?)\$\$([\s\S]*?)\$\$end\$\$/g;
+  let match;
+  while ((match = simplePattern.exec(cleanedContent)) !== null) {
+    const [, directive, title, editContent] = match;
+    const mode = directive === 'appendcreation' ? 'append' : 'replace';
+    edits.push({ title: title.trim(), content: editContent.trim(), mode });
+  }
+
+  // Partial replace
+  const replacePattern = /\$\$replacecreation:([^$]+?)\$\$([\s\S]*?)\$\$with\$\$([\s\S]*?)\$\$end\$\$/g;
+  while ((match = replacePattern.exec(cleanedContent)) !== null) {
+    const [, title, target, replacement] = match;
+    edits.push({ title: title.trim(), target: target.trim(), replacement: replacement.trim(), mode: 'patch' });
+  }
+
+  return edits;
+}
+
 // Helper to validate creation types
 function isValidCreationType(type: string): type is CreationType {
   return ['code', 'markdown', 'html', 'svg', 'mermaid', 'react', 'placeholder'].includes(type);
@@ -202,6 +235,9 @@ export function removeCreationDirectives(content: string): string {
   
   // Remove $$creation:type ... $$end$$ blocks
   let result = cleanedContent.replace(/\$\$creation:(\w+)(?:\s+([^\n]+))?\$\$([\s\S]*?)\$\$end\$\$/g, '');
+
+  result = result.replace(/\$\$(?:editcreation|appendcreation):([^$]+?)\$\$([\s\S]*?)\$\$end\$\$/g, '');
+  result = result.replace(/\$\$replacecreation:([^$]+?)\$\$([\s\S]*?)\$\$with\$\$([\s\S]*?)\$\$end\$\$/g, '');
   
   // Also remove $$external$$ ... $$externalend$$ blocks
   result = result.replace(/\$\$external\$\$([\s\S]*?)\$\$externalend\$\$/g, '');

@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { showHtmlPreview } from '../utils/htmlPreview';
-import { detectCreations, showCreation, removeCreationDirectives, CreationType, switchCreation } from '../utils/creationsHelper';
+import { detectCreations, detectCreationEdits, showCreation, removeCreationDirectives, CreationType, switchCreation } from '../utils/creationsHelper';
 import creationManager from '../utils/creationManager';
 import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
@@ -383,7 +383,19 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       // CRITICAL: Detect creations from raw content (same as refresh render)
       // Use rawContentRef when content is empty (similar to render logic)
       const creations = detectCreations(contentToProcess);
-      
+      const edits = detectCreationEdits(contentToProcess);
+
+      // Apply edits to existing creations
+      edits.forEach(edit => {
+        if (edit.mode === 'append' && edit.content) {
+          creationManager.editCreationByTitle(edit.title, edit.content, 'append');
+        } else if (edit.mode === 'replace' && edit.content) {
+          creationManager.editCreationByTitle(edit.title, edit.content, 'replace');
+        } else if (edit.mode === 'patch' && edit.target && edit.replacement) {
+          creationManager.patchCreationByTitle(edit.title, edit.target, edit.replacement);
+        }
+      });
+
       // Update finalized creations
       setFinalizedCreations(creations);
       
@@ -506,6 +518,16 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
         // Update finalized creations when streaming ends to match detected creations
         if (content) {
           const detectedCreations = detectCreations(content);
+          const detectedEdits = detectCreationEdits(content);
+          detectedEdits.forEach(edit => {
+            if (edit.mode === 'append' && edit.content) {
+              creationManager.editCreationByTitle(edit.title, edit.content, 'append');
+            } else if (edit.mode === 'replace' && edit.content) {
+              creationManager.editCreationByTitle(edit.title, edit.content, 'replace');
+            } else if (edit.mode === 'patch' && edit.target && edit.replacement) {
+              creationManager.patchCreationByTitle(edit.title, edit.target, edit.replacement);
+            }
+          });
           setFinalizedCreations(detectedCreations);
         }
         
@@ -931,6 +953,16 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
       // Update finalized creations when streaming ends
       if (content) {
         const detectedCreations = detectCreations(content);
+        const detectedEdits = detectCreationEdits(content);
+        detectedEdits.forEach(edit => {
+          if (edit.mode === 'append' && edit.content) {
+            creationManager.editCreationByTitle(edit.title, edit.content, 'append');
+          } else if (edit.mode === 'replace' && edit.content) {
+            creationManager.editCreationByTitle(edit.title, edit.content, 'replace');
+          } else if (edit.mode === 'patch' && edit.target && edit.replacement) {
+            creationManager.patchCreationByTitle(edit.title, edit.target, edit.replacement);
+          }
+        });
         setFinalizedCreations(detectedCreations);
       }
       

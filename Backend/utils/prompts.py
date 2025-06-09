@@ -243,6 +243,29 @@ $$external$$
 {"recharts": "^2.5.0"}
 $$externalend$$
 
+# ===============================
+# EDITING EXISTING CREATIONS
+# ===============================
+You can update previously generated creations without resending the entire block.
+Reference the **title** of the creation:
+
+$$editcreation:Existing Title$$
+new content replacing the old
+$$end$$
+
+$$appendcreation:Existing Title$$
+additional content to append
+$$end$$
+
+# Replace only a portion of a creation
+$$replacecreation:Existing Title$$
+text to find
+$$with$$
+replacement text
+$$end$$
+
+Always keep the title exactly as it was originally generated.
+
 ⚠️ FINAL REMINDER: NEVER WRAP CREATION BLOCKS IN MARKDOWN CODE BLOCKS OR ANY OTHER SYNTAX! ⚠️
 =================================================
 """
