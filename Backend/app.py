@@ -2796,10 +2796,19 @@ def chat():
                         # Convert to the format expected by the frontend while preserving metadata
                         simplified_messages = []
                         for msg in formatted_messages:
+                            # Handle timestamp conversion safely
+                            timestamp_val = msg.get("timestamp", time.time())
+                            if isinstance(timestamp_val, str):
+                                # If already a string, use it directly
+                                timestamp_str = timestamp_val
+                            else:
+                                # Convert from float/int to ISO string
+                                timestamp_str = datetime.fromtimestamp(timestamp_val).isoformat()
+                            
                             simplified_msg = {
                                 "role": msg["role"],
                                 "content": msg["content"],
-                                "timestamp": datetime.fromtimestamp(msg.get("timestamp", time.time())).isoformat(),
+                                "timestamp": timestamp_str,
                                 "tags": msg.get("tags", [])
                             }
                             if "reasoning" in msg:
@@ -4183,19 +4192,33 @@ def update_message_tags(chat_id, msg_index):
         safe_exception(f"Error updating message tags: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
+# Helper function to compare message lists for version deduplication
+def messages_are_identical(msg_list1, msg_list2):
+    """Compare two message lists ignoring timestamps and metadata"""
+    if len(msg_list1) != len(msg_list2):
+        return False
+    for msg1, msg2 in zip(msg_list1, msg_list2):
+        # Compare essential content (role, content) and ignore timestamps/metadata
+        if (msg1.get("role") != msg2.get("role") or 
+            msg1.get("content") != msg2.get("content")):
+            return False
+    return True
+
 # New endpoints for message editing, deletion, and refresh with versioning
 
 @app.route("/api/chats/<chat_id>/messages/<int:msg_index>/edit", methods=["POST"])
 def edit_message(chat_id, msg_index):
-    """Edit a user message at the given index and truncate history"""
+    """Edit a user message at the given index and automatically resend for model response"""
     try:
         data = request.json or {}
         new_content = data.get("content")
+        
         if new_content is None:
             return jsonify({"error": "No content provided"}), 400
 
         data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
+        
         if not chats_file.exists():
             return jsonify({"error": "Chat history file not found"}), 404
 
@@ -4207,8 +4230,14 @@ def edit_message(chat_id, msg_index):
             return jsonify({"error": "Chat not found"}), 404
 
         messages = chat_entry.get("messages", [])
+        
         if msg_index < 0 or msg_index >= len(messages):
             return jsonify({"error": "Invalid message index"}), 400
+
+        original_message = messages[msg_index]
+
+        if original_message.get("role") != "user":
+            return jsonify({"error": "Can only edit user messages"}), 400
 
         # Save current messages as a version before modifying
         versions = chat_entry.setdefault("versions", [])
@@ -4216,24 +4245,49 @@ def edit_message(chat_id, msg_index):
             "timestamp": datetime.now().isoformat(),
             "messages": messages,
             "action": "edit",
-            "index": msg_index
+            "index": msg_index,
+            "name": f"Before editing message {msg_index}"
         })
 
-        # Truncate history before the edited message
-        truncated = messages[:msg_index]
-        chat_entry["messages"] = truncated
+        # Truncate to messages BEFORE the edited message (edited content will be sent as new message)
+        # Note: We don't modify the original message, we just truncate and let frontend send new content
+        updated_messages = messages[:msg_index]
+        
+        chat_entry["messages"] = updated_messages
         chat_entry["updated_at"] = datetime.now().isoformat()
 
         with open(chats_file, "w", encoding="utf-8") as f:
             json.dump(chat_history, f, indent=2, ensure_ascii=False)
 
-        # Update active chat if loaded
+        # Update active chat if loaded and ensure proper message format
         if chat_id in active_chats:
             chat = active_chats[chat_id]
-            chat.unified_history = truncated
+            # Ensure messages have proper timestamp format for unified_history
+            for msg in updated_messages:
+                if "timestamp" not in msg:
+                    msg["timestamp"] = time.time()
+                elif isinstance(msg["timestamp"], str):
+                    # Convert ISO string back to timestamp for unified_history
+                    try:
+                        msg["timestamp"] = datetime.fromisoformat(msg["timestamp"]).timestamp()
+                    except:
+                        msg["timestamp"] = time.time()
+            chat.unified_history = updated_messages
             chat.last_updated = time.time()
 
-        return jsonify({"success": True, "messages": truncated, "new_content": new_content})
+        response_data = {
+            "success": True, 
+            "messages": updated_messages, 
+            "should_generate_response": True,
+            "edited_message": {
+                "index": msg_index,
+                "content": new_content,  # This is the NEW edited content to be sent
+                "attachments": original_message.get("attachments", [])  # Keep original attachments
+            }
+        }
+        
+        
+        return jsonify(response_data)
     except Exception as e:
         safe_exception(f"Error editing message: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
@@ -4274,8 +4328,19 @@ def delete_messages(chat_id, msg_index):
         with open(chats_file, "w", encoding="utf-8") as f:
             json.dump(chat_history, f, indent=2, ensure_ascii=False)
 
+        # Update active chat if loaded and ensure proper message format
         if chat_id in active_chats:
             chat = active_chats[chat_id]
+            # Ensure messages have proper timestamp format for unified_history
+            for msg in truncated:
+                if "timestamp" not in msg:
+                    msg["timestamp"] = time.time()
+                elif isinstance(msg["timestamp"], str):
+                    # Convert ISO string back to timestamp for unified_history
+                    try:
+                        msg["timestamp"] = datetime.fromisoformat(msg["timestamp"]).timestamp()
+                    except:
+                        msg["timestamp"] = time.time()
             chat.unified_history = truncated
             chat.last_updated = time.time()
 
@@ -4287,10 +4352,12 @@ def delete_messages(chat_id, msg_index):
 
 @app.route("/api/chats/<chat_id>/messages/<int:msg_index>/refresh", methods=["POST"])
 def refresh_message(chat_id, msg_index):
-    """Refresh the model response starting from a user message"""
+    """Refresh the model response starting from a user message by generating a new response"""
+    
     try:
         data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
         chats_file = data_dir / "chats.json"
+        
         if not chats_file.exists():
             return jsonify({"error": "Chat history file not found"}), 404
 
@@ -4302,10 +4369,12 @@ def refresh_message(chat_id, msg_index):
             return jsonify({"error": "Chat not found"}), 404
 
         messages = chat_entry.get("messages", [])
+        
         if msg_index < 0 or msg_index >= len(messages):
             return jsonify({"error": "Invalid message index"}), 400
 
         user_msg = messages[msg_index]
+        
         if user_msg.get("role") != "user":
             return jsonify({"error": "Can only refresh user messages"}), 400
 
@@ -4314,9 +4383,11 @@ def refresh_message(chat_id, msg_index):
             "timestamp": datetime.now().isoformat(),
             "messages": messages,
             "action": "refresh",
-            "index": msg_index
+            "index": msg_index,
+            "name": f"Before refreshing message {msg_index}"
         })
 
+        # Truncate to messages BEFORE the user message (user message will be resent as new message)
         truncated = messages[:msg_index]
         chat_entry["messages"] = truncated
         chat_entry["updated_at"] = datetime.now().isoformat()
@@ -4324,12 +4395,35 @@ def refresh_message(chat_id, msg_index):
         with open(chats_file, "w", encoding="utf-8") as f:
             json.dump(chat_history, f, indent=2, ensure_ascii=False)
 
+        # Update active chat if loaded and ensure proper message format
         if chat_id in active_chats:
             chat = active_chats[chat_id]
+            # Ensure messages have proper timestamp format for unified_history
+            for msg in truncated:
+                if "timestamp" not in msg:
+                    msg["timestamp"] = time.time()
+                elif isinstance(msg["timestamp"], str):
+                    # Convert ISO string back to timestamp for unified_history
+                    try:
+                        msg["timestamp"] = datetime.fromisoformat(msg["timestamp"]).timestamp()
+                    except:
+                        msg["timestamp"] = time.time()
             chat.unified_history = truncated
             chat.last_updated = time.time()
 
-        return jsonify({"success": True, "messages": truncated, "refresh_content": user_msg.get("content", "")})
+        response_data = {
+            "success": True, 
+            "messages": truncated, 
+            "should_generate_response": True,
+            "refresh_message": {
+                "index": msg_index,
+                "content": user_msg.get("content", ""),
+                "attachments": user_msg.get("attachments", [])
+            }
+        }
+        
+        return jsonify(response_data)
+    
     except Exception as e:
         safe_exception(f"Error refreshing message: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
@@ -4358,6 +4452,75 @@ def list_chat_versions(chat_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/chats/<chat_id>/versions/<int:version_index>/name", methods=["PUT"])
+def update_version_name(chat_id, version_index):
+    """Update the name of a specific version"""
+    try:
+        data = request.json or {}
+        new_name = data.get("name")
+        if not new_name:
+            return jsonify({"error": "Name is required"}), 400
+
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        versions = chat_entry.get("versions", [])
+        if version_index < 0 or version_index >= len(versions):
+            return jsonify({"error": "Invalid version index"}), 400
+
+        versions[version_index]["name"] = new_name
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        return jsonify({"success": True, "version": versions[version_index]})
+    except Exception as e:
+        safe_exception(f"Error updating version name: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<chat_id>/versions/<int:version_index>", methods=["DELETE"])
+def delete_version(chat_id, version_index):
+    """Delete a specific version"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "data")))
+        chats_file = data_dir / "chats.json"
+        if not chats_file.exists():
+            return jsonify({"error": "Chat history file not found"}), 404
+
+        with open(chats_file, "r", encoding="utf-8") as f:
+            chat_history = json.load(f)
+
+        chat_entry = next((c for c in chat_history.get("chats", []) if c.get("id") == chat_id), None)
+        if not chat_entry:
+            return jsonify({"error": "Chat not found"}), 404
+
+        versions = chat_entry.get("versions", [])
+        if version_index < 0 or version_index >= len(versions):
+            return jsonify({"error": "Invalid version index"}), 400
+
+        deleted_version = versions.pop(version_index)
+        chat_entry["updated_at"] = datetime.now().isoformat()
+
+        with open(chats_file, "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, indent=2, ensure_ascii=False)
+
+        return jsonify({"success": True, "deleted_version": deleted_version, "remaining_versions": len(versions)})
+    except Exception as e:
+        safe_exception(f"Error deleting version: {str(e)}", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/chats/<chat_id>/versions/<int:version_index>/restore", methods=["POST"])
 def restore_chat_version(chat_id, version_index):
     """Restore a specific version of a chat"""
@@ -4379,22 +4542,52 @@ def restore_chat_version(chat_id, version_index):
             return jsonify({"error": "Invalid version index"}), 400
 
         current_messages = chat_entry.get("messages", [])
-        versions.append({
-            "timestamp": datetime.now().isoformat(),
-            "messages": current_messages,
-            "action": "restore",
-            "index": version_index
-        })
-
         restored_messages = versions[version_index]["messages"]
+        
+        # Check if current state already matches the target version
+        if messages_are_identical(current_messages, restored_messages):
+            safe_debug(f"Skipped restoring - current state already matches version {version_index}")
+            return jsonify({"success": True, "messages": restored_messages, "skipped_duplicate": True})
+        
+        # ALWAYS save current state as a version before restoring (but check for duplicates)
+        should_create_version = True
+        
+        # Check if the current state already matches any existing version
+        for existing_version in versions:
+            if messages_are_identical(current_messages, existing_version["messages"]):
+                safe_debug(f"Current state matches existing version - not creating duplicate")
+                should_create_version = False
+                break
+        
+        if should_create_version:
+            versions.append({
+                "timestamp": datetime.now().isoformat(),
+                "messages": current_messages,
+                "action": "restore",
+                "index": version_index,
+                "name": f"Before restore to version {version_index}"
+            })
+            safe_debug(f"Created new version entry before restoring to version {version_index}")
+        
         chat_entry["messages"] = restored_messages
         chat_entry["updated_at"] = datetime.now().isoformat()
 
         with open(chats_file, "w", encoding="utf-8") as f:
             json.dump(chat_history, f, indent=2, ensure_ascii=False)
 
+        # Update active chat if loaded and ensure proper message format
         if chat_id in active_chats:
             chat = active_chats[chat_id]
+            # Ensure messages have proper timestamp format for unified_history
+            for msg in restored_messages:
+                if "timestamp" not in msg:
+                    msg["timestamp"] = time.time()
+                elif isinstance(msg["timestamp"], str):
+                    # Convert ISO string back to timestamp for unified_history
+                    try:
+                        msg["timestamp"] = datetime.fromisoformat(msg["timestamp"]).timestamp()
+                    except:
+                        msg["timestamp"] = time.time()
             chat.unified_history = restored_messages
             chat.last_updated = time.time()
 

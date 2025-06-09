@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, ChangeEvent, useCallback } from 'react';
 import Message from './Message';
 import SummaryModal from './SummaryModal';
+import VersionHistoryModal from './VersionHistoryModal';
+import EditMessageModal from './EditMessageModal';
 import chatManager, { generateChatId } from '../utils/chatManager';
 import ImageAnnotationModal from './ImageAnnotationModal';
 
@@ -193,6 +195,10 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   // Add state for chat summarization
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+  const [versionHistoryModalOpen, setVersionHistoryModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+  const [hasVersions, setHasVersions] = useState(false);
   const [summaryContent, setSummaryContent] = useState('');
   // Queue for image annotation before upload
   const [annotationQueue, setAnnotationQueue] = useState<{ file: File; index: number; total: number; }[]>([]);
@@ -296,67 +302,206 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     };
   }, []);
 
-  const applyHistoryUpdate = (newMessages: ChatMessage[]) => {
-    setMessages(newMessages);
-    setLoading(false);
-    setIsStreaming(false);
-    setIsThinking(false);
+  const checkVersionsExist = useCallback(async () => {
+    if (!chatId) {
+      setHasVersions(false);
+      return;
+    }
+    
+    try {
+      const res = await fetch(`/api/chats/${chatId}/versions`);
+      if (res.ok) {
+        const data = await res.json();
+        setHasVersions(data.versions && data.versions.length > 0);
+      } else {
+        setHasVersions(false);
+      }
+    } catch (e) {
+      console.error('Error checking versions:', e);
+      setHasVersions(false);
+    }
+  }, [chatId]);
+
+  // Check for versions when chatId changes
+  useEffect(() => {
+    if (chatId) {
+      checkVersionsExist();
+    } else {
+      setHasVersions(false);
+    }
+  }, [chatId, checkVersionsExist]);
+
+  const reloadChatFromBackend = async (preserveLoadingState = false) => {
+    if (!chatId) return;
+    
+    try {
+      if (!preserveLoadingState) {
+        setLoading(true);
+      }
+      console.log(`🔄 Reloading chat ${chatId.slice(-8)} from backend...`);
+      
+      // CRITICAL: Clear all frontend state first to prevent interference, but preserve input/attachments if loading state is preserved
+      setMessages([]);
+      setIsStreaming(false);
+      setIsThinking(false);
+      if (!preserveLoadingState) {
+        setInput('');
+        setAttachments([]);
+      }
+      
+      // Fetch the complete chat data from backend using the correct endpoint
+      const res = await fetch(`/api/chat/${chatId}`);
+      if (res.ok) {
+        const data = await res.json();
+        // Small delay to ensure state is properly cleared
+        await new Promise(resolve => setTimeout(resolve, 50));
+        setMessages(data.messages || []);
+        console.log(`✅ Reloaded ${data.messages?.length || 0} messages from backend`);
+      } else {
+        console.error('Failed to reload chat from backend:', res.status);
+        // If chat doesn't exist in backend, keep messages cleared
+        if (res.status === 404) {
+          console.log('Chat not found in backend, messages remain cleared');
+        }
+      }
+      
+      // Check if versions exist after reloading
+      await checkVersionsExist();
+    } catch (e) {
+      console.error('Error reloading chat from backend:', e);
+      // On error, keep messages cleared
+      setMessages([]);
+    } finally {
+      if (!preserveLoadingState) {
+        setLoading(false);
+        setIsStreaming(false);
+        setIsThinking(false);
+      }
+    }
   };
 
   const handleEditMessageAction = async (index: number) => {
-    const original = messages[index];
-    const edited = window.prompt('Edit message', original.content);
-    if (edited === null || !chatId) return;
+    setEditingMessageIndex(index);
+    setEditModalOpen(true);
+  };
+
+  const handleSaveEditedMessage = async (newContent: string) => {
+    if (editingMessageIndex === null || !chatId) {
+      return;
+    }
+    
     try {
-      const res = await fetch(`/api/chats/${chatId}/messages/${index}/edit`, {
+      setLoading(true);
+      
+      const requestUrl = `/api/chats/${chatId}/messages/${editingMessageIndex}/edit`;
+      
+      const res = await fetch(requestUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: edited })
+        body: JSON.stringify({ content: newContent })
       });
+      
       const data = await res.json();
+      
       if (res.ok) {
-        applyHistoryUpdate(data.messages);
-        setInput(edited);
-        setAttachments(original.attachments || []);
-        handleSend();
+        // If backend indicates we should generate a response, trigger it
+        if (data.should_generate_response && data.edited_message) {
+          
+          // Reload the truncated chat history from backend
+          await reloadChatFromBackend(false);
+          
+          // Directly send the edited message without touching input box
+          await handleSend(true, data.edited_message.content, data.edited_message.attachments || []);
+        } else {
+          
+          // Reload from backend and set loading to false
+          await reloadChatFromBackend();
+          setLoading(false);
+        }
       } else {
-        alert(data.error || 'Failed to edit message');
+        console.error('❌ [EDIT-SAVE] Edit failed:', data.error);
+        alert(`Failed to edit message: ${data.error || 'Unknown error'}`);
+        setLoading(false);
       }
     } catch (e) {
-      console.error(e);
+      console.error('❌ [EDIT-SAVE] Edit request failed:', e);
+      alert('Failed to edit message. Please check your connection and try again.');
+      setLoading(false);
+    } finally {
+      setEditingMessageIndex(null);
     }
   };
 
   const handleDeleteMessageAction = async (index: number) => {
-    if (!chatId || !window.confirm('Delete this message and all following?')) return;
+    if (!chatId || !window.confirm('Delete this message and all following messages?')) return;
+    
     try {
+      setLoading(true);
       const res = await fetch(`/api/chats/${chatId}/messages/${index}`, { method: 'DELETE' });
       const data = await res.json();
+      
       if (res.ok) {
-        applyHistoryUpdate(data.messages);
+        // Reload from backend to ensure we have the correct state
+        await reloadChatFromBackend();
       } else {
-        alert(data.error || 'Failed to delete');
+        console.error('Delete failed:', data.error);
+        alert(`Failed to delete messages: ${data.error || 'Unknown error'}`);
       }
     } catch (e) {
-      console.error(e);
+      console.error('Delete request failed:', e);
+      alert('Failed to delete messages. Please check your connection and try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleRefreshMessageAction = async (index: number) => {
-    if (!chatId) return;
+    
+    if (!chatId) {
+      return;
+    }
+    
     try {
-      const res = await fetch(`/api/chats/${chatId}/messages/${index}/refresh`, { method: 'POST' });
+      const userMessage = messages[index];
+   
+      if (!userMessage || userMessage.role !== 'user') {
+        console.log('❌ [REFRESH-ACTION] Invalid message for refresh - not a user message');
+        alert('Can only refresh from user messages');
+        return;
+      }
+      
+      setLoading(true);
+      
+      const requestUrl = `/api/chats/${chatId}/messages/${index}/refresh`;
+      
+      const res = await fetch(requestUrl, { method: 'POST' });
+      
       const data = await res.json();
+      
       if (res.ok) {
-        applyHistoryUpdate(data.messages);
-        setInput(data.refresh_content || '');
-        setAttachments(messages[index].attachments || []);
-        handleSend();
+        // If backend indicates we should generate a response, trigger it
+        if (data.should_generate_response && data.refresh_message) {
+          
+          // Reload the truncated chat history from backend
+          await reloadChatFromBackend(false);
+          
+          // Directly send the message without touching input box
+          await handleSend(true, data.refresh_message.content, data.refresh_message.attachments || []);
+        } else {
+          
+          // Reload from backend and set loading to false
+          await reloadChatFromBackend();
+          setLoading(false);
+        }
       } else {
-        alert(data.error || 'Failed to refresh');
+        console.error('❌ [REFRESH-ACTION] Refresh failed:', data.error);
+        alert(`Failed to refresh: ${data.error || 'Unknown error'}`);
+        setLoading(false);
       }
     } catch (e) {
-      console.error(e);
+      console.error('❌ [REFRESH-ACTION] Refresh request failed:', e);
+      alert('Failed to refresh. Please check your connection and try again.');
+      setLoading(false);
     }
   };
 
@@ -1683,15 +1828,25 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   };
   
   // Enhanced send function to handle document caching, chat history, and background processing
-  const handleSend = async () => {
-    // Prevent sending if uploads are in progress
-    if (isUploading) {
+  // Can be called with provided content for programmatic sending (refresh/edit) or without for normal input sending
+  const handleSend = async (forceForeground: boolean = false, providedContent?: string, providedAttachments?: FileAttachment[]) => {
+
+    
+    // Use provided content/attachments or fall back to state
+    const messageContent = providedContent || input.trim();
+    const messageAttachments = providedAttachments || attachments;
+    
+    // Only check for uploads if we're using state attachments (not provided ones)
+    if (!providedContent && isUploading) {
       alert('Please wait for file uploads to complete before sending your message.');
       return;
     }
     
-    // Use robust sending disabled check
-    if (isSendingDisabled() || (!input.trim() && attachments.length === 0)) {
+    // Use robust sending disabled check, but only for normal input sending
+    const sendingDisabled = !providedContent && isSendingDisabled();
+    const hasContent = messageContent || messageAttachments.length > 0;
+    
+    if (sendingDisabled || !hasContent) {
       return;
     }
     
@@ -1713,15 +1868,19 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     // No more temporary placeholders - backend will provide immediate chat metadata
     
     // Check if we should process in background (if chat is not visible)
-    const shouldProcessInBackground = backgroundProcessingEnabled && !isActive && chatId;
+    const shouldProcessInBackground = backgroundProcessingEnabled && !isActive && chatId && !forceForeground;
     
     if (shouldProcessInBackground) {
       
-      // Clear input but don't show loading state
-      const inputToSend = input.trim();
-      const attachmentsToSend = [...attachments];
-      setInput('');
-      setAttachments([]);
+      // For background processing, use the determined content/attachments
+      const inputToSend = messageContent;
+      const attachmentsToSend = [...messageAttachments];
+      
+      // Only clear input/attachments if we're using state (not provided content)
+      if (!providedContent) {
+        setInput('');
+        setAttachments([]);
+      }
       
       // Build messages array for background processing
       const messagesToSend = [
@@ -1762,7 +1921,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
 
     // Check if we have document attachments that could benefit from caching
-    const documentAttachments = attachments.filter(
+    const documentAttachments = messageAttachments.filter(
       attachment => attachment.file_type === 'document' && attachment.file_id
     );
     
@@ -1781,8 +1940,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     
     const userMessage: ChatMessage = {
       role: 'user',
-      content: input.trim(),
-      attachments: attachments.length > 0 ? attachments.map(a => ({
+      content: messageContent,
+      attachments: messageAttachments.length > 0 ? messageAttachments.map(a => ({
         // Map only necessary fields for the message
         file_id: a.file_id,
         file_type: a.file_type,
@@ -1822,8 +1981,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
     setMessages(prev => [...prev, userMessage]);
     
-    setInput('');
-    setAttachments([]); // Clear attachments from input area AFTER they are included in userMessage
+    // Only clear input/attachments if we're using state (not provided content)
+    if (!providedContent) {
+      setInput('');
+      setAttachments([]); // Clear attachments from input area AFTER they are included in userMessage
+    }
     accumulatedContentRef.current = ''; // Clear any accumulated assistant message content
     setLoading(true);
     
@@ -2885,6 +3047,17 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
+          {chatId && hasVersions && (
+            <button
+              onClick={() => setVersionHistoryModalOpen(true)}
+              className="settings-button"
+              title="Version History"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="settings-icon">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+              </svg>
+            </button>
+          )}
           {showSummarizeButton && (
             <button
               onClick={summarizeChat}
@@ -3052,7 +3225,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
               reasoning={message.reasoning} // Pass reasoning tokens to Message component
               onEdit={message.role === 'user' ? () => handleEditMessageAction(index) : undefined}
               onDelete={message.role === 'user' ? () => handleDeleteMessageAction(index) : undefined}
-              onRefresh={message.role === 'assistant' ? () => handleRefreshMessageAction(index - 1) : undefined}
+              onRefresh={message.role === 'user' ? () => handleRefreshMessageAction(index) : undefined}
             />
           );
         })}
@@ -3104,7 +3277,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
             // Use robust sending disabled check for Enter key handling
             if (e.key === 'Enter' && !e.shiftKey && !isSendingDisabled()) {
               e.preventDefault();
-              handleSend();
+              handleSend(false);
             } else if (e.key === 'Enter' && !e.shiftKey && isSendingDisabled()) {
               // Prevent new line creation when Enter is pressed but sending is disabled
               e.preventDefault();
@@ -3184,7 +3357,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
 
         <button
           className="send-btn"
-          onClick={handleSend}
+          onClick={() => handleSend(false)}
           disabled={isSendingDisabled() || (!input.trim() && attachments.length === 0)}
           title="Send message"
         >
@@ -3226,6 +3399,26 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         onClose={() => setSummaryModalOpen(false)}
         summary={summaryContent}
         onUseSummary={useSummaryAsHistory}
+      />
+      
+      <VersionHistoryModal
+        isOpen={versionHistoryModalOpen}
+        onClose={() => setVersionHistoryModalOpen(false)}
+        chatId={chatId}
+        onRestore={() => {
+          reloadChatFromBackend();
+          checkVersionsExist();
+        }}
+      />
+      
+      <EditMessageModal
+        isOpen={editModalOpen}
+        onClose={() => {
+          setEditModalOpen(false);
+          setEditingMessageIndex(null);
+        }}
+        initialContent={editingMessageIndex !== null ? messages[editingMessageIndex]?.content || '' : ''}
+        onSave={handleSaveEditedMessage}
       />
     </div>
   );

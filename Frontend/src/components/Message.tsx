@@ -2176,16 +2176,15 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
                     </svg>
                   </button>
                 )}
+                {onRefresh && (
+                  <button className="message-action-btn" onClick={onRefresh} title="Refresh response">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+                      <path d="M3 10a7 7 0 0112-4.9V3a1 1 0 112 0v5h-5a1 1 0 110-2h2.026A5 5 0 105 10a1 1 0 11-2 0z" />
+                    </svg>
+                  </button>
+                )}
               </>
-            ) : (
-              onRefresh && (
-                <button className="message-action-btn" onClick={onRefresh} title="Refresh">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-                    <path d="M3 10a7 7 0 0112-4.9V3a1 1 0 112 0v5h-5a1 1 0 110-2h2.026A5 5 0 105 10a1 1 0 11-2 0z" />
-                  </svg>
-                </button>
-              )
-            )}
+            ) : null}
           </div>
         )}
         {!isUser && !isThinking && showCopyButton && (
