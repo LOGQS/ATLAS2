@@ -598,6 +598,51 @@
   margin-bottom: 0.5em;
 }
 
+/* Version indicator styles */
+.creation-version-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  position: relative;
+  top: -1px;
+}
+
+.creation-version-badge.latest {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
+}
+
+.creation-version-badge.older {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: white;
+  box-shadow: 0 1px 3px rgba(107, 114, 128, 0.3);
+}
+
+.creation-latest-indicator {
+  color: #10b981;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
+}
+
+/* Hover effects for version badges */
+.creation-list-item:hover .creation-version-badge.latest {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.4);
+}
+
+.creation-list-item:hover .creation-version-badge.older {
+  background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+  box-shadow: 0 2px 6px rgba(107, 114, 128, 0.4);
+}
+
 .markdown-content blockquote {
   border-left: 4px solid var(--border-color);
   margin-left: 0;

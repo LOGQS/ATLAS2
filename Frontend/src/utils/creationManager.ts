@@ -24,6 +24,9 @@ class CreationManager {
   private retryCount: number = 0;
   private retryTimeout: number | null = null;
   
+  // Track processed edits to prevent duplicates
+  private processedEdits: Set<string> = new Set();
+  
   private constructor() {
     // Initialize storage and set up backend health check
     this.initializeStorage();
@@ -147,7 +150,7 @@ class CreationManager {
     // Add a unique ID if it doesn't exist
     const creationWithId = {
       ...creation,
-      id: creation.id || `creation-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      id: creation.id || `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
     };
     
     // Add to the creations list
@@ -240,6 +243,49 @@ class CreationManager {
       .filter((creation): creation is Creation => creation !== undefined);
   }
   
+  /**
+   * Get the version number for a creation (V1, V2, V3, etc.)
+   */
+  public getCreationVersionInfo(creation: Creation): { version: number; isLatest: boolean; totalVersions: number } {
+    if (!creation.title) {
+      return { version: 1, isLatest: true, totalVersions: 1 };
+    }
+
+    // Get all creations with the same title
+    const sameTitle = this.creations.filter(c => c.title?.toLowerCase() === creation.title?.toLowerCase());
+    
+    if (sameTitle.length === 1) {
+      return { version: 1, isLatest: true, totalVersions: 1 };
+    }
+
+    // Sort by creation timestamp (from ID) and editedAt to determine version order
+    const sortedVersions = sameTitle.sort((a, b) => {
+      // First priority: original creation (no editedAt) comes first
+      if (!a.metadata?.editedAt && b.metadata?.editedAt) return -1;
+      if (a.metadata?.editedAt && !b.metadata?.editedAt) return 1;
+      
+      // If both have editedAt, sort by editedAt
+      if (a.metadata?.editedAt && b.metadata?.editedAt && 
+          typeof a.metadata.editedAt === 'string' && typeof b.metadata.editedAt === 'string') {
+        return new Date(a.metadata.editedAt).getTime() - new Date(b.metadata.editedAt).getTime();
+      }
+      
+      // If neither has editedAt, sort by ID timestamp
+      const getTimestamp = (id: string) => {
+        const match = id?.match(/creation-(\d+)-/);
+        return match ? parseInt(match[1]) : 0;
+      };
+      
+      return getTimestamp(a.id || '') - getTimestamp(b.id || '');
+    });
+
+    const versionIndex = sortedVersions.findIndex(c => c.id === creation.id);
+    const version = versionIndex + 1;
+    const isLatest = versionIndex === sortedVersions.length - 1;
+    
+    return { version, isLatest, totalVersions: sortedVersions.length };
+  }
+
   /**
    * Clear all creations
    */
@@ -507,37 +553,292 @@ class CreationManager {
     return true;
   }
 
-  /** Get a creation by title (case insensitive) */
+  /** Get the LATEST creation by title (case insensitive) - returns the most recently created version */
   public getCreationByTitle(title: string): Creation | undefined {
-    return this.creations.find(c => c.title?.toLowerCase() === title.toLowerCase());
+    // Find all creations with this title
+    const matchingCreations = this.creations.filter(c => c.title?.toLowerCase() === title.toLowerCase());
+    
+    if (matchingCreations.length === 0) {
+      return undefined;
+    }
+    
+    // Return the most recent one (highest timestamp in ID or latest editedAt)
+    return matchingCreations.reduce((latest, current) => {
+      // If current has editedAt and is more recent, use it
+      if (current.metadata?.editedAt && latest.metadata?.editedAt && 
+          typeof current.metadata.editedAt === 'string' && typeof latest.metadata.editedAt === 'string') {
+        return new Date(current.metadata.editedAt) > new Date(latest.metadata.editedAt) ? current : latest;
+      }
+      
+      // If only current has editedAt, it's newer
+      if (current.metadata?.editedAt && !latest.metadata?.editedAt) {
+        return current;
+      }
+      
+      // If only latest has editedAt, it's newer
+      if (!current.metadata?.editedAt && latest.metadata?.editedAt) {
+        return latest;
+      }
+      
+      // Neither has editedAt, compare by ID timestamp (extract timestamp from ID)
+      const getCurrentTimestamp = () => {
+        const match = current.id?.match(/creation-(\d+)-/);
+        return match ? parseInt(match[1]) : 0;
+      };
+      
+      const getLatestTimestamp = () => {
+        const match = latest.id?.match(/creation-(\d+)-/);
+        return match ? parseInt(match[1]) : 0;
+      };
+      
+      return getCurrentTimestamp() > getLatestTimestamp() ? current : latest;
+    });
   }
 
-  /** Edit a creation's content by title */
+  /** Edit a creation's content by title - creates a new version instead of modifying the original */
   public editCreationByTitle(title: string, content: string, mode: 'replace' | 'append' = 'replace'): Creation | null {
-    const creation = this.getCreationByTitle(title);
-    if (!creation || !creation.id) return null;
+    const originalCreation = this.getCreationByTitle(title);
+    if (!originalCreation || !originalCreation.id) return null;
 
-    const newContent = mode === 'append' ? creation.content + content : content;
-    this.updateCreation(creation.id, { content: newContent });
-    return creation;
-  }
-
-  /** Replace a specific snippet within a creation by title */
-  public patchCreationByTitle(title: string, target: string, replacement: string): Creation | null {
-    const creation = this.getCreationByTitle(title);
-    if (!creation || !creation.id) return null;
-
-    let regex: RegExp;
-    try {
-      regex = new RegExp(target, 'g');
-    } catch {
-      const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      regex = new RegExp(escaped, 'g');
+    // Create a unique key for this edit operation to prevent duplicates
+    const editKey = `${title}-${mode}-${content.substring(0, 50)}-${Date.now()}`;
+    
+    // Check if this edit has already been processed recently (within last 1000ms)
+    const recentEdits = Array.from(this.processedEdits).filter(key => {
+      const timestamp = parseInt(key.split('-').pop() || '0');
+      return Date.now() - timestamp < 1000; // Within last second
+    });
+    
+    const isDuplicate = recentEdits.some(key => 
+      key.startsWith(`${title}-${mode}`) && key.includes(content.substring(0, 50))
+    );
+    
+    if (isDuplicate) {
+      console.log(`Skipping duplicate edit for ${title} (${mode})`);
+      // Return the most recent creation with this title
+      return this.getCreationByTitle(title) || null;
     }
 
-    const newContent = creation.content.replace(regex, replacement);
-    this.updateCreation(creation.id, { content: newContent });
-    return creation;
+    // Create new content based on mode
+    let newContent: string;
+    if (mode === 'append') {
+      // Ensure proper spacing when appending - add newline if original doesn't end with one
+      const originalEndsWithNewline = originalCreation.content.endsWith('\n');
+      const contentStartsWithNewline = content.startsWith('\n');
+      
+      if (originalEndsWithNewline || contentStartsWithNewline) {
+        // Already has proper spacing
+        newContent = originalCreation.content + content;
+      } else {
+        // Add newline between content
+        newContent = originalCreation.content + '\n' + content;
+      }
+    } else {
+      newContent = content;
+    }
+    
+    // Create a new creation object (new version) instead of modifying the original
+    const newCreation: Creation = {
+      ...originalCreation,
+      content: newContent,
+      id: `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      metadata: {
+        ...originalCreation.metadata,
+        originalId: originalCreation.id,
+        editMode: mode,
+        editedAt: new Date().toISOString()
+      }
+    };
+    
+    // Add the new version to the gallery
+    const addedCreation = this.addCreation(newCreation);
+    
+    // Track this edit to prevent duplicates
+    this.processedEdits.add(editKey);
+    
+    // Clean up old edit keys (keep only last 100)
+    if (this.processedEdits.size > 100) {
+      const oldestKeys = Array.from(this.processedEdits).slice(0, 50);
+      oldestKeys.forEach(key => this.processedEdits.delete(key));
+    }
+    
+    console.log(`✅ [PATCH-COMPLETE] Successfully patched "${title}" - content changed from ${originalCreation.content.length} to ${newContent.length} chars`);
+    
+    // Return the new creation version
+    return addedCreation;
+  }
+
+  /** Replace a specific snippet within a creation by title - creates a new version instead of modifying the original */
+  public patchCreationByTitle(title: string, target: string, replacement: string): Creation | null {
+    const originalCreation = this.getCreationByTitle(title);
+    if (!originalCreation || !originalCreation.id) return null;
+
+    // Create a unique key for this patch operation to prevent duplicates
+    const patchKey = `${title}-patch-${target.substring(0, 20)}-${replacement.substring(0, 20)}-${Date.now()}`;
+    
+    // Check if this patch has already been processed recently (within last 1000ms)
+    const recentPatches = Array.from(this.processedEdits).filter(key => {
+      const timestamp = parseInt(key.split('-').pop() || '0');
+      return Date.now() - timestamp < 1000; // Within last second
+    });
+    
+    const isDuplicate = recentPatches.some(key => 
+      key.startsWith(`${title}-patch`) && 
+      key.includes(target.substring(0, 20)) && 
+      key.includes(replacement.substring(0, 20))
+    );
+    
+    if (isDuplicate) {
+      console.log(`Skipping duplicate patch for ${title} (${target} -> ${replacement})`);
+      // Return the most recent creation with this title
+      return this.getCreationByTitle(title) || null;
+    }
+
+    // Enhanced replacement logic with multiple fallback strategies
+    let newContent = originalCreation.content;
+    let matched = false;
+    
+    // Strategy 1: Try exact match first
+    if (originalCreation.content.includes(target)) {
+      newContent = originalCreation.content.replace(target, replacement);
+      matched = true;
+      console.log(`✅ [PATCH-SUCCESS] Exact match found for "${target}" in "${title}"`);
+    } else {
+      console.log(`❌ [PATCH-FAIL] Exact match failed for target in "${title}":`, {
+        target: JSON.stringify(target),
+        targetLength: target.length,
+        hasNewlines: target.includes('\n'),
+        hasCarriageReturns: target.includes('\r'),
+        contentPreview: originalCreation.content.substring(0, 200) + '...'
+      });
+      
+      // Strategy 2: Try with normalized whitespace (convert all whitespace to single spaces)
+      const normalizeWhitespace = (str: string) => str.replace(/\s+/g, ' ').trim();
+      const normalizedTarget = normalizeWhitespace(target);
+      const normalizedContent = normalizeWhitespace(originalCreation.content);
+      
+      if (normalizedContent.includes(normalizedTarget)) {
+        // Find the original text that corresponds to the normalized target
+        const words = normalizedTarget.split(' ');
+        
+        // Create a regex that matches the target with flexible whitespace
+        const flexiblePattern = words.map(word => 
+          word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        ).join('\\s+');
+        
+        try {
+          const flexibleRegex = new RegExp(flexiblePattern, 'g');
+          if (flexibleRegex.test(originalCreation.content)) {
+            newContent = originalCreation.content.replace(flexibleRegex, replacement);
+            matched = true;
+            console.log(`✅ [PATCH-SUCCESS] Flexible whitespace match found for "${target}" in "${title}"`);
+          }
+        } catch (error) {
+          console.log(`⚠️ [PATCH-REGEX-ERROR] Flexible regex failed:`, error);
+        }
+      }
+      
+      // Strategy 3: Try removing all newlines and extra whitespace from both target and content
+      if (!matched) {
+        const cleanTarget = target.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const lines = cleanTarget.split('\n').map(line => line.trim()).filter(line => line);
+        
+        if (lines.length === 1) {
+          // Single line - try trimmed exact match
+          const trimmedTarget = target.trim();
+          if (originalCreation.content.includes(trimmedTarget)) {
+            newContent = originalCreation.content.replace(trimmedTarget, replacement);
+            matched = true;
+            console.log(`✅ [PATCH-SUCCESS] Trimmed match found for "${target}" in "${title}"`);
+          }
+        } else if (lines.length > 1) {
+          // Multi-line - try to find the pattern allowing for different line endings
+          const multiLinePattern = lines.map(line => 
+            line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          ).join('\\s*\\n\\s*');
+          
+          try {
+            const multiLineRegex = new RegExp(multiLinePattern, 'g');
+            if (multiLineRegex.test(originalCreation.content)) {
+              newContent = originalCreation.content.replace(multiLineRegex, replacement);
+              matched = true;
+              console.log(`✅ [PATCH-SUCCESS] Multi-line pattern match found for "${target}" in "${title}"`);
+            }
+          } catch (error) {
+            console.log(`⚠️ [PATCH-REGEX-ERROR] Multi-line regex failed:`, error);
+          }
+        }
+      }
+      
+      // Strategy 4: Last resort - try regex matching
+      if (!matched) {
+        try {
+          const escapedTarget = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(escapedTarget, 'g');
+          if (regex.test(originalCreation.content)) {
+            newContent = originalCreation.content.replace(regex, replacement);
+            matched = true;
+            console.log(`✅ [PATCH-SUCCESS] Regex match found for "${target}" in "${title}"`);
+          }
+        } catch (error) {
+          console.log(`⚠️ [PATCH-REGEX-ERROR] Final regex attempt failed:`, error);
+        }
+      }
+      
+      // If still no match, log detailed failure information
+      if (!matched) {
+        console.error(`🚫 [PATCH-TOTAL-FAIL] All replacement strategies failed for "${title}":`, {
+          originalTarget: JSON.stringify(target),
+          targetChars: Array.from(target).map(c => c.charCodeAt(0)),
+          contentLength: originalCreation.content.length,
+          contentStart: JSON.stringify(originalCreation.content.substring(0, 100)),
+          possibleMatches: [
+            originalCreation.content.includes(target.trim()),
+            originalCreation.content.includes(target.replace(/\n/g, ' ')),
+            originalCreation.content.includes(target.replace(/\s+/g, ' '))
+          ]
+        });
+        
+        // Return the original creation unchanged if no replacement was possible
+        return originalCreation;
+      }
+    }
+    
+    // Only create new version if content actually changed
+    if (newContent === originalCreation.content) {
+      console.log(`ℹ️ [PATCH-NO-CHANGE] No changes made to "${title}" - content remained the same`);
+      return originalCreation;
+    }
+    
+    // Create a new creation object (new version) instead of modifying the original
+    const newCreation: Creation = {
+      ...originalCreation,
+      content: newContent,
+      id: `creation-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      metadata: {
+        ...originalCreation.metadata,
+        originalId: originalCreation.id,
+        editMode: 'patch',
+        patchTarget: target,
+        patchReplacement: replacement,
+        editedAt: new Date().toISOString()
+      }
+    };
+    
+    // Add the new version to the gallery
+    const addedCreation = this.addCreation(newCreation);
+    
+    // Track this patch to prevent duplicates
+    this.processedEdits.add(patchKey);
+    
+    // Clean up old edit keys (keep only last 100)
+    if (this.processedEdits.size > 100) {
+      const oldestKeys = Array.from(this.processedEdits).slice(0, 50);
+      oldestKeys.forEach(key => this.processedEdits.delete(key));
+    }
+    
+    // Return the new creation version
+    return addedCreation;
   }
 
   /**

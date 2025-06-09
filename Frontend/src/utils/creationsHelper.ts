@@ -210,14 +210,14 @@ export function detectCreationEdits(content: string): CreationEdit[] {
   while ((match = simplePattern.exec(cleanedContent)) !== null) {
     const [, directive, title, editContent] = match;
     const mode = directive === 'appendcreation' ? 'append' : 'replace';
-    edits.push({ title: title.trim(), content: editContent.trim(), mode });
+    edits.push({ title: title.trim(), content: editContent, mode });
   }
 
   // Partial replace
   const replacePattern = /\$\$replacecreation:([^$]+?)\$\$([\s\S]*?)\$\$with\$\$([\s\S]*?)\$\$end\$\$/g;
   while ((match = replacePattern.exec(cleanedContent)) !== null) {
     const [, title, target, replacement] = match;
-    edits.push({ title: title.trim(), target: target.trim(), replacement: replacement.trim(), mode: 'patch' });
+    edits.push({ title: title.trim(), target: target, replacement: replacement, mode: 'patch' });
   }
 
   return edits;

@@ -410,6 +410,9 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
     const isActive = currentCreation?.id === creation.id;
     const isSelected = creation.id ? selectedCreations.has(creation.id) : false;
     
+    // Get version information for this creation
+    const versionInfo = creationManager.getCreationVersionInfo(creation);
+    
     const handleClick = (e: React.MouseEvent) => {
       if (isSelectMode && creation.id) {
         toggleCreationSelection(creation.id, index, e.shiftKey);
@@ -473,9 +476,20 @@ const EnhancedCreationViewer: React.FC<EnhancedCreationViewerProps> = ({
         <div className="creation-item-content">
           <div className="creation-item-title">
             {creation.title || `${creation.type.charAt(0).toUpperCase() + creation.type.slice(1)} Creation`}
+            {versionInfo.totalVersions > 1 && (
+              <span 
+                className={`creation-version-badge ${versionInfo.isLatest ? 'latest' : 'older'}`}
+                title={`Version ${versionInfo.version} of ${versionInfo.totalVersions} ${versionInfo.isLatest ? '(Latest)' : ''}`}
+              >
+                V{versionInfo.version}
+              </span>
+            )}
           </div>
           <div className="creation-item-subtitle">
             {creation.type === 'code' ? creation.language || 'code' : creation.type}
+            {versionInfo.totalVersions > 1 && versionInfo.isLatest && (
+              <span className="creation-latest-indicator">• Latest</span>
+            )}
           </div>
         </div>
         
