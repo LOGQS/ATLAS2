@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { showHtmlPreview } from '../utils/htmlPreview';
-import { detectCreations, detectCreationEdits, showCreation, removeCreationDirectives, CreationType, switchCreation } from '../utils/creationsHelper';
+import { detectCreations, detectCreationEdits, showCreation, removeCreationDirectives, CreationType, switchCreation, parseExternalDependencies } from '../utils/creationsHelper';
 import creationManager from '../utils/creationManager';
 import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
@@ -129,6 +129,7 @@ interface StreamedCreation {
   isComplete: boolean;
   id: string;
   forwarded: number;   // NEW – bytes already sent to the creation window
+  externalDependencies?: Record<string, string>; // External dependencies for React components
   metadata?: {
     isTemporary?: boolean;
     isEdit?: boolean;
@@ -1138,39 +1139,100 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
 
           // If end tag was found and creation is not yet marked complete by this logic path
           if (endTagIndex !== -1 && !creationComplete) {
-            setCreationComplete(true);
-
-            const completeCreation: Creation = {
-              type: streamedCreation.type as CreationType,
-              content: streamedCreation.content.trim(), // content is already updated via setStreamedCreation
-              title: streamedCreation.title,
-              language: streamedCreation.language,
-              id: streamedCreation.id,
-              metadata: { isTemporary: true }
-            };
-
-            const isDuplicateFinalized = completedStreamCreationsRef.current.some(existing =>
-              existing.type === completeCreation.type &&
-              existing.title === completeCreation.title &&
-              existing.id === completeCreation.id
-            );
-
-            if (!isDuplicateFinalized) {
-              completedStreamCreationsRef.current = [...completedStreamCreationsRef.current, completeCreation];
+            // For React creations, check if external dependencies are expected
+            let shouldMarkComplete = true;
+            
+            if (streamedCreation.type === 'react') {
+              // Check if there are external dependencies in the content after $$end$$
+              const afterEndContent = cleanedContent.substring(endTagIndex + '$$end$$'.length);
+              const hasExternalStart = afterEndContent.includes('$$external$$');
+              const hasExternalEnd = afterEndContent.includes('$$externalend$$');
+              
+              console.log('🔍 [REACT-COMPLETION-CHECK] Checking external dependencies for React creation:', {
+                creationId: streamedCreation.id,
+                title: streamedCreation.title,
+                hasExternalStart,
+                hasExternalEnd,
+                afterEndContentLength: afterEndContent.length,
+                afterEndPreview: afterEndContent.substring(0, 100) + (afterEndContent.length > 100 ? '...' : '')
+              });
+              
+              // If external start tag is found but external end tag is not found yet, wait
+              if (hasExternalStart && !hasExternalEnd) {
+                shouldMarkComplete = false;
+                console.log('⏳ [REACT-COMPLETION-DELAYED] React creation waiting for external dependencies to complete');
+              }
+              
+              // If both external start and end are found, parse the external dependencies
+              if (hasExternalStart && hasExternalEnd) {
+                try {
+                  const externalDeps = parseExternalDependencies(afterEndContent);
+                  if (externalDeps) {
+                    // Update the streamed creation with external dependencies
+                    setStreamedCreation(prev => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        externalDependencies: externalDeps
+                      };
+                    });
+                    console.log('✅ [REACT-EXTERNAL-DEPS] Added external dependencies to React creation:', {
+                      creationId: streamedCreation.id,
+                      dependencies: Object.keys(externalDeps)
+                    });
+                  }
+                } catch (error) {
+                  console.warn('⚠️ [REACT-EXTERNAL-PARSE-ERROR] Failed to parse external dependencies:', error);
+                  // Continue with completion even if parsing fails
+                }
+              }
             }
+            
+            if (shouldMarkComplete) {
+              setCreationComplete(true);
 
-            const timeout = setTimeout(() => {
-              window.dispatchEvent(new CustomEvent('switch-creation-preview', {
-                detail: { creationId: completeCreation.id }
-              }));
-            }, 1000);
-            setCreationSwitchTimeout(timeout as unknown as number);
+              const completeCreation: Creation = {
+                type: streamedCreation.type as CreationType,
+                content: streamedCreation.content.trim(), // content is already updated via setStreamedCreation
+                title: streamedCreation.title,
+                language: streamedCreation.language,
+                id: streamedCreation.id,
+                externalDependencies: streamedCreation.externalDependencies, // Include external dependencies
+                metadata: { isTemporary: true }
+              };
 
-            const afterCreationContent = cleanedContent.substring(endTagIndex + '$$end$$'.length);
-            if (afterCreationContent) {
-              setPostCreationContent(afterCreationContent);
-              const newDisplayedContent = preCreationContent + afterCreationContent;
-              safeSetDisplayedContent(newDisplayedContent);
+              const isDuplicateFinalized = completedStreamCreationsRef.current.some(existing =>
+                existing.type === completeCreation.type &&
+                existing.title === completeCreation.title &&
+                existing.id === completeCreation.id
+              );
+
+              if (!isDuplicateFinalized) {
+                completedStreamCreationsRef.current = [...completedStreamCreationsRef.current, completeCreation];
+              }
+
+              const timeout = setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('switch-creation-preview', {
+                  detail: { creationId: completeCreation.id }
+                }));
+              }, 1000);
+              setCreationSwitchTimeout(timeout as unknown as number);
+
+              // For React creations with external dependencies, include content up to $$externalend$$
+              let contentEndIndex = endTagIndex + '$$end$$'.length;
+              if (streamedCreation.type === 'react' && cleanedContent.includes('$$externalend$$')) {
+                const externalEndIndex = cleanedContent.indexOf('$$externalend$$', endTagIndex);
+                if (externalEndIndex !== -1) {
+                  contentEndIndex = externalEndIndex + '$$externalend$$'.length;
+                }
+              }
+              
+              const afterCreationContent = cleanedContent.substring(contentEndIndex);
+              if (afterCreationContent) {
+                setPostCreationContent(afterCreationContent);
+                const newDisplayedContent = preCreationContent + afterCreationContent;
+                safeSetDisplayedContent(newDisplayedContent);
+              }
             }
           } else if (endTagIndex === -1) {
             // No end tag yet, ensure displayed content is only pre-creation content

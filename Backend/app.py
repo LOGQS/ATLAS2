@@ -900,14 +900,14 @@ def is_openrouter_model(model_name):
     """
     Check if the given model name is an OpenRouter model
     """
-    openrouter_models = ["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"]
+    openrouter_models = ["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free", "deepseek/deepseek-chat-v3-0324:free", "qwen/qwen3-30b-a3b:free"]
     return model_name in openrouter_models
 
 def is_groq_model(model_name):
     """
     Check if the given model name is a Groq model
     """
-    groq_models = ["llama-3.3-70b-versatile"]
+    groq_models = ["llama-3.3-70b-versatile", "qwen-qwq-32b"]
     return model_name in groq_models
 
 def is_gemini_model(model_name):
@@ -1413,11 +1413,11 @@ def get_models():
     
     # Add OpenRouter models if available
     if openrouter_client and OPENROUTER_API_KEY:
-        models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free"])
+        models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free", "qwen/qwen3-30b-a3b:free"])
     
     # Add Groq models if available
     if GROQ_API_KEY:
-        models.extend(["llama-3.3-70b-versatile"])
+        models.extend(["llama-3.3-70b-versatile", "qwen-qwq-32b"])
     
     return jsonify({
         "models": models,

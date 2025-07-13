@@ -603,9 +603,24 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
     },
     { 
+      id: 'deepseek/deepseek-chat-v3-0324:free', 
+      name: 'DeepSeek V3',
+      description: 'DeepSeek V3 chat model via OpenRouter'
+    },
+    { 
+      id: 'qwen/qwen3-30b-a3b:free', 
+      name: 'Qwen 3 30B',
+      description: 'Qwen3 model via OpenRouter'
+    },
+    { 
       id: 'llama-3.3-70b-versatile', 
       name: 'Llama 3.3 70B',
       description: 'Really fast model via Groq'
+    },
+    { 
+      id: 'qwen-qwq-32b', 
+      name: 'Qwen QwQ 32B',
+      description: 'Deep thinking model via Groq'
     }
   ];
 

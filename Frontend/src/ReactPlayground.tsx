@@ -169,7 +169,6 @@ const ReactPlayground = () => {
             code: `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App';
 import './styles.css';
 
 // Ensure Tailwind CSS is loaded - inject script if not already present
@@ -206,31 +205,73 @@ window.addEventListener('error', (event) => {
   });
 });
 
-// Mount the component
-const rootElement = document.getElementById('root');
-const root = createRoot(rootElement);
-
-try {
-  root.render(<App />);
-  console.log('Component rendered successfully');
-} catch (error) {
-  console.error('Failed to render component:', error);
-  
-  // Display error in the UI
-  const errorDiv = document.createElement('div');
-  errorDiv.style.padding = '20px';
-  errorDiv.style.margin = '20px';
-  errorDiv.style.backgroundColor = '#ffebee';
-  errorDiv.style.border = '1px solid #ffcdd2';
-  errorDiv.style.borderRadius = '4px';
-  errorDiv.style.color = '#b71c1c';
-  errorDiv.innerHTML = \`<h3>Error Rendering Component</h3><pre>\${error instanceof Error ? error.message : String(error)}</pre>\`;
-  
-  if (rootElement) {
-    rootElement.innerHTML = '';
-    rootElement.appendChild(errorDiv);
+// Dynamic import with error handling for both default and named exports
+const mountComponent = async () => {
+  try {
+    const rootElement = document.getElementById('root');
+    const root = createRoot(rootElement);
+    
+    console.log('Loading component from App.tsx...');
+    
+    // Dynamic import to handle both default and named exports
+    const appModule = await import('./App');
+    
+    // Try to get the component - check for default export first, then named exports
+    let AppComponent;
+    if (appModule.default) {
+      AppComponent = appModule.default;
+      console.log('Using default export from App.tsx');
+    } else if (appModule.App) {
+      AppComponent = appModule.App;
+      console.log('Using named export "App" from App.tsx');
+    } else {
+      // Get the first exported component if no default or App export
+      const exportKeys = Object.keys(appModule).filter(key => key !== 'default');
+      if (exportKeys.length > 0) {
+        AppComponent = appModule[exportKeys[0]];
+        console.log('Using first named export "' + exportKeys[0] + '" from App.tsx');
+      } else {
+        throw new Error('No valid React component found in App.tsx - no default export or named exports detected');
+      }
+    }
+    
+    // Validate that we have a valid React component
+    if (typeof AppComponent !== 'function' && typeof AppComponent !== 'object') {
+      throw new Error('Exported component is not a valid React component: ' + typeof AppComponent);
+    }
+    
+    console.log('Rendering component...');
+    root.render(React.createElement(AppComponent));
+    console.log('Component rendered successfully');
+    
+  } catch (error) {
+    console.error('Failed to load or render component:', error);
+    
+    // Display error in the UI
+    const rootElement = document.getElementById('root');
+    const root = createRoot(rootElement);
+    const errorDiv = React.createElement('div', {
+      style: {
+        padding: '20px',
+        margin: '20px',
+        backgroundColor: '#fee2e2',
+        border: '1px solid #fca5a5',
+        borderRadius: '8px',
+        color: '#dc2626',
+        fontFamily: 'monospace'
+      }
+    }, [
+      React.createElement('h3', { key: 'title' }, 'Component Error'),
+      React.createElement('p', { key: 'message' }, 'Failed to render React component: ' + (error instanceof Error ? error.message : String(error))),
+      React.createElement('p', { key: 'help' }, 'Make sure your component has a default export or is exported as a named export.')
+    ]);
+    
+    root.render(errorDiv);
   }
-}
+};
+
+// Start the mounting process
+mountComponent();
 `,
             hidden: true
           },
