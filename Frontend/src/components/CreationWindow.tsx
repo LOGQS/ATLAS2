@@ -142,10 +142,23 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
     if (creation) {
       // Reset streamed content when creation changes (unless streaming is active)
       if (!isStreamingRef.current) {
-        setStreamedContent('');
+        // Only reset streamed content if the creation content is different
+        // This prevents losing streamed content when auto-opening after streaming completes
+        if (creation.content && creation.content !== streamedContent) {
+          // If creation has content and it's different from streamed content,
+          // use the creation's content as the new streamed content
+          setStreamedContent(creation.content);
+        } else if (!creation.content && streamedContent) {
+          // If creation has no content but we have streamed content, keep the streamed content
+          // This happens during the transition from streaming to completed state
+          console.log('CreationWindow: Preserving streamed content during transition');
+        } else if (!creation.content && !streamedContent) {
+          // Both are empty, ensure we start fresh
+          setStreamedContent('');
+        }
       }
     }
-  }, [creation?.id, creation?.type, creation?.title, streamedContent.length, viewMode, creation]);
+  }, [creation?.id, creation?.type, creation?.title, streamedContent.length, viewMode, creation, streamedContent]);
   
   // Listen for streaming events
   useEffect(() => {
@@ -391,8 +404,27 @@ const CreationWindow: React.FC<CreationWindowProps> = ({ creation, onClose }) =>
     }
   };
   
-  // Determine what content to display - use streamed content when available
-  const displayContent = isStreamingRef.current ? streamedContent : creation.content;
+  // Determine what content to display - prioritize actual content over streaming state
+  const displayContent = (() => {
+    // If we're actively streaming, use the streamed content
+    if (isStreamingRef.current && streamedContent) {
+      return streamedContent;
+    }
+    
+    // If not streaming, prefer creation.content if it exists, otherwise fall back to streamedContent
+    // This handles the case where auto-opening happens with complete creation content
+    if (creation.content) {
+      return creation.content;
+    }
+    
+    // Fall back to streamed content if creation has no content (transition state)
+    if (streamedContent) {
+      return streamedContent;
+    }
+    
+    // Final fallback to creation content (even if empty)
+    return creation.content || '';
+  })();
 
   return (
     <div 
