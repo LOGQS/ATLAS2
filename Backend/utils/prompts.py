@@ -1,3 +1,5 @@
+# status: finished, to improve later
+
 # Define system instruction for Creations feature
 creations_system_instruction = """
 =================================================
@@ -272,6 +274,7 @@ Always keep the title exactly as it was originally generated.
 # System instruction for summarizing chat history
 summary_system_instruction = "Summarize the conversation in concise bullet points."
 
+# System instruction for the chat classifier
 full_classifier_prompt = """You are a context analyzer, memory manager for an AI assistant that supports "Creations" - special formatted content blocks for code, diagrams, React components, etc.
 
 Your task is to analyze the CURRENT USER REQUEST and determine if "The AI assistant's knowledge about creations" is needed for the response This might be a functional request, like

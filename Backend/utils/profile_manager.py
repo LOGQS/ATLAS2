@@ -1,11 +1,11 @@
+# status: cleaned/organized
+
 import os
 import json
 import shutil
 from pathlib import Path
 from uuid import uuid4
 from werkzeug.utils import secure_filename
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
 DATA_DIR = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
 PROFILES_FILE = DATA_DIR / "profiles.json"
@@ -30,7 +30,12 @@ def save_profiles(profiles):
 
 def create_profile(name: str):
     profiles = load_profiles()
-    profile_id = f"prof-{uuid4().hex[:8]}"
+    excluded_ids = {p.get("id") for p in profiles}
+    # Generate a unique profile_id not in excluded_ids
+    while True:
+        profile_id = f"prof-{uuid4().hex[:8]}"
+        if profile_id not in excluded_ids:
+            break
     profile = {"id": profile_id, "name": name, "vectorize": False}
     profiles.append(profile)
     save_profiles(profiles)
@@ -86,41 +91,14 @@ def delete_file(profile_id: str, filename: str):
         path.unlink()
 
 
+# TODO: This function needs to be fixed and improved to leverage data handler and the rag. Cleaned up for now.
 def get_knowledge(profile_id: str, query: str = ""):
     """Get knowledge as text content (for vectorized search or system messages)"""
-    kb_dir = KNOWLEDGE_BASE_DIR / profile_id
-    if not kb_dir.exists():
-        return ""
-    texts = []
-    for f in kb_dir.iterdir():
-        if f.is_file():
-            try:
-                texts.append(f.read_text(encoding="utf-8", errors="ignore"))
-            except Exception:
-                continue
-    if not texts:
-        return ""
-    profiles = load_profiles()
-    profile = next((p for p in profiles if p.get("id") == profile_id), None)
-    if profile and profile.get("vectorize") and query:
-        try:
-            vectorizer = TfidfVectorizer()
-            docs_tfidf = vectorizer.fit_transform(texts)
-            query_vec = vectorizer.transform([query])
-            sims = cosine_similarity(query_vec, docs_tfidf).flatten()
-            if sims.size == 0:
-                return ""
-            top_indices = sims.argsort()[-3:][::-1]
-            selected = [texts[i] for i in top_indices]
-            return "\n".join(selected)
-        except Exception:
-            return "\n".join(texts)
-    else:
-        return "\n".join(texts)
+    pass
 
 
 def get_profile_file_paths(profile_id: str):
-    """Get file paths for direct attachment (for non-vectorized knowledge base)"""
+    """Get file paths for direct attachment"""
     kb_dir = KNOWLEDGE_BASE_DIR / profile_id
     if not kb_dir.exists():
         return []

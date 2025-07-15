@@ -1,3 +1,5 @@
+# status: to clean, organize, move from
+
 import os
 import json
 import base64
@@ -17,82 +19,46 @@ from google.genai import types
 from logging.handlers import RotatingFileHandler
 import tempfile
 from datetime import datetime
-from faster_whisper import WhisperModel
 from pathlib import Path
 from utils.prompts import creations_system_instruction, summary_system_instruction, full_classifier_prompt
-from utils.profile_manager import (
-    load_profiles,
-    create_profile,
-    update_profile,
-    delete_profile,
-    list_files as profile_list_files,
-    save_file as profile_save_file,
-    delete_file as profile_delete_file,
-    get_knowledge,
-    get_profile_file_paths,
-    should_attach_files_directly,
-)
+from utils.profile_manager import load_profiles, create_profile, update_profile, delete_profile, list_files as profile_list_files, save_file as profile_save_file, delete_file as profile_delete_file, get_knowledge, get_profile_file_paths, should_attach_files_directly
 import gc
-import ctypes
 import signal
 import atexit
 from groq import Groq
 from openai import OpenAI
 import time
+import glob
 import requests
 from html.parser import HTMLParser
+from utils.extra import safe_log_data, initialize_whisper_model, cleanup_whisper_model
+from utils.configs import SUPPORTED_MIME_TYPES, PROCESSING_FILE_TYPES, DEFAULT_SETTINGS
 
-# Set environment variables to handle OpenMP issues BEFORE importing any libraries
-# This prevents the "libiomp5md.dll already initialized" error from faster_whisper
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-os.environ['OMP_NUM_THREADS'] = '1'  # Limit threads to reduce conflicts
+# ------------------------------------------------------------
+# Logging setup
+# ------------------------------------------------------------
 
-# Force cleanup of any existing OpenMP runtime on Windows
-if sys.platform == "win32":
-    try:
-        # Try to unload any existing libiomp5md.dll
-        kernel32 = ctypes.windll.kernel32
-        # Get handle to libiomp5md.dll if it exists
-        lib_handle = kernel32.GetModuleHandleW("libiomp5md.dll")
-        if lib_handle:
-            print("Found existing libiomp5md.dll, attempting cleanup...")
-            # Force garbage collection
-            gc.collect()
-            # Note: We can't safely FreeLibrary here as it might be in use
-            # The environment variable will handle the duplicate warning
-    except Exception as e:
-        print(f"OpenMP cleanup attempt failed (this is usually safe to ignore): {e}")
-
-# Create logs directory if it doesn't exist
 logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 if not os.path.exists(logs_dir):
     os.makedirs(logs_dir)
-
-# Define the log file path
 log_file = os.path.join(logs_dir, 'atlas.log')
 
-# Try to clean the log file if it already exists to ensure a fresh start
+# Try to clean the log file if it already exists to ensure a fresh start (temporary for testing)
 if os.path.exists(log_file):
     try:
-        # Try to truncate the file rather than removing it
-        # This is less likely to cause permission issues
         with open(log_file, 'w', encoding='utf-8') as f:
-            pass  # Just truncate the file
+            pass
     except (PermissionError, OSError) as e:
-        # If we can't access the file, create a new one with timestamp
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         log_file = os.path.join(logs_dir, f'atlas_{timestamp}.log')
         print(f"Cannot access existing log file, creating new one: {log_file}")
-        # We don't need to create the file - the handler will do that
 
 # Configure logger with both console and file handlers
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-# Format for both handlers
 log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Console handler - Configure with UTF-8 encoding to handle Unicode characters
+# Console handler
 console_handler = logging.StreamHandler(stream=sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 console_handler.setFormatter(log_format)
@@ -106,112 +72,22 @@ file_handler.setFormatter(log_format)
 # Add both handlers
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
-
 logger.info("Logging configured to file: %s", log_file)
 
-# Helper function to safely log complex data structures
-def safe_log_data(data, max_length=1000):
-    """
-    Safely convert data to string representation for logging,
-    handling potential Unicode issues and truncating if too long.
-    """
-    try:
-        if isinstance(data, dict):
-            # Create a sanitized copy with sensitive data removed/truncated
-            sanitized = {}
-            for k, v in data.items():
-                # Skip logging message content entirely (might contain Unicode)
-                if k == "messages" and isinstance(v, list):
-                    sanitized[k] = f"[{len(v)} messages]"
-                # Handle other complex nested structures
-                elif isinstance(v, (dict, list)):
-                    sanitized[k] = f"[complex data: {type(v).__name__}]"
-                # Handle strings that might contain Unicode
-                elif isinstance(v, str) and len(v) > 50:
-                    sanitized[k] = v[:50] + "..."
-                else:
-                    sanitized[k] = v
-            result = str(sanitized)
-        elif isinstance(data, list) and len(data) > 10:
-            result = f"[List with {len(data)} items]"
-        else:
-            result = str(data)
-            
-        # Truncate if the final result is too long
-        if len(result) > max_length:
-            result = result[:max_length] + "..."
-            
-        return result
-    except Exception as e:
-        return f"[Error serializing log data: {str(e)}]"
-
-# Initialize Whisper model at startup
-whisper_model = None
-
-def cleanup_whisper_model():
-    """
-    Clean up the existing Whisper model and force garbage collection
-    """
-    global whisper_model
-    try:
-        if whisper_model is not None:
-            logger.info("Cleaning up existing Whisper model...")
-            # Delete the model reference
-            del whisper_model
-            whisper_model = None
-            # Force garbage collection to clean up OpenMP resources
-            gc.collect()
-            logger.info("Whisper model cleanup completed")
-    except Exception as e:
-        logger.warning(f"Error during Whisper model cleanup: {str(e)}")
-
-def initialize_whisper_model():
-    """
-    Initialize the Whisper model with proper cleanup and OpenMP handling
-    """
-    global whisper_model
-    try:
-        # Clean up any existing model first
-        cleanup_whisper_model()
-        
-        # Set additional OpenMP environment variables for this process
-        os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-        os.environ['OMP_NUM_THREADS'] = '1'
-        
-        # Force garbage collection before loading
-        gc.collect()
-        
-        logger.info("Loading Whisper model at startup...")
-        
-        # Initialize with explicit CPU settings to avoid GPU/CUDA issues
-        whisper_model = WhisperModel(
-            model_size_or_path="base",
-            device="cpu",
-            compute_type="int8",
-            num_workers=1,  # Reduced from 4 to 1 to minimize OpenMP conflicts
-            download_root=None,  # Use default cache
-            local_files_only=False
-        )
-        
-        logger.info("Whisper model loaded successfully")
-        return whisper_model
-    except Exception as e:
-        logger.exception(f"Error loading Whisper model: {str(e)}")
-        # Clean up on failure
-        cleanup_whisper_model()
-        
-        # If it's an OpenMP error, provide helpful information
-        if "libiomp5md.dll" in str(e) or "OpenMP" in str(e):
-            logger.error("OpenMP conflict detected. The application will continue but audio transcription may not work. Try restarting the application or use the /api/whisper/reinitialize endpoint.")
-        
-        raise e
+# ------------------------------------------------------------
+# Initializing whisper model for stt with OpenMP issues handling
+# ------------------------------------------------------------
 
 # Initialize the model
+whisper_model = None
 try:
     initialize_whisper_model()
 except Exception as e:
     logger.exception(f"Error loading Whisper model at startup: {str(e)}")
-    # We'll continue without the model and try to initialize it when needed
+    
+# ------------------------------------------------------------
+# Environment variables
+# ------------------------------------------------------------
 
 # Load environment variables
 load_dotenv()
@@ -223,7 +99,6 @@ client = None
 # Initialize Gemini client if API key is available
 if GEMINI_API_KEY:
     try:
-        # Initialize with longer timeout
         client = genai.Client(api_key=GEMINI_API_KEY)
         logger.info("Gemini client initialized successfully")
     except Exception as e:
@@ -272,6 +147,10 @@ if GROQ_API_KEY:
         groq_client = None
 else:
     logger.info("GROQ_API_KEY not found in environment variables")
+
+# ------------------------------------------------------------
+# Flask and SocketIO setup
+# ------------------------------------------------------------
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -610,7 +489,6 @@ try:
     logger.info(f"Temp files directory created/verified at: {temp_files_dir}")
     
     # Clean up any existing temp files on startup
-    import glob
     temp_file_pattern = str(temp_files_dir / "*")
     existing_temp_files = glob.glob(temp_file_pattern)
     if existing_temp_files:
@@ -787,89 +665,6 @@ def handle_start_background_chat(data):
     except Exception as e:
         safe_exception("Error starting background chat", e)
         emit('error', {'message': str(e)})
-
-
-
-# Supported file types - expanded based on Gemini API documentation
-SUPPORTED_MIME_TYPES = {
-    "image": [
-        "image/jpeg", 
-        "image/png", 
-        "image/gif", 
-        "image/webp", 
-        "image/tiff",
-        "image/heic",
-        "image/heif"
-    ],
-    "video": [
-        "video/mp4", 
-        "video/mpeg", 
-        "video/quicktime", 
-        "video/x-msvideo",
-        "video/mov",
-        "video/avi",
-        "video/x-flv",
-        "video/mpg",
-        "video/webm",
-        "video/wmv",
-        "video/3gpp"
-    ],
-    "audio": [
-        "audio/mpeg",
-        "audio/mp3",
-        "audio/wav",
-        "audio/ogg",
-        "audio/webm",
-        "audio/aac",
-        "audio/flac",
-        "audio/x-m4a"
-    ],
-    "document": [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.oasis.opendocument.text",
-        "application/msword",
-        "text/plain",
-        "application/javascript",
-        "text/javascript",
-        "application/json",
-        "text/html",
-        "text/css",
-        "application/xml",
-        "text/xml",
-        "text/markdown",
-        "text/csv",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "text/x-python",
-        "application/x-python",
-        "text/python",
-        "application/rtf",
-        "text/rtf"
-    ]
-}
-
-# Define which file types need processing (typically documents)
-PROCESSING_FILE_TYPES = {
-    "document": [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.oasis.opendocument.text",
-        "application/msword",
-        "application/rtf"
-    ]
-}
-
-# Default settings
-DEFAULT_SETTINGS = {
-    "model": "gemini-2.5-flash-preview-05-20",
-    "safety_settings": {
-        "harassment": "BLOCK_NONE",
-        "hate_speech": "BLOCK_NONE",
-        "sexually_explicit": "BLOCK_NONE",
-        "dangerous_content": "BLOCK_NONE"
-    }
-}
 
 # Global settings
 settings = DEFAULT_SETTINGS.copy()
@@ -5222,14 +5017,6 @@ def reset_chat_messages(chat_id):
         safe_exception(f"Error resetting chat messages: {str(e)}", e)
         return jsonify({"error": str(e)}), 500
 
-# Import and register task endpoints
-try:
-    from app_tasks import register_task_endpoints
-    register_task_endpoints(app)
-    logger.info("Task endpoints registered successfully")
-except Exception as e:
-    logger.error(f"Failed to register task endpoints: {str(e)}")
-
 def cleanup_on_exit():
     """Cleanup function to be called on application exit"""
     try:
@@ -5286,7 +5073,7 @@ def reinitialize_whisper():
 if __name__ == "__main__":
     try:
         safe_debug("Starting Flask application with SocketIO")
-        socketio.run(app, debug=True, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
+        socketio.run(app, debug=True, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True, use_reloader=False)
     except Exception as e:
         print(f"Error starting Flask application: {str(e)}")
         # Log to a separate file in case logging itself is the issue

@@ -7,8 +7,9 @@
     "install:frontend": "npm install --prefix Frontend",
     "install:backend": "pip install -r Backend/requirements.txt",
     "frontend": "npm run dev --prefix Frontend",
+    "frontend:wait": "node wait-for-backend.js && npm run frontend",
     "backend": "python Backend/app.py",
-    "start": "npx concurrently \"npm run backend\" \"npm run frontend\""
+    "start": "npx concurrently \"npm run backend\" \"npm run frontend:wait\""
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
