@@ -34,9 +34,10 @@ data/
 *.DS_Store
 Thumbs.db 
 
-# Claude Code
+# Ai coders
 CLAUDE.local.md
 .claude/
+.kiro/
 
 # Guides
 *.md

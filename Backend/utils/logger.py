@@ -10,9 +10,8 @@ from utils.extra import safe_log_data
 
 def safe_debug(message, data=None):
     """Safely log debug messages with potentially problematic data"""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()
     try:
-        # Encode the message safely to handle Unicode characters on Windows
         safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
         if data is not None:
             safe_data = safe_log_data(data)
@@ -20,7 +19,6 @@ def safe_debug(message, data=None):
         else:
             logger.debug(safe_message)
     except (UnicodeEncodeError, UnicodeDecodeError) as e:
-        # Fallback: log a simplified message without problematic characters
         simple_message = str(message).encode('ascii', errors='replace').decode('ascii')
         logger.debug(f"[Unicode Error in Log] {simple_message}")
         if data is not None:
@@ -29,9 +27,8 @@ def safe_debug(message, data=None):
 
 def safe_info(message, data=None):
     """Safely log info messages with potentially problematic data"""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()
     try:
-        # Remove emojis and other Unicode characters that cause issues
         safe_message = str(message).encode('ascii', errors='ignore').decode('ascii')
         if data is not None:
             safe_data = safe_log_data(data)
@@ -47,9 +44,8 @@ def safe_info(message, data=None):
 
 def safe_warning(message, data=None):
     """Safely log warning messages with potentially problematic data"""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()  
     try:
-        # Remove emojis and other Unicode characters that cause issues
         safe_message = str(message).encode('ascii', errors='ignore').decode('ascii')
         if data is not None:
             safe_data = safe_log_data(data)
@@ -65,7 +61,7 @@ def safe_warning(message, data=None):
 
 def safe_error(message, data=None):
     """Safely log error messages with potentially problematic data"""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()  
     try:
         safe_message = message.encode('utf-8', errors='replace').decode('utf-8')
         if data is not None:
@@ -82,7 +78,7 @@ def safe_error(message, data=None):
 
 def safe_exception(message, exception=None):
     """Safely log exceptions with potentially problematic data"""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger()  
     if exception is not None:
         safe_exc = str(exception).encode('utf-8', errors='replace').decode('utf-8')
         logger.exception(f"{message}: {safe_exc}")
