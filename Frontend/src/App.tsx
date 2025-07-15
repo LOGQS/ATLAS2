@@ -14,7 +14,6 @@ import EnhancedCreationViewer from './components/EnhancedCreationViewer';
 import LeftSidebar from './components/LeftSidebar';
 import DeleteChatModal from './components/DeleteChatModal';
 import CreationWindow from './components/CreationWindow';
-import TaskSystem from './components/TaskSystem';
 import SettingsWindow from './components/SettingsWindow';
 import { Creation, CreationType } from './utils/creationsHelper';
 import chatManager, { ChatHistoryItem } from './utils/chatManager';
@@ -125,8 +124,7 @@ function App() {
   const [creationWindowOpen, setCreationWindowOpen] = useState(false);
   const [currentCreation, setCurrentCreation] = useState<Creation | null>(null);
   
-  // Add state for task system
-  const [isTaskSystemOpen, setIsTaskSystemOpen] = useState(false);
+
 
   // Focus mode state
   const [isFocusMode, setIsFocusMode] = useState(false);
@@ -1004,15 +1002,7 @@ function App() {
     }
   };
 
-  // Add a function to handle opening the task system
-  const handleOpenTaskSystem = () => {
-    setIsTaskSystemOpen(true);
-  };
-  
-  // Add a function to handle closing the task system
-  const handleCloseTaskSystem = () => {
-    setIsTaskSystemOpen(false);
-  };
+
 
   // Add creation modal handlers
   const handleAddCreation = () => {
@@ -1402,26 +1392,7 @@ function App() {
           </div>
         </div>
         
-        <div className="sidebar-section">
-          <h3 className="sidebar-heading">Running Tasks</h3>
-          <ul className="sidebar-nav chat-history-list">
-            <li className="empty-history-message">
-              <p className="sidebar-text">No tasks running</p>
-            </li>
-          </ul>
-          <div className="chat-history-actions">
-            <button 
-              className="sidebar-link sidebar-button new-chat-button"
-              onClick={handleOpenTaskSystem}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-              <span>New Task</span>
-            </button>
-          </div>
-        </div>
+
       </LeftSidebar>
 
       {/* Render chat windows - no more null placeholders */}
@@ -1937,11 +1908,7 @@ function App() {
         </div>
       )}
 
-      {/* Add Task System component */}
-      <TaskSystem
-        isOpen={isTaskSystemOpen}
-        onClose={handleCloseTaskSystem}
-      />
+
       <ChatSearchModal isOpen={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
       
       {/* Add Settings Window component */}

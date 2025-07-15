@@ -12,7 +12,6 @@ interface FileAttachment {
   mime_type: string;
   filename: string;
   original_name: string;
-  // For local UI state
   uploading?: boolean;
   upload_progress?: number;
   local_url?: string;
@@ -28,8 +27,8 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   attachments?: FileAttachment[];
-  isHistory?: boolean; // Add this flag to identify messages from history
-  reasoning?: string; // For reasoning tokens from OpenRouter models
+  isHistory?: boolean;
+  reasoning?: string;
   timestamp?: string;
   tags?: string[];
 }
