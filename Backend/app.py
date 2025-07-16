@@ -36,6 +36,7 @@ from utils.configs import SUPPORTED_MIME_TYPES, PROCESSING_FILE_TYPES, DEFAULT_S
 from utils.logger import safe_debug, safe_info, safe_warning, safe_error, safe_exception
 from main.ai_functions import *
 from main.chat import UnifiedChatSession, BackgroundChatProcessor, initialize_chat_module
+from main.websocket_handlers import register_socketio_handlers
 
 # ------------------------------------------------------------
 # Logging setup
@@ -234,67 +235,6 @@ app.safe_exception = safe_exception
 # Dictionary to store chat sessions
 active_chats = {}
 
-# WebSocket event handlers
-@socketio.on('connect')
-def handle_connect():
-    safe_info(f"Client connected: {request.sid}")
-    emit('connected', {'status': 'Connected to ATLAS backend'})
-    
-@socketio.on('disconnect')
-def handle_disconnect():
-    safe_info(f"Client disconnected: {request.sid}")
-    
-@socketio.on('join_chat')
-def handle_join_chat(data):
-    chat_id = data.get('chat_id')
-    if chat_id:
-        join_room(f'chat_{chat_id}')
-        safe_info(f"Client {request.sid} joined chat room: {chat_id}")
-        
-        # Send current chat status
-        status = background_processor.get_chat_status(chat_id)
-        emit('chat_status', {
-            'chat_id': chat_id,
-            'status': status
-        })
-        
-@socketio.on('leave_chat')
-def handle_leave_chat(data):
-    chat_id = data.get('chat_id')
-    if chat_id:
-        leave_room(f'chat_{chat_id}')
-        safe_info(f"Client {request.sid} left chat room: {chat_id}")
-        
-@socketio.on('start_background_chat')
-def handle_start_background_chat(data):
-    """Start background processing for a chat"""
-    try:
-        chat_id = data.get('chat_id')
-        messages = data.get('messages', [])
-        model_name = data.get('model', settings['model'])
-        kwargs = {
-            'temperature': data.get('temperature'),
-            'max_tokens': data.get('max_tokens')
-        }
-        
-        if not chat_id or not messages:
-            emit('error', {'message': 'Invalid chat data'})
-            return
-            
-        # Start background processing
-        background_processor.start_background_processing(
-            chat_id, messages, model_name, **kwargs
-        )
-        
-        emit('background_started', {
-            'chat_id': chat_id,
-            'status': 'processing'
-        })
-        
-    except Exception as e:
-        safe_exception("Error starting background chat", e)
-        emit('error', {'message': str(e)})
-
 # Global settings
 settings = DEFAULT_SETTINGS.copy()
 
@@ -306,10 +246,8 @@ initialize_ai_functions(client, openrouter_client, groq_client,
 # Initialize chat module with global variables
 initialize_chat_module(socketio, settings, active_chats)
 
-
-
-
-
+# Register WebSocket handlers
+register_socketio_handlers(socketio, background_processor, settings)
 
 # Get available models
 @app.route("/api/models", methods=["GET"])
