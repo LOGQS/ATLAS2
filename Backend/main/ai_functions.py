@@ -106,7 +106,7 @@ def get_openai_client_for_model(model_name):
 
 def generate_chat_summary(messages, model_name):
     """Generate a summary of the conversation using Gemini Flash"""
-    summary_model = "gemini-2.5-flash-preview-05-20"
+    summary_model = "gemini-2.5-flash"
     
     try:
         if client is None:

@@ -76,7 +76,7 @@ PROCESSING_FILE_TYPES = {
 
 # Default settings
 DEFAULT_SETTINGS = {
-    "model": "gemini-2.5-flash-preview-05-20",
+    "model": "gemini-2.5-flash",
     "safety_settings": {
         "harassment": "BLOCK_NONE",
         "hate_speech": "BLOCK_NONE",

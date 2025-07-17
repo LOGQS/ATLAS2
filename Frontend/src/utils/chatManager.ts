@@ -998,7 +998,7 @@ class ChatManager {
    * Create a new empty chat
    * This creates a chat entry without starting a conversation
    */
-  public async createEmptyChat(title: string = "New Chat", model: string = "gemini-2.0-flash"): Promise<ChatHistoryItem | null> {
+  public async createEmptyChat(title: string = "New Chat", model: string = "gemini-2.5-flash"): Promise<ChatHistoryItem | null> {
     try {
       if (!this.backendAvailable) {
         console.log('Backend not available, cannot create chat');

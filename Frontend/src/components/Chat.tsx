@@ -67,7 +67,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState(() => {
-    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
+    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -523,7 +523,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
       const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
       const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
-      const newDefaultModel = localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
+      const newDefaultModel = localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
       
       // Use functional updates to avoid stale closure issues
       setShowTtsButton((prev: boolean) => prev !== newTtsButtonEnabled ? newTtsButtonEnabled : prev);
@@ -582,12 +582,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   // Available models with descriptions
   const models: Model[] = [
     { 
-      id: 'gemini-2.5-flash-preview-05-20', 
+      id: 'gemini-2.5-flash', 
       name: 'Gemini 2.5 Flash',
       description: 'Fast responses, ideal for simple queries'
     },
     { 
-      id: 'gemini-2.5-pro-exp-03-25', 
+      id: 'gemini-2.5-pro', 
       name: 'Gemini 2.5 Pro',
       description: 'Advanced model with superior reasoning capabilities'
     },
@@ -2054,7 +2054,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }, 0);
     
     // For Gemini 2.5 Pro, show thinking state before streaming
-    const isGemini25Pro = model === 'gemini-2.5-pro-exp-03-25' || model === 'gemini-2.5-flash-preview-05-20';
+    const isGemini25Pro = model === 'gemini-2.5-pro' || model === 'gemini-2.5-flash';
     if (isGemini25Pro) {
       // First set the thinking state
       setIsThinking(true);
@@ -2515,7 +2515,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
           }
           
           // Create background chat state
-          chatManager.startBackgroundChat(chatId, currentMessages, selectedModel?.id || 'gemini-2.0-flash', {
+          chatManager.startBackgroundChat(chatId, currentMessages, selectedModel?.id || 'gemini-2.5-flash', {
             context: 'new-chat-transition'
           });
           

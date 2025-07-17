@@ -10,9 +10,7 @@ import sys
 import uuid
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit, join_room, leave_room
-import threading
-from queue import Queue
+from flask_socketio import SocketIO
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -258,8 +256,8 @@ def get_models():
     if client is not None:
         models.extend([
             "gemini-2.0-flash-exp",
-            "gemini-2.5-flash-preview-05-20", 
-            "gemini-2.5-pro-exp-03-25"
+            "gemini-2.5-flash", 
+            "gemini-2.5-pro"
         ])
     
     # Add OpenRouter models if available

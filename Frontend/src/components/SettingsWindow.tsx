@@ -65,18 +65,18 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   
   // Default model setting
   const [defaultModel, setDefaultModel] = useState(() => {
-    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash-preview-05-20';
+    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
   });
   
   // Available models (same as in Chat.tsx)
   const models: Model[] = [
     { 
-      id: 'gemini-2.5-flash-preview-05-20', 
+      id: 'gemini-2.5-flash', 
       name: 'Gemini 2.5 Flash',
       description: 'Fast responses, ideal for simple queries'
     },
     { 
-      id: 'gemini-2.5-pro-exp-03-25', 
+      id: 'gemini-2.5-pro', 
       name: 'Gemini 2.5 Pro',
       description: 'Advanced model with superior reasoning capabilities'
     },

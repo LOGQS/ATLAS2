@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from utils.logger import safe_info, safe_warning, safe_exception
 from utils.prompts import creations_system_instruction
-from ai_functions import supports_file_attachments, create_gemini_chat_with_files, create_unified_chat_response
+from main.ai_functions import supports_file_attachments, create_gemini_chat_with_files, create_unified_chat_response
 
 # Global variables that will be set by app.py
 socketio = None
