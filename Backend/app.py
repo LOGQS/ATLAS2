@@ -26,7 +26,7 @@ import glob
 import requests
 from html.parser import HTMLParser
 from utils.extra import initialize_whisper_model, cleanup_whisper_model
-from utils.configs import SUPPORTED_MIME_TYPES, PROCESSING_FILE_TYPES, DEFAULT_SETTINGS
+from utils.configs import SUPPORTED_MIME_TYPES, PROCESSING_FILE_TYPES, DEFAULT_SETTINGS, load_settings, save_settings, get_valid_setting_keys
 from utils.logger import safe_debug, safe_info, safe_warning, safe_error, safe_exception
 import main.ai_functions as ai_functions
 from main.ai_functions import *
@@ -167,7 +167,7 @@ app.safe_exception = safe_exception
 active_chats = {}
 
 # Global settings
-settings = DEFAULT_SETTINGS.copy()
+settings = load_settings()
 
 # Initialize AI functions module with settings and whisper model
 initialize_ai_functions(settings, whisper_model)
@@ -245,14 +245,40 @@ def get_settings():
 # Update settings
 @app.route("/api/settings", methods=["POST"])
 def update_settings():
-    data = request.json
-    
-    # Update only valid settings
-    for key in data:
-        if key in settings:
-            settings[key] = data[key]
-    
-    return jsonify(settings)
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        # Update only valid settings
+        valid_keys = get_valid_setting_keys()
+        updated_keys = []
+        
+        for key, value in data.items():
+            if key in valid_keys:
+                settings[key] = value
+                updated_keys.append(key)
+        
+        if not updated_keys:
+            return jsonify({"success": False, "error": "No valid settings provided"}), 400
+        
+        # Save to file
+        if save_settings(settings):
+            return jsonify({
+                "success": True, 
+                "settings": settings,
+                "updated_keys": updated_keys
+            })
+        else:
+            return jsonify({
+                "success": False, 
+                "error": "Failed to save settings", 
+                "settings": settings
+            }), 500
+            
+    except Exception as e:
+        safe_error(f"Error updating settings: {e}")
+        return jsonify({"success": False, "error": "Internal server error"}), 500
 
 # Switch model for an existing chat
 @app.route("/api/chat/<chat_id>/switch-model", methods=["POST"])

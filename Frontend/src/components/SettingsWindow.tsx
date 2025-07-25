@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import profileManager, { Profile } from '../utils/profileManager';
+import { settingsManager, AppSettings } from '../utils/settingsManager';
 
 interface Model {
   id: string;
@@ -12,10 +13,6 @@ interface SettingsWindowProps {
   onClose: () => void;
 }
 
-interface GenerationSettings {
-  temperature: number | undefined;
-  maxTokens: number | undefined;
-}
 
 const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -29,44 +26,9 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   // Track knowledge base state separately from vectorization
   const [knowledgeBaseEnabled, setKnowledgeBaseEnabled] = useState<Record<string, boolean>>({});
   
-  // General settings state
-  const [ttsEnabled, setTtsEnabled] = useState(() => {
-    const saved = localStorage.getItem('ttsButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [sttEnabled, setSttEnabled] = useState(() => {
-    const saved = localStorage.getItem('sttButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [copyButtonEnabled, setCopyButtonEnabled] = useState(() => {
-    const saved = localStorage.getItem('copyButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [modelParametersEnabled, setModelParametersEnabled] = useState(() => {
-    const saved = localStorage.getItem('modelParametersEnabled');
-    return saved ? JSON.parse(saved) : false;
-  });
-  const [imageAnnotationEnabled, setImageAnnotationEnabled] = useState(() => {
-    const saved = localStorage.getItem('imageAnnotationEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [summarizeButtonEnabled, setSummarizeButtonEnabled] = useState(() => {
-    const saved = localStorage.getItem('summarizeButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [ttsVoice, setTtsVoice] = useState(() => {
-    return localStorage.getItem('ttsVoice') || 'default';
-  });
-  const [ttsSpeed, setTtsSpeed] = useState(() => {
-    const saved = localStorage.getItem('ttsSpeed');
-    return saved ? parseFloat(saved) : 1.0;
-  });
+  // Centralized settings state
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  
-  // Default model setting
-  const [defaultModel, setDefaultModel] = useState(() => {
-    return localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
-  });
   
   // Available models from API
   const [models, setModels] = useState<Model[]>([]);
@@ -99,14 +61,14 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     loadModels();
   }, []);
   
-  // Generation parameters state
-  const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(() => {
-    const saved = localStorage.getItem('generationSettings');
-    return saved ? JSON.parse(saved) : {
-      temperature: undefined,
-      maxTokens: undefined,
-    };
-  });
+  // Load settings from centralized manager
+  useEffect(() => {
+    const unsubscribe = settingsManager.subscribe((newSettings) => {
+      setSettings(newSettings);
+    });
+    
+    return unsubscribe;
+  }, []);
   
   // Edit state for inline editing
   const [editingTemperature, setEditingTemperature] = useState(false);
@@ -127,79 +89,10 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     }
   }, []);
   
-  // Save general settings to localStorage and dispatch custom events
-  useEffect(() => {
-    localStorage.setItem('ttsButtonEnabled', JSON.stringify(ttsEnabled));
-    // Dispatch custom event for same-window updates
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'ttsButtonEnabled', value: ttsEnabled } 
-    }));
-  }, [ttsEnabled]);
-  
-  useEffect(() => {
-    localStorage.setItem('sttButtonEnabled', JSON.stringify(sttEnabled));
-    // Dispatch custom event for same-window updates
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'sttButtonEnabled', value: sttEnabled } 
-    }));
-  }, [sttEnabled]);
-  
-  useEffect(() => {
-    localStorage.setItem('copyButtonEnabled', JSON.stringify(copyButtonEnabled));
-    // Dispatch custom event for same-window updates
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'copyButtonEnabled', value: copyButtonEnabled } 
-    }));
-  }, [copyButtonEnabled]);
-  
-  useEffect(() => {
-    localStorage.setItem('ttsVoice', ttsVoice);
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'ttsVoice', value: ttsVoice } 
-    }));
-  }, [ttsVoice]);
-  
-  useEffect(() => {
-    localStorage.setItem('ttsSpeed', ttsSpeed.toString());
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'ttsSpeed', value: ttsSpeed } 
-    }));
-  }, [ttsSpeed]);
-  
-  useEffect(() => {
-    localStorage.setItem('modelParametersEnabled', JSON.stringify(modelParametersEnabled));
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'modelParametersEnabled', value: modelParametersEnabled } 
-    }));
-  }, [modelParametersEnabled]);
-
-  useEffect(() => {
-    localStorage.setItem('imageAnnotationEnabled', JSON.stringify(imageAnnotationEnabled));
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'imageAnnotationEnabled', value: imageAnnotationEnabled } 
-    }));
-  }, [imageAnnotationEnabled]);
-
-  useEffect(() => {
-    localStorage.setItem('summarizeButtonEnabled', JSON.stringify(summarizeButtonEnabled));
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'summarizeButtonEnabled', value: summarizeButtonEnabled } 
-    }));
-  }, [summarizeButtonEnabled]);
-  
-  useEffect(() => {
-    localStorage.setItem('generationSettings', JSON.stringify(generationSettings));
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'generationSettings', value: generationSettings } 
-    }));
-  }, [generationSettings]);
-
-  useEffect(() => {
-    localStorage.setItem('defaultModel', defaultModel);
-    window.dispatchEvent(new CustomEvent('settingsChanged', { 
-      detail: { key: 'defaultModel', value: defaultModel } 
-    }));
-  }, [defaultModel]);
+  // Helper functions for updating settings
+  const updateSetting = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    await settingsManager.setSetting(key, value);
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -323,11 +216,14 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   };
 
   const handleTemperatureChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!settings) return;
     const newValue = parseFloat(e.target.value);
-    setGenerationSettings((prev: GenerationSettings) => ({ ...prev, temperature: newValue }));
+    const newGenerationSettings = { ...settings.generationSettings, temperature: newValue };
+    updateSetting('generationSettings', newGenerationSettings);
   };
 
   const handleMaxTokensChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!settings) return;
     let newValue = parseInt(e.target.value);
     
     // Handle the step logic: 1, 100, 200, 300, etc.
@@ -341,25 +237,26 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       newValue = Math.round(newValue / 100) * 100;
     }
     
-    setGenerationSettings((prev: GenerationSettings) => ({ ...prev, maxTokens: newValue }));
+    const newGenerationSettings = { ...settings.generationSettings, maxTokens: newValue };
+    updateSetting('generationSettings', newGenerationSettings);
   };
 
   const handleResetParameters = () => {
-    setGenerationSettings({
-      temperature: undefined,
-      maxTokens: undefined,
-    });
-    setModelParametersEnabled(false);
+    if (!settings) return;
+    updateSetting('generationSettings', { temperature: undefined, maxTokens: undefined });
+    updateSetting('modelParametersEnabled', false);
   };
 
   const handleTemperatureLabelClick = () => {
+    if (!settings) return;
     setEditingTemperature(true);
-    setTempTemperatureValue(generationSettings.temperature?.toString() || '1.0');
+    setTempTemperatureValue(settings.generationSettings.temperature?.toString() || '1.0');
   };
 
   const handleMaxTokensLabelClick = () => {
+    if (!settings) return;
     setEditingMaxTokens(true);
-    setTempMaxTokensValue(generationSettings.maxTokens?.toString() || '4096');
+    setTempMaxTokensValue(settings.generationSettings.maxTokens?.toString() || '4096');
   };
 
   const handleTemperatureInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -371,14 +268,17 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
   };
 
   const handleTemperatureInputSubmit = () => {
+    if (!settings) return;
     const newValue = parseFloat(tempTemperatureValue);
     if (!isNaN(newValue) && newValue >= 0 && newValue <= 2) {
-      setGenerationSettings(prev => ({ ...prev, temperature: newValue }));
+      const newGenerationSettings = { ...settings.generationSettings, temperature: newValue };
+      updateSetting('generationSettings', newGenerationSettings);
     }
     setEditingTemperature(false);
   };
 
   const handleMaxTokensInputSubmit = () => {
+    if (!settings) return;
     let newValue = parseInt(tempMaxTokensValue);
     if (!isNaN(newValue) && newValue >= 1 && newValue <= 1000000) {
       // Apply the same stepping logic as the slider
@@ -391,7 +291,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
         // For values >= 100, round to nearest 100
         newValue = Math.round(newValue / 100) * 100;
       }
-      setGenerationSettings(prev => ({ ...prev, maxTokens: newValue }));
+      const newGenerationSettings = { ...settings.generationSettings, maxTokens: newValue };
+      updateSetting('generationSettings', newGenerationSettings);
     }
     setEditingMaxTokens(false);
   };
@@ -666,8 +567,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                     <span>Default Model for New Chats</span>
                     <select
                       className="setting-select"
-                      value={defaultModel}
-                      onChange={(e) => setDefaultModel(e.target.value)}
+                      value={settings?.defaultModel || 'gemini-2.5-flash'}
+                      onChange={(e) => updateSetting('defaultModel', e.target.value)}
                     >
                       {models.map((model) => (
                         <option key={model.id} value={model.id}>
@@ -687,8 +588,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={copyButtonEnabled}
-                      onChange={(e) => setCopyButtonEnabled(e.target.checked)}
+                      checked={settings?.copyButtonEnabled || false}
+                      onChange={(e) => updateSetting('copyButtonEnabled', e.target.checked)}
                     />
                     <span>Show Copy Button on Messages</span>
                   </label>
@@ -699,8 +600,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={ttsEnabled}
-                      onChange={(e) => setTtsEnabled(e.target.checked)}
+                      checked={settings?.ttsButtonEnabled || false}
+                      onChange={(e) => updateSetting('ttsButtonEnabled', e.target.checked)}
                     />
                     <span>Show Text-to-Speech Button</span>
                   </label>
@@ -711,8 +612,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={sttEnabled}
-                      onChange={(e) => setSttEnabled(e.target.checked)}
+                      checked={settings?.sttButtonEnabled || false}
+                      onChange={(e) => updateSetting('sttButtonEnabled', e.target.checked)}
                     />
                     <span>Show Speech-to-Text Button</span>
                   </label>
@@ -723,8 +624,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={modelParametersEnabled}
-                      onChange={(e) => setModelParametersEnabled(e.target.checked)}
+                      checked={settings?.modelParametersEnabled || false}
+                      onChange={(e) => updateSetting('modelParametersEnabled', e.target.checked)}
                     />
                     <span>Customize Model Parameters</span>
                   </label>
@@ -735,8 +636,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={imageAnnotationEnabled}
-                      onChange={(e) => setImageAnnotationEnabled(e.target.checked)}
+                      checked={settings?.imageAnnotationEnabled || false}
+                      onChange={(e) => updateSetting('imageAnnotationEnabled', e.target.checked)}
                     />
                     <span>Enable Image Annotation</span>
                   </label>
@@ -747,8 +648,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   <label className="setting-label">
                     <input
                       type="checkbox"
-                      checked={summarizeButtonEnabled}
-                      onChange={(e) => setSummarizeButtonEnabled(e.target.checked)}
+                      checked={settings?.summarizeButtonEnabled || false}
+                      onChange={(e) => updateSetting('summarizeButtonEnabled', e.target.checked)}
                     />
                     <span>Show Summarize Button</span>
                   </label>
@@ -756,7 +657,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                 </div>
               </div>
               
-              {ttsEnabled && (
+              {settings?.ttsButtonEnabled && (
                 <div className="settings-group">
                   <h4>Text-to-Speech Settings</h4>
                   
@@ -765,8 +666,8 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                       <span>Voice</span>
                       <select
                         className="setting-select"
-                        value={ttsVoice}
-                        onChange={(e) => setTtsVoice(e.target.value)}
+                        value={settings?.ttsVoice || 'default'}
+                        onChange={(e) => updateSetting('ttsVoice', e.target.value)}
                       >
                         <option value="default">Default Browser Voice</option>
                         {availableVoices.map((voice, index) => (
@@ -780,15 +681,15 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                   
                   <div className="setting-item">
                     <label className="setting-label-block">
-                      <span>Speed: {ttsSpeed.toFixed(1)}x</span>
+                      <span>Speed: {(settings?.ttsSpeed || 1.0).toFixed(1)}x</span>
                       <input
                         type="range"
                         className="setting-slider"
                         min="0.2"
                         max="5.0"
                         step="0.1"
-                        value={ttsSpeed}
-                        onChange={(e) => setTtsSpeed(parseFloat(e.target.value))}
+                        value={settings?.ttsSpeed || 1.0}
+                        onChange={(e) => updateSetting('ttsSpeed', parseFloat(e.target.value))}
                       />
                       <div className="slider-labels">
                         <span>0.2x</span>
@@ -800,7 +701,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
               
-              {modelParametersEnabled && (
+              {settings?.modelParametersEnabled && (
                 <div className="settings-group">
                   <h4>Model Parameters</h4>
                   <div className="setting-actions">
@@ -832,7 +733,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                           onClick={handleTemperatureLabelClick}
                           title="Click to edit (0.0 - 2.0)"
                         >
-                          Temperature: {generationSettings.temperature !== undefined ? generationSettings.temperature.toFixed(1) : 'Default'}
+                          Temperature: {settings?.generationSettings.temperature !== undefined && settings.generationSettings.temperature !== null ? settings.generationSettings.temperature.toFixed(1) : 'Default'}
                         </span>
                       )}
                       <input
@@ -841,7 +742,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                         min="0"
                         max="2"
                         step="0.1"
-                        value={generationSettings.temperature ?? 1}
+                        value={settings?.generationSettings.temperature ?? 1}
                         onChange={handleTemperatureChange}
                       />
                       <div className="slider-labels">
@@ -872,7 +773,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                           onClick={handleMaxTokensLabelClick}
                           title="Click to edit (1 - 1,000,000)"
                         >
-                          Max Tokens: {generationSettings.maxTokens !== undefined ? generationSettings.maxTokens.toLocaleString() : 'Default'}
+                          Max Tokens: {settings?.generationSettings.maxTokens !== undefined && settings.generationSettings.maxTokens !== null ? settings.generationSettings.maxTokens.toLocaleString() : 'Default'}
                         </span>
                       )}
                       <input
@@ -881,7 +782,7 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
                         min="1"
                         max="1000000"
                         step="1"
-                        value={generationSettings.maxTokens ?? 4096}
+                        value={settings?.generationSettings.maxTokens ?? 4096}
                         onChange={handleMaxTokensChange}
                       />
                       <div className="slider-labels">

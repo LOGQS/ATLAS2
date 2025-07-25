@@ -4,6 +4,11 @@
 This module contains the configurations for the application.
 """
 
+import os
+import json
+import logging
+from pathlib import Path
+
 # Supported file types based on Gemini API documentation
 SUPPORTED_MIME_TYPES = {
     "image": [
@@ -82,5 +87,55 @@ DEFAULT_SETTINGS = {
         "hate_speech": "BLOCK_NONE",
         "sexually_explicit": "BLOCK_NONE",
         "dangerous_content": "BLOCK_NONE"
+    },
+    # UI Settings
+    "defaultModel": "gemini-2.5-flash",
+    "ttsButtonEnabled": False,
+    "sttButtonEnabled": False,
+    "copyButtonEnabled": False,
+    "modelParametersEnabled": False,
+    "imageAnnotationEnabled": False,
+    "summarizeButtonEnabled": False,
+    "ttsVoice": "default",
+    "ttsSpeed": 1.0,
+    "generationSettings": {
+        "temperature": None,
+        "maxTokens": None
     }
 }
+
+# Settings management
+def load_settings():
+    """Load settings from file or return defaults"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
+        settings_file = data_dir / "settings.json"
+        
+        if settings_file.exists():
+            with open(settings_file, 'r') as f:
+                loaded_settings = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                merged_settings = DEFAULT_SETTINGS.copy()
+                merged_settings.update(loaded_settings)
+                return merged_settings
+    except Exception as e:
+        logging.warning(f"Failed to load settings: {e}")
+    return DEFAULT_SETTINGS.copy()
+
+def save_settings(settings_data):
+    """Save settings to file"""
+    try:
+        data_dir = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data")))
+        data_dir.mkdir(exist_ok=True)
+        
+        settings_file = data_dir / "settings.json"
+        with open(settings_file, 'w') as f:
+            json.dump(settings_data, f, indent=2)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save settings: {e}")
+        return False
+
+def get_valid_setting_keys():
+    """Get set of valid setting keys"""
+    return set(DEFAULT_SETTINGS.keys())

@@ -5,6 +5,7 @@ import VersionHistoryModal from './VersionHistoryModal';
 import EditMessageModal from './EditMessageModal';
 import chatManager, { generateChatId } from '../utils/chatManager';
 import ImageAnnotationModal from './ImageAnnotationModal';
+import { settingsManager, AppSettings } from '../utils/settingsManager';
 
 interface FileAttachment {
   file_id: string;
@@ -69,6 +70,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   const [model, setModel] = useState(() => {
     return localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
   });
+  
+  // Centralized settings state
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -208,16 +212,16 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     silenceThreshold: 10, // Default threshold value (0-255)
     silenceDuration: 1.5, // Seconds of silence before processing
   });
-  const [generationSettings, setGenerationSettings] = useState<{
-    temperature?: number;
-    maxTokens?: number;
-  }>(() => {
-    const saved = localStorage.getItem('generationSettings');
-    return saved ? JSON.parse(saved) : {
-      temperature: undefined,
-      maxTokens: undefined,
-    };
-  });
+  // Load settings from centralized manager
+  useEffect(() => {
+    const unsubscribe = settingsManager.subscribe((newSettings) => {
+      setSettings(newSettings);
+      // Sync model state when settings change
+      setModel(newSettings.defaultModel);
+    });
+    
+    return unsubscribe;
+  }, []);
   // Add ref for the audio analyser
   const analyserRef = useRef<AnalyserNode | null>(null);
   // Add ref for audio data visualization
@@ -241,65 +245,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
   // Track browser support for the SpeechSynthesis API
   const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
   
-  // Button visibility settings from localStorage
-  const [showTtsButton, setShowTtsButton] = useState(() => {
-    const saved = localStorage.getItem('ttsButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [showSttButton, setShowSttButton] = useState(() => {
-    const saved = localStorage.getItem('sttButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [imageAnnotationEnabled, setImageAnnotationEnabled] = useState(() => {
-    const saved = localStorage.getItem('imageAnnotationEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
-  const [showSummarizeButton, setShowSummarizeButton] = useState(() => {
-    const saved = localStorage.getItem('summarizeButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
+  // Button visibility computed from centralized settings
+  const showTtsButton = settings?.ttsButtonEnabled ?? true;
+  const showSttButton = settings?.sttButtonEnabled ?? true;
+  const imageAnnotationEnabled = settings?.imageAnnotationEnabled ?? true;
+  const showSummarizeButton = settings?.summarizeButtonEnabled ?? true;
   
-  // Listen for changes to button visibility settings
-  useEffect(() => {
-    // Handle storage events from other windows
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'ttsButtonEnabled' && e.newValue !== null) {
-        setShowTtsButton(JSON.parse(e.newValue));
-      } else if (e.key === 'sttButtonEnabled' && e.newValue !== null) {
-        setShowSttButton(JSON.parse(e.newValue));
-      } else if (e.key === 'imageAnnotationEnabled' && e.newValue !== null) {
-        setImageAnnotationEnabled(JSON.parse(e.newValue));
-      } else if (e.key === 'summarizeButtonEnabled' && e.newValue !== null) {
-        setShowSummarizeButton(JSON.parse(e.newValue));
-      } else if (e.key === 'defaultModel' && e.newValue !== null) {
-        setModel(e.newValue);
-      }
-    };
-    
-    // Handle custom events from same window
-    const handleSettingsChange = (e: CustomEvent) => {
-      const { key, value } = e.detail;
-      if (key === 'ttsButtonEnabled') {
-        setShowTtsButton(value);
-      } else if (key === 'sttButtonEnabled') {
-        setShowSttButton(value);
-      } else if (key === 'imageAnnotationEnabled') {
-        setImageAnnotationEnabled(value);
-      } else if (key === 'summarizeButtonEnabled') {
-        setShowSummarizeButton(value);
-      } else if (key === 'defaultModel') {
-        setModel(value);
-      }
-    };
-    
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('settingsChanged', handleSettingsChange as EventListener);
-    
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('settingsChanged', handleSettingsChange as EventListener);
-    };
-  }, []);
 
   const checkVersionsExist = useCallback(async () => {
     if (!chatId) {
@@ -504,36 +455,9 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   };
 
-  // State for enabling or disabling text-to-speech output
-  const [ttsEnabled, setTtsEnabled] = useState(() => {
-    const saved = localStorage.getItem('ttsEnabled');
-    return saved ? JSON.parse(saved) : false;
-  });
-
-  // Persist TTS setting
-  useEffect(() => {
-    localStorage.setItem('ttsEnabled', JSON.stringify(ttsEnabled));
-  }, [ttsEnabled]);
+  // TTS enabled state computed from settings (local toggle)
+  const [ttsEnabled, setTtsEnabled] = useState(false);
   
-  // Force reload settings when window gains focus (settings might have changed)
-  useEffect(() => {
-    const handleFocus = () => {
-      // Check for button visibility changes
-      const newTtsButtonEnabled = JSON.parse(localStorage.getItem('ttsButtonEnabled') || 'true');
-      const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
-      const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
-      const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
-      
-      // Use functional updates to avoid stale closure issues
-      setShowTtsButton((prev: boolean) => prev !== newTtsButtonEnabled ? newTtsButtonEnabled : prev);
-      setShowSttButton((prev: boolean) => prev !== newSttButtonEnabled ? newSttButtonEnabled : prev);
-      setImageAnnotationEnabled((prev: boolean) => prev !== newImageAnnotationEnabled ? newImageAnnotationEnabled : prev);
-      setShowSummarizeButton((prev: boolean) => prev !== newSummarizeButtonEnabled ? newSummarizeButtonEnabled : prev);
-    };
-    
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, []); // Empty dependency array to avoid infinite loop
 
   // Helper to speak assistant messages
   const speak = useCallback((text: string) => {
@@ -541,25 +465,25 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'en-US';
     
-    // Apply TTS settings from localStorage
-    const savedVoice = localStorage.getItem('ttsVoice');
-    const savedSpeed = localStorage.getItem('ttsSpeed');
+    // Apply TTS settings from centralized settings
+    const ttsVoice = settings?.ttsVoice;
+    const ttsSpeed = settings?.ttsSpeed;
     
-    if (savedVoice && savedVoice !== 'default') {
+    if (ttsVoice && ttsVoice !== 'default') {
       const voices = window.speechSynthesis.getVoices();
-      const selectedVoice = voices.find(voice => voice.name === savedVoice);
+      const selectedVoice = voices.find(voice => voice.name === ttsVoice);
       if (selectedVoice) {
         utter.voice = selectedVoice;
       }
     }
     
-    if (savedSpeed) {
-      utter.rate = parseFloat(savedSpeed);
+    if (ttsSpeed) {
+      utter.rate = ttsSpeed;
     }
     
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utter);
-  }, [ttsSupported]);
+  }, [ttsSupported, settings]);
 
   // Only speak when TTS is initially enabled
   useEffect(() => {
@@ -635,7 +559,7 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         // Current model is not available, select the first available model
         const newModel = models[0].id;
         setModel(newModel);
-        localStorage.setItem('defaultModel', newModel);
+        settingsManager.setSetting('defaultModel', newModel);
         console.log(`Default model "${currentModel}" not available. Switched to "${newModel}".`);
       }
     }
@@ -1935,8 +1859,8 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         messagesToSend,
         model,
         {
-          temperature: generationSettings.temperature,
-          max_tokens: generationSettings.maxTokens
+          temperature: settings?.generationSettings.temperature,
+          max_tokens: settings?.generationSettings.maxTokens
         }
       );
       
@@ -2109,11 +2033,11 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
         model
       };
 
-      if (generationSettings.temperature !== undefined) {
-        requestData.temperature = generationSettings.temperature;
+      if (settings?.generationSettings.temperature !== undefined) {
+        requestData.temperature = settings.generationSettings.temperature;
       }
-      if (generationSettings.maxTokens !== undefined) {
-        requestData.max_tokens = generationSettings.maxTokens;
+      if (settings?.generationSettings.maxTokens !== undefined) {
+        requestData.max_tokens = settings.generationSettings.maxTokens;
       }
       
       // Add cache_id if we have one (either pre-existing or newly created)
@@ -2583,18 +2507,6 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     setMicSettings(settings);
   };
 
-  // Load generation settings from localStorage on component mount
-  useEffect(() => {
-    const saved = localStorage.getItem('generationSettings');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setGenerationSettings(parsed);
-      } catch (e) {
-        console.error('Error parsing saved generation settings:', e);
-      }
-    }
-  }, []);
 
   // Function to handle threshold change
   const handleThresholdChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3017,19 +2929,6 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     };
   }, [setMessages, setLoading, setIsStreaming, setIsThinking, setShouldAutoScroll, setChatId, isActive, chatId]);
 
-  // Listen for generation settings changes from Settings Window
-  useEffect(() => {
-    const handleSettingsChange = (event: CustomEvent) => {
-      if (event.detail.key === 'generationSettings') {
-        setGenerationSettings(event.detail.value);
-      }
-    };
-
-    window.addEventListener('settingsChanged', handleSettingsChange as EventListener);
-    return () => {
-      window.removeEventListener('settingsChanged', handleSettingsChange as EventListener);
-    };
-  }, []);
 
   return (
     <div className="chat-container">

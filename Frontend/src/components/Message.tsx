@@ -12,6 +12,7 @@ import CreationIndicators from './CreationIndicators';
 import { getCreationIcon } from '../utils/creationIcons';
 import UrlPreviewCard from './UrlPreviewCard';
 import PDFViewer from './PDFViewer';
+import { settingsManager, AppSettings } from '../utils/settingsManager';
 
 // Add new imports for streaming creation detection
 import { Creation } from '../utils/creationsHelper';
@@ -145,36 +146,20 @@ const Message: FC<MessageProps> = ({ content, isUser, isStreaming = false, isThi
   const [codeBlockCopied, setCodeBlockCopied] = useState<{[key: string]: boolean}>({});
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
   
-  // Get copy button visibility setting from localStorage with live updates
-  const [showCopyButton, setShowCopyButton] = useState(() => {
-    const saved = localStorage.getItem('copyButtonEnabled');
-    return saved ? JSON.parse(saved) : true;
-  });
+  // Centralized settings state
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   
-  // Listen for settings changes to update immediately
+  // Load settings from centralized manager
   useEffect(() => {
-    const handleSettingsChange = (event: Event) => {
-      const customEvent = event as CustomEvent<{ key: string; value: boolean }>;
-      if (customEvent.detail.key === 'copyButtonEnabled') {
-        setShowCopyButton(customEvent.detail.value);
-      }
-    };
+    const unsubscribe = settingsManager.subscribe((newSettings) => {
+      setSettings(newSettings);
+    });
     
-    // Also listen for storage changes from other tabs/windows
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.key === 'copyButtonEnabled' && event.newValue !== null) {
-        setShowCopyButton(JSON.parse(event.newValue));
-      }
-    };
-    
-    window.addEventListener('settingsChanged', handleSettingsChange);
-    window.addEventListener('storage', handleStorageChange);
-    
-    return () => {
-      window.removeEventListener('settingsChanged', handleSettingsChange);
-      window.removeEventListener('storage', handleStorageChange);
-    };
+    return unsubscribe;
   }, []);
+  
+  // Copy button visibility computed from centralized settings
+  const showCopyButton = settings?.copyButtonEnabled ?? true;
   
   // Refs to track completed creations during streaming
   const completedStreamCreationsRef = useRef<Creation[]>([]);
