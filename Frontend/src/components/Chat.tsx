@@ -577,44 +577,69 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
     }
   }, [isStreaming, messages, speak, ttsEnabled, ttsSupported]); 
 
-  // Available models with descriptions
-  const models: Model[] = [
-    { 
-      id: 'gemini-2.5-flash', 
-      name: 'Gemini 2.5 Flash',
-      description: 'Fast responses, ideal for simple queries'
-    },
-    { 
-      id: 'gemini-2.5-pro', 
-      name: 'Gemini 2.5 Pro',
-      description: 'Advanced model with superior reasoning capabilities'
-    },
-    { 
-      id: 'deepseek/deepseek-r1-0528:free', 
-      name: 'DeepSeek R1',
-      description: 'Advanced reasoning model via OpenRouter'
-    },
-    { 
-      id: 'tngtech/deepseek-r1t-chimera:free', 
-      name: 'DeepSeek R1T',
-      description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
-    },
-    { 
-      id: 'deepseek/deepseek-chat-v3-0324:free', 
-      name: 'DeepSeek V3',
-      description: 'DeepSeek V3 chat model via OpenRouter'
-    },
-    { 
-      id: 'qwen/qwen3-30b-a3b:free', 
-      name: 'Qwen 3 30B',
-      description: 'Qwen3 model via OpenRouter'
-    },
-    { 
-      id: 'llama-3.3-70b-versatile', 
-      name: 'Llama 3.3 70B',
-      description: 'Really fast model via Groq'
+  // Available models with descriptions - loaded from API
+  const [models, setModels] = useState<Model[]>([]);
+
+  // Load available models from the backend
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const response = await fetch('/api/models');
+        if (response.ok) {
+          const data = await response.json();
+          setModels(data.models || []);
+        } else {
+          console.error('Failed to load models from API');
+          // Fallback to basic models if API fails
+          setModels([
+            { 
+              id: 'gemini-2.5-flash', 
+              name: 'Gemini 2.5 Flash',
+              description: 'Fast responses, ideal for simple queries'
+            },
+            { 
+              id: 'gemini-2.5-pro', 
+              name: 'Gemini 2.5 Pro',
+              description: 'Advanced model with superior reasoning capabilities'
+            }
+          ]);
+        }
+      } catch (error) {
+        console.error('Error loading models:', error);
+        // Fallback to basic models if fetch fails
+        setModels([
+          { 
+            id: 'gemini-2.5-flash', 
+            name: 'Gemini 2.5 Flash',
+            description: 'Fast responses, ideal for simple queries'
+          },
+          { 
+            id: 'gemini-2.5-pro', 
+            name: 'Gemini 2.5 Pro',
+            description: 'Advanced model with superior reasoning capabilities'
+          }
+        ]);
+      }
+    };
+
+    loadModels();
+  }, []);
+
+  // Validate and set default model once after models are loaded
+  useEffect(() => {
+    if (models.length > 0) {
+      const currentModel = model;
+      const isCurrentModelAvailable = models.some(m => m.id === currentModel);
+      
+      if (!isCurrentModelAvailable) {
+        // Current model is not available, select the first available model
+        const newModel = models[0].id;
+        setModel(newModel);
+        localStorage.setItem('defaultModel', newModel);
+        console.log(`Default model "${currentModel}" not available. Switched to "${newModel}".`);
+      }
     }
-  ];
+  }, [models, model]); // Runs when models are loaded or model changes from localStorage
 
   // Helper function to check if file type is supported
   const isFileTypeSupported = (file: File): { supported: boolean, type?: string } => {

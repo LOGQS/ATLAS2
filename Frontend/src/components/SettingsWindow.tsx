@@ -68,44 +68,36 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
     return localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
   });
   
-  // Available models (same as in Chat.tsx)
-  const models: Model[] = [
-    { 
-      id: 'gemini-2.5-flash', 
-      name: 'Gemini 2.5 Flash',
-      description: 'Fast responses, ideal for simple queries'
-    },
-    { 
-      id: 'gemini-2.5-pro', 
-      name: 'Gemini 2.5 Pro',
-      description: 'Advanced model with superior reasoning capabilities'
-    },
-    { 
-      id: 'deepseek/deepseek-r1-0528:free', 
-      name: 'DeepSeek R1',
-      description: 'Advanced reasoning model via OpenRouter'
-    },
-    { 
-      id: 'tngtech/deepseek-r1t-chimera:free', 
-      name: 'DeepSeek R1T',
-      description: 'Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)'
-    },
-    { 
-      id: 'deepseek/deepseek-chat-v3-0324:free', 
-      name: 'DeepSeek V3',
-      description: 'DeepSeek V3 chat model via OpenRouter'
-    },
-    { 
-      id: 'qwen/qwen3-30b-a3b:free', 
-      name: 'Qwen 3 30B',
-      description: 'Qwen3 model via OpenRouter'
-    },
-    { 
-      id: 'llama-3.3-70b-versatile', 
-      name: 'Llama 3.3 70B',
-      description: 'Really fast model via Groq'
-    }
-  ];
+  // Available models from API
+  const [models, setModels] = useState<Model[]>([]);
+
+  // Load models from API
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const response = await fetch('/api/models');
+        if (response.ok) {
+          const data = await response.json();
+          setModels(data.models || []);
+        } else {
+          // Fallback to basic models if API fails
+          setModels([
+            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast responses, ideal for simple queries' },
+            { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Advanced model with superior reasoning capabilities' }
+          ]);
+        }
+      } catch (error) {
+        console.error('Error loading models:', error);
+        // Fallback to basic models on error
+        setModels([
+          { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Fast responses, ideal for simple queries' },
+          { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Advanced model with superior reasoning capabilities' }
+        ]);
+      }
+    };
+
+    loadModels();
+  }, []);
   
   // Generation parameters state
   const [generationSettings, setGenerationSettings] = useState<GenerationSettings>(() => {

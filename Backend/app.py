@@ -98,8 +98,6 @@ CORS(app)
 
 # Initialize SocketIO for real-time communication
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
-
-
         
 # Global background processor
 background_processor = BackgroundChatProcessor()
@@ -188,18 +186,47 @@ def get_models():
     # Add Gemini models if client is available
     if ai_functions.client is not None:
         models.extend([
-            "gemini-2.0-flash-exp",
-            "gemini-2.5-flash", 
-            "gemini-2.5-pro"
+            {
+                "id": "gemini-2.5-flash",
+                "name": "Gemini 2.5 Flash", 
+                "description": "Fast responses, ideal for simple queries"
+            },
+            {
+                "id": "gemini-2.5-pro",
+                "name": "Gemini 2.5 Pro",
+                "description": "Advanced model with superior reasoning capabilities"
+            }
         ])
     
     # Add OpenRouter models if available
     if ai_functions.openrouter_client and ai_functions.OPENROUTER_API_KEY:
-        models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free", "qwen/qwen3-30b-a3b:free"])
+        models.extend([
+            {
+                "id": "deepseek/deepseek-r1-0528:free",
+                "name": "DeepSeek R1",
+                "description": "Advanced reasoning model via OpenRouter"
+            },
+            {
+                "id": "tngtech/deepseek-r1t-chimera:free", 
+                "name": "DeepSeek R1T Chimera",
+                "description": "Merged version of DeepSeek-R1 and DeepSeek-V3 (0324)"
+            },
+            {
+                "id": "qwen/qwen3-30b-a3b:free",
+                "name": "Qwen 3 30B",
+                "description": "Qwen3 model via OpenRouter"
+            }
+        ])
     
     # Add Groq models if available
     if ai_functions.GROQ_API_KEY:
-        models.extend(["llama-3.3-70b-versatile"])
+        models.extend([
+            {
+                "id": "llama-3.3-70b-versatile",
+                "name": "Llama 3.3 70B Versatile",
+                "description": "Really fast model via Groq"
+            }
+        ])
     
     return jsonify({
         "models": models,
