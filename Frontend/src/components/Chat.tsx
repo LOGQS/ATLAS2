@@ -523,14 +523,12 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       const newSttButtonEnabled = JSON.parse(localStorage.getItem('sttButtonEnabled') || 'true');
       const newImageAnnotationEnabled = JSON.parse(localStorage.getItem('imageAnnotationEnabled') || 'true');
       const newSummarizeButtonEnabled = JSON.parse(localStorage.getItem('summarizeButtonEnabled') || 'true');
-      const newDefaultModel = localStorage.getItem('defaultModel') || 'gemini-2.5-flash';
       
       // Use functional updates to avoid stale closure issues
       setShowTtsButton((prev: boolean) => prev !== newTtsButtonEnabled ? newTtsButtonEnabled : prev);
       setShowSttButton((prev: boolean) => prev !== newSttButtonEnabled ? newSttButtonEnabled : prev);
       setImageAnnotationEnabled((prev: boolean) => prev !== newImageAnnotationEnabled ? newImageAnnotationEnabled : prev);
       setShowSummarizeButton((prev: boolean) => prev !== newSummarizeButtonEnabled ? newSummarizeButtonEnabled : prev);
-      setModel((prev: string) => prev !== newDefaultModel ? newDefaultModel : prev);
     };
     
     window.addEventListener('focus', handleFocus);
@@ -615,11 +613,6 @@ const Chat: React.FC<ChatProps> = ({ initialChatId, isActive }) => {
       id: 'llama-3.3-70b-versatile', 
       name: 'Llama 3.3 70B',
       description: 'Really fast model via Groq'
-    },
-    { 
-      id: 'qwen-qwq-32b', 
-      name: 'Qwen QwQ 32B',
-      description: 'Deep thinking model via Groq'
     }
   ];
 

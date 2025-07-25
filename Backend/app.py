@@ -11,8 +11,6 @@ import uuid
 from flask import Flask, request, jsonify, Response, stream_with_context, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from dotenv import load_dotenv
-from google import genai
 from google.genai import types
 from logging.handlers import RotatingFileHandler
 import tempfile
@@ -23,8 +21,6 @@ from utils.profile_manager import load_profiles, create_profile, update_profile,
 import gc
 import signal
 import atexit
-from groq import Groq
-from openai import OpenAI
 import time
 import glob
 import requests
@@ -32,6 +28,7 @@ from html.parser import HTMLParser
 from utils.extra import initialize_whisper_model, cleanup_whisper_model
 from utils.configs import SUPPORTED_MIME_TYPES, PROCESSING_FILE_TYPES, DEFAULT_SETTINGS
 from utils.logger import safe_debug, safe_info, safe_warning, safe_error, safe_exception
+import main.ai_functions as ai_functions
 from main.ai_functions import *
 from main.chat import UnifiedChatSession, BackgroundChatProcessor, initialize_chat_module
 from main.websocket_handlers import register_socketio_handlers
@@ -90,68 +87,6 @@ try:
 except Exception as e:
     logger.exception(f"Error loading Whisper model at startup: {str(e)}")
     
-# ------------------------------------------------------------
-# Environment variables
-# ------------------------------------------------------------
-
-# Load environment variables
-load_dotenv()
-
-# Configure Google Generative AI
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = None
-
-# Initialize Gemini client if API key is available
-if GEMINI_API_KEY:
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("Gemini client initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize Gemini client: {str(e)}")
-        client = None
-else:
-    logger.warning("GEMINI_API_KEY not found in environment variables")
-
-# Configure OpenRouter API
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-openrouter_client = None
-
-# Initialize OpenRouter client if API key is available
-if OPENROUTER_API_KEY:
-    try:
-        openrouter_client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-        )
-        logger.info("OpenRouter client initialized successfully")
-    except ImportError:
-        logger.warning("OpenAI library not installed. OpenRouter functionality will not be available.")
-        openrouter_client = None
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenRouter client: {str(e)}")
-        openrouter_client = None
-else:
-    logger.info("OPENROUTER_API_KEY not found in environment variables")
-
-# Configure Groq API
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-groq_client = None
-
-# Initialize Groq client if API key is available
-if GROQ_API_KEY:
-    try:
-        groq_client = Groq(
-            api_key=GROQ_API_KEY,
-        )
-        logger.info("Groq client initialized successfully")
-    except ImportError:
-        logger.warning("OpenAI library not installed. Groq functionality will not be available.")
-        groq_client = None
-    except Exception as e:
-        logger.error(f"Failed to initialize Groq client: {str(e)}")
-        groq_client = None
-else:
-    logger.info("GROQ_API_KEY not found in environment variables")
 
 # ------------------------------------------------------------
 # Flask and SocketIO setup
@@ -236,10 +171,8 @@ active_chats = {}
 # Global settings
 settings = DEFAULT_SETTINGS.copy()
 
-# Initialize AI functions module with global variables
-initialize_ai_functions(client, openrouter_client, groq_client, 
-                       GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, 
-                       settings, whisper_model)
+# Initialize AI functions module with settings and whisper model
+initialize_ai_functions(settings, whisper_model)
 
 # Initialize chat module with global variables
 initialize_chat_module(socketio, settings, active_chats)
@@ -253,7 +186,7 @@ def get_models():
     models = []
     
     # Add Gemini models if client is available
-    if client is not None:
+    if ai_functions.client is not None:
         models.extend([
             "gemini-2.0-flash-exp",
             "gemini-2.5-flash", 
@@ -261,19 +194,19 @@ def get_models():
         ])
     
     # Add OpenRouter models if available
-    if openrouter_client and OPENROUTER_API_KEY:
+    if ai_functions.openrouter_client and ai_functions.OPENROUTER_API_KEY:
         models.extend(["deepseek/deepseek-r1-0528:free", "tngtech/deepseek-r1t-chimera:free", "qwen/qwen3-30b-a3b:free"])
     
     # Add Groq models if available
-    if GROQ_API_KEY:
-        models.extend(["llama-3.3-70b-versatile", "qwen-qwq-32b"])
+    if ai_functions.GROQ_API_KEY:
+        models.extend(["llama-3.3-70b-versatile"])
     
     return jsonify({
         "models": models,
         "available_clients": {
-            "gemini": client is not None,
-            "openrouter": openrouter_client is not None and OPENROUTER_API_KEY is not None,
-            "groq": GROQ_API_KEY is not None
+            "gemini": ai_functions.client is not None,
+            "openrouter": ai_functions.openrouter_client is not None and ai_functions.OPENROUTER_API_KEY is not None,
+            "groq": ai_functions.GROQ_API_KEY is not None
         }
     })
 
@@ -307,13 +240,13 @@ def switch_chat_model(chat_id):
             
         # Validate that we have the necessary client for the new model
         if is_openrouter_model(new_model):
-            if not openrouter_client or not OPENROUTER_API_KEY:
+            if not ai_functions.openrouter_client or not ai_functions.OPENROUTER_API_KEY:
                 return jsonify({"error": f"OpenRouter model '{new_model}' requested but OpenRouter client not available. Please check your OPENROUTER_API_KEY."}), 503
         elif is_groq_model(new_model):
-            if not GROQ_API_KEY:
+            if not ai_functions.GROQ_API_KEY:
                 return jsonify({"error": f"Groq model '{new_model}' requested but Groq API key not available. Please check your GROQ_API_KEY."}), 503
         elif is_gemini_model(new_model):
-            if not GEMINI_API_KEY:
+            if not ai_functions.GEMINI_API_KEY:
                 return jsonify({"error": f"Gemini model '{new_model}' requested but Gemini API key not available. Please check your GEMINI_API_KEY."}), 503
         else:
             return jsonify({"error": f"Unknown model: {new_model}"}), 400
@@ -417,7 +350,7 @@ def list_files():
             return jsonify(error_response), status_code
             
         files = []
-        for file in client.files.list():
+        for file in ai_functions.client.files.list():
             files.append({
                 "name": file.name,
                 "uri": file.uri if hasattr(file, "uri") else None,
@@ -439,7 +372,7 @@ def list_documents():
             return jsonify(error_response), status_code
             
         documents = []
-        for file in client.files.list():
+        for file in ai_functions.client.files.list():
             # Skip non-active files
             if hasattr(file, 'state') and file.state.name != 'ACTIVE':
                 continue
@@ -478,7 +411,7 @@ def list_documents():
 @app.route("/api/files/<file_id>", methods=["DELETE"])
 def delete_file(file_id):
     try:
-        client.files.delete(name=file_id)
+        ai_functions.client.files.delete(name=file_id)
         return jsonify({"success": True, "message": f"File {file_id} deleted successfully"})
     except Exception as e:
         logger.exception(f"Error deleting file {file_id}: {str(e)}")
@@ -488,7 +421,7 @@ def delete_file(file_id):
 @app.route("/api/files/<file_id>/state", methods=["GET"])
 def get_file_state(file_id):
     try:
-        file = client.files.get(name=file_id)
+        file = ai_functions.client.files.get(name=file_id)
         file_state = getattr(file.state, 'name', 'UNKNOWN') if hasattr(file, 'state') else 'UNKNOWN'
         return jsonify({
             "file_id": file_id,
@@ -578,7 +511,7 @@ def upload_file():
         
         try:
             # Upload with mime_type in config (using file path directly as shown in examples)
-            uploaded_file = client.files.upload(
+            uploaded_file = ai_functions.client.files.upload(
                 file=temp_path,
                 config=dict(mime_type=mime_type)
             )
@@ -606,7 +539,7 @@ def upload_file():
                 # Wait until the file is ACTIVE or until we hit the time limit
                 while processing and (time.time() - start_time) < max_wait_time:
                     # Get current file state
-                    file_obj = client.files.get(name=uploaded_file.name)
+                    file_obj = ai_functions.client.files.get(name=uploaded_file.name)
                     file_state = getattr(file_obj.state, 'name', 'UNKNOWN')
                     
                     logger.debug(f"File processing state: {file_state}")
@@ -767,7 +700,7 @@ def create_document_cache():
         valid_files = []
         for file_id in file_ids:
             try:
-                file_obj = client.files.get(name=file_id)
+                file_obj = ai_functions.client.files.get(name=file_id)
                 if hasattr(file_obj, 'state') and file_obj.state.name == 'ACTIVE':
                     valid_files.append(file_id)
                 else:
@@ -801,7 +734,7 @@ def create_document_cache():
 def check_file_state(file_id):
     """Check the processing state of a file, especially for documents that need processing"""
     try:
-        file = client.files.get(name=file_id)
+        file = ai_functions.client.files.get(name=file_id)
         
         if not hasattr(file, 'name'):
             return jsonify({"error": "File not found"}), 404
@@ -963,17 +896,17 @@ def chat():
         temperature = data.get("temperature")
         max_tokens = data.get("max_tokens")
         
-        safe_info(f"🚀 [CHAT-START] Processing chat request - model: {model_name}, messages: {len(messages)}, cache_id: {cache_id}")
+        safe_info(f"[CHAT-START] Processing chat request - model: {model_name}, messages: {len(messages)}, cache_id: {cache_id}")
         
         if cache_id:
             safe_info(f"Using document cache: {cache_id}")
         
         # Validate that we have the necessary client for the requested model
         if is_openrouter_model(model_name):
-            if not openrouter_client or not OPENROUTER_API_KEY:
+            if not ai_functions.openrouter_client or not ai_functions.OPENROUTER_API_KEY:
                 return jsonify({"error": f"OpenRouter model '{model_name}' requested but OpenRouter client not available. Please check your OPENROUTER_API_KEY."}), 503
         elif is_groq_model(model_name):
-            if not GROQ_API_KEY:
+            if not ai_functions.GROQ_API_KEY:
                 return jsonify({"error": f"Groq model '{model_name}' requested but Groq API key not available. Please check your GROQ_API_KEY."}), 503
         else:
             # Default to Gemini models
@@ -1101,11 +1034,11 @@ def chat():
         # Create a new chat or get the existing one
         if new_chat:
             logger.debug(f"Creating new chat with model: {model_name}")
-            safe_info(f"🆕 [NEW-CHAT] Creating new UnifiedChatSession - ID: {chat_id}, model: {model_name}")
+            safe_info(f"[NEW-CHAT] Creating new UnifiedChatSession - ID: {chat_id}, model: {model_name}")
             
             # Use unified chat session for all providers
             chat = UnifiedChatSession(chat_id, model_name)
-            safe_info(f"✅ [NEW-CHAT] UnifiedChatSession created successfully")
+            safe_info(f"[NEW-CHAT] UnifiedChatSession created successfully")
             
             # Initialize history if available
             if history_messages:
@@ -1123,7 +1056,7 @@ def chat():
             # Store the chat in our dictionary
             active_chats[chat_id] = chat
             logger.debug(f"New chat session created with ID: {chat_id}")
-            safe_info(f"🗃️ [ACTIVE-CHATS] Added to active_chats - total: {len(active_chats)}")
+            safe_info(f"[ACTIVE-CHATS] Added to active_chats - total: {len(active_chats)}")
             
             # Save chat metadata to chat history file
             try:
@@ -1228,7 +1161,7 @@ def chat():
         
         # If we have a latest user message
         if latest_message:
-            safe_info(f"✅ [LATEST-MSG] Latest user message found - proceeding with message processing")
+            safe_info(f"[LATEST-MSG] Latest user message found - proceeding with message processing")
             # Process message parts including any attachments
             parts = []
             
@@ -1250,7 +1183,7 @@ def chat():
                             # Get file using client.files.get method
                             file_id = attachment.get("file_id", "unknown")
                             safe_debug(f"Getting file with ID: {file_id}", file_id)
-                            file_obj = client.files.get(name=file_id)
+                            file_obj = ai_functions.client.files.get(name=file_id)
                             
                             # Check the file's state (applicable to all file types)
                             if hasattr(file_obj, 'state'):
@@ -1265,7 +1198,7 @@ def chat():
                                     
                                     while file_state == 'PROCESSING' and (time.time() - start_time) < max_wait:
                                         time.sleep(1)
-                                        file_obj = client.files.get(name=file_id)
+                                        file_obj = ai_functions.client.files.get(name=file_id)
                                         file_state = getattr(file_obj.state, 'name', 'UNKNOWN')
                                     
                                     if file_state != 'ACTIVE':
@@ -1322,7 +1255,7 @@ def chat():
                             mime_type = mime_type_map.get(file_ext, 'text/plain')
                             
                             # Upload file to Gemini API for processing
-                            file_obj = client.files.upload(
+                            file_obj = ai_functions.client.files.upload(
                                 file=file_path,
                                 config=dict(mime_type=mime_type)
                             )
@@ -1358,9 +1291,9 @@ def chat():
             try:
                 # Add the user message to our unified history (without knowledge attachments)
                 user_message_content = latest_message["content"] if latest_message and "content" in latest_message else ""
-                safe_info(f"💬 [USER-MSG] User message content: '{user_message_content[:100]}...' (length: {len(user_message_content) if user_message_content else 0})")
+                safe_info(f"[USER-MSG] User message content: '{user_message_content[:100]}...' (length: {len(user_message_content) if user_message_content else 0})")
                 if user_message_content:
-                    safe_info(f"✅ [USER-MSG] User message content exists - proceeding with chat flow")
+                    safe_info(f"[USER-MSG] User message content exists - proceeding with chat flow")
                     chat.add_message("user", user_message_content)
                     
                     # Immediately save the user message to file to ensure persistence even if user switches chats
@@ -1482,10 +1415,10 @@ def chat():
                 
                 # Use raw stream directly (fastest approach)
                 delayed_response = response
-                safe_info(f"🎯 [RESPONSE] Successfully created response stream - type: {type(response)}")
+                safe_info(f"[RESPONSE] Successfully created response stream - type: {type(response)}")
                 
             except Exception as e:
-                safe_error(f"❌ [RESPONSE] Error during unified chat request: {str(e)}", e)
+                safe_error(f"[RESPONSE] Error during unified chat request: {str(e)}", e)
                 return jsonify({"error": str(e)}), 500
             
             def generate():
@@ -1493,12 +1426,12 @@ def chat():
                 assistant_response = ""  # Track the complete assistant response
                 accumulated_reasoning = ""  # Track the complete reasoning for OpenRouter models
                 
-                safe_info(f"🔄 [GENERATE] Starting generate function - new_chat: {new_chat}, chat_id: {chat_id}")
+                safe_info(f"[GENERATE] Starting generate function - new_chat: {new_chat}, chat_id: {chat_id}")
                 
                 try:
                     # FIRST: Send chat metadata immediately for new chats
                     if new_chat:
-                        safe_info(f"📤 [METADATA] Preparing to send chat creation metadata for new chat")
+                        safe_info(f"[METADATA] Preparing to send chat creation metadata for new chat")
                         # Extract chat title for metadata
                         chat_title = "New Chat"
                         if messages and messages[-1]["role"] == "user" and "content" in messages[-1] and messages[-1]["content"]:
@@ -1518,13 +1451,13 @@ def chat():
                             'created_at': datetime.now().isoformat(),
                             'is_new_chat': True
                         }
-                        safe_info(f"✉️ [METADATA] Created metadata event: {metadata_event}")
+                        safe_info(f"[METADATA] Created metadata event: {metadata_event}")
                         try:
                             json_data = json.dumps(metadata_event)
                             yield f"data: {json_data}\n\n"
-                            safe_info(f"📤 [CHAT-INIT] ✅ Successfully sent chat metadata as first event: {chat_id}")
+                            safe_info(f"[CHAT-INIT] Successfully sent chat metadata as first event: {chat_id}")
                         except (UnicodeEncodeError, json.JSONDecodeError) as e:
-                            safe_warning(f"❌ [CHAT-INIT] Error encoding chat metadata: {str(e)}")
+                            safe_warning(f"[CHAT-INIT] Error encoding chat metadata: {str(e)}")
                     else:
                         # Send chat resume metadata for existing chats
                         resume_event = {
@@ -1743,7 +1676,7 @@ def chat():
             safe_info(f"🌊 [RETURN] Returning streaming Response with generate() function")
             return Response(stream_with_context(generate()), content_type='text/event-stream')
         else:
-            safe_warning(f"❌ [USER-MSG] No user message content found - returning error")
+            safe_warning(f"[USER-MSG] No user message content found - returning error")
             return jsonify({"error": "No user message provided"}), 400
     
     except Exception as e:
@@ -1773,7 +1706,7 @@ def clear_chat(chat_id):
                         
                         # Delete from Gemini API
                         safe_debug(f"Deleting file {file_id} from File API", file_id)
-                        client.files.delete(name=file_id)
+                        ai_functions.client.files.delete(name=file_id)
                         chat.files.remove(file_id)
                         safe_debug(f"Successfully deleted file {file_id}", file_id)
                     except Exception as file_error:
@@ -1873,7 +1806,7 @@ def delete_chat_from_history(chat_id):
                 if hasattr(chat, 'files') and chat.files:
                     for file_id in list(chat.files):
                         try:
-                            client.files.delete(name=file_id)
+                            ai_functions.client.files.delete(name=file_id)
                         except Exception as file_error:
                             safe_debug(f"Error deleting file {file_id}: {str(file_error)}", file_error)
                 
@@ -2199,7 +2132,7 @@ def generate_image():
             
         # Use gemini-2.0-flash-exp-image-generation model for image generation with proper config
         safe_debug(f"Generating image with prompt: {prompt[:50]}...", prompt)
-        response = client.models.generate_content(
+        response = ai_functions.client.models.generate_content(
             model="gemini-2.0-flash-exp-image-generation",
             contents=prompt,
             config=config
@@ -3053,8 +2986,6 @@ def messages_are_identical(msg_list1, msg_list2):
             return False
     return True
 
-# New endpoints for message editing, deletion, and refresh with versioning
-
 @app.route("/api/chats/<chat_id>/messages/<int:msg_index>/edit", methods=["POST"])
 def edit_message(chat_id, msg_index):
     """Edit a user message at the given index and automatically resend for model response"""
@@ -3891,7 +3822,7 @@ def bulk_delete_chats():
                 if hasattr(chat, 'files') and chat.files:
                     for file_id in list(chat.files):
                         try:
-                            client.files.delete(name=file_id)
+                            ai_functions.client.files.delete(name=file_id)
                         except Exception as file_error:
                             safe_debug(f"Error deleting file {file_id}: {str(file_error)}", file_error)
                 
@@ -3954,7 +3885,7 @@ def clear_all_chats():
             if hasattr(chat, 'files') and chat.files:
                 for file_id in list(chat.files):
                     try:
-                        client.files.delete(name=file_id)
+                        ai_functions.client.files.delete(name=file_id)
                         deleted_files += 1
                     except Exception as file_error:
                         safe_debug(f"Error deleting file {file_id}: {str(file_error)}", file_error)
@@ -4016,7 +3947,7 @@ def reset_chat_messages(chat_id):
                         
                         # Delete from Gemini API
                         safe_debug(f"Deleting file {file_id} from File API", file_id)
-                        client.files.delete(name=file_id)
+                        ai_functions.client.files.delete(name=file_id)
                         chat.files.remove(file_id)
                         safe_debug(f"Successfully deleted file {file_id}", file_id)
                     except Exception as file_error:

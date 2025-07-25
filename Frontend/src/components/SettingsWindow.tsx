@@ -104,11 +104,6 @@ const SettingsWindow: React.FC<SettingsWindowProps> = ({ isOpen, onClose }) => {
       id: 'llama-3.3-70b-versatile', 
       name: 'Llama 3.3 70B',
       description: 'Really fast model via Groq'
-    },
-    { 
-      id: 'qwen-qwq-32b', 
-      name: 'Qwen QwQ 32B',
-      description: 'Deep thinking model via Groq'
     }
   ];
   

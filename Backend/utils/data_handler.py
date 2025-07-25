@@ -4,11 +4,50 @@
 This module handles data/file conversion and preprocessing for the application.
 """
 
-def encoder_cycler():
+def encoder_cycler(text):
     """
-    This function cycles through the encoders and returns the appropriate encoder for the file type.
+    This function cycles through multiple encoders until one works successfully.
+    Tries UTF-8, ASCII, Latin-1, CP1252, and others until something works.
     """
-    pass
+    if text is None:
+        return ""
+    
+    # Convert to string if not already
+    if not isinstance(text, str):
+        text = str(text)
+    
+    # List of encodings to try in order
+    encodings = [
+        'utf-8',
+        'ascii', 
+        'latin-1',
+        'cp1252',
+        'iso-8859-1',
+        'utf-16',
+        'cp437',
+        'cp850',
+        'windows-1252'
+    ]
+    
+    # Try each encoding with different error handling strategies
+    error_strategies = ['ignore', 'replace', 'xmlcharrefreplace']
+    
+    for encoding in encodings:
+        for strategy in error_strategies:
+            try:
+                # Try to encode and decode to ensure compatibility
+                encoded = text.encode(encoding, errors=strategy)
+                decoded = encoded.decode(encoding, errors=strategy)
+                return decoded
+            except (UnicodeEncodeError, UnicodeDecodeError, LookupError):
+                continue
+    
+    # Last resort: convert to ASCII with replacement and truncate if needed
+    try:
+        safe_text = ''.join(c if ord(c) < 128 else '?' for c in text)
+        return safe_text[:1000] + "..." if len(safe_text) > 1000 else safe_text
+    except Exception:
+        return "[ENCODING_FAILED]"
 
 class FileTypeRouter:
     """

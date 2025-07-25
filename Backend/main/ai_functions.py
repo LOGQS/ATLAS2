@@ -1,8 +1,12 @@
 # status: to clean up later
 
 import json
+import os
+from dotenv import load_dotenv
+from google import genai
 from google.genai import types
 from openai import OpenAI
+from groq import Groq
 from utils.prompts import summary_system_instruction, full_classifier_prompt
 from utils.logger import safe_debug, safe_info, safe_warning, safe_error, safe_exception
 from utils.extra import initialize_whisper_model
@@ -17,19 +21,72 @@ GROQ_API_KEY = None
 settings = None
 whisper_model = None
 
-def initialize_ai_functions(app_client, app_openrouter_client, app_groq_client, 
-                           app_gemini_key, app_openrouter_key, app_groq_key, 
-                           app_settings, app_whisper_model):
-    """Initialize global variables from app.py"""
+def initialize_ai_functions(app_settings, app_whisper_model):
+    """Initialize AI functions with environment variables and client setup"""
     global client, openrouter_client, groq_client, GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, settings, whisper_model
-    client = app_client
-    openrouter_client = app_openrouter_client
-    groq_client = app_groq_client
-    GEMINI_API_KEY = app_gemini_key
-    OPENROUTER_API_KEY = app_openrouter_key
-    GROQ_API_KEY = app_groq_key
+    
+    # Load environment variables
+    load_dotenv()
+    
+    # Set global variables
     settings = app_settings
     whisper_model = app_whisper_model
+    
+    # Configure Google Generative AI
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    client = None
+    
+    # Initialize Gemini client if API key is available
+    if GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            safe_info("Gemini client initialized successfully")
+        except Exception as e:
+            safe_error(f"Failed to initialize Gemini client: {str(e)}")
+            client = None
+    else:
+        safe_warning("GEMINI_API_KEY not found in environment variables")
+    
+    # Configure OpenRouter API
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    openrouter_client = None
+    
+    # Initialize OpenRouter client if API key is available
+    if OPENROUTER_API_KEY:
+        try:
+            openrouter_client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+            )
+            safe_info("OpenRouter client initialized successfully")
+        except ImportError:
+            safe_warning("OpenAI library not installed. OpenRouter functionality will not be available.")
+            openrouter_client = None
+        except Exception as e:
+            safe_error(f"Failed to initialize OpenRouter client: {str(e)}")
+            openrouter_client = None
+    else:
+        safe_info("OPENROUTER_API_KEY not found in environment variables")
+    
+    # Configure Groq API
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    groq_client = None
+    
+    # Initialize Groq client if API key is available
+    if GROQ_API_KEY:
+        try:
+            groq_client = Groq(
+                api_key=GROQ_API_KEY,
+            )
+            safe_info("Groq client initialized successfully")
+        except ImportError:
+            safe_warning("OpenAI library not installed. Groq functionality will not be available.")
+            groq_client = None
+        except Exception as e:
+            safe_error(f"Failed to initialize Groq client: {str(e)}")
+            groq_client = None
+    else:
+        safe_info("GROQ_API_KEY not found in environment variables")
 
 def load_whisper_model():
     """
@@ -64,7 +121,7 @@ def is_groq_model(model_name):
     """
     Check if the given model name is a Groq model
     """
-    groq_models = ["llama-3.3-70b-versatile", "qwen-qwq-32b"]
+    groq_models = ["llama-3.3-70b-versatile"]
     return model_name in groq_models
 
 def is_gemini_model(model_name):
