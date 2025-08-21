@@ -207,12 +207,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingSta
       clearTimeout(loadHistoryTimeoutRef.current);
     }
     
-    return new Promise<void>((resolve) => {
-      loadHistoryTimeoutRef.current = setTimeout(async () => {
-        await loadChatHistoryImmediate(chatId);
-        resolve();
-      }, 10);
-    });
+    await loadChatHistoryImmediate(chatId);
   }, [chatId, loadChatHistoryImmediate]);
 
   const checkAndResumeStreaming = useCallback(async (targetChatId: string, messages: Message[]) => {
@@ -548,22 +543,18 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingSta
     if (chatId && isActive && streamingMessageId === null && !(firstMessage && !firstMessageSent) && !justFinishedStreaming) {
       logger.info(`[SCROLL] Chat ${chatId} - useEffect[chatId,streamingMessageId,...] - triggering loadChatHistory`);
       loadChatHistory().then(() => {
-        setTimeout(() => {
-          checkAndResumeStreaming(chatId, []);
-        }, 100);
+        checkAndResumeStreaming(chatId, []);
       });
     }
   }, [chatId, isActive, streamingMessageId, firstMessage, firstMessageSent, justFinishedStreaming, loadChatHistory, checkAndResumeStreaming]);
 
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && config && !firstMessageSent) {
-      setTimeout(() => {
-        handleNewMessage(firstMessage);
-        setFirstMessageSent(true);
-        if (onFirstMessageSent) {
-          onFirstMessageSent(chatId);
-        }
-      }, 200);
+      handleNewMessage(firstMessage);
+      setFirstMessageSent(true);
+      if (onFirstMessageSent) {
+        onFirstMessageSent(chatId);
+      }
     }
   }, [chatId, isActive, firstMessage, config, firstMessageSent, handleNewMessage, onFirstMessageSent]);
 
@@ -614,7 +605,14 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingSta
     <div className="chat-messages">
       <div className="messages-container">
         <div className="spacer" style={{flexGrow: 1}}></div>
-        {messages.slice().reverse().map((message, index) => renderMessage(message, messages.length - 1 - index))}
+        {showDelayedLoading && (
+          <div className="delayed-loading-indicator">
+            <div className="delayed-loading-content">
+              <div className="delayed-loading-spinner"></div>
+              <span>Thinking...</span>
+            </div>
+          </div>
+        )}
         {loading && messages.length > 0 && !streamingMessageId && (
           <div className="typing-indicator">
             <div className="typing-animation">
@@ -624,14 +622,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingSta
             </div>
           </div>
         )}
-        {showDelayedLoading && (
-          <div className="delayed-loading-indicator">
-            <div className="delayed-loading-content">
-              <div className="delayed-loading-spinner"></div>
-              <span>Thinking...</span>
-            </div>
-          </div>
-        )}
+        {messages.slice().reverse().map((message, index) => renderMessage(message, messages.length - 1 - index))}
         <div ref={messagesEndRef} />
       </div>
     </div>

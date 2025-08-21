@@ -31,7 +31,7 @@ const RightSidebar: React.FC = () => {
         <div className="sidebar-content">
           <div className="sidebar-header">
             <div className="sidebar-header-top">
-              <h3>Settings</h3>
+              <h3>Customizations</h3>
               <div className="sidebar-toggle-container">
                 <button 
                   className={`sidebar-toggle ${isToggled ? 'active' : ''}`}
@@ -43,10 +43,32 @@ const RightSidebar: React.FC = () => {
             </div>
           </div>
           <div className="sidebar-items">
-            <div className="sidebar-item">Profile</div>
-            <div className="sidebar-item">Preferences</div>
-            <div className="sidebar-item">Theme</div>
-            <div className="sidebar-item">Help</div>
+            <div className="chat-history-section">
+              <div className="chat-history-header">
+                <div className="chat-history-title">
+                  <div className="sidebar-icon knowledge-icon"></div>
+                  <h3>Knowledge Management</h3>
+                </div>
+              </div>
+              <div className="chat-history-content">
+                <div className="sidebar-item">
+                  <div className="sidebar-icon profile-icon"></div>
+                  Profiles
+                </div>
+                <div className="sidebar-item">
+                  <div className="sidebar-icon document-icon"></div>
+                  Files
+                </div>
+                <div className="sidebar-item">
+                  <div className="sidebar-icon folder-icon"></div>
+                  Folders
+                </div>
+                <div className="sidebar-item">
+                  <div className="sidebar-icon globe-icon"></div>
+                  Web
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -56,12 +56,13 @@ body.chat-active .main-content {
   text-align: center;
   letter-spacing: -0.5px;
   margin: 0;
-  transition: opacity 0.5s ease;
+  transition: opacity 0.15s ease;
 }
 
 .title.fading,
 .input-container.center.fading {
   opacity: 0;
+  transition: opacity 0.15s ease;
 }
 
 .title.hidden,
@@ -76,7 +77,7 @@ body.chat-active .main-content {
   gap: 15px;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.5s ease;
+  transition: opacity 0.15s ease;
 }
 
 .bottom-input-container {
@@ -91,7 +92,7 @@ body.chat-active .main-content {
   left: 50%;
   transform: translateX(-50%);
   z-index: 100;
-  animation: fadeInUp 0.5s ease forwards;
+  animation: fadeInUp 0.2s ease forwards;
 }
 
 @keyframes fadeInUp {

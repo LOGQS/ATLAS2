@@ -143,14 +143,10 @@ function App() {
         if (chatId) {
           setPendingFirstMessages(prev => new Map(prev).set(chatId, message));
           setCenterFading(true);
-          setTimeout(() => {
-            setHasMessageBeenSent(true);
-            document.body.classList.add('chat-active');
-            setTimeout(() => {
-              setMessage('');
-              bottomInputRef.current?.focus();
-            }, 400);
-          }, 500);
+          setHasMessageBeenSent(true);
+          document.body.classList.add('chat-active');
+          setMessage('');
+          bottomInputRef.current?.focus();
         }
       } else {
         if (activeChatId !== 'none' && chatRef.current) {
@@ -311,6 +307,141 @@ function App() {
     });
   }, []);
 
+  const handleBulkDelete = async (chatIds: string[]) => {
+    try {
+      logger.info('Bulk deleting chats:', chatIds);
+      const response = await fetch(apiUrl('/api/db/chats/bulk-delete'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ chat_ids: chatIds })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        logger.info('Bulk delete completed:', data.message);
+        
+        // Remove deleted chats from state
+        setChats(prev => prev.filter(chat => !chatIds.includes(chat.id)));
+        
+        // Clear streaming and pending messages for deleted chats
+        setStreamingChats(prev => {
+          const newSet = new Set(prev);
+          chatIds.forEach(id => newSet.delete(id));
+          return newSet;
+        });
+        
+        setPendingFirstMessages(prev => {
+          const newMap = new Map(prev);
+          chatIds.forEach(id => newMap.delete(id));
+          return newMap;
+        });
+        
+        // If active chat was deleted, start new chat
+        if (chatIds.includes(activeChatId)) {
+          await handleNewChat();
+        }
+      } else {
+        const data = await response.json();
+        logger.error('Failed to bulk delete chats:', data.error);
+      }
+    } catch (error) {
+      logger.error('Failed to bulk delete chats:', error);
+    }
+  };
+
+  const handleBulkExport = async (chatIds: string[]) => {
+    try {
+      logger.info('Bulk exporting chats:', chatIds);
+      const response = await fetch(apiUrl('/api/db/chats/bulk-export'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ chat_ids: chatIds })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        logger.info('Bulk export completed:', data.export_count, 'chats');
+        
+        // Create and download individual JSON files for each chat
+        data.exported_chats.forEach((chat: any) => {
+          const jsonData = JSON.stringify(chat, null, 2);
+          const blob = new Blob([jsonData], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `chat_${chat.name?.replace(/[^a-zA-Z0-9]/g, '_') || chat.id}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        });
+      } else {
+        const data = await response.json();
+        logger.error('Failed to bulk export chats:', data.error);
+      }
+    } catch (error) {
+      logger.error('Failed to bulk export chats:', error);
+    }
+  };
+
+  const handleBulkImport = async (files: FileList) => {
+    try {
+      logger.info('Bulk importing chats from', files.length, 'files');
+      const chatsToImport: any[] = [];
+      
+      // Convert FileList to array and read all files
+      const fileArray = Array.from(files);
+      logger.info('Processing files:', fileArray.map(f => f.name));
+      
+      for (const file of fileArray) {
+        if (file.type === 'application/json' || file.name.endsWith('.json')) {
+          try {
+            logger.info('Processing file:', file.name);
+            const text = await file.text();
+            const chatData = JSON.parse(text);
+            chatsToImport.push(chatData);
+            logger.info('Successfully processed file:', file.name);
+          } catch (error) {
+            logger.error('Failed to parse JSON file:', file.name, error);
+          }
+        } else {
+          logger.warn('Skipping non-JSON file:', file.name);
+        }
+      }
+      
+      if (chatsToImport.length === 0) {
+        logger.warn('No valid JSON files found for import');
+        return;
+      }
+      
+      const response = await fetch(apiUrl('/api/db/chats/bulk-import'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ chats: chatsToImport })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        logger.info('Bulk import completed:', data.message);
+        
+        // Reload chats to show imported ones
+        await loadChatsFromDatabase();
+      } else {
+        const data = await response.json();
+        logger.error('Failed to bulk import chats:', data.error);
+      }
+    } catch (error) {
+      logger.error('Failed to bulk import chats:', error);
+    }
+  };
+
 
   return (
     <div className="app">
@@ -321,6 +452,10 @@ function App() {
         onNewChat={handleNewChat}
         onDeleteChat={handleDeleteChat}
         onEditChat={handleEditChat}
+        onBulkDelete={handleBulkDelete}
+        onBulkExport={handleBulkExport}
+        onBulkImport={handleBulkImport}
+        onChatsReload={loadChatsFromDatabase}
       />
       <div className="main-content">
         <div className="chat-container">

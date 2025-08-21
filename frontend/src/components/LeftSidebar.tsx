@@ -1,6 +1,6 @@
 // status: complete
 
-import React, { useState} from 'react';
+import React, { useState, useCallback} from 'react';
 import '../styles/LeftSidebar.css';
 import { BrowserStorage } from '../utils/BrowserStorage';
 import logger from '../utils/logger';
@@ -20,6 +20,10 @@ interface LeftSidebarProps {
   onNewChat?: () => void;
   onDeleteChat?: (chatId: string) => void;
   onEditChat?: (chatId: string, newName: string) => void;
+  onBulkDelete?: (chatIds: string[]) => void;
+  onBulkExport?: (chatIds: string[]) => void;
+  onBulkImport?: (files: FileList) => void;
+  onChatsReload?: () => void;
 }
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({
@@ -28,7 +32,11 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onChatSelect,
   onNewChat,
   onDeleteChat,
-  onEditChat
+  onEditChat,
+  onBulkDelete,
+  onBulkExport,
+  onBulkImport,
+  onChatsReload
 }) => {
   const [isToggled, setIsToggled] = useState(() => {
     const settings = BrowserStorage.getUISettings();
@@ -38,6 +46,9 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
 
   const handleToggle = () => {
     const newToggleState = !isToggled;
@@ -88,6 +99,98 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
     setDeletingChatId(null);
   };
 
+  const toggleSelectionMode = () => {
+    setSelectionMode(!selectionMode);
+    if (selectionMode) {
+      setSelectedChats(new Set());
+      setLastSelectedIndex(null);
+    }
+  };
+
+  const handleChatSelection = (chatId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    
+    const chatIndex = chats.findIndex(chat => chat.id === chatId);
+    
+    if (event.ctrlKey || event.metaKey) {
+      const newSelected = new Set(selectedChats);
+      if (newSelected.has(chatId)) {
+        newSelected.delete(chatId);
+      } else {
+        newSelected.add(chatId);
+      }
+      setSelectedChats(newSelected);
+      setLastSelectedIndex(chatIndex);
+    } else if (event.shiftKey && lastSelectedIndex !== null) {
+      const newSelected = new Set(selectedChats);
+      const start = Math.min(lastSelectedIndex, chatIndex);
+      const end = Math.max(lastSelectedIndex, chatIndex);
+      
+      for (let i = start; i <= end; i++) {
+        if (chats[i]) {
+          newSelected.add(chats[i].id);
+        }
+      }
+      setSelectedChats(newSelected);
+    } else {
+      setSelectedChats(new Set([chatId]));
+      setLastSelectedIndex(chatIndex);
+    }
+  };
+
+  const selectAllChats = useCallback(() => {
+    setSelectedChats(new Set(chats.map(chat => chat.id)));
+  }, [chats]);
+
+  const clearSelection = () => {
+    setSelectedChats(new Set());
+    setLastSelectedIndex(null);
+  };
+
+  const handleBulkExport = () => {
+    if (onBulkExport && selectedChats.size > 0) {
+      onBulkExport(Array.from(selectedChats));
+    }
+  };
+
+  const handleBulkImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && onBulkImport) {
+      onBulkImport(files);
+      event.target.value = '';
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (onBulkDelete && selectedChats.size > 0) {
+      onBulkDelete(Array.from(selectedChats));
+      setSelectedChats(new Set());
+    }
+  };
+
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!selectionMode) return;
+      
+      if (event.key === 'Escape') {
+        if (selectedChats.size > 0) {
+          clearSelection();
+        } else {
+          setSelectionMode(false);
+        }
+        event.preventDefault();
+      } else if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
+        selectAllChats();
+        event.preventDefault();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectionMode, selectedChats.size, selectAllChats]);
+
   const shouldBeVisible = isToggled || (!isToggled && isHovering);
 
   return (
@@ -126,11 +229,64 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
             </div>
             <div className="chat-history-section">
               <div className="chat-history-header">
-                <div className="chat-history-title">
-                  <div className="sidebar-icon chat-history-icon"></div>
-                  <h3>Chat History</h3>
+                <div className="chat-history-header-top">
+                  <div className="chat-history-title">
+                    <div className="sidebar-icon chat-history-icon"></div>
+                    <h3>Chat History</h3>
+                  </div>
+                  <button 
+                    className={`selection-menu-btn ${selectionMode ? 'active' : ''}`}
+                    onClick={toggleSelectionMode}
+                    title="Selection Mode"
+                  >
+                    <div className="three-dots-icon"></div>
+                  </button>
                 </div>
-                <button className="refresh-button">↻</button>
+                {selectionMode && (
+                  <div className="selection-controls">
+                    <button 
+                      className="selection-btn clear-btn" 
+                      onClick={clearSelection}
+                      title="Clear Selection"
+                      disabled={selectedChats.size === 0}
+                    >
+                      <div className="clear-icon"></div>
+                    </button>
+                    <button 
+                      className="selection-btn select-all-btn" 
+                      onClick={selectAllChats}
+                      title="Select All"
+                    >
+                      <div className="select-all-icon"></div>
+                    </button>
+                    <label className="selection-btn import-btn" title="Import Chats">
+                      <div className="import-icon">📥</div>
+                      <input 
+                        type="file" 
+                        multiple 
+                        accept=".json"
+                        onChange={handleBulkImport}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                    <button 
+                      className="selection-btn export-btn" 
+                      onClick={handleBulkExport}
+                      title="Export Selected"
+                      disabled={selectedChats.size === 0}
+                    >
+                      <div className="export-icon">📤</div>
+                    </button>
+                    <button 
+                      className="selection-btn delete-btn" 
+                      onClick={handleBulkDelete}
+                      title={`Delete ${selectedChats.size} selected`}
+                      disabled={selectedChats.size === 0}
+                    >
+                      <div className="delete-icon"></div>
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="chat-history-content">
                 {chats.length === 0 ? (
@@ -139,8 +295,15 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                   chats.map((chat) => (
                     <div
                       key={chat.id}
-                      className={`chat-item ${chat.id === activeChat ? 'active' : ''}`}
-                      onClick={() => editingChatId !== chat.id && onChatSelect?.(chat.id)}
+                      className={`chat-item ${
+                        selectionMode 
+                          ? selectedChats.has(chat.id) ? 'selected' : ''
+                          : chat.id === activeChat ? 'active' : ''
+                      }`}
+                      onClick={selectionMode 
+                        ? (e) => handleChatSelection(chat.id, e)
+                        : () => editingChatId !== chat.id && onChatSelect?.(chat.id)
+                      }
                     >
                       {editingChatId === chat.id ? (
                         <div className="chat-edit-container">
@@ -160,32 +323,42 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                         </div>
                       ) : (
                         <>
+                          {selectionMode && (
+                            <div className="chat-selection">
+                              <input
+                                type="checkbox"
+                                checked={selectedChats.has(chat.id)}
+                                onChange={() => {}}
+                                onClick={(e) => handleChatSelection(chat.id, e)}
+                              />
+                            </div>
+                          )}
                           <span className="chat-name">{chat.name}</span>
                           {chat.state && chat.state !== 'static' && (
-                            <span className={`chat-state-indicator ${chat.state}`}>
-                              {chat.state === 'thinking' ? '🤔' : '✍️'}
-                            </span>
+                            <span className={`chat-state-indicator ${chat.state}`}></span>
                           )}
-                          <div className="chat-actions">
-                            <button 
-                              className="chat-action-btn edit-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditStart(chat.id, chat.name);
-                              }}
-                            >
-                              <div className="edit-icon"></div>
-                            </button>
-                            <button 
-                              className="chat-action-btn delete-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteStart(chat.id);
-                              }}
-                            >
-                              <div className="delete-icon"></div>
-                            </button>
-                          </div>
+                          {!selectionMode && (
+                            <div className="chat-actions">
+                              <button 
+                                className="chat-action-btn edit-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditStart(chat.id, chat.name);
+                                }}
+                              >
+                                <div className="edit-icon"></div>
+                              </button>
+                              <button 
+                                className="chat-action-btn delete-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteStart(chat.id);
+                                }}
+                              >
+                                <div className="delete-icon"></div>
+                              </button>
+                            </div>
+                          )}
                         </>
                       )}
                     </div>

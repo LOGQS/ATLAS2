@@ -28,6 +28,9 @@ class DatabaseRoute:
         self.app.route('/api/db/active-chat', methods=['GET'])(self.get_active_chat)
         self.app.route('/api/db/active-chat', methods=['POST'])(self.set_active_chat)
         self.app.route('/api/db/chat/<chat_id>/state', methods=['GET'])(self.get_chat_state)
+        self.app.route('/api/db/chats/bulk-export', methods=['POST'])(self.bulk_export_chats)
+        self.app.route('/api/db/chats/bulk-import', methods=['POST'])(self.bulk_import_chats)
+        self.app.route('/api/db/chats/bulk-delete', methods=['POST'])(self.bulk_delete_chats)
     
     def get_all_chats(self):
         """Get all chat sessions with basic info"""
@@ -244,6 +247,154 @@ class DatabaseRoute:
             
         except Exception as e:
             logger.error(f"Error getting chat state: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    def bulk_export_chats(self):
+        """Export multiple chats with their full history"""
+        try:
+            data = request.get_json()
+            chat_ids = data.get('chat_ids', [])
+            
+            if not chat_ids:
+                return jsonify({'error': 'chat_ids array is required'}), 400
+            
+            exported_chats = []
+            
+            for chat_id in chat_ids:
+                if not db.chat_exists(chat_id):
+                    logger.warning(f"Skipping non-existent chat: {chat_id}")
+                    continue
+                
+                # Get chat metadata
+                all_chats = db.get_all_chats()
+                chat_meta = next((chat for chat in all_chats if chat['id'] == chat_id), None)
+                
+                if not chat_meta:
+                    continue
+                
+                # Get chat history
+                history = db.get_chat_history(chat_id)
+                
+                exported_chat = {
+                    'id': chat_meta['id'],
+                    'name': chat_meta['name'],
+                    'system_prompt': chat_meta['system_prompt'],
+                    'created_at': chat_meta['created_at'],
+                    'messages': history
+                }
+                
+                exported_chats.append(exported_chat)
+            
+            return jsonify({
+                'exported_chats': exported_chats,
+                'export_count': len(exported_chats)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error bulk exporting chats: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    def bulk_import_chats(self):
+        """Import multiple chats from exported data"""
+        try:
+            data = request.get_json()
+            chats_data = data.get('chats', [])
+            
+            if not chats_data:
+                return jsonify({'error': 'chats array is required'}), 400
+            
+            imported_count = 0
+            skipped_count = 0
+            errors = []
+            
+            for chat_data in chats_data:
+                try:
+                    chat_id = chat_data.get('id')
+                    name = chat_data.get('name', 'Imported Chat')
+                    system_prompt = chat_data.get('system_prompt')
+                    messages = chat_data.get('messages', [])
+                    
+                    if not chat_id:
+                        errors.append("Chat missing ID, skipping")
+                        continue
+                    
+                    # Check if chat already exists
+                    if db.chat_exists(chat_id):
+                        # Generate new ID for duplicate
+                        import time
+                        import random
+                        new_chat_id = f"imported_{int(time.time())}_{random.randint(1000, 9999)}"
+                        chat_id = new_chat_id
+                    
+                    # Create chat
+                    success = db.create_chat(chat_id, system_prompt, name)
+                    if not success:
+                        errors.append(f"Failed to create chat {chat_id}")
+                        continue
+                    
+                    # Import messages
+                    for message in messages:
+                        db.save_message(
+                            chat_id=chat_id,
+                            role=message.get('role', 'user'),
+                            content=message.get('content', ''),
+                            thoughts=message.get('thoughts'),
+                            provider=message.get('provider'),
+                            model=message.get('model')
+                        )
+                    
+                    imported_count += 1
+                    
+                except Exception as e:
+                    errors.append(f"Error importing chat: {str(e)}")
+                    skipped_count += 1
+            
+            return jsonify({
+                'message': f'Import completed: {imported_count} imported, {skipped_count} skipped',
+                'imported_count': imported_count,
+                'skipped_count': skipped_count,
+                'errors': errors
+            })
+            
+        except Exception as e:
+            logger.error(f"Error bulk importing chats: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    def bulk_delete_chats(self):
+        """Delete multiple chats"""
+        try:
+            data = request.get_json()
+            chat_ids = data.get('chat_ids', [])
+            
+            if not chat_ids:
+                return jsonify({'error': 'chat_ids array is required'}), 400
+            
+            deleted_count = 0
+            errors = []
+            
+            for chat_id in chat_ids:
+                try:
+                    if not db.chat_exists(chat_id):
+                        errors.append(f"Chat {chat_id} does not exist")
+                        continue
+                    
+                    success = db.delete_chat(chat_id)
+                    if success:
+                        deleted_count += 1
+                    else:
+                        errors.append(f"Failed to delete chat {chat_id}")
+                        
+                except Exception as e:
+                    errors.append(f"Error deleting chat {chat_id}: {str(e)}")
+            
+            return jsonify({
+                'message': f'Deleted {deleted_count} chats',
+                'deleted_count': deleted_count,
+                'errors': errors
+            })
+            
+        except Exception as e:
+            logger.error(f"Error bulk deleting chats: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
 def register_db_routes(app: Flask):
