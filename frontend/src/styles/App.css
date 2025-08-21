@@ -15,6 +15,11 @@ body.chat-active {
   overflow: hidden;
 }
 
+body.chat-active .main-content {
+  align-items: stretch;
+  padding: 0;
+}
+
 .app {
   display: flex;
   min-height: 100vh;
@@ -149,6 +154,35 @@ body.chat-active {
 
 .send-button:active {
   transform: translateY(0);
+}
+
+.send-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.send-button.loading {
+  background: linear-gradient(135deg, #cc7a3f 0%, #3c73b8 100%);
+  cursor: not-allowed;
+}
+
+.send-button.loading:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.loading-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid #ffffff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 @media (max-width: 768px) {

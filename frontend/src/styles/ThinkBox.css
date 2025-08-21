@@ -1,0 +1,251 @@
+/* ThinkBox Component Styles */
+.think-box {
+  width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.think-box:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Header */
+.think-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s ease;
+}
+
+.think-box-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.think-box-header:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.think-box-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.think-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 146, 79, 0.2);
+  border: 2px solid rgba(255, 146, 79, 0.6);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.think-icon::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 146, 79, 0.8);
+  border-radius: 50%;
+}
+
+.think-icon::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -1px;
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 146, 79, 0.6);
+  border-radius: 50%;
+}
+
+.think-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Thinking Indicator */
+.thinking-indicator {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 8px;
+  transition: opacity 0.2s ease;
+}
+
+.thinking-indicator.hidden {
+  opacity: 0;
+}
+
+.thinking-indicator .dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #ff924f;
+  animation: pulse 1.4s ease-in-out infinite both;
+}
+
+.thinking-indicator .dot:nth-child(1) { 
+  animation-delay: -0.32s; 
+}
+
+.thinking-indicator .dot:nth-child(2) { 
+  animation-delay: -0.16s; 
+}
+
+@keyframes pulse {
+  0%, 80%, 100% {
+    transform: scale(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Collapse Arrow */
+.collapse-arrow {
+  transition: transform 0.3s ease;
+  transform-origin: center;
+}
+
+.collapse-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.arrow-icon {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid rgba(255, 255, 255, 0.6);
+  transition: border-color 0.2s ease;
+}
+
+.think-box-header:hover .arrow-icon {
+  border-top-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Content */
+.think-box-content {
+  max-height: 300px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.think-box-content.collapsed {
+  max-height: 0;
+  padding: 0;
+  border-top: none;
+}
+
+.think-box-text {
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+  font-style: italic;
+  position: relative;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Custom scrollbar for content */
+.think-box-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.think-box-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.think-box-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.think-box-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Cursor for streaming */
+.cursor {
+  color: #ff924f;
+  animation: blink 1s infinite;
+  font-weight: bold;
+  transition: opacity 0.2s ease;
+}
+
+.cursor.hidden {
+  opacity: 0;
+  animation: none;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .think-box-header {
+    padding: 10px 12px;
+  }
+  
+  .think-box-text {
+    padding: 12px;
+    font-size: 13px;
+  }
+  
+  .think-label {
+    font-size: 13px;
+  }
+  
+  .think-box-content {
+    max-height: 200px;
+  }
+}
+
+/* Focus styles for accessibility */
+.think-box-header:focus {
+  outline: 2px solid rgba(255, 146, 79, 0.4);
+  outline-offset: -2px;
+}
+
+.think-box-header:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Animation for initial load */
+.think-box {
+  animation: fadeInScale 0.3s ease-out;
+}
+
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

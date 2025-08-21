@@ -1,9 +1,23 @@
-import React, { useState } from 'react';
+// status: complete
+
+import React, { useState} from 'react';
 import '../styles/RightSidebar.css';
+import { BrowserStorage } from '../utils/BrowserStorage';
+import logger from '../utils/logger';
 
 const RightSidebar: React.FC = () => {
-  const [isToggled, setIsToggled] = useState(false);
+  const [isToggled, setIsToggled] = useState(() => {
+    const settings = BrowserStorage.getUISettings();
+    return settings.rightSidebarToggled;
+  });
   const [isHovering, setIsHovering] = useState(false);
+
+  const handleToggle = () => {
+    const newToggleState = !isToggled;
+    logger.info('Toggling right sidebar:', newToggleState);
+    setIsToggled(newToggleState);
+    BrowserStorage.updateUISetting('rightSidebarToggled', newToggleState);
+  };
 
   const shouldBeVisible = isToggled || (!isToggled && isHovering);
 
@@ -21,7 +35,7 @@ const RightSidebar: React.FC = () => {
               <div className="sidebar-toggle-container">
                 <button 
                   className={`sidebar-toggle ${isToggled ? 'active' : ''}`}
-                  onClick={() => setIsToggled(!isToggled)}
+                  onClick={handleToggle}
                 >
                   <div className="toggle-slider"></div>
                 </button>

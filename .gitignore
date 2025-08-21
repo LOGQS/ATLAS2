@@ -1,40 +1,25 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
 .venv/
-*.egg-info/
 dist/
 build/
 
 # Node
 node_modules/
-npm-debug.log*
-yarn-error.log*
 package-lock.json
-yarn.lock
 
 # Environment variables
 .env*
-!.env.example
 
 # Data and Logs
-Backend/data/
-Backend/logs/
-Frontend/dist/
+logs/
 data/
 
 # IDE / OS specific
 .vscode/
-.idea/
-*.DS_Store
-Thumbs.db 
 
-# Ai coders
+# AI coder
 .claude/
-.kiro/
 
-# Guides
+# Notes/Guides
 *.md

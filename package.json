@@ -1,0 +1,30 @@
+{
+  "name": "atlas2",
+  "version": "1.0.0",
+  "description": "ATLAS2 - AI Chat Application",
+  "main": "index.js",
+  "scripts": {
+    "start": "concurrently \"npm run backend\" \"npm run frontend:wait\"",
+    "backend": "cd backend && python app.py",
+    "frontend": "cd frontend && npm start",
+    "frontend:wait": "wait-on http://localhost:5000/health && npm run frontend",
+    "dev": "npm start",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && pip install -r ../requirements.txt",
+    "build": "cd frontend && npm run build",
+    "test": "cd frontend && npm test"
+  },
+  "keywords": [
+    "ai",
+    "chat"
+  ],
+  "author": "ATLAS2 Team",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "wait-on": "^7.2.0"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
+  }
+}

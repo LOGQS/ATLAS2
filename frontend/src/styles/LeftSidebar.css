@@ -201,10 +201,30 @@
 
 .chat-history-content {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
   margin: 20px 0;
   flex-grow: 1;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.chat-history-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-history-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+.chat-history-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+.chat-history-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .chat-history-header {
@@ -213,6 +233,12 @@
   align-items: center;
   padding-bottom: 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chat-history-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .chat-history-header h3 {
@@ -244,6 +270,169 @@
   font-size: 14px;
   font-style: italic;
   margin: 0;
+  text-align: center;
+  align-self: center;
+}
+
+.chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  position: relative;
+}
+
+.chat-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.chat-item.active {
+  background: rgba(255, 146, 79, 0.1);
+  border-color: rgba(255, 146, 79, 0.3);
+}
+
+.chat-state-indicator {
+  font-size: 14px;
+  margin-left: 8px;
+  opacity: 0.8;
+  animation: pulse 2s infinite;
+}
+
+.chat-state-indicator.thinking {
+  color: #fbbf24;
+}
+
+.chat-state-indicator.responding {
+  color: #10b981;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chat-name {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.chat-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.chat-item:hover .chat-actions {
+  opacity: 1;
+}
+
+.chat-action-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s ease;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.chat-action-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.edit-btn:hover {
+  background: rgba(255, 206, 84, 0.2);
+}
+
+.delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.edit-icon {
+  position: relative;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  transform: rotate(45deg); /* diagonal pencil */
+  color: currentColor;
+}
+
+/* pencil body */
+.edit-icon::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 0;
+  width: 10px;
+  height: 4px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+/* pencil tip */
+.edit-icon::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 4px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+}
+
+
+.delete-icon {
+  width: 14px;
+  height: 14px;
+  position: relative;
+}
+
+.delete-icon::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 3px;
+  right: 3px;
+  bottom: 2px;
+  border: 1px solid currentColor;
+  border-radius: 0 0 2px 2px;
+}
+
+.delete-icon::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  border-top: 1px solid currentColor;
+  border-left: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  border-radius: 2px 2px 0 0;
 }
 
 .chat-history-section {
@@ -280,5 +469,31 @@
 .plus-icon {
   font-size: 16px;
   font-weight: bold;
+}
+
+.chat-history-icon {
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 2px;
+  position: relative;
+}
+
+.chat-history-icon::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  right: 2px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.chat-history-icon::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: 2px;
+  right: 4px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.6);
 }
 
