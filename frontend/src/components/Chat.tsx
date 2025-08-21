@@ -25,6 +25,7 @@ interface ChatProps {
   onMessageSent?: (message: string) => void;
   onStreamingStateChange?: (chatId: string, isStreaming: boolean) => void;
   onChatStateChange?: (chatId: string, state: 'thinking' | 'responding' | 'static') => void;
+  onFirstMessageSent?: (chatId: string) => void;
   isActive?: boolean;
   defaultProvider?: string;
   defaultModel?: string;
@@ -36,7 +37,7 @@ const generateUniqueMessageId = (): number => {
   return Date.now() * 1000 + (messageIdCounter++);
 };
 
-const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingStateChange, onChatStateChange, isActive = true, firstMessage }, ref) => {
+const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingStateChange, onChatStateChange, onFirstMessageSent, isActive = true, firstMessage }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [showDelayedLoading, setShowDelayedLoading] = useState(false);
@@ -559,9 +560,12 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onStreamingSta
       setTimeout(() => {
         handleNewMessage(firstMessage);
         setFirstMessageSent(true);
+        if (onFirstMessageSent) {
+          onFirstMessageSent(chatId);
+        }
       }, 200);
     }
-  }, [chatId, isActive, firstMessage, config, firstMessageSent, handleNewMessage]);
+  }, [chatId, isActive, firstMessage, config, firstMessageSent, handleNewMessage, onFirstMessageSent]);
 
   useEffect(() => {
     return () => {

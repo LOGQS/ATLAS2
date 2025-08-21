@@ -268,37 +268,5 @@ class DatabaseManager:
             result = cursor.fetchone()
             return result["state"] if result else None
     
-    def save_provider_config(self, provider: str, config: str, is_enabled: bool = True) -> bool:
-        """Save provider configuration"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO provider_configs (provider, config, is_enabled, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                """, (provider, config, is_enabled))
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error saving provider config: {str(e)}")
-            return False
-    
-    def get_provider_config(self, provider: str) -> Optional[Dict[str, Any]]:
-        """Get provider configuration"""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT config, is_enabled, updated_at 
-                FROM provider_configs 
-                WHERE provider = ?
-            """, (provider,))
-            result = cursor.fetchone()
-            if result:
-                return {
-                    "config": result["config"],
-                    "is_enabled": bool(result["is_enabled"]),
-                    "updated_at": result["updated_at"]
-                }
-            return None
 
 db = DatabaseManager()

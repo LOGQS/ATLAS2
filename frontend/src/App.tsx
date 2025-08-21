@@ -21,7 +21,7 @@ function App() {
   const [centerFading, setCenterFading] = useState(false);
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>('none');
-  const [firstMessage, setFirstMessage] = useState<string>('');
+  const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
   const [streamingChats, setStreamingChats] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -141,7 +141,7 @@ function App() {
       if (!hasMessageBeenSent) {
         const chatId = await createNewChat(message);
         if (chatId) {
-          setFirstMessage(message);
+          setPendingFirstMessages(prev => new Map(prev).set(chatId, message));
           setCenterFading(true);
           setTimeout(() => {
             setHasMessageBeenSent(true);
@@ -197,7 +197,6 @@ function App() {
     })));
     
     setMessage('');
-    setFirstMessage('');
     
     await setActiveChat(chatId);
     
@@ -212,7 +211,6 @@ function App() {
     setHasMessageBeenSent(false);
     setCenterFading(false);
     setMessage('');
-    setFirstMessage('');
     
     setStreamingChats(new Set());
     
@@ -236,6 +234,12 @@ function App() {
           const newSet = new Set(prev);
           newSet.delete(chatId);
           return newSet;
+        });
+        
+        setPendingFirstMessages(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(chatId);
+          return newMap;
         });
         
         if (activeChatId === chatId) {
@@ -298,6 +302,15 @@ function App() {
     ));
   }, []);
 
+  const handleFirstMessageSent = useCallback((chatId: string) => {
+    logger.info('First message sent for chat:', chatId);
+    setPendingFirstMessages(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(chatId);
+      return newMap;
+    });
+  }, []);
+
 
   return (
     <div className="app">
@@ -347,9 +360,10 @@ function App() {
               ref={chatRef} 
               chatId={activeChatId} 
               isActive={true}
-              firstMessage={firstMessage}
+              firstMessage={pendingFirstMessages.get(activeChatId) || ''}
               onStreamingStateChange={handleStreamingStateChange}
               onChatStateChange={handleChatStateChange}
+              onFirstMessageSent={handleFirstMessageSent}
             />
             <div className="bottom-input-container">
               <input
