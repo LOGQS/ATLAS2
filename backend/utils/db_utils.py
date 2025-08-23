@@ -26,7 +26,8 @@ class DatabaseManager:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_size_limit=104857600")
+        conn.execute("PRAGMA busy_timeout=500")
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA mmap_size=268435456")
         conn.row_factory = sqlite3.Row
@@ -122,12 +123,28 @@ class DatabaseManager:
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
+                
+                # Check for recent duplicates to prevent accidental duplicate saves
+                cursor.execute("""
+                    SELECT id FROM messages 
+                    WHERE chat_id = ? AND role = ? AND content = ?
+                    AND datetime(timestamp, 'localtime') > datetime('now', '-1 minute', 'localtime')
+                    ORDER BY timestamp DESC LIMIT 1
+                """, (chat_id, role, content))
+                
+                existing = cursor.fetchone()
+                if existing:
+                    logger.warning(f"Duplicate message detected for chat {chat_id}, returning existing ID: {existing[0]}")
+                    return existing[0]
+                
+                # Save new message
                 cursor.execute("""
                     INSERT INTO messages (chat_id, role, content, thoughts, provider, model)
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (chat_id, role, content, thoughts, provider, model))
                 message_id = cursor.lastrowid
                 conn.commit()
+                logger.debug(f"Saved new message {message_id} for chat {chat_id}: {role} - {content[:50]}...")
                 return message_id
         except Exception as e:
             logger.error(f"Error saving message: {str(e)}")
@@ -255,9 +272,14 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE chats SET state = ? WHERE id = ?", (state, chat_id))
                 conn.commit()
-                return cursor.rowcount > 0
+                updated = cursor.rowcount > 0
+                if updated:
+                    logger.debug(f"Updated chat {chat_id} state to '{state}'")
+                else:
+                    logger.warning(f"Failed to update chat {chat_id} state to '{state}' - chat may not exist")
+                return updated
         except Exception as e:
-            logger.error(f"Error updating chat state: {str(e)}")
+            logger.error(f"Error updating chat state for {chat_id}: {str(e)}")
             return False
     
     def get_chat_state(self, chat_id: str) -> Optional[str]:

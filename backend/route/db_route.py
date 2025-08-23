@@ -79,6 +79,10 @@ class DatabaseRoute:
             if not db.chat_exists(chat_id):
                 return jsonify({'error': 'Chat not found'}), 404
             
+            # Let background processing complete naturally - don't cancel it
+            # Background threads will clean themselves up when processing finishes
+            logger.info(f"Deleting chat {chat_id} - background processing will complete naturally")
+            
             success = db.delete_chat(chat_id)
             
             if success:
@@ -377,6 +381,9 @@ class DatabaseRoute:
                     if not db.chat_exists(chat_id):
                         errors.append(f"Chat {chat_id} does not exist")
                         continue
+                    
+                    # Let background processing complete naturally
+                    logger.info(f"Bulk deleting chat {chat_id} - background processing will complete naturally")
                     
                     success = db.delete_chat(chat_id)
                     if success:

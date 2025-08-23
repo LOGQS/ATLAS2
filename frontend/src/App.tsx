@@ -5,8 +5,15 @@ import './styles/App.css';
 import LeftSidebar from './components/LeftSidebar';
 import RightSidebar from './components/RightSidebar';
 import Chat from './components/Chat';
+import ModalWindow from './components/ModalWindow';
+import KnowledgeSection from './sections/KnowledgeSection';
+import GalleryWindow from './sections/GalleryWindow';
+import SearchWindow from './sections/SearchWindow';
+import SettingsWindow from './sections/SettingsWindow';
 import logger from './utils/logger';
 import { apiUrl } from './config/api';
+import { BrowserStorage } from './utils/BrowserStorage';
+import { subscribe } from './utils/chatstate';
 
 interface ChatItem {
   id: string;
@@ -22,11 +29,26 @@ function App() {
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>('none');
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
-  const [streamingChats, setStreamingChats] = useState<Set<string>>(new Set());
+  const [activeModal, setActiveModal] = useState<string | null>(null);
+  const [isAppInitialized, setIsAppInitialized] = useState(false);
 
   useEffect(() => {
-    loadChatsFromDatabase();
-    loadActiveChat();
+    if (isAppInitialized) return;
+    
+    const initializeApp = async () => {
+      logger.info('[App.useEffect] Initializing app');
+      await loadChatsFromDatabase();
+      await loadActiveChat();
+      setIsAppInitialized(true);
+    };
+    initializeApp();
+  }, [isAppInitialized]);
+
+  useEffect(() => {
+    const off = subscribe((chatId, state) => {
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, state } : c));
+    });
+    return off;
   }, []);
 
   const loadActiveChat = async () => {
@@ -36,7 +58,7 @@ function App() {
       
       if (response.ok) {
         const activeChat = data.active_chat;
-        logger.info('Loaded active chat from database:', activeChat);
+        logger.info('[App.loadActiveChat] Loaded active chat from database:', activeChat);
         
         if (activeChat && activeChat !== 'none') {
           setActiveChatId(activeChat);
@@ -50,41 +72,63 @@ function App() {
         }
       }
     } catch (error) {
-      logger.error('Failed to load active chat:', error);
+      logger.error('[App.loadActiveChat] Failed to load active chat:', error);
     }
   };
 
   const loadChatsFromDatabase = async () => {
     try {
-      logger.info('Loading chats from database');
+      logger.info('[App.loadChatsFromDatabase] Loading chats from database');
       const response = await fetch(apiUrl('/api/db/chats'));
       const data = await response.json();
       
       if (response.ok) {
-        logger.info('Successfully loaded chats:', data.chats.length);
-        setChats(data.chats.map((chat: any) => ({
+        logger.info('[App.loadChatsFromDatabase] Successfully loaded chats:', data.chats.length);
+        const chatsFromDb = data.chats.map((chat: any) => ({
           id: chat.id,
           name: chat.name,
           isActive: false,
           state: chat.state || 'static'
-        })));
+        }));
+        
+        const settings = BrowserStorage.getUISettings();
+        if (settings.chatOrder && settings.chatOrder.length > 0) {
+          const orderedChats: ChatItem[] = [];
+          const chatMap = new Map<string, ChatItem>(chatsFromDb.map((chat: ChatItem) => [chat.id, chat]));
+          
+          settings.chatOrder.forEach(chatId => {
+            if (chatMap.has(chatId)) {
+              const chat = chatMap.get(chatId);
+              if (chat) {
+                orderedChats.push(chat);
+                chatMap.delete(chatId);
+              }
+            }
+          });
+          
+          chatMap.forEach((chat) => {
+            orderedChats.push(chat);
+          });
+          
+          setChats(orderedChats);
+        } else {
+          setChats(chatsFromDb);
+        }
       } else {
-        logger.error('Failed to load chats:', data.error);
+        logger.error('[App.loadChatsFromDatabase] Failed to load chats:', data.error);
       }
     } catch (error) {
-      logger.error('Failed to load chats:', error);
+      logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
     }
   };
   const bottomInputRef = useRef<HTMLInputElement>(null);
   const chatRef = useRef<any>(null);
 
-  const createNewChat = async (firstMessageText: string) => {
-    const chatId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const chatName = firstMessageText.split(' ').slice(0, 4).join(' ');
-    
+  const createNewChatInBackground = async (chatId: string, chatName: string, firstMessage: string) => {
     logger.info('Creating new chat in DB:', { chatId, chatName });
     
     try {
+      // Create chat in database
       const response = await fetch(apiUrl('/api/db/chat'), {
         method: 'POST',
         headers: {
@@ -99,55 +143,61 @@ function App() {
       if (!response.ok) {
         const data = await response.json();
         logger.error('Failed to create chat in database:', data.error);
-        return null;
+        return;
       }
 
       logger.info('Chat created successfully in DB');
       
+      // Set chat name
       try {
-        const nameResponse = await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
+        await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ name: chatName })
         });
-        
-        if (!nameResponse.ok) {
-          logger.warn('Failed to set chat name, but continuing with creation');
-        }
       } catch (error) {
         logger.warn('Failed to set chat name:', error);
       }
 
-      const newChat: ChatItem = {
-        id: chatId,
-        name: chatName,
-        isActive: true,
-        state: 'static'
-      };
-
-      setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
-      await setActiveChat(chatId);
-      return chatId;
+      // Set as active chat in backend (already set in UI)
+      await syncActiveChat(chatId);
     } catch (error) {
       logger.error('Failed to create chat:', error);
-      return null;
     }
   };
 
+
   const handleSend = async () => {
     if (message.trim() && !isActiveChatStreaming) {
-      if (!hasMessageBeenSent) {
-        const chatId = await createNewChat(message);
-        if (chatId) {
-          setPendingFirstMessages(prev => new Map(prev).set(chatId, message));
-          setCenterFading(true);
-          setHasMessageBeenSent(true);
-          document.body.classList.add('chat-active');
-          setMessage('');
-          bottomInputRef.current?.focus();
-        }
+      if (!hasMessageBeenSent || activeChatId === 'none') {
+        // Generate chat ID immediately
+        const chatId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const chatName = message.split(' ').slice(0, 4).join(' ');
+        const messageToSend = message;
+        
+        // Optimistic UI updates - instant
+        setCenterFading(true);
+        setHasMessageBeenSent(true);
+        document.body.classList.add('chat-active');
+        setMessage('');
+        
+        // Create new chat in UI
+        const newChat: ChatItem = {
+          id: chatId,
+          name: chatName,
+          isActive: true,
+          state: 'static'
+        };
+        setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
+        setActiveChatId(chatId);
+        setPendingFirstMessages(prev => new Map(prev).set(chatId, messageToSend));
+        
+        bottomInputRef.current?.focus();
+        
+        // Background DB creation and message sending (async, don't await)
+        createNewChatInBackground(chatId, chatName, messageToSend);
       } else {
         if (activeChatId !== 'none' && chatRef.current) {
           logger.info('Sending message to active chat:', activeChatId);
@@ -167,7 +217,7 @@ function App() {
     }
   };
 
-  const setActiveChat = async (chatId: string) => {
+  const syncActiveChat = async (chatId: string) => {
     try {
       await fetch(apiUrl('/api/db/active-chat'), {
         method: 'POST',
@@ -177,76 +227,91 @@ function App() {
         body: JSON.stringify({ chat_id: chatId })
       });
       
-      setActiveChatId(chatId);
-      logger.info('Active chat changed to:', chatId);
+      logger.info('[App.syncActiveChat] Backend sync completed for:', chatId);
     } catch (error) {
-      logger.error('Failed to set active chat:', error);
-      setActiveChatId(chatId);
+      logger.error('[App.syncActiveChat] Failed to sync active chat:', error);
     }
   };
 
-  const handleChatSelect = async (chatId: string) => {
+
+  const handleChatSelect = useCallback((chatId: string) => {
+    if (activeChatId === chatId) return;
+    
     logger.info('Switching to chat:', chatId);
+    
+    // IMMEDIATE UI updates for instant feedback with loading state
+    setActiveChatId(chatId);
     setChats(prev => prev.map(chat => ({ 
       ...chat, 
       isActive: chat.id === chatId 
     })));
-    
     setMessage('');
-    
-    await setActiveChat(chatId);
     
     if (!hasMessageBeenSent) {
       setHasMessageBeenSent(true);
       document.body.classList.add('chat-active');
     }
-  };
+    
+    // Backend sync in background (don't await)
+    syncActiveChat(chatId);
+  }, [activeChatId, hasMessageBeenSent]);
 
-  const handleNewChat = async () => {
+  const handleNewChat = () => {
     logger.info('Starting new chat');
     setHasMessageBeenSent(false);
     setCenterFading(false);
     setMessage('');
     
-    setStreamingChats(new Set());
-    
-    await setActiveChat('none');
+    // IMMEDIATE UI updates
+    setActiveChatId('none');
     setChats(prev => prev.map(chat => ({ ...chat, isActive: false })));
     document.body.classList.remove('chat-active');
+    
+    // Backend sync in background
+    syncActiveChat('none');
   };
 
   const handleDeleteChat = async (chatId: string) => {
+    logger.info('Deleting chat:', chatId);
+    
+    // Store original state for rollback
+    const originalChats = chats;
+    const originalPendingMessages = new Map(pendingFirstMessages);
+    
+    // Optimistic update - remove from UI immediately
+    setChats(prev => prev.filter(chat => chat.id !== chatId));
+    setPendingFirstMessages(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(chatId);
+      return newMap;
+    });
+    
+    if (activeChatId === chatId) {
+      handleNewChat();
+    }
+    
+    // Backend sync in background
     try {
-      logger.info('Deleting chat:', chatId);
       const response = await fetch(apiUrl(`/api/db/chat/${chatId}`), {
         method: 'DELETE'
       });
       
       if (response.ok) {
         logger.info('Chat deleted successfully');
-        setChats(prev => prev.filter(chat => chat.id !== chatId));
-        
-        setStreamingChats(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(chatId);
-          return newSet;
-        });
-        
-        setPendingFirstMessages(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(chatId);
-          return newMap;
-        });
-        
-        if (activeChatId === chatId) {
-          await handleNewChat();
-        }
       } else {
         const data = await response.json();
         logger.error('Failed to delete chat:', data.error);
+        
+        // Rollback optimistic update
+        setChats(originalChats);
+        setPendingFirstMessages(originalPendingMessages);
       }
     } catch (error) {
       logger.error('Failed to delete chat:', error);
+      
+      // Rollback optimistic update
+      setChats(originalChats);
+      setPendingFirstMessages(originalPendingMessages);
     }
   };
 
@@ -275,21 +340,9 @@ function App() {
     }
   };
 
-  const handleStreamingStateChange = useCallback((chatId: string, streaming: boolean) => {
-    if (streaming) {
-      setStreamingChats(prev => new Set(prev).add(chatId));
-      logger.info('Chat started streaming:', chatId);
-    } else {
-      setStreamingChats(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(chatId);
-        logger.info('Chat stopped streaming:', chatId);
-        return newSet;
-      });
-    }
-  }, []);
 
-  const isActiveChatStreaming = activeChatId !== 'none' && streamingChats.has(activeChatId);
+  const activeChat = chats.find(chat => chat.id === activeChatId);
+  const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -307,6 +360,15 @@ function App() {
     });
   }, []);
 
+  const handleActiveStateChange = useCallback((chatId: string, isReallyActive: boolean) => {
+    logger.info('Chat confirms active state:', chatId, isReallyActive);
+    if (isReallyActive) {
+      setActiveChatId(chatId);
+    } else if (activeChatId === chatId) {
+      setActiveChatId('none');
+    }
+  }, [activeChatId]);
+
   const handleBulkDelete = async (chatIds: string[]) => {
     try {
       logger.info('Bulk deleting chats:', chatIds);
@@ -322,15 +384,8 @@ function App() {
         const data = await response.json();
         logger.info('Bulk delete completed:', data.message);
         
-        // Remove deleted chats from state
         setChats(prev => prev.filter(chat => !chatIds.includes(chat.id)));
         
-        // Clear streaming and pending messages for deleted chats
-        setStreamingChats(prev => {
-          const newSet = new Set(prev);
-          chatIds.forEach(id => newSet.delete(id));
-          return newSet;
-        });
         
         setPendingFirstMessages(prev => {
           const newMap = new Map(prev);
@@ -338,7 +393,6 @@ function App() {
           return newMap;
         });
         
-        // If active chat was deleted, start new chat
         if (chatIds.includes(activeChatId)) {
           await handleNewChat();
         }
@@ -366,7 +420,6 @@ function App() {
         const data = await response.json();
         logger.info('Bulk export completed:', data.export_count, 'chats');
         
-        // Create and download individual JSON files for each chat
         data.exported_chats.forEach((chat: any) => {
           const jsonData = JSON.stringify(chat, null, 2);
           const blob = new Blob([jsonData], { type: 'application/json' });
@@ -394,7 +447,6 @@ function App() {
       logger.info('Bulk importing chats from', files.length, 'files');
       const chatsToImport: any[] = [];
       
-      // Convert FileList to array and read all files
       const fileArray = Array.from(files);
       logger.info('Processing files:', fileArray.map(f => f.name));
       
@@ -431,7 +483,6 @@ function App() {
         const data = await response.json();
         logger.info('Bulk import completed:', data.message);
         
-        // Reload chats to show imported ones
         await loadChatsFromDatabase();
       } else {
         const data = await response.json();
@@ -442,6 +493,19 @@ function App() {
     }
   };
 
+  const handleChatReorder = (reorderedChats: ChatItem[]) => {
+    setChats(reorderedChats);
+  };
+
+  const handleOpenModal = (modalType: string) => {
+    logger.info('Opening modal:', modalType);
+    setActiveModal(modalType);
+  };
+
+  const handleCloseModal = () => {
+    logger.info('Closing modal');
+    setActiveModal(null);
+  };
 
   return (
     <div className="app">
@@ -456,6 +520,8 @@ function App() {
         onBulkExport={handleBulkExport}
         onBulkImport={handleBulkImport}
         onChatsReload={loadChatsFromDatabase}
+        onChatReorder={handleChatReorder}
+        onOpenModal={handleOpenModal}
       />
       <div className="main-content">
         <div className="chat-container">
@@ -488,17 +554,17 @@ function App() {
           </div>
         </div>
         
-        {hasMessageBeenSent && activeChatId !== 'none' && (
+        {(hasMessageBeenSent && activeChatId !== 'none') && (
           <>
             <Chat 
-              key={activeChatId}
+              key={activeChatId} 
               ref={chatRef} 
               chatId={activeChatId} 
               isActive={true}
               firstMessage={pendingFirstMessages.get(activeChatId) || ''}
-              onStreamingStateChange={handleStreamingStateChange}
               onChatStateChange={handleChatStateChange}
               onFirstMessageSent={handleFirstMessageSent}
+              onActiveStateChange={handleActiveStateChange}
             />
             <div className="bottom-input-container">
               <input
@@ -528,7 +594,64 @@ function App() {
           </>
         )}
       </div>
-      <RightSidebar />
+      <RightSidebar onOpenModal={handleOpenModal} />
+      
+      <ModalWindow 
+        isOpen={activeModal === 'gallery'} 
+        onClose={handleCloseModal}
+        className="gallery-modal"
+      >
+        <GalleryWindow />
+      </ModalWindow>
+      
+      <ModalWindow 
+        isOpen={activeModal === 'search'} 
+        onClose={handleCloseModal}
+        className="search-modal"
+      >
+        <SearchWindow />
+      </ModalWindow>
+      
+      <ModalWindow 
+        isOpen={activeModal === 'settings'} 
+        onClose={handleCloseModal}
+        className="settings-modal"
+      >
+        <SettingsWindow />
+      </ModalWindow>
+
+      {/* Right Sidebar Knowledge Management Components */}
+      <ModalWindow 
+        isOpen={activeModal === 'profiles'} 
+        onClose={handleCloseModal}
+        className="profiles-modal"
+      >
+        <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} />
+      </ModalWindow>
+
+      <ModalWindow 
+        isOpen={activeModal === 'files'} 
+        onClose={handleCloseModal}
+        className="files-modal"
+      >
+        <KnowledgeSection activeSubsection="files" onSubsectionChange={() => {}} />
+      </ModalWindow>
+
+      <ModalWindow 
+        isOpen={activeModal === 'folders'} 
+        onClose={handleCloseModal}
+        className="folders-modal"
+      >
+        <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} />
+      </ModalWindow>
+
+      <ModalWindow 
+        isOpen={activeModal === 'web'} 
+        onClose={handleCloseModal}
+        className="web-modal"
+      >
+        <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} />
+      </ModalWindow>
     </div>
   );
 }

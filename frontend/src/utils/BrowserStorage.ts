@@ -3,6 +3,7 @@
 export interface UISettings {
   leftSidebarToggled: boolean;
   rightSidebarToggled: boolean;
+  chatOrder?: string[];
 }
 
 const DEFAULT_SETTINGS: UISettings = {

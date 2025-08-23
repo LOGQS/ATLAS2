@@ -24,6 +24,13 @@ const ModalWindow: React.FC<ModalWindowProps> = ({
         className={`modal-window ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
+        <button 
+          className="modal-close-button" 
+          onClick={onClose}
+          aria-label="Close modal"
+        >
+          ×
+        </button>
         {children}
       </div>
     </div>

@@ -24,6 +24,8 @@ interface LeftSidebarProps {
   onBulkExport?: (chatIds: string[]) => void;
   onBulkImport?: (files: FileList) => void;
   onChatsReload?: () => void;
+  onChatReorder?: (reorderedChats: Chat[]) => void;
+  onOpenModal?: (modalType: string) => void;
 }
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({
@@ -36,7 +38,8 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onBulkDelete,
   onBulkExport,
   onBulkImport,
-  onChatsReload
+  onChatReorder,
+  onOpenModal
 }) => {
   const [isToggled, setIsToggled] = useState(() => {
     const settings = BrowserStorage.getUISettings();
@@ -49,6 +52,9 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+  const [draggedItem, setDraggedItem] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<{index: number; position: 'before' | 'after'} | null>(null);
+  const [lastDropPosition, setLastDropPosition] = useState<{index: number; position: 'before' | 'after'} | null>(null);
 
   const handleToggle = () => {
     const newToggleState = !isToggled;
@@ -168,6 +174,99 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
     }
   };
 
+  const handleDragStart = (e: React.DragEvent, chatId: string) => {
+    if (selectionMode) {
+      e.preventDefault();
+      return;
+    }
+    setDraggedItem(chatId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/html', chatId);
+  };
+
+  const handleDragOver = (e: React.DragEvent, chatId: string) => {
+    if (selectionMode || !draggedItem) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    const chatIndex = chats.findIndex(chat => chat.id === chatId);
+    if (chatIndex === -1) return;
+    
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const mouseY = e.clientY;
+    
+    // Create larger drop zones to prevent twitching
+    const topZone = rect.top + (rect.height*3);
+    const bottomZone = rect.bottom - (rect.height*3);
+    
+    let newPosition: {index: number; position: 'before' | 'after'} | null = null;
+    
+    if (mouseY <= topZone) {
+      newPosition = { index: chatIndex, position: 'before' };
+    } else if (mouseY >= bottomZone) {
+      newPosition = { index: chatIndex, position: 'after' };
+    } else {
+      newPosition = lastDropPosition;
+    }
+    
+    if (newPosition && 
+        (!dropPosition || 
+         dropPosition.index !== newPosition.index || 
+         dropPosition.position !== newPosition.position)) {
+      setDropPosition(newPosition);
+      setLastDropPosition(newPosition);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (selectionMode) return;
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDropPosition(null);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    if (selectionMode || !draggedItem || !dropPosition) return;
+    e.preventDefault();
+    
+    const draggedIndex = chats.findIndex(chat => chat.id === draggedItem);
+    if (draggedIndex === -1) {
+      setDraggedItem(null);
+      setDropPosition(null);
+      return;
+    }
+
+    const reorderedChats = [...chats];
+    const [draggedChat] = reorderedChats.splice(draggedIndex, 1);
+    
+    let insertIndex = dropPosition.index;
+    if (dropPosition.position === 'after') {
+      insertIndex += 1;
+    }
+    
+    if (draggedIndex < insertIndex) {
+      insertIndex -= 1;
+    }
+    
+    reorderedChats.splice(insertIndex, 0, draggedChat);
+
+    const chatOrder = reorderedChats.map(chat => chat.id);
+    BrowserStorage.updateUISetting('chatOrder', chatOrder);
+    
+    if (onChatReorder) {
+      onChatReorder(reorderedChats);
+    }
+
+    setDraggedItem(null);
+    setDropPosition(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedItem(null);
+    setDropPosition(null);
+    setLastDropPosition(null);
+  };
+
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!selectionMode) return;
@@ -215,15 +314,15 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
             </div>
           </div>
           <div className="sidebar-items">
-            <div className="sidebar-item">
+            <div className="sidebar-item" onClick={() => onOpenModal?.('gallery')}>
               <div className="sidebar-icon gallery-icon"></div>
               Gallery
             </div>
-            <div className="sidebar-item">
+            <div className="sidebar-item" onClick={() => onOpenModal?.('search')}>
               <div className="sidebar-icon search-icon"></div>
               Search
             </div>
-            <div className="sidebar-item">
+            <div className="sidebar-item" onClick={() => onOpenModal?.('settings')}>
               <div className="sidebar-icon settings-icon"></div>
               Settings
             </div>
@@ -292,19 +391,32 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                 {chats.length === 0 ? (
                   <p className="no-history">No chat history yet</p>
                 ) : (
-                  chats.map((chat) => (
-                    <div
-                      key={chat.id}
-                      className={`chat-item ${
-                        selectionMode 
-                          ? selectedChats.has(chat.id) ? 'selected' : ''
-                          : chat.id === activeChat ? 'active' : ''
-                      }`}
-                      onClick={selectionMode 
-                        ? (e) => handleChatSelection(chat.id, e)
-                        : () => editingChatId !== chat.id && onChatSelect?.(chat.id)
-                      }
-                    >
+                  chats.map((chat, index) => (
+                    <React.Fragment key={chat.id}>
+                      {/* Drop zone before item */}
+                      {dropPosition?.index === index && dropPosition.position === 'before' && (
+                        <div className="drop-indicator" />
+                      )}
+                      
+                      <div
+                        className={`chat-item ${
+                          selectionMode 
+                            ? selectedChats.has(chat.id) ? 'selected' : ''
+                            : chat.id === activeChat ? 'active' : ''
+                        } ${
+                          draggedItem === chat.id ? 'dragging' : ''
+                        }`}
+                        draggable={!selectionMode && editingChatId !== chat.id}
+                        onDragStart={(e) => handleDragStart(e, chat.id)}
+                        onDragOver={(e) => handleDragOver(e, chat.id)}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        onDragEnd={handleDragEnd}
+                        onClick={selectionMode 
+                          ? (e) => handleChatSelection(chat.id, e)
+                          : () => editingChatId !== chat.id && onChatSelect?.(chat.id)
+                        }
+                      >
                       {editingChatId === chat.id ? (
                         <div className="chat-edit-container">
                           <input
@@ -334,8 +446,8 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                             </div>
                           )}
                           <span className="chat-name">{chat.name}</span>
-                          {chat.state && chat.state !== 'static' && (
-                            <span className={`chat-state-indicator ${chat.state}`}></span>
+                          {chat.id !== activeChat && chat.state !== 'static' && (
+                            <span className={`chat-state-indicator ${chat.state}`} key={chat.state} />
                           )}
                           {!selectionMode && (
                             <div className="chat-actions">
@@ -361,7 +473,13 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                           )}
                         </>
                       )}
-                    </div>
+                      </div>
+                      
+                      {/* Drop zone after item */}
+                      {dropPosition?.index === index && dropPosition.position === 'after' && (
+                        <div className="drop-indicator" />
+                      )}
+                    </React.Fragment>
                   ))
                 )}
               </div>

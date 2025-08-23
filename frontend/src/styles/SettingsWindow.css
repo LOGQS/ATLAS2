@@ -1,0 +1,134 @@
+/* Settings Window */
+.settings-body {
+  padding: 0;
+}
+
+.settings-group {
+  margin-bottom: 24px;
+}
+
+.settings-group h5 {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.setting-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.setting-label > span:first-child {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.setting-description {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+}
+
+.setting-select {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: #ffffff;
+  padding: 6px 10px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.setting-select:focus {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 146, 79, 0.5);
+}
+
+.setting-select option {
+  background: rgba(20, 20, 20, 0.95);
+  color: #ffffff;
+}
+
+.setting-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.toggle-switch {
+  width: 40px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  position: relative;
+  transition: all 0.3s ease;
+  outline: none;
+}
+
+.toggle-switch.active {
+  background: linear-gradient(135deg, #ff924f 0%, #4a90e2 100%);
+}
+
+.toggle-switch .toggle-slider {
+  width: 16px;
+  height: 16px;
+  background: #ffffff;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch.active .toggle-slider {
+  transform: translateX(20px);
+}
+
+.storage-bar {
+  width: 100px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.storage-fill {
+  height: 100%;
+  background: linear-gradient(135deg, #ff924f 0%, #4a90e2 100%);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.section-button.danger {
+  background: rgba(220, 53, 69, 0.2);
+  border: 1px solid rgba(220, 53, 69, 0.4);
+  color: #ff6b7d;
+}
+
+.section-button.danger:hover {
+  background: rgba(220, 53, 69, 0.3);
+  border-color: rgba(220, 53, 69, 0.6);
+}

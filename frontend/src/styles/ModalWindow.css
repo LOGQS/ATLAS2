@@ -112,3 +112,108 @@
 .delete-cancel-btn:active {
   transform: translateY(0);
 }
+
+/* Modal sizing for different window types */
+.gallery-modal {
+  width: 800px;
+  height: 600px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.search-modal {
+  width: 600px;
+  height: 500px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.settings-modal {
+  width: 500px;
+  height: 700px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.profiles-modal {
+  width: 600px;
+  height: 500px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.files-modal {
+  width: 700px;
+  height: 600px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.folders-modal {
+  width: 600px;
+  height: 550px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.web-modal {
+  width: 650px;
+  height: 500px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+/* Enable scrolling for modal content when needed */
+.gallery-modal .section-content,
+.search-modal .section-content,
+.settings-modal .section-content,
+.profiles-modal .section-content,
+.files-modal .section-content,
+.folders-modal .section-content,
+.web-modal .section-content {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Adjust section styling for modals */
+.modal-window .section-content {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.modal-window .section-header {
+  margin-bottom: 20px;
+}
+
+.modal-window .section-header h4 {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Close button styling for better visibility */
+.modal-window .modal-close-button {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.modal-window .modal-close-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}

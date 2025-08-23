@@ -5,6 +5,7 @@ export const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localh
 console.log('API Base URL:', API_BASE_URL);
 
 export const apiUrl = (path: string): string => {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${API_BASE_URL}${normalizedPath}`;
+  const base = API_BASE_URL.replace(/\/+$/, '');
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${p}`;
 };

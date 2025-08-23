@@ -1,5 +1,6 @@
 // status: complete
 import React, { useState, useEffect, useRef } from 'react';
+import logger from '../utils/logger';
 
 interface ThinkBoxProps {
   thoughts: string;
@@ -42,7 +43,7 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
         const chatContainer = thinkBoxElement?.closest('.chat-messages')?.querySelector('.messages-container');
         if (chatContainer) {
           chatContainer.scrollTop = 0;
-          console.log(`[SCROLL] ThinkBox triggered scroll for chat: ${chatId || 'unknown'}`);
+          logger.info(`[SCROLL] ThinkBox triggered scroll for chat: ${chatId || 'unknown'}`);
         }
       }, 100);
     } else if (!isStreaming && thoughts) {

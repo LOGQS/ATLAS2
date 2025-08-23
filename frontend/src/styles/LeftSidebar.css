@@ -822,5 +822,50 @@
   opacity: 1;
 }
 
+/* Drag and Drop Styles */
+.chat-item.dragging {
+  opacity: 0.5;
+  transform: rotate(2deg);
+  background: rgba(255, 146, 79, 0.2);
+  border-color: rgba(255, 146, 79, 0.5);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  cursor: grabbing !important;
+}
+
+.drop-indicator {
+  height: 3px;
+  background: linear-gradient(90deg, #4a90e2, #ff924f);
+  border-radius: 2px;
+  margin: 2px 12px;
+  animation: dropIndicatorPulse 1.2s ease-in-out infinite alternate;
+  box-shadow: 
+    0 0 8px rgba(74, 144, 226, 0.6),
+    0 0 3px rgba(255, 146, 79, 0.4);
+  position: relative;
+  z-index: 100;
+  opacity: 0.9;
+}
+
+@keyframes dropIndicatorPulse {
+  from {
+    opacity: 0.6;
+    transform: scaleX(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+.chat-item[draggable="true"]:not(.dragging):hover {
+  cursor: grab;
+}
+
+.chat-item[draggable="true"] {
+  transition: all 0.2s ease;
+}
+
+
 
 

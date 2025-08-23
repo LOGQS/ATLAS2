@@ -5,7 +5,11 @@ import '../styles/RightSidebar.css';
 import { BrowserStorage } from '../utils/BrowserStorage';
 import logger from '../utils/logger';
 
-const RightSidebar: React.FC = () => {
+interface RightSidebarProps {
+  onOpenModal?: (modalType: string) => void;
+}
+
+const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal }) => {
   const [isToggled, setIsToggled] = useState(() => {
     const settings = BrowserStorage.getUISettings();
     return settings.rightSidebarToggled;
@@ -17,6 +21,11 @@ const RightSidebar: React.FC = () => {
     logger.info('Toggling right sidebar:', newToggleState);
     setIsToggled(newToggleState);
     BrowserStorage.updateUISetting('rightSidebarToggled', newToggleState);
+  };
+
+  const handleSubsectionClick = (subsection: string) => {
+    logger.info('Opening modal for subsection:', subsection);
+    onOpenModal?.(subsection);
   };
 
   const shouldBeVisible = isToggled || (!isToggled && isHovering);
@@ -51,19 +60,31 @@ const RightSidebar: React.FC = () => {
                 </div>
               </div>
               <div className="chat-history-content">
-                <div className="sidebar-item">
+                <div 
+                  className="sidebar-item"
+                  onClick={() => handleSubsectionClick('profiles')}
+                >
                   <div className="sidebar-icon profile-icon"></div>
                   Profiles
                 </div>
-                <div className="sidebar-item">
+                <div 
+                  className="sidebar-item"
+                  onClick={() => handleSubsectionClick('files')}
+                >
                   <div className="sidebar-icon document-icon"></div>
                   Files
                 </div>
-                <div className="sidebar-item">
+                <div 
+                  className="sidebar-item"
+                  onClick={() => handleSubsectionClick('folders')}
+                >
                   <div className="sidebar-icon folder-icon"></div>
                   Folders
                 </div>
-                <div className="sidebar-item">
+                <div 
+                  className="sidebar-item"
+                  onClick={() => handleSubsectionClick('web')}
+                >
                   <div className="sidebar-icon globe-icon"></div>
                   Web
                 </div>

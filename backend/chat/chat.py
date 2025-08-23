@@ -1,12 +1,126 @@
 # status: complete
 
 import uuid
+import threading
+import time
 from typing import Dict, Any, Optional, Generator, List
 from chat.providers import Gemini, HuggingFace, OpenRouter
 from utils.db_utils import db
+from utils.config import Config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Global thread-safe registry for background chat processing
+_chat_threads_lock = threading.Lock()
+_chat_threads: Dict[str, threading.Thread] = {}
+_chat_thread_status: Dict[str, str] = {}  # 'running', 'completed', 'error', 'cancelled'
+_chat_thread_cancel_flags: Dict[str, threading.Event] = {}  # Cancel signals
+
+def get_chat_thread_status(chat_id: str) -> Optional[str]:
+    """Get the status of a chat's background thread"""
+    with _chat_threads_lock:
+        return _chat_thread_status.get(chat_id)
+
+def is_chat_processing(chat_id: str) -> bool:
+    """Check if a chat is currently being processed in background"""
+    with _chat_threads_lock:
+        return (chat_id in _chat_threads and 
+                _chat_threads[chat_id].is_alive() and 
+                _chat_thread_status.get(chat_id) == 'running')
+
+def cleanup_completed_threads():
+    """Clean up completed/dead threads"""
+    with _chat_threads_lock:
+        completed_chats = []
+        for chat_id, thread in list(_chat_threads.items()):
+            if not thread.is_alive():
+                completed_chats.append(chat_id)
+        
+        for chat_id in completed_chats:
+            del _chat_threads[chat_id]
+            _chat_thread_status.pop(chat_id, None)
+            _chat_thread_cancel_flags.pop(chat_id, None)
+            logger.info(f"Cleaned up completed thread for chat {chat_id}")
+
+def cancel_chat_thread(chat_id: str) -> bool:
+    """Cancel a running background thread for a chat (only for explicit user cancellation)"""
+    with _chat_threads_lock:
+        if chat_id in _chat_thread_cancel_flags:
+            logger.info(f"Cancelling background thread for chat {chat_id}")
+            _chat_thread_cancel_flags[chat_id].set()
+            _chat_thread_status[chat_id] = 'cancelled'
+            return True
+        return False
+
+def is_chat_cancelled(chat_id: str) -> bool:
+    """Check if a chat's processing has been cancelled"""
+    with _chat_threads_lock:
+        if chat_id in _chat_thread_cancel_flags:
+            return _chat_thread_cancel_flags[chat_id].is_set()
+        return False
+
+def _start_background_processing(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
+    """Start background processing thread for a chat"""
+    with _chat_threads_lock:
+        # Clean up any existing thread for this chat
+        if chat_id in _chat_threads:
+            old_thread = _chat_threads[chat_id]
+            if old_thread.is_alive():
+                logger.warning(f"Chat {chat_id} already has a running thread, keeping existing one")
+                return False
+            else:
+                del _chat_threads[chat_id]
+                _chat_thread_status.pop(chat_id, None)
+                _chat_thread_cancel_flags.pop(chat_id, None)
+        
+        # Create new thread - NO cancel flag for truly independent processing
+        thread = threading.Thread(
+            target=_background_process_wrapper,
+            args=(chat_id, chat_instance, message, provider, model, include_reasoning),
+            kwargs=config_params
+        )
+        thread.daemon = True
+        _chat_threads[chat_id] = thread
+        _chat_thread_status[chat_id] = 'running'
+        thread.start()
+        
+        logger.info(f"Started background processing thread for chat {chat_id}")
+        return True
+
+def _background_process_wrapper(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
+    """Wrapper for background processing with error handling"""
+    try:
+        logger.info(f"Background processing started for chat {chat_id}")
+        
+        # Call the actual processing method
+        chat_instance._process_message_background(message, provider, model, include_reasoning, **config_params)
+        
+        with _chat_threads_lock:
+            _chat_thread_status[chat_id] = 'completed'
+        
+        logger.info(f"Background processing completed for chat {chat_id}")
+        
+    except Exception as e:
+        logger.error(f"Background processing error for chat {chat_id}: {str(e)}", exc_info=True)
+        
+        with _chat_threads_lock:
+            _chat_thread_status[chat_id] = 'error'
+        
+        # CRITICAL: Always ensure DB state is reset to 'static' even if publishing fails
+        try:
+            db.update_chat_state(chat_id, "static")
+            logger.info(f"Reset DB state to 'static' for chat {chat_id} after error")
+        except Exception as db_error:
+            logger.critical(f"CRITICAL: Failed to reset DB state for chat {chat_id}: {str(db_error)}")
+        
+        # Publish error to content queue so frontend gets it (non-critical)
+        try:
+            from route.chat_route import publish_state, publish_content
+            publish_content(chat_id, "error", str(e))
+            publish_state(chat_id, "static")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to publish error state (non-critical): {str(cleanup_error)}")
 
 class Chat:
     """
@@ -131,6 +245,7 @@ class Chat:
         Yields:
             Streaming response chunks
         """
+        from route.chat_route import publish_state
         db.save_message(self.chat_id, "user", message)
         
         if provider not in self.providers or not self.providers[provider].is_available():
@@ -163,9 +278,11 @@ class Chat:
         
         if use_reasoning:
             db.update_chat_state(self.chat_id, "thinking")
+            publish_state(self.chat_id, "thinking")
             current_state = "thinking"
         else:
             db.update_chat_state(self.chat_id, "responding")
+            publish_state(self.chat_id, "responding")
             current_state = "responding"
         
         for chunk in self.providers[provider].generate_text_stream(
@@ -179,6 +296,7 @@ class Chat:
                 full_text += chunk.get("content", "")
                 if current_state == "thinking":
                     db.update_chat_state(self.chat_id, "responding")
+                    publish_state(self.chat_id, "responding")
                     current_state = "responding"
             
 
@@ -192,3 +310,252 @@ class Chat:
             yield chunk
         
         db.update_chat_state(self.chat_id, "static")
+        publish_state(self.chat_id, "static")
+    
+    def resume_text_stream(self) -> Generator[Dict[str, Any], None, None]:
+        """
+        Resume streaming for an interrupted chat
+        
+        Yields:
+            Streaming response chunks for the incomplete assistant message
+        """
+        from route.chat_route import publish_state
+        current_state = db.get_chat_state(self.chat_id)
+        if current_state not in ['thinking', 'responding']:
+            yield {
+                "type": "error",
+                "content": "No active stream to resume"
+            }
+            return
+        
+        chat_history = self.get_chat_history()
+        last_message = None
+        provider = None
+        model = None
+        
+        for msg in reversed(chat_history):
+            if msg["role"] == "assistant":
+                last_message = msg
+                provider = msg.get("provider", "gemini")
+                model = msg.get("model", Config.get_default_model())
+                break
+        
+        if not last_message:
+            yield {
+                "type": "error", 
+                "content": "No assistant message found to resume"
+            }
+            return
+        
+        user_message = None
+        for i, msg in enumerate(reversed(chat_history)):
+            if msg["role"] == "assistant" and msg["id"] == last_message["id"]:
+                if i + 1 < len(chat_history):
+                    prev_msg = list(reversed(chat_history))[i + 1]
+                    if prev_msg["role"] == "user":
+                        user_message = prev_msg["content"]
+                break
+        
+        if not user_message:
+            yield {
+                "type": "error",
+                "content": "No user message found to resume from"
+            }
+            return
+        
+        if provider not in self.providers or not self.providers[provider].is_available():
+            available = self.get_available_providers()
+            yield {
+                "type": "error",
+                "content": f"Provider '{provider}' not available. Available: {available}"
+            }
+            return
+        
+        resume_history = [msg for msg in chat_history if msg["id"] != last_message["id"]]
+        
+        use_reasoning = self.supports_reasoning(provider, model)
+        
+        logger.info(f"Resuming streaming for chat {self.chat_id}, provider {provider}, model {model}")
+        
+        full_text = last_message.get("content", "") or ""
+        full_thoughts = last_message.get("thoughts", "") or ""
+        
+        for chunk in self.providers[provider].generate_text_stream(
+            user_message, model=model, include_thoughts=use_reasoning,
+            chat_history=resume_history
+        ):
+            if chunk.get("type") == "thoughts":
+                chunk_content = chunk.get("content", "")
+                if not full_thoughts or not chunk_content.startswith(full_thoughts):
+                    if full_thoughts and chunk_content.startswith(full_thoughts):
+                        new_content = chunk_content[len(full_thoughts):]
+                        if new_content:
+                            yield {"type": "thoughts", "content": new_content}
+                        full_thoughts = chunk_content
+                    else:
+                        yield chunk
+                        full_thoughts += chunk_content
+                else:
+                    full_thoughts += chunk_content
+                    
+            elif chunk.get("type") == "answer":
+                chunk_content = chunk.get("content", "")
+                if not full_text or not chunk_content.startswith(full_text):
+                    if full_text and chunk_content.startswith(full_text):
+                        new_content = chunk_content[len(full_text):]
+                        if new_content:
+                            yield {"type": "answer", "content": new_content}
+                        full_text = chunk_content
+                    else:
+                        yield chunk
+                        full_text += chunk_content
+                else:
+                    full_text += chunk_content
+                    
+                if current_state == "thinking":
+                    db.update_chat_state(self.chat_id, "responding")
+                    publish_state(self.chat_id, "responding")
+                    current_state = "responding"
+            
+            if last_message["id"] and (full_text or full_thoughts):
+                db.update_message(
+                    last_message["id"],
+                    full_text,
+                    thoughts=full_thoughts if full_thoughts else None
+                )
+        
+        db.update_chat_state(self.chat_id, "static")
+        publish_state(self.chat_id, "static")
+    
+    def _process_message_background(self, message: str, provider: str = "gemini",
+                                  model: Optional[str] = None, include_reasoning: bool = True,
+                                  **config_params):
+        """
+        Process message in background thread - writes only to DB, no HTTP streaming
+        This runs independently of frontend connection state
+        """
+        from route.chat_route import publish_state
+        
+        if provider not in self.providers or not self.providers[provider].is_available():
+            available = self.get_available_providers()
+            error_msg = f"Provider '{provider}' not available. Available: {available}"
+            logger.error(f"Background processing error for chat {self.chat_id}: {error_msg}")
+            return
+        
+        use_reasoning = include_reasoning and self.supports_reasoning(provider, model)
+        
+        chat_history = self.get_chat_history()
+        if chat_history and chat_history[-1]["role"] == "user":
+            chat_history = chat_history[:-1]
+ 
+        assistant_message_id = db.save_message(
+            self.chat_id,
+            "assistant", 
+            "",
+            thoughts=None,
+            provider=provider,
+            model=model
+        )
+        
+        full_text = ""
+        full_thoughts = ""
+        
+        logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages")
+        
+        # Set initial state (with error handling)
+        try:
+            if use_reasoning:
+                db.update_chat_state(self.chat_id, "thinking")
+                publish_state(self.chat_id, "thinking")
+                current_state = "thinking"
+                logger.info(f"Chat {self.chat_id} entering thinking state")
+            else:
+                db.update_chat_state(self.chat_id, "responding")
+                publish_state(self.chat_id, "responding")
+                current_state = "responding"
+                logger.info(f"Chat {self.chat_id} entering responding state")
+        except Exception as state_error:
+            logger.error(f"Failed to set initial state for chat {self.chat_id}: {state_error}")
+            current_state = "responding"  # Fallback state
+        
+        # Process the stream in background, updating DB and publishing chunks
+        # NO cancellation checks - processing continues independently
+        for chunk in self.providers[provider].generate_text_stream(
+            message, model=model, include_thoughts=use_reasoning, 
+            chat_history=chat_history, **config_params
+        ):
+            
+            if chunk.get("type") == "thoughts":
+                full_thoughts += chunk.get("content", "")
+                # Publish thought chunk for real-time streaming (with error handling)
+                try:
+                    from route.chat_route import publish_content
+                    publish_content(self.chat_id, "thoughts", chunk.get("content", ""))
+                except Exception as pub_error:
+                    logger.warning(f"Failed to publish thoughts chunk for chat {self.chat_id}: {pub_error}")
+                    # Continue processing even if publishing fails
+                
+            elif chunk.get("type") == "answer":
+                full_text += chunk.get("content", "")
+                # Publish answer chunk for real-time streaming (with error handling)
+                try:
+                    from route.chat_route import publish_content
+                    publish_content(self.chat_id, "answer", chunk.get("content", ""))
+                except Exception as pub_error:
+                    logger.warning(f"Failed to publish answer chunk for chat {self.chat_id}: {pub_error}")
+                    # Continue processing even if publishing fails
+                
+                if current_state == "thinking":
+                    try:
+                        db.update_chat_state(self.chat_id, "responding")
+                        publish_state(self.chat_id, "responding")
+                        current_state = "responding"
+                    except Exception as state_error:
+                        logger.warning(f"Failed to update state to responding for chat {self.chat_id}: {state_error}")
+            
+            # Update DB with accumulated content (always update, even if HTTP clients disconnected)
+            if assistant_message_id and (full_text or full_thoughts):
+                try:
+                    db.update_message(
+                        assistant_message_id,
+                        full_text,
+                        thoughts=full_thoughts if full_thoughts else None
+                    )
+                except Exception as db_error:
+                    logger.error(f"Error updating message in DB for chat {self.chat_id}: {db_error}")
+                    # Continue processing despite DB errors
+        
+        # Mark as complete (with error handling) - DB state is CRITICAL, publishing is best-effort
+        try:
+            db.update_chat_state(self.chat_id, "static")
+            logger.info(f"Successfully updated DB state to 'static' for chat {self.chat_id}")
+        except Exception as db_error:
+            logger.critical(f"CRITICAL: Failed to mark chat {self.chat_id} as static in DB: {db_error}")
+            # This is a critical failure - log extensively
+            logger.critical(f"Chat {self.chat_id} may be stuck in non-static state in DB")
+        
+        # Publishing to queues/streams is best-effort (non-critical for DB consistency)
+        try:
+            publish_state(self.chat_id, "static")
+            # Signal completion to content queue
+            from route.chat_route import publish_content
+            publish_content(self.chat_id, "complete", "")
+            logger.info(f"Background processing completed successfully for chat {self.chat_id}")
+        except Exception as publish_error:
+            logger.warning(f"Failed to publish completion (non-critical): {publish_error}")
+            # Still log success since DB was updated
+    
+    def start_background_processing(self, message: str, provider: str = "gemini",
+                                  model: Optional[str] = None, include_reasoning: bool = True,
+                                  **config_params) -> bool:
+        """
+        Start background processing of a message (non-blocking)
+        Returns True if started successfully, False if already running
+        """
+        # Save user message first
+        db.save_message(self.chat_id, "user", message)
+        
+        # Start background thread
+        return _start_background_processing(
+            self.chat_id, self, message, provider, model, include_reasoning, **config_params
+        )

@@ -1,0 +1,360 @@
+.knowledge-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.modal-window .knowledge-section {
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .knowledge-section {
+    padding: 10px;
+  }
+}
+
+.section-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.section-header h4 {
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 500;
+  margin: 0;
+  letter-spacing: 0.3px;
+}
+
+.modal-window .section-header h4 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.section-body {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.section-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.section-body::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 2px;
+}
+
+.section-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.section-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.section-button.primary {
+  background: linear-gradient(135deg, #ff924f 0%, #4a90e2 100%);
+  color: #ffffff;
+}
+
+.section-button.primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(255, 146, 79, 0.3);
+}
+
+.section-button.secondary {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.section-button.secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.empty-state-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+  opacity: 0.4;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  position: relative;
+}
+
+.empty-state-icon.profile-large {
+  border-radius: 50%;
+}
+
+.empty-state-icon.profile-large::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  transform: translateX(-50%);
+}
+
+.empty-state-icon.profile-large::after {
+  content: '';
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  width: 24px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 0 0 20px 20px;
+  transform: translateX(-50%);
+}
+
+.empty-state p {
+  font-size: 14px;
+  margin: 0 0 16px 0;
+}
+
+.modal-window .empty-state {
+  padding: 40px 20px;
+}
+
+.modal-window .empty-state-icon {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 20px;
+}
+
+.modal-window .empty-state p {
+  font-size: 16px;
+  margin-bottom: 20px;
+}
+
+/* File List */
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.file-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.file-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-name {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-size {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.file-actions, .folder-actions, .web-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.action-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 12px;
+}
+
+.action-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.folder-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.folder-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.folder-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.folder-item.nested {
+  margin-left: 20px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.folder-name {
+  flex: 1;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.web-resources {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.web-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.web-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.web-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.web-title {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.web-url {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-window .file-item {
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.modal-window .folder-item {
+  padding: 10px;
+  border-radius: 8px;
+}
+
+.modal-window .web-item {
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.modal-window .section-button {
+  font-size: 14px;
+  padding: 8px 16px;
+  font-weight: 600;
+}
+
+.modal-window .action-btn {
+  font-size: 14px;
+  padding: 6px 10px;
+  font-weight: 500;
+}
+
+.modal-window .sidebar-icon {
+  margin-right: 4px;
+}
