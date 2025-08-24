@@ -8,6 +8,23 @@ import '../styles/ThinkBox.css';
 import logger from '../utils/logger';
 import { apiUrl } from '../config/api';
 import { subscribe } from '../utils/chatstate';
+import { streamReconciler } from '../utils/streamReconciler';
+
+// UUID v4 generator without external dependencies
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : ((r & 0x3) | 0x8);
+    return v.toString(16);
+  });
+}
+
+// Stream metadata for correlation tracking
+type StreamMeta = { sid: string; chatId: string; msgId: number };
+
+function mkStreamMeta(chatId: string, msgId: number): StreamMeta {
+  return { sid: generateUUID(), chatId, msgId };
+}
 
 interface Message {
   id: number;
@@ -38,26 +55,62 @@ const generateUniqueMessageId = (): number => {
   return Date.now() * 1000 + (messageIdCounter++);
 };
 
-// Robust SSE parser that handles CRLF and multi-line events
-function parseSSE(buffer: string): string[] {
-  const lines = buffer.split(/\r?\n/);
+// Robust SSE parser that handles CRLF and multi-line events, returns leftover buffer
+function drainSSE(buffer: string): { events: string[]; rest: string } {
   const events: string[] = [];
-  let event: string[] = [];
-  
-  for (const line of lines) {
-    if (line === '') { // event boundary
-      if (event.length) { 
-        events.push(event.join('\n')); 
-        event = [];
-      }
-    } else if (line.startsWith('data:')) {
-      event.push(line.slice(5).trimStart());
-    }
+  let pos = 0;
+
+  while (true) {
+    const nn = buffer.indexOf('\n\n', pos);
+    const crlf = buffer.indexOf('\r\n\r\n', pos);
+    let sep = -1, adv = 0;
+
+    if (nn !== -1 && (crlf === -1 || nn < crlf)) { sep = nn; adv = 2; }
+    else if (crlf !== -1) { sep = crlf; adv = 4; }
+    else break; // no full event yet
+
+    const block = buffer.slice(pos, sep);
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n');
+
+    if (data.length) events.push(data);
+    pos = sep + adv;
   }
-  
-  return events;
+
+  return { events, rest: buffer.slice(pos) };
 }
 
+
+// Overlap-safe append function for handling backend resends (instrumented)
+function appendWithOverlap(prev: string, next: string, maxOverlap = 200): string {
+  const prevLen = prev?.length ?? 0;
+  const nextLen = next?.length ?? 0;
+  let used = 0;
+
+  if (!prev) { 
+    logger.debug(`[APPEND] prev=0 next=${nextLen} usedOverlap=0 out=${nextLen}`);
+    return next || '';
+  }
+  if (!next) { 
+    logger.debug(`[APPEND] prev=${prevLen} next=0 usedOverlap=0 out=${prevLen}`);
+    return prev;
+  }
+
+  const start = Math.max(0, prevLen - maxOverlap);
+  const win = prev.slice(start);
+  for (let i = Math.min(win.length, next.length); i > 0; i--) {
+    if (win.endsWith(next.slice(0, i))) { 
+      used = i; 
+      break;
+    }
+  }
+  const outLen = prevLen + (nextLen - used);
+  logger.debug(`[APPEND] prev=${prevLen} next=${nextLen} overlapWin=${win.length} usedOverlap=${used} out=${outLen}`);
+  return used ? prev + next.slice(used) : prev + next;
+}
 
 const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateChange, onFirstMessageSent, onActiveStateChange, isActive = true, firstMessage }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -68,83 +121,103 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   const [firstMessageSent, setFirstMessageSent] = useState(false);
   const [currentChatState, setCurrentChatState] = useState<'thinking' | 'responding' | 'static'>('static');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const loadingHistoryRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
-  const abortControllerRef = useRef<AbortController | null>(null);
   const loadedChatRef = useRef<string | null>(null);
+  const prevChatIdRef = useRef<string | null>(null);
   const currentLoadingChatRef = useRef<string | null>(null);
-  const isLoadingRef = useRef<boolean>(false);
-  const processedChatRef = useRef<string | null>(null);
+  // Track which chat we are currently loading for
+  const loadingForChatRef = useRef<string | null>(null);
+  // Monotonic request sequence to ignore stale responses
+  const requestSeqRef = useRef(0);
+  // Dedicated refs for stream ownership (never touched by history loading)
+  const streamOwnerChatRef = useRef<string | null>(null);
+  const streamOwnerMsgRef = useRef<number | null>(null);
+  // Dedicated refs for stream abort management
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const historyAbortRef = useRef<AbortController | null>(null); // For history loads
+  const streamingChatIdRef = useRef<string | null>(null);
+  // Stream correlation tracking
+  const streamMetaRef = useRef<StreamMeta | null>(null);
+  // Message length tracking for audit
+  const msgLenRef = useRef<Record<number, number>>({});
+  // removed processedChatRef; it caused no-render when re-activating same chat
+  // In-flight promise map for coalescing concurrent resumes
+  const inFlightResume = useRef<Map<string, Promise<void>>>(new Map());
 
   const scrollToBottom = useCallback(() => {
     const container = messagesEndRef.current?.parentElement;
     if (container) {
-      logger.info(`[SCROLL] Chat ${chatId} - Before scrollToBottom - scrollTop: ${container.scrollTop}, scrollHeight: ${container.scrollHeight}`);
+      logger.debug(`[SCROLL] Chat ${chatId} - Before scrollToBottom - scrollTop: ${container.scrollTop}, scrollHeight: ${container.scrollHeight}`);
       container.scrollTop = container.scrollHeight;
-      logger.info(`[SCROLL] Chat ${chatId} - After scrollToBottom - scrollTop: ${container.scrollTop}`);
+      logger.debug(`[SCROLL] Chat ${chatId} - After scrollToBottom - scrollTop: ${container.scrollTop}`);
     }
   }, [chatId]);
+
+  // Text length growth audit function
+  const auditLen = useCallback((msgId: number, newText: string, label: string, sid: string, seq: number) => {
+    const prev = msgLenRef.current[msgId] ?? 0;
+    const now = newText.length;
+    if (now < prev) {
+      logger.error(`[AUDIT/len] sid=${sid} seq=${seq} msg=${msgId} ${label} lengthDecreased ${prev}->${now}`);
+    } else {
+      logger.debug(`[AUDIT/len] sid=${sid} seq=${seq} msg=${msgId} ${label} ${prev}->${now}`);
+    }
+    msgLenRef.current[msgId] = now;
+  }, []);
 
 
 
   // Common chunk processing function to avoid duplication
-  const processChunk = useCallback((chunk: any, assistantMessageId: number, targetChatId: string) => {
-    if (!mountedRef.current) {
-      logger.warn(`[CHUNK] Component unmounted, ignoring chunk type: ${chunk.type} for chat ${targetChatId}`);
-      return;
+  const processChunk = useCallback((chunk: any, _assistantMessageId: number, _targetChatId: string, meta?: StreamMeta, seq?: number) => {
+    const curChat = streamOwnerChatRef.current;
+    const curMsg  = streamOwnerMsgRef.current;
+
+    logger.info(`[CHUNK/owner] expChat=${curChat} expMsg=${curMsg} curChat=${curChat} curMsg=${curMsg}`);
+
+    if (!curChat || curMsg == null) return null;
+
+    // route-guard: only accept if we still own this chat
+    if (chunk.chat_id && chunk.chat_id !== curChat) return null;
+
+    // ===== states =====
+    if (chunk.type === 'chat_state') {
+      logger.info(`[STATE] sid=${meta?.sid ?? 'n/a'} state=${chunk.state} chat_id=${chunk.chat_id}`);
+      onChatStateChange?.(chunk.chat_id ?? curChat, chunk.state);
+      return null;
     }
 
-    logger.info(`[CHUNK] ===== PROCESSING LIVE CHUNK =====`);
-    logger.info(`[CHUNK] Type: ${chunk.type}, Chat: ${targetChatId}, MessageId: ${assistantMessageId}`);
-
-    if (chunk.type === 'chat_state') {
-      if (onChatStateChange && chunk.chat_id) onChatStateChange(chunk.chat_id, chunk.state);
-      if (chunk.state === 'static') {
-        setLoading(false);
-        setStreamingMessageId(null);
-      }
-      return null;
-    } else if (chunk.type === 'thoughts') {
-      
-      logger.info(`[SCROLL] Chat ${targetChatId} - Updating thoughts during streaming`);
-      setMessages(prev => prev.map(msg =>
-        msg.id === assistantMessageId
-          ? {
-              ...msg,
-              thoughts: (() => {
-                const prevT = msg.thoughts || '';
-                const c = chunk.content || '';
-                return c.startsWith(prevT) ? c : prevT + c;
-              })()
-            }
-          : msg
-      ));
+    // Buffer first
+    if (chunk.type === 'thoughts') {
+      streamReconciler.push(curChat, 'thoughts', chunk.content || '');
     } else if (chunk.type === 'answer') {
-      
-      logger.info(`[SCROLL] Chat ${targetChatId} - Updating message content during streaming`);
-      setMessages(prev => prev.map(msg =>
-        msg.id === assistantMessageId
-          ? {
-              ...msg,
-              isStreaming: false,
-              isStreamingResponse: true,
-              content: (() => {
-                const prevC = msg.content || '';
-                const c = chunk.content || '';
-                return c.startsWith(prevC) ? c : prevC + c;
-              })()
-            }
-          : msg
-      ));
+      streamReconciler.push(curChat, 'content', chunk.content || '');
     } else if (chunk.type === 'complete') {
-      logger.info(`[CHUNK] Received COMPLETE chunk for chat ${targetChatId}, messageId: ${assistantMessageId}`);
+      logger.info(`[CHUNK] Received COMPLETE chunk for chat ${curChat}, messageId: ${curMsg}`);
+      streamReconciler.clear(curChat);
       return 'complete';
     } else if (chunk.type === 'error') {
-      logger.error(`[CHUNK] Received ERROR chunk for chat ${targetChatId}, messageId: ${assistantMessageId}:`, chunk.content);
+      logger.error(`[CHUNK] Received ERROR chunk for chat ${curChat}, messageId: ${curMsg}:`, chunk.content);
       return 'error';
     }
+
+    // Then patch UI against the **current** owner id
+    if (chunk.type === 'thoughts' || chunk.type === 'answer') {
+      setMessages(prev => prev.map(msg => {
+        if (msg.id !== curMsg) return msg;
+        const nextText = chunk.type === 'thoughts'
+          ? appendWithOverlap(msg.thoughts || '', chunk.content || '')
+          : appendWithOverlap(msg.content  || '', chunk.content || '');
+        if (meta && typeof seq === 'number') {
+          auditLen(curMsg, nextText, chunk.type === 'thoughts' ? 'thoughts' : 'content', meta.sid, seq);
+        }
+        return chunk.type === 'thoughts'
+          ? { ...msg, thoughts: nextText }
+          : { ...msg, isStreaming: false, isStreamingResponse: true, content: nextText };
+      }));
+    }
+
     return null;
-  }, [onChatStateChange]);
+  }, [onChatStateChange, auditLen]);
 
   const resumeStream = useCallback(async (targetChatId: string, assistantMessageId: number) => {
     logger.info(`[resumeStream] ===== RESUME STREAM CALLED =====`);
@@ -155,13 +228,33 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       return;
     }
 
+    if (streamingChatIdRef.current === targetChatId && streamAbortRef.current) {
+      logger.info(`[STREAM/reuse] chat=${targetChatId} sid=${streamMetaRef.current?.sid ?? 'n/a'} (already attached)`);
+      return;
+    }
+
+    // Create stream metadata for correlation
+    const meta = mkStreamMeta(targetChatId, assistantMessageId);
+    logger.info(`[STREAM/open] sid=${meta.sid} chat=${meta.chatId} msg=${meta.msgId}`);
+    
+    // Detect duplicate streams
+    if (streamingChatIdRef.current && streamingChatIdRef.current === meta.chatId) {
+      logger.warn(`[STREAM/dup] sid=${meta.sid} existingStreamForChat=${streamingChatIdRef.current} existingSid=${streamMetaRef.current?.sid ?? 'n/a'}`);
+    }
+
     logger.info(`[resumeStream] Connecting to backend stream for chat: ${targetChatId}`);
     
+    const abortController = new AbortController();
     try {
+      logger.info(`[STREAM/acquire] sid=${meta.sid} chat=${meta.chatId} msg=${meta.msgId}`);
       setStreamingMessageId(assistantMessageId);
-      
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
+      // Set stream ownership (never touched by history loading)
+      streamOwnerChatRef.current = targetChatId;
+      streamOwnerMsgRef.current = assistantMessageId;
+      // Set dedicated stream abort refs
+      streamAbortRef.current = abortController;
+      streamingChatIdRef.current = targetChatId;
+      streamMetaRef.current = meta;
       
       // Connect to ongoing stream with simple attach (no message, no resume)
       const response = await fetch(apiUrl('/api/chat/stream'), {
@@ -190,22 +283,34 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       }
 
       let buffer = '';
+      let seq = 0;
 
       while (true) {
         const { done, value } = await reader.read();
         
+        // Byte-level logging
+        logger.debug(`[STREAM/read] sid=${meta.sid} bytes=${value?.length ?? 0} done=${done}`);
+        
         if (done) {
           buffer += decoder.decode(value || new Uint8Array(), { stream: false });
-          for (const payload of parseSSE(buffer)) {
-            if (!mountedRef.current) break;
+          const { events, rest } = drainSSE(buffer);
+          // SSE framing logging
+          logger.debug(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
+          
+          for (const payload of events) {
+            seq++;
+            const preview = payload.slice(0, 120).replace(/\s+/g, ' ');
+            logger.debug(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${preview}"`);
+            
             try {
               const chunk = JSON.parse(payload);
-              const result = processChunk(chunk, assistantMessageId, targetChatId);
+              const result = processChunk(chunk, assistantMessageId, targetChatId, meta, seq);
               
               if (result === 'complete') {
                 logger.info(`[resumeStream] Stream complete for chat ${targetChatId}, resetting states`);
                 setStreamingMessageId(null);
                 setLoading(false);
+                onChatStateChange?.(targetChatId, 'static');
               } else if (result === 'error') {
                 logger.error('Stream error:', chunk.content);
                 setLoading(false);
@@ -218,21 +323,29 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
               logger.error('Error parsing final chunk:', e);
             }
           }
+          buffer = rest; // should be "", but safe even if backend ends mid-chunk
           break;
         }
 
         buffer += decoder.decode(value, { stream: true });
+        const { events, rest } = drainSSE(buffer);
+        // SSE framing logging  
+        logger.debug(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
         
-        for (const payload of parseSSE(buffer)) {
-          if (!mountedRef.current) break;
+        for (const payload of events) {
+          seq++;
+          const preview = payload.slice(0, 120).replace(/\s+/g, ' ');
+          logger.debug(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${preview}"`);
+          
           try {
             const chunk = JSON.parse(payload);
-            const result = processChunk(chunk, assistantMessageId, targetChatId);
+            const result = processChunk(chunk, assistantMessageId, targetChatId, meta, seq);
             
             if (result === 'complete') {
               logger.info(`[resumeStream] Stream complete for chat ${targetChatId}`);
               setStreamingMessageId(null);
               setLoading(false);
+              onChatStateChange?.(targetChatId, 'static');
             } else if (result === 'error') {
               logger.error('Stream error:', chunk.content);
               setLoading(false);
@@ -242,18 +355,18 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
             logger.error('Error parsing resume chunk:', e);
           }
         }
-        
-        // Keep only the tail after last event boundary
-        const lastSep = buffer.lastIndexOf('\n\n');
-        buffer = lastSep >= 0 ? buffer.slice(lastSep + 2) : buffer;
+        buffer = rest; // keep exact leftover bytes (no drops)
       }
     } catch (error) {
-      // Don't log AbortError as it's expected when switching chats
-      if (error instanceof Error && error.name === 'AbortError') {
-        logger.info(`[resumeStream] Stream aborted for chat ${targetChatId} (client disconnected, backend continues)`);
-        return; // Exit early, don't update UI state
-      } else {
-        logger.error(`[resumeStream] Error for chat ${targetChatId}:`, error);
+      // Enhanced error logging with stream metadata
+      if (error instanceof Error) {
+        logger.info(`[STREAM/catch] sid=${meta.sid} name=${error.name} message=${error.message}`);
+        if (error.name === 'AbortError') {
+          logger.info(`[resumeStream] Stream aborted for chat ${targetChatId} (client disconnected, backend continues)`);
+          return; // Exit early, don't update UI state
+        } else {
+          logger.error(`[resumeStream] Error for chat ${targetChatId}:`, error);
+        }
       }
       
       setLoading(false);
@@ -274,8 +387,17 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           : msg
       ));
     } finally {
-      if (abortControllerRef.current) {
-        abortControllerRef.current = null;
+      // Clear dedicated stream abort refs if this is the current stream
+      if (streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+      }
+      if (streamingChatIdRef.current === targetChatId) {
+        streamingChatIdRef.current = null;
+      }
+      // Only clear stream ownership if this stream is still the owner
+      if (streamOwnerChatRef.current === targetChatId && streamOwnerMsgRef.current === assistantMessageId) {
+        streamOwnerChatRef.current = null;
+        streamOwnerMsgRef.current = null;
       }
     }
   }, [isActive, processChunk, onChatStateChange]);
@@ -284,17 +406,17 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     const lastMessage = messages[messages.length - 1];
     const container = messagesEndRef.current?.parentElement;
     if (container) {
-      logger.info(`[SCROLL] Chat ${chatId} useEffect[messages] - Current scroll position: ${container.scrollTop}, scrollHeight: ${container.scrollHeight}, messages.length: ${messages.length}`);
+      logger.debug(`[SCROLL] Chat ${chatId} useEffect[messages] - Current scroll position: ${container.scrollTop}, scrollHeight: ${container.scrollHeight}, messages.length: ${messages.length}`);
     }
     if (lastMessage && (lastMessage.isStreaming || lastMessage.isStreamingResponse)) {
-      logger.info(`[SCROLL] Chat ${chatId} useEffect[messages] - triggering scrollToBottom because message is streaming`);
+      logger.debug(`[SCROLL] Chat ${chatId} useEffect[messages] - triggering scrollToBottom because message is streaming`);
       scrollToBottom();
     }
   }, [messages, chatId, scrollToBottom]);
 
   useEffect(() => {
     if (streamingMessageId) {
-      logger.info(`[SCROLL] Chat ${chatId} useEffect[streamingMessageId] - triggering scrollToBottom for messageId: ${streamingMessageId}`);
+      logger.debug(`[SCROLL] Chat ${chatId} useEffect[streamingMessageId] - triggering scrollToBottom for messageId: ${streamingMessageId}`);
       scrollToBottom();
     }
   }, [streamingMessageId, chatId, scrollToBottom]);
@@ -335,23 +457,22 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   const loadChatHistoryImmediate = useCallback(async (targetChatId: string, retryCount = 0): Promise<Message[]> => {
     if (!targetChatId) return [];
     
-    // Prevent concurrent loads for the same chat
-    if (currentLoadingChatRef.current === targetChatId || isLoadingRef.current) {
+    // Allow only one loader per target chat; do not block other chats
+    if (loadingForChatRef.current === targetChatId) {
       logger.info(`[Chat.loadChatHistoryImmediate] Already loading history for chat: ${targetChatId}`);
       return [];
     }
     
     const abortController = new AbortController();
-    abortControllerRef.current = abortController;
+    historyAbortRef.current = abortController;
     
     // Add abort listener to track when this gets aborted
     abortController.signal.addEventListener('abort', () => {
       logger.info(`[loadChatHistoryImmediate] AbortController aborted for ${targetChatId} - reason: ${abortController.signal.reason || 'unknown'}`);
     });
     
-    currentLoadingChatRef.current = targetChatId;
-    loadingHistoryRef.current = targetChatId;
-    isLoadingRef.current = true;
+    const seq = ++requestSeqRef.current;
+    loadingForChatRef.current = targetChatId;
     setIsLoadingHistory(true);
     
     try {
@@ -400,6 +521,12 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           };
         });
         
+        // Ignore stale responses from a previous switch
+        if (requestSeqRef.current !== seq || loadingForChatRef.current !== targetChatId) {
+          logger.info(`[Chat.loadChatHistoryImmediate] Stale response ignored for ${targetChatId}`);
+          return [];
+        }
+        
         logger.info(`[loadChatHistoryImmediate] ===== DB LOAD COMPLETE =====`);
         logger.info(`[loadChatHistoryImmediate] Loaded ${formattedMessages.length} messages for chat ${targetChatId}`);
         logger.info(`[loadChatHistoryImmediate] Backend state: ${chatState}`);
@@ -411,7 +538,21 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           isStreamingResponse: m.isStreamingResponse
         })));
         logger.info(`[loadChatHistoryImmediate] CALLING setMessages - FRONTEND SHOULD NOW SHOW ${formattedMessages.length} MESSAGES`);
-        setMessages(formattedMessages);
+        const merged = streamReconciler.mergeSnapshot(targetChatId, formattedMessages);
+        setMessages(merged);
+
+        // If a stream is active for this chat, retarget ownership to the DB's last assistant ID
+        if (streamOwnerChatRef.current === targetChatId) {
+          const lastAssistantInMerged = [...merged].reverse().find(m => m.role === 'assistant');
+          if (lastAssistantInMerged) {
+            const old = streamOwnerMsgRef.current;
+            logger.info(`[OWNER/retarget] chat=${targetChatId} oldMsg=${old} newMsg=${lastAssistantInMerged.id}`);
+            streamOwnerMsgRef.current = lastAssistantInMerged.id;
+            streamReconciler.setActiveMessage(targetChatId, lastAssistantInMerged.id); // <- add this
+            setStreamingMessageId(lastAssistantInMerged.id);
+          }
+        }
+
         loadedChatRef.current = targetChatId;
         logger.info(`[loadChatHistoryImmediate] ===== DB LOAD & RENDER COMPLETE =====`);
         
@@ -453,31 +594,33 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       
       return [];
     } finally {
-      if (abortControllerRef.current === abortController) {
-        abortControllerRef.current = null;
+      if (historyAbortRef.current === abortController) {
+        historyAbortRef.current = null;
       }
-      if (currentLoadingChatRef.current === targetChatId) {
-        currentLoadingChatRef.current = null;
-      }
-      loadingHistoryRef.current = null;
-      isLoadingRef.current = false;
+      if (loadingForChatRef.current === targetChatId) loadingForChatRef.current = null;
       setIsLoadingHistory(false);
     }
   }, [onChatStateChange]);
 
 
 
+  // Keep a stable mirror of messages
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
   const checkAndResumeStreaming = useCallback(async (targetChatId: string, messagesFromDB?: Message[]) => {
-    logger.info(`[checkAndResumeStreaming] ===== CHECKING IF SHOULD RESUME STREAMING =====`);
-    logger.info(`[checkAndResumeStreaming] Target chat: ${targetChatId}`);
-    
-    // Prevent multiple calls for the same chat while we're already checking
-    if (currentLoadingChatRef.current === targetChatId && isLoadingRef.current) {
-      logger.info(`[checkAndResumeStreaming] Already checking state for chat: ${targetChatId}`);
+    // Coalesce concurrent calls
+    const existing = inFlightResume.current.get(targetChatId);
+    if (existing) {
+      logger.debug(`[checkAndResumeStreaming] Coalesced duplicate call for ${targetChatId}`);
+      await existing;
       return;
     }
-    
-    try {
+
+    const run = (async () => {
+      logger.info(`[checkAndResumeStreaming] ===== CHECKING IF SHOULD RESUME STREAMING =====`);
+      logger.info(`[checkAndResumeStreaming] Target chat: ${targetChatId}`);
+      
       // 1) Read authoritative state from backend
       logger.info(`[checkAndResumeStreaming] Reading backend state...`);
       const stateRes = await fetch(apiUrl(`/api/db/chat/${targetChatId}/state`));
@@ -489,57 +632,53 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       // 2) If not active, ensure UI reflects static state
       if (chatState !== 'thinking' && chatState !== 'responding') {
         logger.info(`[checkAndResumeStreaming] Chat ${targetChatId} is STATIC - no streaming needed`);
-        setStreamingMessageId(null);
-        setLoading(false);
-        if (onChatStateChange) {
-          onChatStateChange(targetChatId, 'static');
-        }
-        logger.info(`[checkAndResumeStreaming] ===== NO STREAMING NEEDED - COMPLETED =====`);
+        if (onChatStateChange) onChatStateChange(targetChatId, 'static');
         return;
       }
 
-      // 3) If backend is actively processing, reconnect to stream
-      logger.info(`[checkAndResumeStreaming] Chat ${targetChatId} is RUNNING (${chatState}) - need to resume streaming`);
-      const messagesToCheck = messagesFromDB || messages;
-      logger.info(`[checkAndResumeStreaming] Using ${messagesToCheck.length} messages (${messagesFromDB ? 'from DB' : 'from React state'})`);
-      const lastAssistant = [...messagesToCheck].reverse().find(m => m.role === 'assistant');
-      
+      // 3) If backend is actively processing, (re)connect to stream RIGHT NOW
+      const useMessages = messagesFromDB || messagesRef.current;
+      const lastAssistant = [...useMessages].reverse().find(m => m.role === 'assistant');
+
       if (lastAssistant) {
-        logger.info(`[checkAndResumeStreaming] Found last assistant message to resume:`, {
-          id: lastAssistant.id,
-          content: lastAssistant.content.substring(0, 50) + '...'
-        });
-        
+        // Normal path (we already have something to attach to)
+        streamReconciler.begin(targetChatId);
+        streamReconciler.setActiveMessage(targetChatId, lastAssistant.id);
         setStreamingMessageId(lastAssistant.id);
-        
-        // Update UI to reflect backend state
-        logger.info(`[checkAndResumeStreaming] Updating UI state for streaming: ${chatState}`);
         setMessages(prev => prev.map(m =>
           m.id === lastAssistant.id
-            ? {
-                ...m,
-                isStreaming: chatState === 'thinking',
-                isStreamingResponse: chatState === 'responding'
-              }
+            ? { ...m, isStreaming: chatState === 'thinking', isStreamingResponse: chatState === 'responding' }
             : m
         ));
-        
-        // Connect to ongoing stream (backend will handle reconnection)
-        logger.info(`[checkAndResumeStreaming] ===== STARTING RESUME STREAM =====`);
         resumeStream(targetChatId, lastAssistant.id);
-        
-        if (onChatStateChange) {
-          onChatStateChange(targetChatId, chatState);
-        }
+        onChatStateChange?.(targetChatId, chatState);
       } else {
-        logger.warn(`[checkAndResumeStreaming] No assistant message found to resume for chat ${targetChatId}`);
+        // COLD START: no assistant message yet (DB not loaded or empty). Create a placeholder and attach.
+        const placeholderId = generateUniqueMessageId();
+        logger.info(`[RESUME/cold-start] chat=${targetChatId} placeholderMsgId=${placeholderId}`);
+        const placeholder = {
+          id: placeholderId,
+          role: 'assistant' as const,
+          content: '',
+          thoughts: '',
+          timestamp: new Date().toISOString(),
+          isStreaming: chatState === 'thinking',
+          isStreamingResponse: chatState === 'responding'
+        };
+        streamReconciler.begin(targetChatId);
+        streamReconciler.setActiveMessage(targetChatId, placeholderId);
+        setMessages(prev => [...prev, placeholder]);
+        setStreamingMessageId(placeholderId);
+        // take ownership for now; we will retarget to DB message id after snapshot lands
+        streamOwnerChatRef.current = targetChatId;
+        streamOwnerMsgRef.current = placeholderId;
+        resumeStream(targetChatId, placeholderId);
+        onChatStateChange?.(targetChatId, chatState);
       }
-    } catch (e) {
-      logger.error('[Chat.checkAndResumeStreaming] failed:', e);
-      setStreamingMessageId(null);
-      setLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    })();
+
+    inFlightResume.current.set(targetChatId, run);
+    try { await run; } finally { inFlightResume.current.delete(targetChatId); }
   }, [resumeStream, onChatStateChange]);
 
   const streamAIResponse = useCallback(async (userMessage: string) => {
@@ -553,9 +692,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       return;
     }
     
+    let abortController: AbortController | undefined;
+    let assistantMessageId: number = 0;
     try {
       logger.info('Starting AI response stream for:', userMessage.substring(0, 50) + '...');
-      const assistantMessageId = generateUniqueMessageId();
+      assistantMessageId = generateUniqueMessageId();
       
       const userMsg: Message = {
         id: generateUniqueMessageId(),
@@ -579,12 +720,23 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         model: config.model
       };
 
-      logger.info(`[SCROLL] Chat ${chatId} - Adding new user and assistant messages to state`);
+      logger.debug(`[SCROLL] Chat ${chatId} - Adding new user and assistant messages to state`);
       setMessages(prev => [...prev, userMsg, assistantMessage]);
       setStreamingMessageId(assistantMessageId);
       
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
+      // Set stream ownership (never touched by history loading)
+      streamOwnerChatRef.current = chatId || null;
+      streamOwnerMsgRef.current = assistantMessageId;
+      abortController = new AbortController();
+      // Set dedicated stream abort refs
+      streamAbortRef.current = abortController;
+      streamingChatIdRef.current = chatId || null;
+      
+      // Set active message for stream reconciler
+      if (chatId) {
+        streamReconciler.begin(chatId);
+        streamReconciler.setActiveMessage(chatId, assistantMessageId);
+      }
       
       const response = await fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
@@ -622,8 +774,8 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         
         if (done) {
           buffer += decoder.decode(value || new Uint8Array(), { stream: false });
-          for (const payload of parseSSE(buffer)) {
-            if (!mountedRef.current) break;
+          const { events, rest } = drainSSE(buffer);
+          for (const payload of events) {
             try {
               const chunk = JSON.parse(payload);
               const result = processChunk(chunk, assistantMessageId, chatId!);
@@ -632,18 +784,19 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
                 logger.info(`[STREAM] Completion signal received for chat ${chatId}`);
                 setStreamingMessageId(null);
                 setLoading(false);
+                onChatStateChange?.(chatId!, 'static');
               }
             } catch (e) {
               logger.error('Error parsing final chunk:', e);
             }
           }
+          buffer = rest; // should be "", but safe even if backend ends mid-chunk
           break;
         }
 
         buffer += decoder.decode(value, { stream: true });
-        
-        for (const payload of parseSSE(buffer)) {
-          if (!mountedRef.current) break;
+        const { events, rest } = drainSSE(buffer);
+        for (const payload of events) {
           try {
             const chunk = JSON.parse(payload);
             const result = processChunk(chunk, assistantMessageId, chatId!);
@@ -652,16 +805,14 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
               logger.info(`[STREAM] Main loop completion signal received for chat ${chatId}, messageId ${assistantMessageId}`);
               setStreamingMessageId(null);
               setLoading(false);
+              onChatStateChange?.(chatId!, 'static');
               logger.info(`[STREAM] Main loop streaming complete for chat ${chatId}, all states reset`);
             }
           } catch (e) {
             logger.error('Error parsing chunk:', e);
           }
         }
-        
-        // Keep only the tail after last event boundary
-        const lastSep = buffer.lastIndexOf('\n\n');
-        buffer = lastSep >= 0 ? buffer.slice(lastSep + 2) : buffer;
+        buffer = rest; // keep exact leftover bytes (no drops)
       }
     } catch (error) {
       
@@ -686,11 +837,20 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           : msg
       ));
     } finally {
-      if (abortControllerRef.current) {
-        abortControllerRef.current = null;
+      // Clear dedicated stream abort refs if this is the current stream
+      if (abortController && streamAbortRef.current === abortController) {
+        streamAbortRef.current = null;
+      }
+      if (streamingChatIdRef.current === chatId) {
+        streamingChatIdRef.current = null;
+      }
+      // Only clear stream ownership if this stream is still the owner
+      if (streamOwnerChatRef.current === chatId && streamOwnerMsgRef.current === assistantMessageId) {
+        streamOwnerChatRef.current = null;
+        streamOwnerMsgRef.current = null;
       }
     }
-  }, [isActive, config, chatId, processChunk]);
+  }, [isActive, config, chatId, processChunk, onChatStateChange]);
 
   const handleNewMessage = useCallback((content: string) => {
     logger.info(`[SEND] ==================== MESSAGE SEND ATTEMPT ====================`);
@@ -709,7 +869,12 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       return;
     }
 
-    if (isLoadingHistory) {
+    if (streamingMessageId !== null) {
+      logger.warn(`[SEND] BLOCKED: Chat ${chatId} has an active stream (streamingMessageId=${streamingMessageId})`);
+      return;
+    }
+
+    if (isLoadingHistory && (!firstMessage || firstMessageSent)) {
       logger.warn(`[SEND] BLOCKED: Chat ${chatId} still loading history`);
       return;
     }
@@ -725,7 +890,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     if (onMessageSent) {
       onMessageSent(content);
     }
-  }, [chatId, isActive, loading, isLoadingHistory, streamingMessageId, currentChatState, streamAIResponse, onMessageSent]);
+  }, [chatId, isActive, loading, isLoadingHistory, streamingMessageId, currentChatState, streamAIResponse, onMessageSent, firstMessage, firstMessageSent]);
 
   useImperativeHandle(ref, () => ({
     handleNewMessage,
@@ -737,117 +902,110 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   }));
 
   useEffect(() => {
-    logger.info(`[Chat.useEffect1] === EFFECT TRIGGERED ===`);
-    logger.info(`[Chat.useEffect1] chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}`);
-    logger.info(`[Chat.useEffect1] processedChatRef.current: ${processedChatRef.current}`);
+    logger.debug(`[Chat.useEffect1] === EFFECT TRIGGERED ===`);
+    logger.debug(`[Chat.useEffect1] chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}`);
+    // Always handle activation; do not skip. Rendering must never depend on past state.
     
-    // Skip if we've already processed this exact chat switch
-    if (processedChatRef.current === chatId && isActive && !firstMessage) {
-      logger.info(`[Chat.useEffect1] SKIPPING - already processed chat ${chatId}`);
-      return;
-    }
-    
-    logger.info(`[Chat.useEffect1] loadedChatRef.current: ${loadedChatRef.current}`);
-    logger.info(`[Chat.useEffect1] currentLoadingChatRef.current: ${currentLoadingChatRef.current}`);
+    logger.debug(`[Chat.useEffect1] loadedChatRef.current: ${loadedChatRef.current}`);
+    logger.debug(`[Chat.useEffect1] currentLoadingChatRef.current: ${currentLoadingChatRef.current}`);
     
     mountedRef.current = true;
 
-    // Abort only if switching away from a different chat
-    const prev = currentLoadingChatRef.current;
-    if (abortControllerRef.current && prev && prev !== chatId) {
-      logger.info(`[Chat.useEffect1] Aborting in-flight request for previous chat ${prev} FROM USEEFFECT1`);
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    } else if (abortControllerRef.current && prev === chatId) {
-      logger.info(`[Chat.useEffect1] NOT aborting - same chat ${chatId}, prev: ${prev}`);
-    } else if (!abortControllerRef.current) {
-      logger.info(`[Chat.useEffect1] No abort controller to abort`);
-    }
-
     const isNewChat = !!(chatId && firstMessage);
-    const isDifferentChat = loadedChatRef.current !== chatId;
+    const isDifferentChat = prevChatIdRef.current !== chatId;
     
-    logger.info(`[Chat.useEffect1] isNewChat: ${isNewChat}, isDifferentChat: ${isDifferentChat}`);
-    
-    // Clear processed flag if switching to a different chat
+    // If a different chat becomes active, abort any in-flight operations for the old one
     if (isDifferentChat) {
-      processedChatRef.current = null;
-      logger.info(`[Chat.useEffect1] CLEARED processed flag for different chat`);
+      logger.debug(`[Chat.useEffect1] Aborting operations for previous chat ${prevChatIdRef.current} before switching to ${chatId}`);
+      streamAbortRef.current?.abort('switching chats');   // stop stream
+      historyAbortRef.current?.abort('switching chats');  // stop DB load
+      
+      // Clear reconciler for prev chat and begin for new
+      if (prevChatIdRef.current) streamReconciler.clear(prevChatIdRef.current);
+      if (chatId) streamReconciler.begin(chatId);
     }
+    
+    logger.debug(`[Chat.useEffect1] isNewChat: ${isNewChat}, isDifferentChat: ${isDifferentChat}`);
+    
+    // No processed flag. We always reload on activation.
 
     if (!chatId || !isActive) {
-      logger.info(`[Chat.useEffect1] EARLY RETURN - chatId: ${chatId}, isActive: ${isActive}`);
+      logger.debug(`[Chat.useEffect1] EARLY RETURN - chatId: ${chatId}, isActive: ${isActive}`);
       return;
     }
 
-    // Mark this chat as processed to prevent duplicate calls
-    processedChatRef.current = chatId;
-    logger.info(`[Chat.useEffect1] MARKED ${chatId} as processed`);
+    // No processed marker.
 
     if (isNewChat && isDifferentChat) {
-      logger.info(`[Chat.useEffect1] HANDLING NEW CHAT`);
+      logger.debug(`[Chat.useEffect1] HANDLING NEW CHAT`);
       // fresh new chat started by first message
       setFirstMessageSent(false);
       setStreamingMessageId(null);
       setLoading(false);
       setIsLoadingHistory(false);
-      loadingHistoryRef.current = null;
-      loadedChatRef.current = null;
+      prevChatIdRef.current = chatId!;         // treat as current for next pass
       setMessages([]);
     } else if (isDifferentChat) {
-      logger.info(`[Chat.useEffect1] HANDLING EXISTING CHAT - STARTING LOAD`);
+      logger.debug(`[Chat.useEffect1] HANDLING EXISTING CHAT - STARTING LOAD`);
       // existing chat: clear and show skeleton, then load history
       setStreamingMessageId(null);
       setLoading(false);
       setIsLoadingHistory(true);
-      loadingHistoryRef.current = chatId;
       loadedChatRef.current = null;
+      loadingForChatRef.current = null;
+      currentLoadingChatRef.current = null;
+      requestSeqRef.current += 1; // invalidate older responses
       setMessages([]);
       
-      // Check if already loading this specific chat
-      const alreadyLoading = currentLoadingChatRef.current === chatId;
-      logger.info(`[Chat.useEffect1] Already loading ${chatId}? ${alreadyLoading}`);
-      
-      if (!alreadyLoading) {
-        logger.info(`[Chat.useEffect1] STARTING ASYNC LOAD for ${chatId}`);
-        // Load history immediately, no separate useEffect needed
+      // Always load history on activation of a different chat
+        logger.debug(`[Chat.useEffect1] STARTING ASYNC LOAD for ${chatId}`);
+        // start resume first, then load DB in parallel
         (async () => {
           if (!mountedRef.current) {
-            logger.info(`[Chat.useEffect1] Component unmounted, aborting load for ${chatId}`);
+            logger.debug(`[Chat.useEffect1] Component unmounted, aborting load for ${chatId}`);
             return;
           }
           
-          logger.info(`[Chat.useEffect1] ===== STEP 1: LOADING ALL MESSAGES FROM DB =====`);
-          const loadedMessages = await loadChatHistoryImmediate(chatId);
-          
-          logger.info(`[Chat.useEffect1] ===== STEP 2: CHECKING IF SHOULD RESUME STREAMING =====`);
-          await checkAndResumeStreaming(chatId, loadedMessages);
-          
-          logger.info(`[Chat.useEffect1] ===== BOTH STEPS COMPLETED FOR ${chatId} =====`);
+          await checkAndResumeRef.current(chatId);
+          await loadHistoryRef.current(chatId);
+          // no second call here; resume already running
+        })();
+    } else {
+      // Same chat re-activated. If not successfully loaded yet, force a load now.
+      if (loadedChatRef.current !== chatId && (!firstMessage || firstMessageSent)) {
+        logger.debug(`[Chat.useEffect1] SAME CHAT, NOT LOADED -> FORCING LOAD for ${chatId}`);
+        setIsLoadingHistory(true);
+        (async () => {
+          await checkAndResumeRef.current(chatId);
+          await loadHistoryRef.current(chatId);
         })();
       } else {
-        logger.info(`[Chat.useEffect1] SKIPPING LOAD - already in progress for ${chatId}`);
+        logger.debug(`[Chat.useEffect1] CHAT ALREADY LOADED - no action needed`);
       }
-    } else {
-      logger.info(`[Chat.useEffect1] CHAT ALREADY LOADED - no action needed`);
     }
 
     // Call onActiveStateChange since we've already prevented duplicates at the effect level
     if (onActiveStateChange && chatId) {
-      logger.info(`[Chat.useEffect1] Calling onActiveStateChange(${chatId}, ${isActive})`);
+      logger.debug(`[Chat.useEffect1] Calling onActiveStateChange(${chatId}, ${isActive})`);
       onActiveStateChange(chatId, isActive);
     }
     
-    logger.info(`[Chat.useEffect1] === EFFECT COMPLETED ===`);
-  }, [chatId, isActive, firstMessage, onActiveStateChange, loadChatHistoryImmediate, checkAndResumeStreaming]);
+    // record current as last active to compute future switches
+    prevChatIdRef.current = chatId ?? null;
+    logger.debug(`[Chat.useEffect1] === EFFECT COMPLETED ===`);
+  }, [chatId, isActive, firstMessage, onActiveStateChange, firstMessageSent]);
+
+  // Add refs for stable function calls
+  const checkAndResumeRef = useRef(checkAndResumeStreaming);
+  const loadHistoryRef = useRef(loadChatHistoryImmediate);
+  useEffect(() => { checkAndResumeRef.current = checkAndResumeStreaming; }, [checkAndResumeStreaming]);
+  useEffect(() => { loadHistoryRef.current = loadChatHistoryImmediate; }, [loadChatHistoryImmediate]);
 
   // History loading is now handled in the main useEffect above
 
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && config && !firstMessageSent) {
-      // Mark this chat as loaded to prevent history loading
-      loadedChatRef.current = chatId;
-      
+      loadedChatRef.current = chatId;   // ensure no force-load races
       // Send first message immediately
       if (mountedRef.current && isActive) {
         logger.info('Sending first message for new chat:', chatId);

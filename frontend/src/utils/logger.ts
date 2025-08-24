@@ -26,18 +26,19 @@ const logger = {
     console.debug(`[ATLAS]`, message, ...args);
   },
   info: (message: string, ...args: any[]) => {
-    // Filter out non-relevant logs for testing
-    const suppressedPatterns = [
-      '[SCROLL]',
-      'Loaded config:',
-      '[App.syncActiveChat]',
-      'Chat state changed:',
-      '[Chat.render]' // Suppressing render logs temporarily
+    const allowedPatterns = [
+      '[STREAM/open]',
+      'Stream complete',
+      '[STREAM] Completion signal received',
+      '[STREAM/catch]',
+      '[RESUME/cold-start]',
+      '[OWNER/retarget]',
+      '[STATE] ', // state transitions only
     ];
     
-    const shouldSuppress = suppressedPatterns.some(pattern => message.includes(pattern));
+    const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     
-    if (!shouldSuppress) {
+    if (shouldShow) {
       console.info(`[ATLAS]`, message, ...args);
     }
     addToBuffer('INFO', message, ...args);
