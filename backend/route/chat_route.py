@@ -116,11 +116,12 @@ def register_chat_routes(app: Flask):
             provider = data.get('provider', 'gemini')
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
-            resume = data.get('resume', False)
             
-            if not message and not resume:
-                logger.warning("Streaming chat request missing message")
-                return jsonify({'error': 'Message is required'}), 400
+            if not message:
+                # If chat is running, we attach to its queue; otherwise it's an error.
+                if not is_chat_processing(chat_id):
+                    logger.warning("Streaming chat request missing message and no running job")
+                    return jsonify({'error': 'Message is required'}), 400
             
             chat = Chat(chat_id=chat_id)
             
@@ -129,10 +130,44 @@ def register_chat_routes(app: Flask):
                 yield "retry: 1500\n\n"
                 yield f"data: {json.dumps({'type': 'chat_id', 'content': chat.chat_id})}\n\n"
                 
-                if resume:
-                    # For resume, use the existing resume logic
-                    for chunk in chat.resume_text_stream():
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                if not message:
+                    # No message provided, attach to existing queue
+                    content_queue = get_content_queue(chat_id)
+                    
+                    try:
+                        # Send current chat state first
+                        from utils.db_utils import db
+                        current_state = db.get_chat_state(chat_id)
+                        if current_state:
+                            yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
+                        
+                        # Stream from existing queue
+                        while True:
+                            try:
+                                chunk = content_queue.get(timeout=30)
+                                
+                                if chunk['type'] == 'complete':
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                                    break
+                                elif chunk['type'] == 'error':
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                                    break
+                                
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                                
+                            except queue.Empty:
+                                yield ": keep-alive\n\n"
+                                
+                                if not is_chat_processing(chat_id):
+                                    logger.info(f"Background processing completed for chat {chat_id} while client was connected")
+                                    break
+                    except GeneratorExit:
+                        logger.info(f"Client disconnected from ongoing stream for chat {chat_id} - backend continues")
+                        pass
+                    except Exception as e:
+                        logger.error(f"Error connecting to ongoing stream for chat {chat_id}: {e}")
+                    
+                    return
                 else:
                     # For new messages, start background processing and stream from queue
                     success = chat.start_background_processing(
@@ -154,28 +189,19 @@ def register_chat_routes(app: Flask):
                             if current_state:
                                 yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
                             
-                            # Check if there are queued chunks and send them in batches to prevent overwhelming
-                            chunks_sent = 0
-                            max_burst = 10  # Max chunks to send in rapid succession
-                            
+                            # Stream from queue without artificial delays
                             while True:
                                 try:
                                     chunk = content_queue.get(timeout=30)
                                     
                                     if chunk['type'] == 'complete':
+                                        yield f"data: {json.dumps(chunk)}\n\n"
                                         break
                                     elif chunk['type'] == 'error':
                                         yield f"data: {json.dumps(chunk)}\n\n"
                                         break
                                     
                                     yield f"data: {json.dumps(chunk)}\n\n"
-                                    chunks_sent += 1
-                                    
-                                    # Add small delay after burst to prevent overwhelming frontend
-                                    if chunks_sent >= max_burst:
-                                        chunks_sent = 0
-                                        import time
-                                        time.sleep(0.01)  # 10ms pause
                                     
                                 except queue.Empty:
                                     yield ": keep-alive\n\n"
@@ -195,28 +221,19 @@ def register_chat_routes(app: Flask):
                     content_queue = get_content_queue(chat_id)
                     
                     try:
-                        chunks_sent = 0
-                        max_burst = 10  # Max chunks to send in rapid succession
-                        
                         while True:
                             try:
                                 # Block until content is available (no polling)
                                 chunk = content_queue.get(timeout=30)
                                 
                                 if chunk['type'] == 'complete':
+                                    yield f"data: {json.dumps(chunk)}\n\n"
                                     break
                                 elif chunk['type'] == 'error':
                                     yield f"data: {json.dumps(chunk)}\n\n"
                                     break
                                     
                                 yield f"data: {json.dumps(chunk)}\n\n"
-                                chunks_sent += 1
-                                
-                                # Add small delay after burst to prevent overwhelming frontend
-                                if chunks_sent >= max_burst:
-                                    chunks_sent = 0
-                                    import time
-                                    time.sleep(0.01)  # 10ms pause
                                 
                             except queue.Empty:
                                 # Send keep-alive if no content for 30 seconds

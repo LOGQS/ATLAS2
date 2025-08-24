@@ -364,10 +364,10 @@ function App() {
     logger.info('Chat confirms active state:', chatId, isReallyActive);
     if (isReallyActive) {
       setActiveChatId(chatId);
-    } else if (activeChatId === chatId) {
-      setActiveChatId('none');
+    } else {
+      setActiveChatId(prev => prev === chatId ? 'none' : prev);
     }
-  }, [activeChatId]);
+  }, []); // Remove activeChatId dependency
 
   const handleBulkDelete = async (chatIds: string[]) => {
     try {
@@ -542,8 +542,8 @@ function App() {
                 logger.info('Send button clicked for active chat:', activeChatId);
                 handleSend();
               }} 
-              className={`send-button ${isActiveChatStreaming ? 'loading' : ''}`}
-              disabled={isActiveChatStreaming}
+              className={`send-button ${(isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)) ? 'loading' : ''}`}
+              disabled={isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)}
             >
               {isActiveChatStreaming ? (
                 <div className="loading-spinner"></div>
@@ -581,8 +581,8 @@ function App() {
                   logger.info('Bottom send button clicked for active chat:', activeChatId);
                   handleSend();
                 }} 
-                className={`send-button ${isActiveChatStreaming ? 'loading' : ''}`}
-                disabled={isActiveChatStreaming}
+                className={`send-button ${(isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)) ? 'loading' : ''}`}
+                disabled={isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)}
               >
                 {isActiveChatStreaming ? (
                   <div className="loading-spinner"></div>

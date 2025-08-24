@@ -26,8 +26,18 @@ const logger = {
     console.debug(`[ATLAS]`, message, ...args);
   },
   info: (message: string, ...args: any[]) => {
-    // Filter out SCROLL logs from console but still buffer them
-    if (!message.includes('[SCROLL]')) {
+    // Filter out non-relevant logs for testing
+    const suppressedPatterns = [
+      '[SCROLL]',
+      'Loaded config:',
+      '[App.syncActiveChat]',
+      'Chat state changed:',
+      '[Chat.render]' // Suppressing render logs temporarily
+    ];
+    
+    const shouldSuppress = suppressedPatterns.some(pattern => message.includes(pattern));
+    
+    if (!shouldSuppress) {
       console.info(`[ATLAS]`, message, ...args);
     }
     addToBuffer('INFO', message, ...args);

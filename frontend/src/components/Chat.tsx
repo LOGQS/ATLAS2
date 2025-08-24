@@ -58,15 +58,10 @@ function parseSSE(buffer: string): string[] {
   return events;
 }
 
-// Simple cache to track loaded chats across component instances
-const chatCache = new Map<string, Message[]>();
-const chatCacheTimestamps = new Map<string, number>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateChange, onFirstMessageSent, onActiveStateChange, isActive = true, firstMessage }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showDelayedLoading, setShowDelayedLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<number | null>(null);
   const [config, setConfig] = useState<{provider: string, model: string} | null>(null);
@@ -74,12 +69,12 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   const [currentChatState, setCurrentChatState] = useState<'thinking' | 'responding' | 'static'>('static');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const loadingHistoryRef = useRef<string | null>(null);
-  const delayedLoadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
   const abortControllerRef = useRef<AbortController | null>(null);
   const loadedChatRef = useRef<string | null>(null);
   const currentLoadingChatRef = useRef<string | null>(null);
   const isLoadingRef = useRef<boolean>(false);
+  const processedChatRef = useRef<string | null>(null);
 
   const scrollToBottom = useCallback(() => {
     const container = messagesEndRef.current?.parentElement;
@@ -90,140 +85,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     }
   }, [chatId]);
 
-  // Cache management functions
-  const isCacheValid = useCallback((targetChatId: string): boolean => {
-    const timestamp = chatCacheTimestamps.get(targetChatId);
-    if (!timestamp) return false;
-    return Date.now() - timestamp < CACHE_TTL;
-  }, []);
 
-  const getCachedMessages = useCallback((targetChatId: string): Message[] | null => {
-    if (isCacheValid(targetChatId)) {
-      const cached = chatCache.get(targetChatId);
-      if (cached) {
-        logger.info(`[Cache] Using cached messages for chat ${targetChatId}`);
-        return cached;
-      }
-    }
-    return null;
-  }, [isCacheValid]);
-
-  const setCachedMessages = useCallback((targetChatId: string, messages: Message[]) => {
-    chatCache.set(targetChatId, [...messages]);
-    chatCacheTimestamps.set(targetChatId, Date.now());
-    logger.info(`[Cache] Cached ${messages.length} messages for chat ${targetChatId}`);
-  }, []);
-
-  const verifyAllChunksProcessed = useCallback(async (assistantMessageId: number, targetChatId: string) => {
-    logger.info(`[VERIFY] Starting verification for chat ${targetChatId}, messageId ${assistantMessageId}`);
-    logger.info(`[VERIFY] Current loading state: ${loading}, streamingMessageId: ${streamingMessageId}`);
-    
-    try {
-      if (targetChatId) {
-        logger.info(`[VERIFY] Making fetch request to /api/db/chat/${targetChatId}`);
-        const fetchStartTime = Date.now();
-        
-        // Add timeout to prevent hanging for 20+ seconds
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          logger.warn(`[VERIFY] Verification timeout after 5 seconds for chat ${targetChatId}`);
-          controller.abort();
-        }, 5000);
-        
-        try {
-          const response = await fetch(apiUrl(`/api/db/chat/${targetChatId}`), {
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          
-          const fetchDuration = Date.now() - fetchStartTime;
-          logger.info(`[VERIFY] Fetch completed in ${fetchDuration}ms, status: ${response.status}`);
-        
-        if (response.ok) {
-          logger.info(`[VERIFY] Response OK, parsing JSON...`);
-          const data = await response.json();
-          logger.info(`[VERIFY] Parsed JSON, history length: ${data.history?.length || 0}`);
-          
-          const lastMessage = data.history[data.history.length - 1];
-          logger.info(`[VERIFY] Last message role: ${lastMessage?.role}, id: ${lastMessage?.id}`);
-          
-          if (lastMessage && lastMessage.role === 'assistant') {
-            logger.info(`[VERIFY] Found assistant message, updating UI state...`);
-            setMessages(prev => prev.map(msg => {
-              if (msg.id === assistantMessageId) {
-                const newContent = lastMessage.content || msg.content;
-                const newThoughts = lastMessage.thoughts || msg.thoughts;
-                
-                const contentChanged = newContent !== msg.content || newThoughts !== msg.thoughts;
-                logger.info(`[VERIFY] Message ${assistantMessageId} content changed: ${contentChanged}`);
-                
-                if (contentChanged) {
-                  logger.info(`[VERIFY] Updating message content for ${assistantMessageId}`);
-                  return {
-                    ...msg,
-                    content: newContent,
-                    thoughts: newThoughts,
-                    isStreamingResponse: false
-                  };
-                } else {
-                  logger.info(`[VERIFY] No content change for message ${assistantMessageId}, just marking complete`);
-                  return { ...msg, isStreamingResponse: false };
-                }
-              }
-              return msg;
-            }));
-            
-            logger.info(`[VERIFY] Calling onChatStateChange with 'static' for chat ${targetChatId}`);
-            if (onChatStateChange) {
-              onChatStateChange(targetChatId, 'static');
-            }
-            logger.info(`[VERIFY] Verification complete for chat ${targetChatId}, returning early`);
-            return;
-          } else {
-            logger.warn(`[VERIFY] No assistant message found in response for chat ${targetChatId}`);
-          }
-        } else {
-          logger.warn(`[VERIFY] HTTP ${response.status} response for chat ${targetChatId}`);
-        }
-        } catch (timeoutError) {
-          clearTimeout(timeoutId);
-          if (timeoutError instanceof Error && timeoutError.name === 'AbortError') {
-            logger.warn(`[VERIFY] Verification timeout or abort for chat ${targetChatId}`);
-          } else {
-            logger.error(`[VERIFY] Fetch error for chat ${targetChatId}:`, timeoutError);
-          }
-        }
-      } else {
-        logger.warn(`[VERIFY] No targetChatId provided`);
-      }
-      
-      logger.info(`[VERIFY] Fallback: updating message ${assistantMessageId} without database verification`);
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId 
-          ? { ...msg, isStreamingResponse: false }
-          : msg
-      ));
-      
-      logger.info(`[VERIFY] Fallback: calling onChatStateChange with 'static' for chat ${targetChatId}`);
-      if (onChatStateChange) {
-        onChatStateChange(targetChatId, 'static');
-      }
-      logger.info(`[VERIFY] Fallback verification complete for chat ${targetChatId}`);
-    } catch (error) {
-      logger.error(`[VERIFY] Error during verification for chat ${targetChatId}:`, error);
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId 
-          ? { ...msg, isStreamingResponse: false }
-          : msg
-      ));
-      
-      logger.info(`[VERIFY] Error fallback: calling onChatStateChange with 'static' for chat ${targetChatId}`);
-      if (onChatStateChange) {
-        onChatStateChange(targetChatId, 'static');
-      }
-      logger.info(`[VERIFY] Error recovery complete for chat ${targetChatId}`);
-    }
-  }, [onChatStateChange, loading, streamingMessageId]);
 
   // Common chunk processing function to avoid duplication
   const processChunk = useCallback((chunk: any, assistantMessageId: number, targetChatId: string) => {
@@ -232,23 +94,17 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       return;
     }
 
-    logger.info(`[CHUNK] Processing chunk type: ${chunk.type} for chat ${targetChatId}, messageId: ${assistantMessageId}`);
+    logger.info(`[CHUNK] ===== PROCESSING LIVE CHUNK =====`);
+    logger.info(`[CHUNK] Type: ${chunk.type}, Chat: ${targetChatId}, MessageId: ${assistantMessageId}`);
 
     if (chunk.type === 'chat_state') {
       if (onChatStateChange && chunk.chat_id) onChatStateChange(chunk.chat_id, chunk.state);
       if (chunk.state === 'static') {
-        setShowDelayedLoading(false);
         setLoading(false);
         setStreamingMessageId(null);
-        // Don't enable send button here - wait for complete signal and verification
       }
       return null;
     } else if (chunk.type === 'thoughts') {
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-        delayedLoadingTimeoutRef.current = null;
-      }
-      setShowDelayedLoading(false);
       
       logger.info(`[SCROLL] Chat ${targetChatId} - Updating thoughts during streaming`);
       setMessages(prev => prev.map(msg =>
@@ -264,11 +120,6 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           : msg
       ));
     } else if (chunk.type === 'answer') {
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-        delayedLoadingTimeoutRef.current = null;
-      }
-      setShowDelayedLoading(false);
       
       logger.info(`[SCROLL] Chat ${targetChatId} - Updating message content during streaming`);
       setMessages(prev => prev.map(msg =>
@@ -296,12 +147,15 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   }, [onChatStateChange]);
 
   const resumeStream = useCallback(async (targetChatId: string, assistantMessageId: number) => {
+    logger.info(`[resumeStream] ===== RESUME STREAM CALLED =====`);
+    logger.info(`[resumeStream] Chat: ${targetChatId}, Message ID: ${assistantMessageId}`);
+    
     if (!isActive || !mountedRef.current) {
-      logger.warn('Attempted to resume stream for inactive/unmounted chat:', targetChatId);
+      logger.warn(`[resumeStream] CANNOT RESUME - isActive: ${isActive}, mounted: ${mountedRef.current}`);
       return;
     }
 
-    logger.info(`[resumeStream] Connecting to stream for chat: ${targetChatId}`);
+    logger.info(`[resumeStream] Connecting to backend stream for chat: ${targetChatId}`);
     
     try {
       setStreamingMessageId(assistantMessageId);
@@ -309,15 +163,14 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
       
-      // Connect to ongoing stream (backend handles whether it's resume or existing stream)
+      // Connect to ongoing stream with simple attach (no message, no resume)
       const response = await fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          chat_id: targetChatId,
-          resume: true
+          chat_id: targetChatId
         }),
         signal: abortController.signal
       });
@@ -350,21 +203,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
               const result = processChunk(chunk, assistantMessageId, targetChatId);
               
               if (result === 'complete') {
-                if (delayedLoadingTimeoutRef.current) {
-                  clearTimeout(delayedLoadingTimeoutRef.current);
-                  delayedLoadingTimeoutRef.current = null;
-                }
-                setShowDelayedLoading(false);
-                await verifyAllChunksProcessed(assistantMessageId, targetChatId);
-                logger.info(`[resumeStream] ==================== RESUME STREAM STATE RESET ====================`);
                 logger.info(`[resumeStream] Stream complete for chat ${targetChatId}, resetting states`);
-                logger.info(`[resumeStream] Current states before reset: loading=${loading}, streamingMessageId=${streamingMessageId}`);
                 setStreamingMessageId(null);
                 setLoading(false);
-                logger.info(`[resumeStream] ==================== RESUME STREAM STATE RESET COMPLETE ====================`);
               } else if (result === 'error') {
                 logger.error('Stream error:', chunk.content);
-                setShowDelayedLoading(false);
                 setLoading(false);
                 setStreamingMessageId(null);
                 if (onChatStateChange) {
@@ -387,18 +230,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
             const result = processChunk(chunk, assistantMessageId, targetChatId);
             
             if (result === 'complete') {
-              if (delayedLoadingTimeoutRef.current) {
-                clearTimeout(delayedLoadingTimeoutRef.current);
-                delayedLoadingTimeoutRef.current = null;
-              }
-              setShowDelayedLoading(false);
-              await verifyAllChunksProcessed(assistantMessageId, targetChatId);
               logger.info(`[resumeStream] Stream complete for chat ${targetChatId}`);
               setStreamingMessageId(null);
               setLoading(false);
             } else if (result === 'error') {
               logger.error('Stream error:', chunk.content);
-              setShowDelayedLoading(false);
               setLoading(false);
               setStreamingMessageId(null);
             }
@@ -420,7 +256,6 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         logger.error(`[resumeStream] Error for chat ${targetChatId}:`, error);
       }
       
-      setShowDelayedLoading(false);
       setLoading(false);
       setStreamingMessageId(null);
       
@@ -443,7 +278,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         abortControllerRef.current = null;
       }
     }
-  }, [isActive, processChunk, verifyAllChunksProcessed, loading, streamingMessageId, onChatStateChange]);
+  }, [isActive, processChunk, onChatStateChange]);
 
   useEffect(() => {
     const lastMessage = messages[messages.length - 1];
@@ -497,38 +332,22 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     loadConfig();
   }, [config]);
 
-  const loadChatHistoryImmediate = useCallback(async (targetChatId: string, retryCount = 0) => {
-    if (!targetChatId) return;
-    
-    // Check cache first
-    const cachedMessages = getCachedMessages(targetChatId);
-    if (cachedMessages && loadedChatRef.current === targetChatId && messages.length > 0) {
-      logger.info(`[Chat.loadChatHistoryImmediate] Chat history already loaded for: ${targetChatId}`);
-      return;
-    }
-    
-    if (cachedMessages) {
-      logger.info(`[Chat.loadChatHistoryImmediate] Loading from cache for: ${targetChatId}`);
-      setMessages(cachedMessages);
-      loadedChatRef.current = targetChatId;
-      setIsLoadingHistory(false);
-      return;
-    }
+  const loadChatHistoryImmediate = useCallback(async (targetChatId: string, retryCount = 0): Promise<Message[]> => {
+    if (!targetChatId) return [];
     
     // Prevent concurrent loads for the same chat
     if (currentLoadingChatRef.current === targetChatId || isLoadingRef.current) {
       logger.info(`[Chat.loadChatHistoryImmediate] Already loading history for chat: ${targetChatId}`);
-      return;
-    }
-    
-    // Only abort previous request if it's for a different chat
-    if (abortControllerRef.current && currentLoadingChatRef.current !== targetChatId) {
-      logger.info(`[Chat.loadChatHistoryImmediate] Aborting previous request for: ${currentLoadingChatRef.current}`);
-      abortControllerRef.current.abort();
+      return [];
     }
     
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    
+    // Add abort listener to track when this gets aborted
+    abortController.signal.addEventListener('abort', () => {
+      logger.info(`[loadChatHistoryImmediate] AbortController aborted for ${targetChatId} - reason: ${abortController.signal.reason || 'unknown'}`);
+    });
     
     currentLoadingChatRef.current = targetChatId;
     loadingHistoryRef.current = targetChatId;
@@ -539,7 +358,10 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       logger.info('[Chat.loadChatHistoryImmediate] Loading chat history for:', targetChatId);
       
       // Load backend state first - this is the source of truth
+      logger.info(`[loadChatHistoryImmediate] Making state fetch for ${targetChatId}`);
       const stateResponse = await fetch(apiUrl(`/api/db/chat/${targetChatId}/state`), { signal: abortController.signal });
+      logger.info(`[loadChatHistoryImmediate] State fetch completed for ${targetChatId}`);
+      
       let chatState: 'thinking' | 'responding' | 'static' = 'static';
       if (stateResponse.ok) {
         const stateData = await stateResponse.json();
@@ -548,14 +370,15 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       }
       
       // Load latest history from database (always fresh from backend)
+      logger.info(`[loadChatHistoryImmediate] Making history fetch for ${targetChatId}`);
       const historyResponse = await fetch(apiUrl(`/api/db/chat/${targetChatId}`), { signal: abortController.signal });
+      logger.info(`[loadChatHistoryImmediate] History fetch completed for ${targetChatId}`);
       
       if (historyResponse.ok) {
         const data = await historyResponse.json();
         
         if (chatState !== 'thinking' && chatState !== 'responding') {
           setStreamingMessageId(null);
-          setShowDelayedLoading(false);
           setLoading(false);
         }
         
@@ -577,15 +400,27 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           };
         });
         
-        logger.info(`[loadChatHistoryImmediate] Loaded ${formattedMessages.length} messages for chat ${targetChatId} with state: ${chatState}`);
+        logger.info(`[loadChatHistoryImmediate] ===== DB LOAD COMPLETE =====`);
+        logger.info(`[loadChatHistoryImmediate] Loaded ${formattedMessages.length} messages for chat ${targetChatId}`);
+        logger.info(`[loadChatHistoryImmediate] Backend state: ${chatState}`);
+        logger.info(`[loadChatHistoryImmediate] Message details:`, formattedMessages.map(m => ({
+          id: m.id, 
+          role: m.role, 
+          content: m.content.substring(0, 50) + '...', 
+          isStreaming: m.isStreaming,
+          isStreamingResponse: m.isStreamingResponse
+        })));
+        logger.info(`[loadChatHistoryImmediate] CALLING setMessages - FRONTEND SHOULD NOW SHOW ${formattedMessages.length} MESSAGES`);
         setMessages(formattedMessages);
-        setCachedMessages(targetChatId, formattedMessages);
         loadedChatRef.current = targetChatId;
+        logger.info(`[loadChatHistoryImmediate] ===== DB LOAD & RENDER COMPLETE =====`);
         
         // Update parent component with backend state
         if (onChatStateChange) {
           onChatStateChange(targetChatId, chatState);
         }
+        
+        return formattedMessages;
         
       } else if (historyResponse.status === 404) {
         logger.info(`[loadChatHistoryImmediate] Chat ${targetChatId} not found, starting fresh`);
@@ -596,15 +431,18 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         if (onChatStateChange) {
           onChatStateChange(targetChatId, 'static');
         }
+        
+        return [];
       } else {
         const errorData = await historyResponse.json();
         logger.error('Failed to load chat history:', errorData.error);
+        return [];
       }
     } catch (error) {
       // Don't log AbortError as it's expected when switching chats
       if (error instanceof Error && error.name === 'AbortError') {
         logger.info('Chat history loading aborted (expected when switching chats)');
-        return; // Exit early, don't update UI state
+        return []; // Exit early, don't update UI state
       } else {
         logger.error('Failed to load chat history:', error);
       }
@@ -612,6 +450,8 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       if (!abortController.signal.aborted) {
         setMessages([]); // ensure UI renders even on error
       }
+      
+      return [];
     } finally {
       if (abortControllerRef.current === abortController) {
         abortControllerRef.current = null;
@@ -623,53 +463,57 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       isLoadingRef.current = false;
       setIsLoadingHistory(false);
     }
-  }, [messages.length, onChatStateChange, getCachedMessages, setCachedMessages]);
-
-  // Update cache when messages change (debounced to avoid excessive updates)
-  useEffect(() => {
-    if (chatId && messages.length > 0 && loadedChatRef.current === chatId) {
-      const timeoutId = setTimeout(() => {
-        setCachedMessages(chatId, messages);
-      }, 100); // Small delay to batch updates
-      
-      return () => clearTimeout(timeoutId);
-    }
-  }, [messages, chatId, setCachedMessages]);
+  }, [onChatStateChange]);
 
 
-  const checkAndResumeStreaming = useCallback(async (targetChatId: string) => {
+
+  const checkAndResumeStreaming = useCallback(async (targetChatId: string, messagesFromDB?: Message[]) => {
+    logger.info(`[checkAndResumeStreaming] ===== CHECKING IF SHOULD RESUME STREAMING =====`);
+    logger.info(`[checkAndResumeStreaming] Target chat: ${targetChatId}`);
+    
     // Prevent multiple calls for the same chat while we're already checking
     if (currentLoadingChatRef.current === targetChatId && isLoadingRef.current) {
-      logger.info(`[Chat.checkAndResumeStreaming] Already checking state for chat: ${targetChatId}`);
+      logger.info(`[checkAndResumeStreaming] Already checking state for chat: ${targetChatId}`);
       return;
     }
     
     try {
       // 1) Read authoritative state from backend
+      logger.info(`[checkAndResumeStreaming] Reading backend state...`);
       const stateRes = await fetch(apiUrl(`/api/db/chat/${targetChatId}/state`));
       const stateJson = await stateRes.json();
       const chatState = stateRes.ok ? (stateJson.state as 'thinking' | 'responding' | 'static') : 'static';
 
-      logger.info(`[Chat.checkAndResumeStreaming] Backend state for chat ${targetChatId}: ${chatState}`);
+      logger.info(`[checkAndResumeStreaming] Backend state for chat ${targetChatId}: ${chatState}`);
 
       // 2) If not active, ensure UI reflects static state
       if (chatState !== 'thinking' && chatState !== 'responding') {
+        logger.info(`[checkAndResumeStreaming] Chat ${targetChatId} is STATIC - no streaming needed`);
         setStreamingMessageId(null);
         setLoading(false);
-        setShowDelayedLoading(false);
         if (onChatStateChange) {
           onChatStateChange(targetChatId, 'static');
         }
+        logger.info(`[checkAndResumeStreaming] ===== NO STREAMING NEEDED - COMPLETED =====`);
         return;
       }
 
       // 3) If backend is actively processing, reconnect to stream
-      const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+      logger.info(`[checkAndResumeStreaming] Chat ${targetChatId} is RUNNING (${chatState}) - need to resume streaming`);
+      const messagesToCheck = messagesFromDB || messages;
+      logger.info(`[checkAndResumeStreaming] Using ${messagesToCheck.length} messages (${messagesFromDB ? 'from DB' : 'from React state'})`);
+      const lastAssistant = [...messagesToCheck].reverse().find(m => m.role === 'assistant');
       
       if (lastAssistant) {
+        logger.info(`[checkAndResumeStreaming] Found last assistant message to resume:`, {
+          id: lastAssistant.id,
+          content: lastAssistant.content.substring(0, 50) + '...'
+        });
+        
         setStreamingMessageId(lastAssistant.id);
         
         // Update UI to reflect backend state
+        logger.info(`[checkAndResumeStreaming] Updating UI state for streaming: ${chatState}`);
         setMessages(prev => prev.map(m =>
           m.id === lastAssistant.id
             ? {
@@ -681,18 +525,19 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         ));
         
         // Connect to ongoing stream (backend will handle reconnection)
-        logger.info(`[Chat.checkAndResumeStreaming] Reconnecting to ongoing stream for chat ${targetChatId}`);
+        logger.info(`[checkAndResumeStreaming] ===== STARTING RESUME STREAM =====`);
         resumeStream(targetChatId, lastAssistant.id);
         
         if (onChatStateChange) {
           onChatStateChange(targetChatId, chatState);
         }
+      } else {
+        logger.warn(`[checkAndResumeStreaming] No assistant message found to resume for chat ${targetChatId}`);
       }
     } catch (e) {
       logger.error('[Chat.checkAndResumeStreaming] failed:', e);
       setStreamingMessageId(null);
       setLoading(false);
-      setShowDelayedLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeStream, onChatStateChange]);
@@ -721,13 +566,6 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         isStreamingResponse: false
       };
       
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-      }
-      
-      delayedLoadingTimeoutRef.current = setTimeout(() => {
-        setShowDelayedLoading(true);
-      }, 5000);
       
       const assistantMessage: Message = {
         id: assistantMessageId,
@@ -791,14 +629,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
               const result = processChunk(chunk, assistantMessageId, chatId!);
               
               if (result === 'complete') {
-                if (delayedLoadingTimeoutRef.current) {
-                  clearTimeout(delayedLoadingTimeoutRef.current);
-                  delayedLoadingTimeoutRef.current = null;
-                }
-                setShowDelayedLoading(false);
-                logger.info(`[STREAM] Completion signal received for chat ${chatId}, verifying chunks...`);
-                await verifyAllChunksProcessed(assistantMessageId, chatId!);
-                logger.info(`[STREAM] Streaming complete for chat ${chatId}, resetting states`);
+                logger.info(`[STREAM] Completion signal received for chat ${chatId}`);
                 setStreamingMessageId(null);
                 setLoading(false);
               }
@@ -819,34 +650,8 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
             
             if (result === 'complete') {
               logger.info(`[STREAM] Main loop completion signal received for chat ${chatId}, messageId ${assistantMessageId}`);
-              logger.info(`[STREAM] Current states before verification - loading: ${loading}, streamingMessageId: ${streamingMessageId}`);
-              
-              if (delayedLoadingTimeoutRef.current) {
-                clearTimeout(delayedLoadingTimeoutRef.current);
-                delayedLoadingTimeoutRef.current = null;
-                logger.info(`[STREAM] Cleared delayed loading timeout`);
-              }
-              setShowDelayedLoading(false);
-              
-              // CRITICAL: Keep loading states active during verification to prevent duplicate sends
-              logger.info(`[STREAM] Keeping loading states active during verification for chat ${chatId}`);
-              logger.info(`[STREAM] Starting chunk verification for chat ${chatId}...`);
-              
-              try {
-                await verifyAllChunksProcessed(assistantMessageId, chatId!);
-                logger.info(`[STREAM] Chunk verification completed for chat ${chatId}`);
-              } catch (error) {
-                logger.error(`[STREAM] Verification failed for chat ${chatId}:`, error);
-              }
-              
-              logger.info(`[STREAM] ==================== STATE RESET ====================`);
-              logger.info(`[STREAM] About to reset loading states for chat ${chatId}`);
-              logger.info(`[STREAM] Current states before reset: loading=${loading}, streamingMessageId=${streamingMessageId}`);
-              logger.info(`[STREAM] Setting streamingMessageId: ${streamingMessageId} -> null`);
               setStreamingMessageId(null);
-              logger.info(`[STREAM] Setting loading: ${loading} -> false`);
               setLoading(false);
-              logger.info(`[STREAM] ==================== STATE RESET COMPLETE ====================`);
               logger.info(`[STREAM] Main loop streaming complete for chat ${chatId}, all states reset`);
             }
           } catch (e) {
@@ -859,11 +664,6 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         buffer = lastSep >= 0 ? buffer.slice(lastSep + 2) : buffer;
       }
     } catch (error) {
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-        delayedLoadingTimeoutRef.current = null;
-      }
-      setShowDelayedLoading(false);
       
       // Don't log AbortError as it's expected when switching chats
       if (error instanceof Error && error.name === 'AbortError') {
@@ -890,39 +690,28 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         abortControllerRef.current = null;
       }
     }
-  }, [isActive, config, chatId, processChunk, verifyAllChunksProcessed, loading, streamingMessageId]);
+  }, [isActive, config, chatId, processChunk]);
 
   const handleNewMessage = useCallback((content: string) => {
     logger.info(`[SEND] ==================== MESSAGE SEND ATTEMPT ====================`);
     logger.info(`[SEND] handleNewMessage called for chat ${chatId}: "${content.substring(0, 50)}"`);
     logger.info(`[SEND] Current state - isActive: ${isActive}, loading: ${loading}, streamingMessageId: ${streamingMessageId}`);
     logger.info(`[SEND] Current chat state: ${currentChatState}`);
-    logger.info(`[SEND] Show delayed loading: ${showDelayedLoading}`);
     
     if (!isActive) {
       logger.warn(`[SEND] BLOCKED: Chat ${chatId} is not active`);
       return;
     }
 
-    // Enhanced duplicate prevention with detailed logging
-    if (loading && streamingMessageId) {
-      logger.warn(`[SEND] ==================== DUPLICATE PREVENTION TRIGGERED ====================`);
-      logger.warn(`[SEND] BLOCKING: Message already being processed for chat ${chatId}`);
-      logger.warn(`[SEND] Blocking reason: loading=${loading} AND streamingMessageId=${streamingMessageId}`);
-      logger.warn(`[SEND] This suggests completion signal was received but verification is still running`);
-      logger.warn(`[SEND] If this is a legitimate follow-up message, the completion flow has a bug`);
-      logger.warn(`[SEND] ==================== END DUPLICATE PREVENTION ====================`);
+    // Prevent sending while streaming or loading history
+    if (loading) {
+      logger.warn(`[SEND] BLOCKED: Chat ${chatId} still streaming`);
       return;
     }
-    
-    if (loading && !streamingMessageId) {
-      logger.warn(`[SEND] UNUSUAL STATE: loading=true but streamingMessageId=null for chat ${chatId}`);
-      logger.warn(`[SEND] This suggests loading state cleanup issue - allowing message to proceed`);
-    }
-    
-    if (!loading && streamingMessageId) {
-      logger.warn(`[SEND] UNUSUAL STATE: loading=false but streamingMessageId=${streamingMessageId} for chat ${chatId}`);
-      logger.warn(`[SEND] This suggests incomplete state cleanup - allowing message to proceed but may cause issues`);
+
+    if (isLoadingHistory) {
+      logger.warn(`[SEND] BLOCKED: Chat ${chatId} still loading history`);
+      return;
     }
 
     logger.info(`[SEND] ==================== PROCEEDING WITH MESSAGE SEND ====================`);
@@ -936,156 +725,151 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     if (onMessageSent) {
       onMessageSent(content);
     }
-  }, [chatId, isActive, loading, streamingMessageId, currentChatState, showDelayedLoading, streamAIResponse, onMessageSent]);
+  }, [chatId, isActive, loading, isLoadingHistory, streamingMessageId, currentChatState, streamAIResponse, onMessageSent]);
 
   useImperativeHandle(ref, () => ({
-    handleNewMessage
+    handleNewMessage,
+    isBusy: () => Boolean(
+      loading ||
+      isLoadingHistory ||
+      streamingMessageId !== null
+    )
   }));
 
   useEffect(() => {
-    logger.info('[Chat.useEffect1] Chat ID or active state changed:', chatId, isActive);
+    logger.info(`[Chat.useEffect1] === EFFECT TRIGGERED ===`);
+    logger.info(`[Chat.useEffect1] chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}`);
+    logger.info(`[Chat.useEffect1] processedChatRef.current: ${processedChatRef.current}`);
     
-    // Reset mounted state for new chat
-    mountedRef.current = true;
-    
-    // Abort HTTP streaming when switching chats (but backend continues processing)
-    const previousChat = loadedChatRef.current;
-    if (abortControllerRef.current && previousChat !== chatId) {
-      logger.info(`[Chat.useEffect1] Aborting HTTP stream for previous chat ${previousChat} (backend continues processing)`);
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    // Skip if we've already processed this exact chat switch
+    if (processedChatRef.current === chatId && isActive && !firstMessage) {
+      logger.info(`[Chat.useEffect1] SKIPPING - already processed chat ${chatId}`);
+      return;
     }
     
-    // Only clear state if this is actually a different chat AND not switching back to a previously loaded chat
-    const isDifferentChat = previousChat !== chatId;
-    const isNewChat = chatId && firstMessage; // New chat has firstMessage
-    const isSwitchingBackToExisting = isDifferentChat && !isNewChat;
+    logger.info(`[Chat.useEffect1] loadedChatRef.current: ${loadedChatRef.current}`);
+    logger.info(`[Chat.useEffect1] currentLoadingChatRef.current: ${currentLoadingChatRef.current}`);
     
-    if (isDifferentChat && isNewChat) {
-      logger.info('[Chat.useEffect1] Clearing state for new chat:', chatId);
+    mountedRef.current = true;
+
+    // Abort only if switching away from a different chat
+    const prev = currentLoadingChatRef.current;
+    if (abortControllerRef.current && prev && prev !== chatId) {
+      logger.info(`[Chat.useEffect1] Aborting in-flight request for previous chat ${prev} FROM USEEFFECT1`);
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    } else if (abortControllerRef.current && prev === chatId) {
+      logger.info(`[Chat.useEffect1] NOT aborting - same chat ${chatId}, prev: ${prev}`);
+    } else if (!abortControllerRef.current) {
+      logger.info(`[Chat.useEffect1] No abort controller to abort`);
+    }
+
+    const isNewChat = !!(chatId && firstMessage);
+    const isDifferentChat = loadedChatRef.current !== chatId;
+    
+    logger.info(`[Chat.useEffect1] isNewChat: ${isNewChat}, isDifferentChat: ${isDifferentChat}`);
+    
+    // Clear processed flag if switching to a different chat
+    if (isDifferentChat) {
+      processedChatRef.current = null;
+      logger.info(`[Chat.useEffect1] CLEARED processed flag for different chat`);
+    }
+
+    if (!chatId || !isActive) {
+      logger.info(`[Chat.useEffect1] EARLY RETURN - chatId: ${chatId}, isActive: ${isActive}`);
+      return;
+    }
+
+    // Mark this chat as processed to prevent duplicate calls
+    processedChatRef.current = chatId;
+    logger.info(`[Chat.useEffect1] MARKED ${chatId} as processed`);
+
+    if (isNewChat && isDifferentChat) {
+      logger.info(`[Chat.useEffect1] HANDLING NEW CHAT`);
+      // fresh new chat started by first message
       setFirstMessageSent(false);
-      setShowDelayedLoading(false);
       setStreamingMessageId(null);
       setLoading(false);
       setIsLoadingHistory(false);
       loadingHistoryRef.current = null;
       loadedChatRef.current = null;
       setMessages([]);
-      
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-        delayedLoadingTimeoutRef.current = null;
-      }
-    } else if (isSwitchingBackToExisting) {
-      logger.info('[Chat.useEffect1] Switching to existing chat:', chatId);
-      
-      // Check cache first before deciding to load
-      const cachedMessages = chatId ? getCachedMessages(chatId) : null;
-      if (cachedMessages) {
-        logger.info('[Chat.useEffect1] Found cached messages, using them');
-        setMessages(cachedMessages);
-        loadedChatRef.current = chatId || null;
-        setIsLoadingHistory(false);
-      } else if (loadedChatRef.current !== chatId) {
-        logger.info('[Chat.useEffect1] Chat not in cache, will load from backend');
-        setMessages([]);
-        setIsLoadingHistory(true);
-      } else {
-        logger.info('[Chat.useEffect1] Chat already loaded, keeping existing messages');
-      }
-      
-      // Clear loading states
-      setShowDelayedLoading(false);
+    } else if (isDifferentChat) {
+      logger.info(`[Chat.useEffect1] HANDLING EXISTING CHAT - STARTING LOAD`);
+      // existing chat: clear and show skeleton, then load history
+      setStreamingMessageId(null);
       setLoading(false);
+      setIsLoadingHistory(true);
+      loadingHistoryRef.current = chatId;
+      loadedChatRef.current = null;
+      setMessages([]);
       
-      if (delayedLoadingTimeoutRef.current) {
-        clearTimeout(delayedLoadingTimeoutRef.current);
-        delayedLoadingTimeoutRef.current = null;
+      // Check if already loading this specific chat
+      const alreadyLoading = currentLoadingChatRef.current === chatId;
+      logger.info(`[Chat.useEffect1] Already loading ${chatId}? ${alreadyLoading}`);
+      
+      if (!alreadyLoading) {
+        logger.info(`[Chat.useEffect1] STARTING ASYNC LOAD for ${chatId}`);
+        // Load history immediately, no separate useEffect needed
+        (async () => {
+          if (!mountedRef.current) {
+            logger.info(`[Chat.useEffect1] Component unmounted, aborting load for ${chatId}`);
+            return;
+          }
+          
+          logger.info(`[Chat.useEffect1] ===== STEP 1: LOADING ALL MESSAGES FROM DB =====`);
+          const loadedMessages = await loadChatHistoryImmediate(chatId);
+          
+          logger.info(`[Chat.useEffect1] ===== STEP 2: CHECKING IF SHOULD RESUME STREAMING =====`);
+          await checkAndResumeStreaming(chatId, loadedMessages);
+          
+          logger.info(`[Chat.useEffect1] ===== BOTH STEPS COMPLETED FOR ${chatId} =====`);
+        })();
+      } else {
+        logger.info(`[Chat.useEffect1] SKIPPING LOAD - already in progress for ${chatId}`);
       }
+    } else {
+      logger.info(`[Chat.useEffect1] CHAT ALREADY LOADED - no action needed`);
     }
-    
-    // Notify active state change once per chat/isActive combination
+
+    // Call onActiveStateChange since we've already prevented duplicates at the effect level
     if (onActiveStateChange && chatId) {
-      logger.info('[Chat.useEffect1] Calling onActiveStateChange:', chatId, isActive);
+      logger.info(`[Chat.useEffect1] Calling onActiveStateChange(${chatId}, ${isActive})`);
       onActiveStateChange(chatId, isActive);
     }
-  }, [chatId, isActive, onActiveStateChange, firstMessage, getCachedMessages]);
+    
+    logger.info(`[Chat.useEffect1] === EFFECT COMPLETED ===`);
+  }, [chatId, isActive, firstMessage, onActiveStateChange, loadChatHistoryImmediate, checkAndResumeStreaming]);
 
-  useEffect(() => {
-    // Only load history for existing chats (not new chats with firstMessage)  
-    if (chatId && isActive && !firstMessage) {
-      // Check if we need to load this chat
-      const needsLoading = loadedChatRef.current !== chatId;
-      const isNotCurrentlyLoading = currentLoadingChatRef.current !== chatId;
-      const hasMessages = messages.length > 0;
-      
-      // Skip if already loaded with messages
-      if (!needsLoading && hasMessages) {
-        logger.info(`[Chat.useEffect3] Chat ${chatId} - already loaded in cache, no sync needed`);
-        return;
-      }
-      
-      if (needsLoading && isNotCurrentlyLoading) {
-        logger.info(`[Chat.useEffect3] Chat ${chatId} - loading existing chat and syncing with backend`);
-        
-        // Add a small delay to debounce rapid successive calls
-        const timeoutId = setTimeout(async () => {
-          if (!mountedRef.current || loadedChatRef.current === chatId) return;
-          
-          logger.info(`[Chat.useEffect3] Chat ${chatId} - executing sync with backend`);
-          
-          try {
-            // Step 1: Load latest database content (this updates UI with current backend state)
-            await loadChatHistoryImmediate(chatId);
-            
-            // Step 2: If chat is actively processing in backend, reconnect to stream
-            if (chatId && mountedRef.current && isActive) {
-              logger.info(`[Chat.useEffect3] Chat ${chatId} - checking for active streams to reconnect`);
-              await checkAndResumeStreaming(chatId);
-            }
-          } catch (error) {
-            logger.error(`[Chat.useEffect3] Error syncing chat ${chatId} with backend:`, error);
-          }
-        }, 10); // Small debounce delay
-        
-        return () => clearTimeout(timeoutId);
-      }
-    }
-  }, [chatId, isActive, firstMessage, messages.length, loadChatHistoryImmediate, checkAndResumeStreaming]);
+  // History loading is now handled in the main useEffect above
 
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && config && !firstMessageSent) {
       // Mark this chat as loaded to prevent history loading
       loadedChatRef.current = chatId;
       
-      // Small delay to ensure component is fully initialized
-      const timeoutId = setTimeout(() => {
-        if (mountedRef.current && isActive) {
-          logger.info('Sending first message for new chat:', chatId);
-          handleNewMessage(firstMessage);
-          setFirstMessageSent(true);
-          if (onFirstMessageSent) {
-            onFirstMessageSent(chatId);
-          }
+      // Send first message immediately
+      if (mountedRef.current && isActive) {
+        logger.info('Sending first message for new chat:', chatId);
+        handleNewMessage(firstMessage);
+        setFirstMessageSent(true);
+        if (onFirstMessageSent) {
+          onFirstMessageSent(chatId);
         }
-      }, 50);
-      
-      return () => clearTimeout(timeoutId);
+      }
     }
   }, [chatId, isActive, firstMessage, config, firstMessageSent, handleNewMessage, onFirstMessageSent]);
 
   useEffect(() => {
+    logger.info(`[Chat.mount] Component mounted - ensuring mountedRef.current = true`);
+    mountedRef.current = true;
+    
     return () => {
+      logger.info(`[Chat.cleanup] Component cleanup - setting mountedRef.current = false`);
       mountedRef.current = false;
-
-
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      if (delayedLoadingTimeoutRef.current) clearTimeout(delayedLoadingTimeoutRef.current);
+      // Note: No longer aborting controllers here as useEffect1 manages all abortion
     };
-  }, [chatId]);
+  }, []); // Only run on mount/unmount, not on chatId changes
 
   const renderMessage = (message: Message, originalIndex: number) => {
     if (message.role === 'user') {
@@ -1122,27 +906,15 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     );
   };
 
+  const frontendBusy = Boolean(loading || isLoadingHistory || streamingMessageId !== null);
+  logger.info(`[Chat.render] ===== FRONTEND STATE =====`);
+  logger.info(`[Chat.render] Chat: ${chatId}, Messages: ${messages.length}, isLoadingHistory: ${isLoadingHistory}`);
+  logger.info(`[Chat.render] loading: ${loading}, streamingMessageId: ${streamingMessageId}, frontendBusy: ${frontendBusy}`);
+  
   return (
     <div className="chat-messages">
       <div className="messages-container">
         <div className="spacer" style={{flexGrow: 1}}></div>
-        {showDelayedLoading && (
-          <div className="delayed-loading-indicator" aria-live="polite">
-            <div className="delayed-loading-content">
-              <div className="delayed-loading-spinner"></div>
-              <span>Thinking...</span>
-            </div>
-          </div>
-        )}
-        {loading && messages.length > 0 && !streamingMessageId && (
-          <div className="typing-indicator">
-            <div className="typing-animation">
-              <div className="dot"></div>
-              <div className="dot"></div>
-              <div className="dot"></div>
-            </div>
-          </div>
-        )}
         {messages.slice().reverse().map((message) => {
           const originalIndex = messages.findIndex(m => m.id === message.id);
           return renderMessage(message, originalIndex);
