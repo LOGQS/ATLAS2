@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify, Response
 import json
 import queue
 import time
+from threading import Lock
 from chat.chat import Chat, is_chat_processing, cleanup_completed_threads
 from utils.config import Config
 from utils.logger import get_logger
@@ -14,15 +15,42 @@ logger = get_logger(__name__)
 state_change_queue = queue.Queue()
 content_queues = {}  # chat_id -> queue for content chunks
 
+# Global broadcaster for all chats
+_subscribers = []
+_sub_lock = Lock()
+
+def _subscribe():
+    q = queue.Queue()
+    with _sub_lock:
+        _subscribers.append(q)
+    return q
+
+def _unsubscribe(q):
+    with _sub_lock:
+        if q in _subscribers: _subscribers.remove(q)
+
+def _broadcast(event: dict):
+    with _sub_lock:
+        for q in list(_subscribers):
+            try:
+                q.put(event, block=False)
+            except queue.Full:
+                # Remove full subscribers to prevent memory leaks
+                _subscribers.remove(q)
+
 def publish_state(chat_id: str, state: str):
     """Publishes a chat state change to the queue."""
     state_change_queue.put({'chat_id': chat_id, 'state': state})
+    # Also broadcast to global stream
+    _broadcast({"chat_id": chat_id, "type": "chat_state", "state": state})
 
 def publish_content(chat_id: str, chunk_type: str, content: str):
     """Publishes a content chunk to the chat's content queue."""
     if chat_id not in content_queues:
         content_queues[chat_id] = queue.Queue()
     content_queues[chat_id].put({'type': chunk_type, 'content': content})
+    # Also broadcast to global stream
+    _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
 
 def get_content_queue(chat_id: str):
     """Get or create content queue for a chat."""
@@ -71,6 +99,25 @@ def register_chat_routes(app: Flask):
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no'
+        })
+    
+    @app.route('/api/chat/stream/all', methods=['GET'])
+    def stream_all():
+        """SSE endpoint for all chat streams - single global stream"""
+        def generate():
+            q = _subscribe()
+            try:
+                yield 'event: ping\ndata: {}\n\n'
+                while True:
+                    ev = q.get()  # blocks until event available
+                    yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+            finally:
+                _unsubscribe(q)
+        return Response(generate(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+            'Access-Control-Allow-Origin': '*'
         })
 
     @app.route('/api/chat/send', methods=['POST'])

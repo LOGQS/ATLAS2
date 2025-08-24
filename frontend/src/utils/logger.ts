@@ -67,6 +67,26 @@ const logger = {
       '[Chat.useEffect1]',
       'Error during async load',
       'Error during same-chat load',
+      // Chat flow debugging
+      '[Chat] Sending message',
+      '[Chat] Message sent successfully',
+      '[Chat] Loading history',
+      '[Chat] Loaded',
+      '[Chat] Empty DB for',
+      '[Chat] New chat',
+      '[Chat] Cannot send message',
+      '[Chat] Finalizing',
+      '[Chat] Creating optimistic',
+      '[Chat] Current message count',
+      '[Chat] Applying overlay',
+      '[Chat] Have overlay buffers',
+      '[LiveStore]',
+      'State update for',
+      'Thoughts chunk for',
+      'Content chunk for',
+      'Stream complete for',
+      'Reconciled',
+      'Reset state for',
     ];
     
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));

@@ -13,7 +13,7 @@ import SettingsWindow from './sections/SettingsWindow';
 import logger from './utils/logger';
 import { apiUrl } from './config/api';
 import { BrowserStorage } from './utils/BrowserStorage';
-import { subscribe } from './utils/chatstate';
+import { liveStore } from './utils/LiveStore';
 
 interface ChatItem {
   id: string;
@@ -37,6 +37,8 @@ function App() {
     
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
+      // Start LiveStore first so it's ready to receive events
+      liveStore.start();
       await loadChatsFromDatabase();
       await loadActiveChat();
       setIsAppInitialized(true);
@@ -45,11 +47,15 @@ function App() {
   }, [isAppInitialized]);
 
   useEffect(() => {
-    const off = subscribe((chatId, state) => {
-      setChats(prev => prev.map(c => c.id === chatId ? { ...c, state } : c));
-    });
-    return off;
-  }, []);
+    // Subscribe to LiveStore for all chats' state changes
+    const unsubs = chats.map(chat =>
+      liveStore.subscribe(chat.id, (_id, snap) => {
+        setChats(prev => prev.map(c => c.id === _id ? { ...c, state: snap.state } : c));
+      })
+    );
+    return () => unsubs.forEach(unsub => unsub && unsub());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats.map(c => c.id).join(',')]); // reattach when chat list changes
 
   const loadActiveChat = async () => {
     try {
