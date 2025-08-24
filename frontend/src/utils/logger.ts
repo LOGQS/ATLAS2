@@ -4,6 +4,19 @@
 let logBuffer: string[] = [];
 const MAX_LOG_ENTRIES = 5000; // Keep last 5000 log entries
 
+// Sampling and compacting helpers
+let counters: Record<string, number> = {};
+const sample = (key: string, n: number) => ((counters[key] = (counters[key]||0)+1) % n) === 0;
+
+function compact(obj: any, max = 120) {
+  try {
+    const s = typeof obj === 'string' ? obj : JSON.stringify(obj);
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  } catch { return String(obj); }
+}
+
+const fmtArgs = (...args: any[]) => args.map(a => compact(a, 160));
+
 function addToBuffer(level: string, message: string, ...args: any[]) {
   const timestamp = new Date().toISOString();
   const argsStr = args.length > 0 ? ' ' + args.map(arg => 
@@ -23,7 +36,7 @@ function addToBuffer(level: string, message: string, ...args: any[]) {
 const logger = {
   debug: (message: string, ...args: any[]) => {
     addToBuffer('DEBUG', message, ...args);
-    console.debug(`[ATLAS]`, message, ...args);
+    console.debug(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   info: (message: string, ...args: any[]) => {
     const allowedPatterns = [
@@ -34,22 +47,42 @@ const logger = {
       '[RESUME/cold-start]',
       '[OWNER/retarget]',
       '[STATE] ', // state transitions only
+      '[DIA]', // diagnostic logs
+      '[DB-snap]',
+      '[DB-merge]',
+      '[DB-apply]',
+      '[DB-retarget]',
+      '[STREAM/drain]',
+      '[STREAM/event]',
+      '[AUDIT/len]',
+      '[CHUNK-apply]',
+      '[RESUME-attach]',
+      '[RESUME-own]',
+      '[CHUNK/prevent-shrink]',
+      '[OWNER/already-synced]',
+      '[OWNER/retarget-sync-fail]',
+      'checkAndResumeStreaming',
+      'resumeStream',
+      'loadChatHistoryImmediate',
+      '[Chat.useEffect1]',
+      'Error during async load',
+      'Error during same-chat load',
     ];
     
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     
     if (shouldShow) {
-      console.info(`[ATLAS]`, message, ...args);
+      console.info(`[ATLAS]`, message, ...fmtArgs(...args));
     }
     addToBuffer('INFO', message, ...args);
   },
   warn: (message: string, ...args: any[]) => {
     addToBuffer('WARN', message, ...args);
-    console.warn(`[ATLAS]`, message, ...args);
+    console.warn(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   error: (message: string, ...args: any[]) => {
     addToBuffer('ERROR', message, ...args);
-    console.error(`[ATLAS]`, message, ...args);
+    console.error(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   
   // Function to download logs as a file
@@ -85,5 +118,8 @@ const logger = {
 // Add global function for easy access from browser console
 (window as any).downloadAtlasLogs = logger.downloadLogs;
 (window as any).clearAtlasLogs = logger.clearLogs;
+
+// Export helpers for use in components
+export { sample, compact };
 
 export default logger;

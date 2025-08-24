@@ -14,10 +14,15 @@ export interface MsgLike {
 }
 
 function appendWithOverlap(prev: string, next: string, maxOverlap = 200): string {
+  const prevLen = prev?.length ?? 0;
   if (!prev) return next || '';
   if (!next) return prev;
-  const start = Math.max(0, prev.length - maxOverlap);
+
+  // adapt to long paragraphs
+  const dyn = Math.min(Math.max(200, Math.floor(prevLen * 0.25)), 4096);
+  const start = Math.max(0, prevLen - dyn);
   const win = prev.slice(start);
+
   for (let i = Math.min(win.length, next.length); i > 0; i--) {
     if (win.endsWith(next.slice(0, i))) return prev + next.slice(i);
   }
@@ -51,11 +56,33 @@ class StreamReconciler {
     }
   }
 
+  /** Change active msgId without resetting the accumulated buffers. */
+  retarget(chatId: string, newMsgId: number) {
+    const s = this.byChat.get(chatId);
+    if (!s) {
+      this.byChat.set(chatId, { msgId: newMsgId, content: '', thoughts: '' });
+      return;
+    }
+    this.byChat.set(chatId, { ...s, msgId: newMsgId }); // keep content/thoughts
+  }
+
   push(chatId: string, field: Field, delta: string) {
     const s = this.byChat.get(chatId);
     if (!s || s.msgId == null) return;
     if (field === 'content') s.content = appendWithOverlap(s.content, delta);
     else s.thoughts = appendWithOverlap(s.thoughts, delta);
+  }
+
+  debugState(chatId: string) {
+    const s = this.byChat.get(chatId);
+    if (!s) return `[no-buffer]`;
+    return `{msgId:${s.msgId}, contentLen:${s.content.length}, thoughtsLen:${s.thoughts.length}}`;
+  }
+
+  getBufferedText(chatId: string, field: Field): string | null {
+    const s = this.byChat.get(chatId);
+    if (!s || s.msgId == null) return null;
+    return field === 'content' ? s.content : s.thoughts;
   }
 
   // Merge buffered text into a fresh DB snapshot before rendering.

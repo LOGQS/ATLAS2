@@ -241,6 +241,7 @@ function App() {
     
     // IMMEDIATE UI updates for instant feedback with loading state
     setActiveChatId(chatId);
+    logger.info(`[DIA][APP-switch] to=${chatId}`);
     setChats(prev => prev.map(chat => ({ 
       ...chat, 
       isActive: chat.id === chatId 

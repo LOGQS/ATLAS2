@@ -5,7 +5,7 @@ import UserMessage from './UserMessage';
 import ThinkBox from './ThinkBox';
 import '../styles/Chat.css';
 import '../styles/ThinkBox.css';
-import logger from '../utils/logger';
+import logger, { sample, compact } from '../utils/logger';
 import { apiUrl } from '../config/api';
 import { subscribe } from '../utils/chatstate';
 import { streamReconciler } from '../utils/streamReconciler';
@@ -99,7 +99,9 @@ function appendWithOverlap(prev: string, next: string, maxOverlap = 200): string
     return prev;
   }
 
-  const start = Math.max(0, prevLen - maxOverlap);
+  // adapt to long paragraphs
+  const dyn = Math.min(Math.max(200, Math.floor(prevLen * 0.25)), 4096);
+  const start = Math.max(0, prevLen - dyn);
   const win = prev.slice(start);
   for (let i = Math.min(win.length, next.length); i > 0; i--) {
     if (win.endsWith(next.slice(0, i))) { 
@@ -157,10 +159,13 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   const auditLen = useCallback((msgId: number, newText: string, label: string, sid: string, seq: number) => {
     const prev = msgLenRef.current[msgId] ?? 0;
     const now = newText.length;
+
+    // Treat decreases as a WARN (races can legitimately reorder baselines)
     if (now < prev) {
-      logger.error(`[AUDIT/len] sid=${sid} seq=${seq} msg=${msgId} ${label} lengthDecreased ${prev}->${now}`);
-    } else {
-      logger.debug(`[AUDIT/len] sid=${sid} seq=${seq} msg=${msgId} ${label} ${prev}->${now}`);
+      logger.warn(`[AUDIT/len] sid=${sid} seq=${seq} msg=${msgId} ${label} lengthDecreased ${prev}->${now}`);
+      // reset baseline to avoid cascading warnings
+      msgLenRef.current[msgId] = now;
+      return;
     }
     msgLenRef.current[msgId] = now;
   }, []);
@@ -176,8 +181,18 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
 
     if (!curChat || curMsg == null) return null;
 
-    // route-guard: only accept if we still own this chat
-    if (chunk.chat_id && chunk.chat_id !== curChat) return null;
+    // Enhanced route-guard: require valid stream ownership
+    // Block if chunk lacks chat_id OR if chat_id doesn't match current owner
+    if (!chunk.chat_id || chunk.chat_id !== curChat) {
+      logger.info(`[DIA][CHUNK-drop] sid=${meta?.sid} seq=${seq} got.chat=${chunk.chat_id || 'MISSING'} owner.chat=${curChat} reason=${!chunk.chat_id ? 'missing_chat_id' : 'chat_mismatch'}`);
+      return null;
+    }
+    
+    // Additional stream ID validation if available
+    if (meta?.sid && streamMetaRef.current?.sid && meta.sid !== streamMetaRef.current.sid) {
+      logger.info(`[DIA][CHUNK-drop] sid=${meta.sid} expected=${streamMetaRef.current.sid} reason=stream_mismatch`);
+      return null;
+    }
 
     // ===== states =====
     if (chunk.type === 'chat_state') {
@@ -192,6 +207,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     } else if (chunk.type === 'answer') {
       streamReconciler.push(curChat, 'content', chunk.content || '');
     } else if (chunk.type === 'complete') {
+      logger.info(`[DIA][CHUNK-complete] chat=${curChat} msg=${curMsg}`);
       logger.info(`[CHUNK] Received COMPLETE chunk for chat ${curChat}, messageId: ${curMsg}`);
       streamReconciler.clear(curChat);
       return 'complete';
@@ -202,11 +218,27 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
 
     // Then patch UI against the **current** owner id
     if (chunk.type === 'thoughts' || chunk.type === 'answer') {
+      if (sample('CHUNK-apply', 10)) logger.info(
+        `[DIA][CHUNK-apply] sid=${meta?.sid} seq=${seq} type=${chunk.type} owner.chat=${curChat} owner.msg=${curMsg} ` +
+        `deltaLen=${(chunk.content||'').length} buf=${streamReconciler.debugState(curChat)}`
+      );
       setMessages(prev => prev.map(msg => {
         if (msg.id !== curMsg) return msg;
-        const nextText = chunk.type === 'thoughts'
-          ? appendWithOverlap(msg.thoughts || '', chunk.content || '')
-          : appendWithOverlap(msg.content  || '', chunk.content || '');
+        
+        // Get both current UI text and reconciler buffer
+        const currentField = chunk.type === 'thoughts' ? msg.thoughts : msg.content;
+        const reconciledText = streamReconciler.getBufferedText(curChat, chunk.type === 'thoughts' ? 'thoughts' : 'content');
+        
+        // Use the longer of the two as the base to prevent content regression
+        const baseText = (reconciledText?.length ?? 0) > (currentField?.length ?? 0) ? reconciledText : currentField;
+        const nextText = appendWithOverlap(baseText || '', chunk.content || '');
+        
+        // Prevent content shrinkage - if nextText is shorter than both current and reconciled, keep current
+        if (nextText.length < Math.max(currentField?.length ?? 0, reconciledText?.length ?? 0)) {
+          logger.warn(`[CHUNK/prevent-shrink] sid=${meta?.sid} seq=${seq} type=${chunk.type} keeping longer text cur=${currentField?.length} rec=${reconciledText?.length} next=${nextText.length}`);
+          return msg; // Don't apply shrinking change
+        }
+        
         if (meta && typeof seq === 'number') {
           auditLen(curMsg, nextText, chunk.type === 'thoughts' ? 'thoughts' : 'content', meta.sid, seq);
         }
@@ -256,6 +288,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       streamingChatIdRef.current = targetChatId;
       streamMetaRef.current = meta;
       
+      logger.info(
+        `[DIA][RESUME-own] sid=${meta.sid} chat=${targetChatId} msg=${assistantMessageId} ` +
+        `buf=${streamReconciler.debugState(targetChatId)}`
+      );
+      
       // Connect to ongoing stream with simple attach (no message, no resume)
       const response = await fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
@@ -288,6 +325,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       while (true) {
         const { done, value } = await reader.read();
         
+        logger.debug(`[DIA][RESUME-read] sid=${meta.sid} done=${done} bytes=${value?.length ?? 0}`);
         // Byte-level logging
         logger.debug(`[STREAM/read] sid=${meta.sid} bytes=${value?.length ?? 0} done=${done}`);
         
@@ -295,12 +333,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           buffer += decoder.decode(value || new Uint8Array(), { stream: false });
           const { events, rest } = drainSSE(buffer);
           // SSE framing logging
-          logger.debug(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
+          if (sample('STREAM/drain', 5)) logger.info(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
           
           for (const payload of events) {
             seq++;
-            const preview = payload.slice(0, 120).replace(/\s+/g, ' ');
-            logger.debug(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${preview}"`);
+            if (sample('STREAM/event', 20)) logger.info(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${compact(payload, 120)}"`);
             
             try {
               const chunk = JSON.parse(payload);
@@ -330,12 +367,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         buffer += decoder.decode(value, { stream: true });
         const { events, rest } = drainSSE(buffer);
         // SSE framing logging  
-        logger.debug(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
+        if (sample('STREAM/drain', 5)) logger.info(`[STREAM/drain] sid=${meta.sid} events=${events.length} restLen=${rest.length}`);
         
         for (const payload of events) {
           seq++;
-          const preview = payload.slice(0, 120).replace(/\s+/g, ' ');
-          logger.debug(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${preview}"`);
+          if (sample('STREAM/event', 20)) logger.info(`[STREAM/event] sid=${meta.sid} seq=${seq} rawPreview="${compact(payload, 120)}"`);
           
           try {
             const chunk = JSON.parse(payload);
@@ -362,6 +398,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       if (error instanceof Error) {
         logger.info(`[STREAM/catch] sid=${meta.sid} name=${error.name} message=${error.message}`);
         if (error.name === 'AbortError') {
+          logger.info(`[DIA][RESUME-abort] sid=${meta.sid} chat=${targetChatId}`);
           logger.info(`[resumeStream] Stream aborted for chat ${targetChatId} (client disconnected, backend continues)`);
           return; // Exit early, don't update UI state
         } else {
@@ -498,6 +535,11 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       if (historyResponse.ok) {
         const data = await historyResponse.json();
         
+        logger.info(
+          `[DIA][DB-snap] chat=${targetChatId} state=${chatState} msgs=${data.history.length} ` +
+          `buf=${streamReconciler.debugState(targetChatId)}`
+        );
+        
         if (chatState !== 'thinking' && chatState !== 'responding') {
           setStreamingMessageId(null);
           setLoading(false);
@@ -537,23 +579,84 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
           isStreaming: m.isStreaming,
           isStreamingResponse: m.isStreamingResponse
         })));
-        logger.info(`[loadChatHistoryImmediate] CALLING setMessages - FRONTEND SHOULD NOW SHOW ${formattedMessages.length} MESSAGES`);
-        const merged = streamReconciler.mergeSnapshot(targetChatId, formattedMessages);
-        setMessages(merged);
+        // Find the DB's current last assistant (if any)
+        const lastAssistant = [...formattedMessages].reverse().find(m => m.role === 'assistant');
 
-        // If a stream is active for this chat, retarget ownership to the DB's last assistant ID
-        if (streamOwnerChatRef.current === targetChatId) {
-          const lastAssistantInMerged = [...merged].reverse().find(m => m.role === 'assistant');
-          if (lastAssistantInMerged) {
-            const old = streamOwnerMsgRef.current;
-            logger.info(`[OWNER/retarget] chat=${targetChatId} oldMsg=${old} newMsg=${lastAssistantInMerged.id}`);
-            streamOwnerMsgRef.current = lastAssistantInMerged.id;
-            streamReconciler.setActiveMessage(targetChatId, lastAssistantInMerged.id); // <- add this
-            setStreamingMessageId(lastAssistantInMerged.id);
+        // If this chat owns an active stream, retarget the reconciler **before** merging
+        if (streamOwnerChatRef.current === targetChatId && lastAssistant) {
+          const oldId = streamOwnerMsgRef.current;
+          if (oldId && oldId !== lastAssistant.id) {
+            // Synchronize both reconciler buffer and owner refs atomically
+            streamReconciler.retarget(targetChatId, lastAssistant.id);
+            streamOwnerMsgRef.current = lastAssistant.id;
+            setStreamingMessageId(lastAssistant.id);
+            
+            // carry over audit baseline to the new id to avoid false "decrease"
+            msgLenRef.current[lastAssistant.id] = msgLenRef.current[oldId] ?? 0;
+            delete msgLenRef.current[oldId];
+            
+            logger.info(`[OWNER/retarget] chat=${targetChatId} oldMsg=${oldId} newMsg=${lastAssistant.id} bufferSynced=true`);
+            
+            // Verify synchronization
+            const bufferState = streamReconciler.debugState(targetChatId);
+            if (!bufferState.includes(`msgId:${lastAssistant.id}`)) {
+              logger.error(`[OWNER/retarget-sync-fail] expected msgId:${lastAssistant.id} but got ${bufferState}`);
+            }
+          } else if (oldId === lastAssistant.id) {
+            // Already synchronized, just update UI reference
+            setStreamingMessageId(lastAssistant.id);
+            logger.info(`[OWNER/already-synced] chat=${targetChatId} msg=${lastAssistant.id}`);
           }
         }
 
+        // NOW merge, so buffer lands on the correct message id
+        logger.info(`[loadChatHistoryImmediate] CALLING setMessages - FRONTEND SHOULD NOW SHOW ${formattedMessages.length} MESSAGES`);
+        const merged = streamReconciler.mergeSnapshot(targetChatId, formattedMessages);
+        
+        const lastA = [...merged].reverse().find(m => m.role==='assistant');
+        logger.info(
+          `[DIA][DB-merge] chat=${targetChatId} merged.msgs=${merged.length} lastAid=${lastA?.id ?? 'none'} ` +
+          `lastAlen=${lastA?.content?.length ?? 0} buf=${streamReconciler.debugState(targetChatId)}`
+        );
+        
+        logger.info(`[DIA][DB-apply] chat=${targetChatId} applying merged snapshot to UI`);
+        
+        // Commit snapshot correctly; preserve longer text if we already have something
+        setMessages(prev => {
+          if (prev.length === 0) return merged;        // ← render the DB snapshot on cold render
+
+          const mergedById = new Map(merged.map(m => [m.id, m]));
+          const out = prev.map(p => {
+            const m = mergedById.get(p.id);
+            if (!m) return p;
+            const content  = (m.content?.length  ?? 0) >= (p.content?.length  ?? 0) ? m.content  : p.content;
+            const thoughts = (m.thoughts?.length ?? 0) >= (p.thoughts?.length ?? 0) ? m.thoughts : p.thoughts;
+            return { ...p, ...m, content, thoughts };
+          });
+
+          // Append any DB messages that weren't in prev (e.g., when returning from another chat)
+          const prevIds = new Set(prev.map(p => p.id));
+          for (const m of merged) if (!prevIds.has(m.id)) out.push(m);
+
+          return out;
+        });
+
+        // Optional: after applying the snapshot, reset audit baselines to current UI
+        for (const m of merged) {
+          msgLenRef.current[m.id] = Math.max(msgLenRef.current[m.id] ?? 0, (m.content?.length ?? 0));
+        }
+
+
+        logger.info(
+          `[DIA][DB-retarget] chat=${targetChatId} newOwnerMsg=${streamOwnerMsgRef.current} ` +
+          `buf=${streamReconciler.debugState(targetChatId)}`
+        );
+
         loadedChatRef.current = targetChatId;
+        logger.info(
+          `[DIA][DB-done] chat=${targetChatId} loadedChatRef=${loadedChatRef.current} ` +
+          `isLoadingHistory=${isLoadingHistory}`
+        );
         logger.info(`[loadChatHistoryImmediate] ===== DB LOAD & RENDER COMPLETE =====`);
         
         // Update parent component with backend state
@@ -600,7 +703,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       if (loadingForChatRef.current === targetChatId) loadingForChatRef.current = null;
       setIsLoadingHistory(false);
     }
-  }, [onChatStateChange]);
+  }, [isLoadingHistory, onChatStateChange]);
 
 
 
@@ -627,6 +730,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       const stateJson = await stateRes.json();
       const chatState = stateRes.ok ? (stateJson.state as 'thinking' | 'responding' | 'static') : 'static';
 
+      logger.info(`[DIA][RESUME-check] chat=${targetChatId} state=${chatState}`);
       logger.info(`[checkAndResumeStreaming] Backend state for chat ${targetChatId}: ${chatState}`);
 
       // 2) If not active, ensure UI reflects static state
@@ -641,6 +745,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       const lastAssistant = [...useMessages].reverse().find(m => m.role === 'assistant');
 
       if (lastAssistant) {
+        logger.info(`[DIA][RESUME-attach] chat=${targetChatId} lastAid=${lastAssistant.id} len=${lastAssistant.content.length} buf=${streamReconciler.debugState(targetChatId)}`);
         // Normal path (we already have something to attach to)
         streamReconciler.begin(targetChatId);
         streamReconciler.setActiveMessage(targetChatId, lastAssistant.id);
@@ -655,6 +760,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       } else {
         // COLD START: no assistant message yet (DB not loaded or empty). Create a placeholder and attach.
         const placeholderId = generateUniqueMessageId();
+        logger.info(`[DIA][RESUME-cold] chat=${targetChatId} placeholderId=${placeholderId} buf=${streamReconciler.debugState(targetChatId)}`);
         logger.info(`[RESUME/cold-start] chat=${targetChatId} placeholderMsgId=${placeholderId}`);
         const placeholder = {
           id: placeholderId,
@@ -920,9 +1026,21 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       streamAbortRef.current?.abort('switching chats');   // stop stream
       historyAbortRef.current?.abort('switching chats');  // stop DB load
       
+      // IMMEDIATELY null out stream ownership refs to prevent cross-chat pollution
+      streamOwnerChatRef.current = null;
+      streamOwnerMsgRef.current = null;
+      streamingChatIdRef.current = null;
+      streamMetaRef.current = null;
+      
       // Clear reconciler for prev chat and begin for new
       if (prevChatIdRef.current) streamReconciler.clear(prevChatIdRef.current);
       if (chatId) streamReconciler.begin(chatId);
+      
+      logger.info(
+        `[DIA][SWITCH] from=${prevChatIdRef.current} -> to=${chatId} ` +
+        `clearedPrevBuf=${!!prevChatIdRef.current} newBuf=${chatId ? streamReconciler.debugState(chatId) : 'n/a'} ` +
+        `clearedOwnership=true`
+      );
     }
     
     logger.debug(`[Chat.useEffect1] isNewChat: ${isNewChat}, isDifferentChat: ${isDifferentChat}`);
@@ -937,6 +1055,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
     // No processed marker.
 
     if (isNewChat && isDifferentChat) {
+      logger.info(`[DIA][SWITCH-branch] new=${isNewChat} diff=${isDifferentChat} active=${isActive}`);
       logger.debug(`[Chat.useEffect1] HANDLING NEW CHAT`);
       // fresh new chat started by first message
       setFirstMessageSent(false);
@@ -946,6 +1065,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       prevChatIdRef.current = chatId!;         // treat as current for next pass
       setMessages([]);
     } else if (isDifferentChat) {
+      logger.info(`[DIA][SWITCH-branch] new=${isNewChat} diff=${isDifferentChat} active=${isActive}`);
       logger.debug(`[Chat.useEffect1] HANDLING EXISTING CHAT - STARTING LOAD`);
       // existing chat: clear and show skeleton, then load history
       setStreamingMessageId(null);
@@ -959,25 +1079,63 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       
       // Always load history on activation of a different chat
         logger.debug(`[Chat.useEffect1] STARTING ASYNC LOAD for ${chatId}`);
-        // start resume first, then load DB in parallel
+        // start resume first, then load DB in parallel with robust error handling
         (async () => {
-          if (!mountedRef.current) {
-            logger.debug(`[Chat.useEffect1] Component unmounted, aborting load for ${chatId}`);
-            return;
+          try {
+            if (!mountedRef.current) {
+              logger.debug(`[Chat.useEffect1] Component unmounted, aborting load for ${chatId}`);
+              return;
+            }
+            
+            logger.info(`[DIA][RESUME-check] starting checkAndResume for ${chatId}`);
+            await checkAndResumeRef.current(chatId);
+            logger.info(`[DIA][RESUME-check] completed checkAndResume for ${chatId}`);
+            
+            if (!mountedRef.current) {
+              logger.debug(`[Chat.useEffect1] Component unmounted after resume, aborting history load for ${chatId}`);
+              return;
+            }
+            
+            logger.info(`[DIA][HISTORY-load] starting loadHistory for ${chatId}`);
+            await loadHistoryRef.current(chatId);
+            logger.info(`[DIA][HISTORY-load] completed loadHistory for ${chatId}`);
+          } catch (error) {
+            logger.error(`[Chat.useEffect1] Error during async load for ${chatId}:`, error);
+            // Ensure loadingForChatRef is cleared even on error
+            if (loadingForChatRef.current === chatId) {
+              loadingForChatRef.current = null;
+              setIsLoadingHistory(false);
+            }
           }
-          
-          await checkAndResumeRef.current(chatId);
-          await loadHistoryRef.current(chatId);
-          // no second call here; resume already running
         })();
     } else {
+      logger.info(`[DIA][SWITCH-branch] new=${isNewChat} diff=${isDifferentChat} active=${isActive}`);
       // Same chat re-activated. If not successfully loaded yet, force a load now.
       if (loadedChatRef.current !== chatId && (!firstMessage || firstMessageSent)) {
         logger.debug(`[Chat.useEffect1] SAME CHAT, NOT LOADED -> FORCING LOAD for ${chatId}`);
         setIsLoadingHistory(true);
         (async () => {
-          await checkAndResumeRef.current(chatId);
-          await loadHistoryRef.current(chatId);
+          try {
+            logger.info(`[DIA][RESUME-check] starting checkAndResume for ${chatId} (same chat)`);
+            await checkAndResumeRef.current(chatId);
+            logger.info(`[DIA][RESUME-check] completed checkAndResume for ${chatId} (same chat)`);
+            
+            if (!mountedRef.current) {
+              logger.debug(`[Chat.useEffect1] Component unmounted after resume, aborting history load for ${chatId} (same chat)`);
+              return;
+            }
+            
+            logger.info(`[DIA][HISTORY-load] starting loadHistory for ${chatId} (same chat)`);
+            await loadHistoryRef.current(chatId);
+            logger.info(`[DIA][HISTORY-load] completed loadHistory for ${chatId} (same chat)`);
+          } catch (error) {
+            logger.error(`[Chat.useEffect1] Error during same-chat load for ${chatId}:`, error);
+            // Ensure loadingForChatRef is cleared even on error
+            if (loadingForChatRef.current === chatId) {
+              loadingForChatRef.current = null;
+              setIsLoadingHistory(false);
+            }
+          }
         })();
       } else {
         logger.debug(`[Chat.useEffect1] CHAT ALREADY LOADED - no action needed`);
@@ -1017,6 +1175,8 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
       }
     }
   }, [chatId, isActive, firstMessage, config, firstMessageSent, handleNewMessage, onFirstMessageSent]);
+
+  useEffect(()=>{ logger.info(`[DIA][MOUNT] chat=${chatId}`); }, [chatId]);
 
   useEffect(() => {
     logger.info(`[Chat.mount] Component mounted - ensuring mountedRef.current = true`);
@@ -1058,7 +1218,7 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
         
         <div className="response-content">
           {message.content}
-          <span className={`cursor ${!isLastAssistantMessage || currentChatState !== 'responding' ? 'hidden' : ''}`}>|</span>
+          <span className={`cursor ${!isLastAssistantMessage || (streamingMessageId !== message.id) || (currentChatState !== 'responding' && !message.isStreamingResponse) ? 'hidden' : ''}`}>|</span>
         </div>
       </div>
     );
@@ -1068,6 +1228,13 @@ const Chat = forwardRef<any, ChatProps>(({ chatId, onMessageSent, onChatStateCha
   logger.info(`[Chat.render] ===== FRONTEND STATE =====`);
   logger.info(`[Chat.render] Chat: ${chatId}, Messages: ${messages.length}, isLoadingHistory: ${isLoadingHistory}`);
   logger.info(`[Chat.render] loading: ${loading}, streamingMessageId: ${streamingMessageId}, frontendBusy: ${frontendBusy}`);
+  
+  const lastAssist = [...messages].reverse().find(m=>m.role==='assistant');
+  if (sample(`RENDER:${chatId}`, 30)) logger.info(
+    `[DIA][RENDER] chat=${chatId} msgs=${messages.length} ` +
+    `lastAid=${lastAssist?.id ?? 'none'} lastAlen=${lastAssist?.content?.length ?? 0} ` +
+    `isLoadingHistory=${isLoadingHistory} streamingId=${streamingMessageId} state=${currentChatState}`
+  );
   
   return (
     <div className="chat-messages">
