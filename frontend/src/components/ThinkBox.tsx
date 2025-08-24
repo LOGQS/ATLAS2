@@ -1,5 +1,7 @@
 // status: complete
 import React, { useState, useEffect, useRef } from 'react';
+import MessageRenderer from './MessageRenderer';
+import '../styles/MessageRenderer.css';
 import logger from '../utils/logger';
 
 interface ThinkBoxProps {
@@ -91,8 +93,10 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
       
       <div className={`think-box-content ${isCollapsed ? 'collapsed' : ''}`}>
         <div className="think-box-text">
-          {displayedThoughts}
-          <span className={`cursor ${!isStreaming ? 'hidden' : ''}`}>|</span>
+          <MessageRenderer 
+            content={displayedThoughts} 
+            showCursor={isStreaming}
+          />
           <div ref={thoughtsEndRef} />
         </div>
       </div>

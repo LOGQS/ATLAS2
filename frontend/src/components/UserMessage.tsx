@@ -1,6 +1,8 @@
 // status: complete
 
 import React from 'react';
+import MessageRenderer from './MessageRenderer';
+import '../styles/MessageRenderer.css';
 
 interface UserMessageProps {
   content: string;
@@ -14,7 +16,7 @@ const UserMessage: React.FC<UserMessageProps> = ({
   return (
     <div className={`user-message ${isFirstMessage ? 'first-message' : ''}`}>
       <div className="user-message-bubble">
-        {content}
+        <MessageRenderer content={content} />
       </div>
     </div>
   );

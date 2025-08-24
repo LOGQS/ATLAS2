@@ -3,8 +3,10 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useCallback } from 'react';
 import UserMessage from './UserMessage';
 import ThinkBox from './ThinkBox';
+import MessageRenderer from './MessageRenderer';
 import '../styles/Chat.css';
 import '../styles/ThinkBox.css';
+import '../styles/MessageRenderer.css';
 import logger from '../utils/logger';
 import { apiUrl } from '../config/api';
 import { liveStore } from '../utils/LiveStore';
@@ -301,8 +303,10 @@ const Chat = forwardRef<any, ChatProps>(({
         )}
         
         <div className="response-content">
-          {message.content}
-          {showCursor && <span className="cursor">|</span>}
+          <MessageRenderer 
+            content={message.content} 
+            showCursor={showCursor}
+          />
         </div>
       </div>
     );
