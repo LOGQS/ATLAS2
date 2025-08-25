@@ -33,7 +33,6 @@ interface ChatProps {
   firstMessage?: string;
 }
 
-// Local ID generator for optimistic rendering
 let _mid = 0;
 const genId = () => Date.now() * 1000 + (_mid++);
 
@@ -64,7 +63,6 @@ const Chat = forwardRef<any, ChatProps>(({
     }
   }, []);
 
-  // 1) Load history once per chat
   const loadHistory = useCallback(async () => {
     if (!chatId) return;
     
@@ -78,11 +76,9 @@ const Chat = forwardRef<any, ChatProps>(({
         const hist: Message[] = data.history || [];
         
         if (hist.length > 0) {
-          // Use DB history when it exists
           setMessages(hist);
           logger.info(`[Chat] Loaded ${hist.length} messages for ${chatId} from DB`);
         } else {
-          // Empty DB - preserve optimistic messages if they exist
           setMessages(prev => {
             if (prev.length > 0) {
               logger.info(`[Chat] Empty DB for ${chatId} - preserving ${prev.length} optimistic messages`);
@@ -93,32 +89,27 @@ const Chat = forwardRef<any, ChatProps>(({
           });
         }
         
-        // Tell LiveStore what DB has, so it can drop stale buffers
         const lastA = [...hist].reverse().find(m => m.role === 'assistant');
         liveStore.reconcileWithDB(chatId, lastA?.id ?? null, lastA?.content ?? '', lastA?.thoughts ?? '');
       } else if (res.status === 404) {
-        // New chat - preserve optimistic messages if they exist
         setMessages(prev => {
           if (prev.length > 0) {
             logger.info(`[Chat] New chat ${chatId} - preserving ${prev.length} optimistic messages`);
-            return prev; // Keep optimistic messages
+            return prev; 
           }
           logger.info(`[Chat] New chat ${chatId} - no messages to preserve`);
           return [];
         });
       } else {
         logger.error(`[Chat] Failed to load history for ${chatId}:`, data.error);
-        // Don't clear optimistic messages on error
       }
     } catch (e) {
       logger.error(`[Chat] Error loading history for ${chatId}:`, e);
-      // Don't clear optimistic messages on error
     } finally {
       setIsLoading(false);
     }
   }, [chatId]);
 
-  // 2) Subscribe to LiveStore for this chat
   useEffect(() => {
     if (!chatId) return;
     
@@ -129,22 +120,19 @@ const Chat = forwardRef<any, ChatProps>(({
         state: snap.state
       });
       
-      // Notify parent of state changes
       if (onChatStateChange) {
         onChatStateChange(_id, snap.state);
       }
     });
   }, [chatId, onChatStateChange]);
 
-  // Load history when chatId changes
   useEffect(() => {
     if (chatId) {
       loadHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId]); // Only depend on chatId, not loadHistory to avoid infinite loops
+  }, [chatId]); 
 
-  // Handle first message for new chats
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isLoading) {
       logger.info(`[Chat] Sending first message for new chat ${chatId}`);
@@ -155,23 +143,20 @@ const Chat = forwardRef<any, ChatProps>(({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, isActive, firstMessage, firstMessageSent, isLoading]); // handleNewMessage and onFirstMessageSent are stable
+  }, [chatId, isActive, firstMessage, firstMessageSent, isLoading]);
 
-  // Scroll to bottom when messages update or streaming
   useEffect(() => {
     if (liveOverlay.state !== 'static' || messages.length > 0) {
       scrollToBottom();
     }
   }, [messages, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, liveOverlay.state, scrollToBottom]);
 
-  // Notify parent of active state
   useEffect(() => {
     if (onActiveStateChange && chatId) {
       onActiveStateChange(chatId, isActive);
     }
   }, [chatId, isActive, onActiveStateChange]);
 
-  // Cleanup on unmount
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -189,7 +174,6 @@ const Chat = forwardRef<any, ChatProps>(({
       return;
     }
 
-    // FINALIZE PREVIOUS RESPONSE: Commit any existing overlay buffers
     if (liveOverlay.contentBuf || liveOverlay.thoughtsBuf) {
       setMessages(prev => {
         const updated = [...prev];
@@ -208,11 +192,9 @@ const Chat = forwardRef<any, ChatProps>(({
       });
     }
 
-    // Clear overlay buffers for fresh start - both local and LiveStore
     setLiveOverlay({ contentBuf: '', thoughtsBuf: '', state: 'static' });
     liveStore.reset(chatId);
 
-    // --- OPTIMISTIC RENDER ---
     const userMsg: Message = {
       id: genId(),
       role: 'user',
@@ -227,7 +209,6 @@ const Chat = forwardRef<any, ChatProps>(({
       timestamp: new Date().toISOString()
     };
     setMessages(prev => [...prev, userMsg, assistantPlaceholder]);
-    // --------------------------
 
     try {
       logger.info(`[Chat] Sending message to ${chatId}: "${content.substring(0, 50)}..."`);
@@ -248,17 +229,14 @@ const Chat = forwardRef<any, ChatProps>(({
     }
   }, [chatId, isActive, liveOverlay, onMessageSent]);
 
-  // Imperative handle for parent component
   useImperativeHandle(ref, () => ({
     handleNewMessage,
     isBusy: () => liveOverlay.state !== 'static'
   }));
 
-  // 4) Combine messages + overlay for render
   const rendered = (() => {
     const out = [...messages];
     
-    // Find last assistant message
     const lastIdx = [...out].reverse().findIndex(m => m.role === 'assistant');
     
     if (lastIdx !== -1 && (liveOverlay.contentBuf || liveOverlay.thoughtsBuf)) {
@@ -286,7 +264,6 @@ const Chat = forwardRef<any, ChatProps>(({
       );
     }
 
-    // Check if this is the last assistant message (for cursor display)
     const lastAssistantMessage = [...rendered].reverse().find(m => m.role === 'assistant');
     const isLastAssistantMessage = message.id === lastAssistantMessage?.id;
     const showCursor = isLastAssistantMessage && liveOverlay.state === 'responding';

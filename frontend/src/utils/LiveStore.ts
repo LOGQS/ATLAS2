@@ -7,7 +7,7 @@ type ChatLive = {
   lastAssistantId: number | null;
   contentBuf: string;
   thoughtsBuf: string;
-  version: number; // monotonic, prevents regressions
+  version: number;
 };
 
 type Listener = (chatId: string, snap: ChatLive) => void;
@@ -48,7 +48,6 @@ class LiveStore {
           next.version++;
           logger.debug(`[LiveStore] Content chunk for ${chatId}: +${(ev.content || '').length} chars`);
         } else if (ev.type === 'complete') {
-          // Stream complete - keep buffers for display until Chat component handles finalization
           next.state = 'static';
           next.version++;
           logger.info(`[LiveStore] Stream complete for ${chatId}`);
@@ -63,7 +62,6 @@ class LiveStore {
     
     this.es.onerror = (e) => {
       logger.warn('[LiveStore] SSE connection error, will reconnect', e);
-      // EventSource automatically reconnects
     };
     
     this.es.onopen = () => {
@@ -77,7 +75,6 @@ class LiveStore {
     }
     this.listeners.get(chatId)!.add(fn);
     
-    // Push current snapshot immediately if present
     const snap = this.byChat.get(chatId);
     if (snap) {
       fn(chatId, snap);
@@ -116,15 +113,12 @@ class LiveStore {
     });
   }
 
-  // Called when history load confirms last assistant id/content
-  // Prevents shrink/regress by bumping version + aligning buffers behind DB content
   reconcileWithDB(chatId: string, lastAssistantId: number | null, dbContent: string, dbThoughts: string) {
     const cur = this.byChat.get(chatId);
     if (!cur) return;
     
     const next = { ...cur, lastAssistantId };
     
-    // If DB has more than buffers, prefer DB (overlay pattern)
     if (dbContent.length >= cur.contentBuf.length) {
       next.contentBuf = '';
     }
@@ -140,7 +134,6 @@ class LiveStore {
     logger.debug(`[LiveStore] Reconciled ${chatId} with DB - lastAid=${lastAssistantId}, cleared buffers`);
   }
 
-  // Stop the global stream (for cleanup)
   stop() {
     if (this.es) {
       this.es.close();

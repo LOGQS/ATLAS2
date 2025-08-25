@@ -3,9 +3,8 @@
 from flask import Flask, request, jsonify, Response
 import json
 import queue
-import time
 from threading import Lock
-from chat.chat import Chat, is_chat_processing, cleanup_completed_threads
+from chat.chat import Chat, is_chat_processing
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
@@ -13,9 +12,8 @@ from utils.db_utils import db
 logger = get_logger(__name__)
 
 state_change_queue = queue.Queue()
-content_queues = {}  # chat_id -> queue for content chunks
+content_queues = {} 
 
-# Global broadcaster for all chats
 _subscribers = []
 _sub_lock = Lock()
 
@@ -35,13 +33,11 @@ def _broadcast(event: dict):
             try:
                 q.put(event, block=False)
             except queue.Full:
-                # Remove full subscribers to prevent memory leaks
                 _subscribers.remove(q)
 
 def publish_state(chat_id: str, state: str):
     """Publishes a chat state change to the queue."""
     state_change_queue.put({'chat_id': chat_id, 'state': state})
-    # Also broadcast to global stream
     _broadcast({"chat_id": chat_id, "type": "chat_state", "state": state})
 
 def publish_content(chat_id: str, chunk_type: str, content: str):
@@ -49,7 +45,6 @@ def publish_content(chat_id: str, chunk_type: str, content: str):
     if chat_id not in content_queues:
         content_queues[chat_id] = queue.Queue()
     content_queues[chat_id].put({'type': chunk_type, 'content': content})
-    # Also broadcast to global stream
     _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
 
 def get_content_queue(chat_id: str):
@@ -62,9 +57,7 @@ def get_content_queue(chat_id: str):
 def cleanup_content_queue(chat_id: str):
     """Clean up content queue when chat processing is complete (not just when client disconnects)."""
     if chat_id in content_queues:
-        # Only cleanup if chat is not actively processing
         if not is_chat_processing(chat_id):
-            # Drain the queue before deleting to prevent memory leaks
             queue_obj = content_queues[chat_id]
             drained_count = 0
             try:
@@ -109,7 +102,7 @@ def register_chat_routes(app: Flask):
             try:
                 yield 'event: ping\ndata: {}\n\n'
                 while True:
-                    ev = q.get()  # blocks until event available
+                    ev = q.get()
                     yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             finally:
                 _unsubscribe(q)
@@ -165,7 +158,6 @@ def register_chat_routes(app: Flask):
             include_reasoning = data.get('include_reasoning', True)
             
             if not message:
-                # If chat is running, we attach to its queue; otherwise it's an error.
                 if not is_chat_processing(chat_id):
                     logger.warning("Streaming chat request missing message and no running job")
                     return jsonify({'error': 'Message is required'}), 400
@@ -178,17 +170,14 @@ def register_chat_routes(app: Flask):
                 yield f"data: {json.dumps({'type': 'chat_id', 'content': chat.chat_id})}\n\n"
                 
                 if not message:
-                    # No message provided, attach to existing queue
                     content_queue = get_content_queue(chat_id)
                     
                     try:
-                        # Send current chat state first
                         from utils.db_utils import db
                         current_state = db.get_chat_state(chat_id)
                         if current_state:
                             yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
                         
-                        # Stream from existing queue
                         while True:
                             try:
                                 chunk = content_queue.get(timeout=30)
@@ -216,7 +205,6 @@ def register_chat_routes(app: Flask):
                     
                     return
                 else:
-                    # For new messages, start background processing and stream from queue
                     success = chat.start_background_processing(
                         message=message,
                         provider=provider,
@@ -225,7 +213,6 @@ def register_chat_routes(app: Flask):
                     )
                     
                     if not success:
-                        # If chat is already processing, connect to existing stream
                         logger.info(f"Chat {chat_id} already processing, connecting client to ongoing stream")
                         content_queue = get_content_queue(chat_id)
                         

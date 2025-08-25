@@ -6,6 +6,8 @@ import os
 from google import genai
 from google.genai import types
 from utils.logger import get_logger
+from utils.rate_limiter import get_rate_limiter
+from utils.config import Config
 
 load_dotenv()
 
@@ -66,6 +68,26 @@ class Gemini:
                 
         return formatted_history
     
+    def count_tokens(self, contents: Any, model: str) -> int:
+        """Count tokens using Gemini API specific method"""
+        if not self.is_available():
+            return 0
+        
+        try:
+            limiter = get_rate_limiter(
+                Config.get_rate_limit_requests_per_minute(),
+                Config.get_rate_limit_burst_size()
+            )
+            result = limiter.execute(
+                self.client.models.count_tokens,
+                f"gemini:{model}",
+                model=model, contents=contents
+            )
+            return result.total_tokens
+        except Exception as e:
+            logger.error(f"Token counting failed: {e}")
+            return 0
+    
     def generate_text(self, prompt: str, model: str = "", 
                      include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None, 
                      **config_params) -> Dict[str, Any]:
@@ -83,7 +105,13 @@ class Gemini:
             contents.extend(formatted_history)
         contents.append({"role": "user", "parts": [{"text": prompt}]})
             
-        response = self.client.models.generate_content(
+        limiter = get_rate_limiter(
+            Config.get_rate_limit_requests_per_minute(),
+            Config.get_rate_limit_burst_size()
+        )
+        response = limiter.execute(
+            self.client.models.generate_content,
+            f"gemini:{model}",
             model=model,
             contents=contents,
             config=config
@@ -127,11 +155,19 @@ class Gemini:
         thoughts = ""
         answer = ""
         
-        for chunk in self.client.models.generate_content_stream(
+        limiter = get_rate_limiter(
+            Config.get_rate_limit_requests_per_minute(),
+            Config.get_rate_limit_burst_size()
+        )
+        stream = limiter.execute(
+            self.client.models.generate_content_stream,
+            f"gemini:{model}",
             model=model,
             contents=contents,
             config=config
-        ):
+        )
+        
+        for chunk in stream:
             for part in chunk.candidates[0].content.parts:
                 if not part.text:
                     continue

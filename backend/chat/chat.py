@@ -2,20 +2,17 @@
 
 import uuid
 import threading
-import time
 from typing import Dict, Any, Optional, Generator, List
 from chat.providers import Gemini, HuggingFace, OpenRouter
 from utils.db_utils import db
-from utils.config import Config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Global thread-safe registry for background chat processing
 _chat_threads_lock = threading.Lock()
 _chat_threads: Dict[str, threading.Thread] = {}
-_chat_thread_status: Dict[str, str] = {}  # 'running', 'completed', 'error', 'cancelled'
-_chat_thread_cancel_flags: Dict[str, threading.Event] = {}  # Cancel signals
+_chat_thread_status: Dict[str, str] = {} 
+_chat_thread_cancel_flags: Dict[str, threading.Event] = {}
 
 def get_chat_thread_status(chat_id: str) -> Optional[str]:
     """Get the status of a chat's background thread"""
@@ -63,7 +60,6 @@ def is_chat_cancelled(chat_id: str) -> bool:
 def _start_background_processing(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
     """Start background processing thread for a chat"""
     with _chat_threads_lock:
-        # Clean up any existing thread for this chat
         if chat_id in _chat_threads:
             old_thread = _chat_threads[chat_id]
             if old_thread.is_alive():
@@ -74,7 +70,6 @@ def _start_background_processing(chat_id: str, chat_instance, message: str, prov
                 _chat_thread_status.pop(chat_id, None)
                 _chat_thread_cancel_flags.pop(chat_id, None)
         
-        # Create new thread - NO cancel flag for truly independent processing
         thread = threading.Thread(
             target=_background_process_wrapper,
             args=(chat_id, chat_instance, message, provider, model, include_reasoning),
@@ -93,7 +88,6 @@ def _background_process_wrapper(chat_id: str, chat_instance, message: str, provi
     try:
         logger.info(f"Background processing started for chat {chat_id}")
         
-        # Call the actual processing method
         chat_instance._process_message_background(message, provider, model, include_reasoning, **config_params)
         
         with _chat_threads_lock:
@@ -107,14 +101,12 @@ def _background_process_wrapper(chat_id: str, chat_instance, message: str, provi
         with _chat_threads_lock:
             _chat_thread_status[chat_id] = 'error'
         
-        # CRITICAL: Always ensure DB state is reset to 'static' even if publishing fails
         try:
             db.update_chat_state(chat_id, "static")
             logger.info(f"Reset DB state to 'static' for chat {chat_id} after error")
         except Exception as db_error:
             logger.critical(f"CRITICAL: Failed to reset DB state for chat {chat_id}: {str(db_error)}")
         
-        # Publish error to content queue so frontend gets it (non-critical)
         try:
             from route.chat_route import publish_state, publish_content
             publish_content(chat_id, "error", str(e))
@@ -348,7 +340,6 @@ class Chat:
         
         logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages")
         
-        # Set initial state (with error handling)
         try:
             if use_reasoning:
                 db.update_chat_state(self.chat_id, "thinking")
@@ -362,10 +353,8 @@ class Chat:
                 logger.info(f"Chat {self.chat_id} entering responding state")
         except Exception as state_error:
             logger.error(f"Failed to set initial state for chat {self.chat_id}: {state_error}")
-            current_state = "responding"  # Fallback state
+            current_state = "responding"
         
-        # Process the stream in background, updating DB and publishing chunks
-        # NO cancellation checks - processing continues independently
         for chunk in self.providers[provider].generate_text_stream(
             message, model=model, include_thoughts=use_reasoning, 
             chat_history=chat_history, **config_params
@@ -373,23 +362,19 @@ class Chat:
             
             if chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
-                # Publish thought chunk for real-time streaming (with error handling)
                 try:
                     from route.chat_route import publish_content
                     publish_content(self.chat_id, "thoughts", chunk.get("content", ""))
                 except Exception as pub_error:
                     logger.warning(f"Failed to publish thoughts chunk for chat {self.chat_id}: {pub_error}")
-                    # Continue processing even if publishing fails
                 
             elif chunk.get("type") == "answer":
                 full_text += chunk.get("content", "")
-                # Publish answer chunk for real-time streaming (with error handling)
                 try:
                     from route.chat_route import publish_content
                     publish_content(self.chat_id, "answer", chunk.get("content", ""))
                 except Exception as pub_error:
                     logger.warning(f"Failed to publish answer chunk for chat {self.chat_id}: {pub_error}")
-                    # Continue processing even if publishing fails
                 
                 if current_state == "thinking":
                     try:
@@ -399,7 +384,6 @@ class Chat:
                     except Exception as state_error:
                         logger.warning(f"Failed to update state to responding for chat {self.chat_id}: {state_error}")
             
-            # Update DB with accumulated content (always update, even if HTTP clients disconnected)
             if assistant_message_id and (full_text or full_thoughts):
                 try:
                     db.update_message(
@@ -409,27 +393,21 @@ class Chat:
                     )
                 except Exception as db_error:
                     logger.error(f"Error updating message in DB for chat {self.chat_id}: {db_error}")
-                    # Continue processing despite DB errors
         
-        # Mark as complete (with error handling) - DB state is CRITICAL, publishing is best-effort
         try:
             db.update_chat_state(self.chat_id, "static")
             logger.info(f"Successfully updated DB state to 'static' for chat {self.chat_id}")
         except Exception as db_error:
             logger.critical(f"CRITICAL: Failed to mark chat {self.chat_id} as static in DB: {db_error}")
-            # This is a critical failure - log extensively
             logger.critical(f"Chat {self.chat_id} may be stuck in non-static state in DB")
         
-        # Publishing to queues/streams is best-effort (non-critical for DB consistency)
         try:
             publish_state(self.chat_id, "static")
-            # Signal completion to content queue
             from route.chat_route import publish_content
             publish_content(self.chat_id, "complete", "")
             logger.info(f"Background processing completed successfully for chat {self.chat_id}")
         except Exception as publish_error:
             logger.warning(f"Failed to publish completion (non-critical): {publish_error}")
-            # Still log success since DB was updated
     
     def start_background_processing(self, message: str, provider: str = "gemini",
                                   model: Optional[str] = None, include_reasoning: bool = True,
@@ -438,10 +416,8 @@ class Chat:
         Start background processing of a message (non-blocking)
         Returns True if started successfully, False if already running
         """
-        # Save user message first
         db.save_message(self.chat_id, "user", message)
         
-        # Start background thread
         return _start_background_processing(
             self.chat_id, self, message, provider, model, include_reasoning, **config_params
         )
