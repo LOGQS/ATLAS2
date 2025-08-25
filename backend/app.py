@@ -10,8 +10,10 @@ sys.path.append(backend_dir)
 
 from route.chat_route import register_chat_routes
 from route.db_route import register_db_routes
+from route.file_route import register_file_routes
 from utils.config import Config
 from utils.logger import get_logger
+from utils.file_handler import setup_filespace, sync_files_with_database
 
 logger = get_logger(__name__)
 
@@ -21,8 +23,18 @@ def create_app():
     
     CORS(app, origins=['http://localhost:3000'])
     
+    setup_filespace()
+    
+    # Sync files with database at startup
+    sync_result = sync_files_with_database()
+    if sync_result['success']:
+        logger.info(f"File sync completed: {sync_result['summary']}")
+    else:
+        logger.error(f"File sync failed: {sync_result['error']}")
+    
     register_chat_routes(app)
     register_db_routes(app)
+    register_file_routes(app)
     
     @app.route('/health')
     def health_check():
@@ -50,6 +62,13 @@ def create_app():
                     'chats': '/api/db/chats',
                     'chat': '/api/db/chat/<chat_id>',
                     'settings': '/api/db/settings'
+                },
+                'files': {
+                    'upload': '/api/files/upload',
+                    'list': '/api/files',
+                    'delete': '/api/files/<file_id>',
+                    'rename': '/api/files/<file_id>/rename',
+                    'download': '/api/files/<file_id>/download'
                 }
             }
         })

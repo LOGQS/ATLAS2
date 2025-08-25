@@ -6,13 +6,14 @@ import LeftSidebar from './components/LeftSidebar';
 import RightSidebar from './components/RightSidebar';
 import Chat from './components/Chat';
 import ModalWindow from './components/ModalWindow';
+import AttachedFiles from './components/AttachedFiles';
 import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
 import logger from './utils/logger';
 import { apiUrl } from './config/api';
-import { BrowserStorage } from './utils/BrowserStorage';
+import { BrowserStorage, AttachedFile } from './utils/BrowserStorage';
 import { liveStore } from './utils/LiveStore';
 
 interface ChatItem {
@@ -21,6 +22,7 @@ interface ChatItem {
   isActive: boolean;
   state?: 'thinking' | 'responding' | 'static';
 }
+
 
 function App() {
   const [message, setMessage] = useState('');
@@ -31,23 +33,31 @@ function App() {
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [isAppInitialized, setIsAppInitialized] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isAppInitialized) return;
     
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
-      // Start LiveStore first so it's ready to receive events
       liveStore.start();
       await loadChatsFromDatabase();
       await loadActiveChat();
+      
+      // Restore attached files from localStorage
+      const savedFiles = BrowserStorage.getAttachedFiles();
+      if (savedFiles.length > 0) {
+        logger.info('[App.useEffect] Restored attached files from localStorage:', savedFiles.length);
+        setAttachedFiles(savedFiles);
+      }
+      
       setIsAppInitialized(true);
     };
     initializeApp();
   }, [isAppInitialized]);
 
   useEffect(() => {
-    // Subscribe to LiveStore for all chats' state changes
     const unsubs = chats.map(chat =>
       liveStore.subscribe(chat.id, (_id, snap) => {
         setChats(prev => prev.map(c => c.id === _id ? { ...c, state: snap.state } : c));
@@ -55,7 +65,75 @@ function App() {
     );
     return () => unsubs.forEach(unsub => unsub && unsub());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chats.map(c => c.id).join(',')]); // reattach when chat list changes
+  }, [chats.map(c => c.id).join(',')]); 
+
+  // Save attached files to localStorage whenever they change
+  useEffect(() => {
+    if (isAppInitialized) {
+      BrowserStorage.setAttachedFiles(attachedFiles);
+    }
+  }, [attachedFiles, isAppInitialized]);
+
+  // Real-time file state updates via SSE (no polling needed!)
+  useEffect(() => {
+    if (!isAppInitialized) return;
+
+    const handleFileStateUpdate = (event: CustomEvent) => {
+      const { file_id, api_state, provider } = event.detail;
+      logger.info(`[App] Received SSE file state update: ${file_id} -> ${api_state}`);
+      
+      setAttachedFiles(prev => {
+        let matchFound = false;
+        let tempFileMatched = false;
+        
+        const updated = prev.map(file => {
+          // First try exact ID match
+          if (file.id === file_id) {
+            const oldState = file.api_state;
+            const newFile = { ...file, api_state, provider: provider || file.provider };
+            logger.info(`[App] Updated file state by ID: ${file.name} ${oldState} -> ${api_state}`);
+            matchFound = true;
+            return newFile;
+          }
+          return file;
+        });
+        
+        // If no ID match, try to match temp files by name (race condition fix)
+        if (!matchFound) {
+          const tempUpdated = prev.map(file => {
+            // Match temp files that are still being processed
+            if (file.id.startsWith('temp_') && ['selected', 'processing_md', 'uploading'].includes(file.api_state || 'selected')) {
+              const oldState = file.api_state;
+              const newFile = { 
+                ...file, 
+                id: file_id, // Update to real ID
+                api_state, 
+                provider: provider || file.provider 
+              };
+              logger.info(`[App] Updated temp file by name match: ${file.name} ${oldState} -> ${api_state} (ID: ${file.id} -> ${file_id})`);
+              tempFileMatched = true;
+              return newFile;
+            }
+            return file;
+          });
+          
+          if (tempFileMatched) {
+            return tempUpdated;
+          } else {
+            logger.warn(`[App] No file found with ID ${file_id}, will be updated when upload response arrives`);
+          }
+        }
+        
+        return updated;
+      });
+    };
+
+    window.addEventListener('fileStateUpdate', handleFileStateUpdate as EventListener);
+    
+    return () => {
+      window.removeEventListener('fileStateUpdate', handleFileStateUpdate as EventListener);
+    };
+  }, [isAppInitialized]);
 
   const loadActiveChat = async () => {
     try {
@@ -134,7 +212,6 @@ function App() {
     logger.info('Creating new chat in DB:', { chatId, chatName });
     
     try {
-      // Create chat in database
       const response = await fetch(apiUrl('/api/db/chat'), {
         method: 'POST',
         headers: {
@@ -154,7 +231,6 @@ function App() {
 
       logger.info('Chat created successfully in DB');
       
-      // Set chat name
       try {
         await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
           method: 'PUT',
@@ -167,7 +243,6 @@ function App() {
         logger.warn('Failed to set chat name:', error);
       }
 
-      // Set as active chat in backend (already set in UI)
       await syncActiveChat(chatId);
     } catch (error) {
       logger.error('Failed to create chat:', error);
@@ -178,18 +253,17 @@ function App() {
   const handleSend = async () => {
     if (message.trim() && !isActiveChatStreaming) {
       if (!hasMessageBeenSent || activeChatId === 'none') {
-        // Generate chat ID immediately
-        const chatId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const chatName = message.split(' ').slice(0, 4).join(' ');
         const messageToSend = message;
+        const filesToSend = [...attachedFiles]; // Make a copy
         
-        // Optimistic UI updates - instant
         setCenterFading(true);
         setHasMessageBeenSent(true);
         document.body.classList.add('chat-active');
         setMessage('');
+        clearAttachedFiles(); 
         
-        // Create new chat in UI
         const newChat: ChatItem = {
           id: chatId,
           name: chatName,
@@ -198,17 +272,19 @@ function App() {
         };
         setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
         setActiveChatId(chatId);
-        setPendingFirstMessages(prev => new Map(prev).set(chatId, messageToSend));
+        setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({message: messageToSend, files: filesToSend})));
         
         bottomInputRef.current?.focus();
         
-        // Background DB creation and message sending (async, don't await)
         createNewChatInBackground(chatId, chatName, messageToSend);
       } else {
         if (activeChatId !== 'none' && chatRef.current) {
           logger.info('Sending message to active chat:', activeChatId);
-          chatRef.current.handleNewMessage(message);
+          // Pass the current attached files to the chat component
+          const filesToSend = [...attachedFiles]; // Make a copy
+          chatRef.current.handleNewMessage(message, filesToSend);
           setMessage('');
+          clearAttachedFiles();
         } else {
           logger.warn('Attempted to send message but no active chat or invalid ref:', { activeChatId, hasRef: !!chatRef.current });
         }
@@ -245,7 +321,6 @@ function App() {
     
     logger.info('Switching to chat:', chatId);
     
-    // IMMEDIATE UI updates for instant feedback with loading state
     setActiveChatId(chatId);
     logger.info(`[DIA][APP-switch] to=${chatId}`);
     setChats(prev => prev.map(chat => ({ 
@@ -259,7 +334,6 @@ function App() {
       document.body.classList.add('chat-active');
     }
     
-    // Backend sync in background (don't await)
     syncActiveChat(chatId);
   }, [activeChatId, hasMessageBeenSent]);
 
@@ -269,23 +343,19 @@ function App() {
     setCenterFading(false);
     setMessage('');
     
-    // IMMEDIATE UI updates
     setActiveChatId('none');
     setChats(prev => prev.map(chat => ({ ...chat, isActive: false })));
     document.body.classList.remove('chat-active');
     
-    // Backend sync in background
     syncActiveChat('none');
   };
 
   const handleDeleteChat = async (chatId: string) => {
     logger.info('Deleting chat:', chatId);
     
-    // Store original state for rollback
     const originalChats = chats;
     const originalPendingMessages = new Map(pendingFirstMessages);
     
-    // Optimistic update - remove from UI immediately
     setChats(prev => prev.filter(chat => chat.id !== chatId));
     setPendingFirstMessages(prev => {
       const newMap = new Map(prev);
@@ -297,7 +367,6 @@ function App() {
       handleNewChat();
     }
     
-    // Backend sync in background
     try {
       const response = await fetch(apiUrl(`/api/db/chat/${chatId}`), {
         method: 'DELETE'
@@ -309,14 +378,12 @@ function App() {
         const data = await response.json();
         logger.error('Failed to delete chat:', data.error);
         
-        // Rollback optimistic update
         setChats(originalChats);
         setPendingFirstMessages(originalPendingMessages);
       }
     } catch (error) {
       logger.error('Failed to delete chat:', error);
       
-      // Rollback optimistic update
       setChats(originalChats);
       setPendingFirstMessages(originalPendingMessages);
     }
@@ -350,6 +417,14 @@ function App() {
 
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
+  
+  // Check if any files are currently processing (not ready for sending)
+  const hasProcessingFiles = attachedFiles.some(file => {
+    const processingStates = ['selected', 'uploading', 'processing', 'processing_md', 'local_processing', 'api_processing'];
+    return file.api_state && processingStates.includes(file.api_state);
+  });
+  
+  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasProcessingFiles;
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -374,7 +449,7 @@ function App() {
     } else {
       setActiveChatId(prev => prev === chatId ? 'none' : prev);
     }
-  }, []); // Remove activeChatId dependency
+  }, []);
 
   const handleBulkDelete = async (chatIds: string[]) => {
     try {
@@ -514,6 +589,197 @@ function App() {
     setActiveModal(null);
   };
 
+  const handleFileUpload = async (files: FileList) => {
+    try {
+      logger.info('[App] Starting backend upload for files:', files.length);
+      
+      const formData = new FormData();
+      
+      for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+      }
+      
+      const response = await fetch(apiUrl('/api/files/upload'), {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        logger.info('[App] Files uploaded to backend successfully:', data.files?.length || 1, data.files?.map((f: { name: any; api_state: any; }) => ({ name: f.name, api_state: f.api_state })));
+        
+        const uploadedFiles = data.files || [data.file];
+        
+        // Replace optimistic temp files with real backend data (avoid duplicates)
+        setAttachedFiles(prev => {
+          const existingIds = new Set(prev.map(f => f.id));
+          
+          // Remove temp files 
+          const withoutTemp = prev.filter(f => !f.id.startsWith('temp_'));
+          
+          // Only add files that don't already exist (SSE might have already added them)
+          const realFiles = uploadedFiles
+            .filter((file: any) => !existingIds.has(file.id))
+            .map((file: any) => ({
+              id: file.id,
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              api_state: file.api_state || 'local',
+              provider: file.provider || undefined
+            }));
+          
+          if (realFiles.length > 0) {
+            logger.info('[App] Added new files from upload response:', realFiles.map((f: { id: any; name: any; api_state: any; }) => ({ id: f.id, name: f.name, api_state: f.api_state })));
+          } else {
+            logger.info('[App] No new files to add - already exist via SSE');
+          }
+          
+          return [...withoutTemp, ...realFiles];
+        });
+        
+        if (data.errors && data.errors.length > 0) {
+          logger.warn('Some files failed to upload:', data.errors);
+        }
+      } else {
+        const errorData = await response.json();
+        logger.error('Failed to upload files:', errorData.error || errorData.errors);
+        
+        // Remove temp files that failed to upload
+        setAttachedFiles(prev => prev.filter(f => !f.id.startsWith('temp_')));
+      }
+    } catch (error) {
+      logger.error('[App] Error uploading files:', error);
+      
+      // Remove temp files on error
+      setAttachedFiles(prev => prev.filter(f => !f.id.startsWith('temp_')));
+    }
+  };
+
+  const handleAddFileClick = () => {
+    logger.info('Add file button clicked - opening file picker');
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      handleFileSelectionImmediate(files);
+      event.target.value = '';
+    }
+  };
+
+  const handleFileSelectionImmediate = async (files: FileList) => {
+    try {
+      logger.info('Files selected, adding to UI immediately:', files.length);
+      
+      // Immediately add files to UI state with optimistic 'selected' state
+      const optimisticFiles = Array.from(files).map(file => ({
+        id: `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        api_state: 'selected' as const,
+        provider: undefined
+      }));
+      
+      logger.info('[App] Adding optimistic files:', optimisticFiles.length, optimisticFiles.map(f => ({ name: f.name, api_state: f.api_state })));
+      setAttachedFiles(prev => [...prev, ...optimisticFiles]);
+      
+      // Start upload process - this will update states from backend
+      handleFileUpload(files);
+      
+    } catch (error) {
+      logger.error('Error handling immediate file selection:', error);
+    }
+  };
+
+  const handleRemoveFile = async (fileId: string) => {
+    logger.info('Removing/canceling attached file with ID:', fileId);
+    
+    const fileToRemove = attachedFiles.find(file => file.id === fileId);
+    if (!fileToRemove) {
+      logger.warn('File not found in attached files:', fileId);
+      return;
+    }
+
+    // Immediately remove from UI (optimistic removal)
+    setAttachedFiles(prev => prev.filter(file => file.id !== fileId));
+    
+    // If it's a temp file (still being processed, not yet uploaded to backend),
+    // no backend cleanup needed
+    if (fileId.startsWith('temp_')) {
+      logger.info('Canceled temp file (no backend cleanup needed):', fileId);
+      return;
+    }
+    
+    // For real files uploaded to backend, delete from backend
+    try {
+      const response = await fetch(apiUrl(`/api/files/${fileId}`), {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        logger.info('File deleted successfully from backend:', data.message);
+      } else {
+        const errorData = await response.json();
+        logger.error('Failed to delete file from backend:', errorData.error);
+        
+        // On backend deletion failure, restore the file to UI
+        setAttachedFiles(prev => {
+          if (prev.some(f => f.id === fileId)) return prev;
+          return [...prev, fileToRemove];
+        });
+      }
+    } catch (error) {
+      logger.error('Error deleting file from backend:', error);
+      
+      // On network error, restore the file to UI
+      setAttachedFiles(prev => {
+        if (prev.some(f => f.id === fileId)) return prev;
+        return [...prev, fileToRemove];
+      });
+    }
+  };
+
+  const clearAttachedFiles = () => {
+    setAttachedFiles([]);
+    BrowserStorage.clearAttachedFiles();
+  };
+
+  const handleClearAllFiles = async () => {
+    if (attachedFiles.length === 0) return;
+    
+    logger.info('Clearing all attached files:', attachedFiles.length);
+    
+    const filesToClear = [...attachedFiles];
+    const fileIds = filesToClear.map(file => file.id);
+    
+    clearAttachedFiles();
+    
+    try {
+      const response = await fetch(apiUrl('/api/files/batch'), {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ file_ids: fileIds })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        logger.error('Failed to batch delete files from backend:', errorData.error);
+        setAttachedFiles(filesToClear);
+      } else {
+        logger.info('Successfully cleared all attached files');
+      }
+    } catch (error) {
+      logger.error('Error during batch delete:', error);
+      setAttachedFiles(filesToClear);
+    }
+  };
+
   return (
     <div className="app">
       <LeftSidebar 
@@ -536,28 +802,46 @@ function App() {
             How can I help you?
           </h1>
           <div className={`input-container center ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
-            <input
-              type="text"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={handleKeyPress}
-              className="message-input"
-              placeholder=""
+            <div className="input-row">
+              <div className="input-wrapper">
+                <button 
+                  className="add-file-button-inline"
+                  title="Add File"
+                  onClick={handleAddFileClick}
+                >
+                  +
+                </button>
+                <input
+                  type="text"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={handleKeyPress}
+                  className="message-input with-file-button"
+                  placeholder=""
+                />
+              </div>
+              <button 
+                onClick={() => {
+                  logger.info('Send button clicked for active chat:', activeChatId);
+                  handleSend();
+                }} 
+                className={`send-button ${isSendDisabled ? 'loading' : ''}`}
+                disabled={isSendDisabled}
+              >
+                {isActiveChatStreaming ? (
+                  <div className="loading-spinner"></div>
+                ) : (
+                  '→'
+                )}
+              </button>
+            </div>
+            
+            <AttachedFiles
+              files={attachedFiles}
+              onRemoveFile={handleRemoveFile}
+              onClearAll={handleClearAllFiles}
+              className="main-screen-attached"
             />
-            <button 
-              onClick={() => {
-                logger.info('Send button clicked for active chat:', activeChatId);
-                handleSend();
-              }} 
-              className={`send-button ${(isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)) ? 'loading' : ''}`}
-              disabled={isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)}
-            >
-              {isActiveChatStreaming ? (
-                <div className="loading-spinner"></div>
-              ) : (
-                '→'
-              )}
-            </button>
           </div>
         </div>
         
@@ -573,30 +857,49 @@ function App() {
               onFirstMessageSent={handleFirstMessageSent}
               onActiveStateChange={handleActiveStateChange}
             />
-            <div className="bottom-input-container">
-              <input
-                ref={bottomInputRef}
-                type="text"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={handleKeyPress}
-                className="message-input"
-                placeholder=""
+            
+            <div className="bottom-input-area">
+              <AttachedFiles
+                files={attachedFiles}
+                onRemoveFile={handleRemoveFile}
+                onClearAll={handleClearAllFiles}
+                className="chat-screen-attached"
               />
-              <button 
-                onClick={() => {
-                  logger.info('Bottom send button clicked for active chat:', activeChatId);
-                  handleSend();
-                }} 
-                className={`send-button ${(isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)) ? 'loading' : ''}`}
-                disabled={isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false)}
-              >
-                {isActiveChatStreaming ? (
-                  <div className="loading-spinner"></div>
-                ) : (
-                  '→'
-                )}
-              </button>
+              
+              <div className="bottom-input-container">
+                <div className="input-wrapper">
+                  <button 
+                    className="add-file-button-inline"
+                    title="Add File"
+                    onClick={handleAddFileClick}
+                  >
+                    +
+                  </button>
+                  <input
+                    ref={bottomInputRef}
+                    type="text"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={handleKeyPress}
+                    className="message-input with-file-button"
+                    placeholder=""
+                  />
+                </div>
+                <button 
+                  onClick={() => {
+                    logger.info('Bottom send button clicked for active chat:', activeChatId);
+                    handleSend();
+                  }} 
+                  className={`send-button ${isSendDisabled ? 'loading' : ''}`}
+                  disabled={isSendDisabled}
+                >
+                  {isActiveChatStreaming ? (
+                    <div className="loading-spinner"></div>
+                  ) : (
+                    '→'
+                  )}
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -627,7 +930,6 @@ function App() {
         <SettingsWindow />
       </ModalWindow>
 
-      {/* Right Sidebar Knowledge Management Components */}
       <ModalWindow 
         isOpen={activeModal === 'profiles'} 
         onClose={handleCloseModal}
@@ -659,6 +961,15 @@ function App() {
       >
         <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} />
       </ModalWindow>
+      
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleFileSelect}
+        accept="*"
+      />
     </div>
   );
 }

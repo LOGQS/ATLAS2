@@ -65,6 +65,8 @@ const logger = {
       'resumeStream',
       'loadChatHistoryImmediate',
       '[Chat.useEffect1]',
+      '[SPINNER]',
+      '[App]',
       'Error during async load',
       'Error during same-chat load',
       // Chat flow debugging
@@ -85,6 +87,12 @@ const logger = {
       'Thoughts chunk for',
       'Content chunk for',
       'Stream complete for',
+      'File state event',
+      'Received SSE file state update',
+      '[SPINNER]',
+      '[AttachedFiles]',
+      'Updated file state',
+      'Updated temp file',
       'Reconciled',
       'Reset state for',
     ];

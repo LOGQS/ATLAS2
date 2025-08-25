@@ -1,6 +1,6 @@
 # status: complete
 
-from typing import Dict, Any, Generator, List
+from typing import Dict, Any, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 from google import genai
@@ -8,6 +8,8 @@ from google.genai import types
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
 from utils.config import Config
+from pathlib import Path
+import time
 
 load_dotenv()
 
@@ -28,6 +30,9 @@ class Gemini:
             "supports_reasoning": True
         }
     }
+    
+    FILE_SIZE_LIMIT = 2 * 1024 * 1024 * 1024  # 2GB in bytes
+    DIRECT_UPLOAD_EXTENSIONS = {'.pdf'}  # Extensions that can be uploaded directly without MD conversion
     
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -89,7 +94,8 @@ class Gemini:
             return 0
     
     def generate_text(self, prompt: str, model: str = "", 
-                     include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None, 
+                     include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
+                     file_attachments: List[str] = None,
                      **config_params) -> Dict[str, Any]:
         """Generate text response with chat history context"""
         if not self.is_available():
@@ -103,7 +109,21 @@ class Gemini:
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
             contents.extend(formatted_history)
-        contents.append({"role": "user", "parts": [{"text": prompt}]})
+        
+        user_parts = [{"text": prompt}]
+        
+        # Add file attachments if provided
+        if file_attachments:
+            for api_file_name in file_attachments:
+                try:
+                    # Get file info to create proper file reference
+                    file_info = self.client.files.get(name=api_file_name)
+                    user_parts.append({"file_data": {"file_uri": file_info.uri}})
+                    logger.info(f"Added file attachment {api_file_name} to request")
+                except Exception as e:
+                    logger.error(f"Failed to add file attachment {api_file_name}: {str(e)}")
+        
+        contents.append({"role": "user", "parts": user_parts})
             
         limiter = get_rate_limiter(
             Config.get_rate_limit_requests_per_minute(),
@@ -136,6 +156,7 @@ class Gemini:
     
     def generate_text_stream(self, prompt: str, model: str = "", 
                            include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
+                           file_attachments: List[str] = None,
                            **config_params) -> Generator[Dict[str, Any], None, None]:
         """Generate streaming text response with chat history context"""
         if not self.is_available():
@@ -150,7 +171,21 @@ class Gemini:
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
             contents.extend(formatted_history)
-        contents.append({"role": "user", "parts": [{"text": prompt}]})
+        
+        user_parts = [{"text": prompt}]
+        
+        # Add file attachments if provided
+        if file_attachments:
+            for api_file_name in file_attachments:
+                try:
+                    # Get file info to create proper file reference
+                    file_info = self.client.files.get(name=api_file_name)
+                    user_parts.append({"file_data": {"file_uri": file_info.uri}})
+                    logger.info(f"Added file attachment {api_file_name} to streaming request")
+                except Exception as e:
+                    logger.error(f"Failed to add file attachment {api_file_name} to streaming request: {str(e)}")
+        
+        contents.append({"role": "user", "parts": user_parts})
         
         thoughts = ""
         answer = ""
@@ -181,6 +216,258 @@ class Gemini:
                         yield {"type": "answer_start"}
                     yield {"type": "answer", "content": part.text}
                     answer += part.text
+    
+    def get_file_size_limit(self) -> int:
+        """Get the maximum file size limit for this provider"""
+        return self.FILE_SIZE_LIMIT
+    
+    def get_direct_upload_extensions(self) -> set:
+        """Get file extensions that can be uploaded directly without MD conversion"""
+        return self.DIRECT_UPLOAD_EXTENSIONS
+    
+    def upload_file(self, file_path: str, display_name: Optional[str] = None) -> Dict[str, Any]:
+        """Upload a file to Gemini Files API and return metadata including API file name"""
+        if not self.is_available():
+            return {
+                'success': False,
+                'error': 'Provider not available',
+                'state': 'error'
+            }
+        
+        try:
+            file_path_obj = Path(file_path)
+            if not file_path_obj.exists():
+                return {
+                    'success': False,
+                    'error': 'File does not exist',
+                    'state': 'error'
+                }
+            
+            file_size = file_path_obj.stat().st_size
+            
+            if file_size > self.FILE_SIZE_LIMIT:
+                return {
+                    'success': False,
+                    'error': f'File size {file_size} exceeds limit of {self.FILE_SIZE_LIMIT} bytes',
+                    'state': 'error'
+                }
+            
+            logger.info(f"Uploading file to Gemini: {file_path}")
+            
+            limiter = get_rate_limiter(
+                Config.get_rate_limit_requests_per_minute(),
+                Config.get_rate_limit_burst_size()
+            )
+            
+            # Set mime_type for markdown files to avoid detection issues
+            file_path_obj = Path(file_path)
+            upload_kwargs = {"file": str(file_path)}
+            
+            if file_path_obj.suffix.lower() == '.md':
+                upload_kwargs["config"] = {"mime_type": "text/markdown"}
+            
+            uploaded_file = limiter.execute(
+                self.client.files.upload,
+                "gemini:upload",
+                **upload_kwargs
+            )
+            
+            logger.info(f"File uploaded successfully to Gemini: {uploaded_file.name}")
+            
+            return {
+                'success': True,
+                'api_file_name': uploaded_file.name,
+                'display_name': display_name or file_path_obj.name,
+                'state': 'uploaded'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error uploading file to Gemini: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'state': 'error'
+            }
+    
+    def get_file_metadata(self, api_file_name: str) -> Dict[str, Any]:
+        """Get metadata for an uploaded file using Gemini Files API"""
+        if not self.is_available():
+            return {
+                'success': False,
+                'error': 'Provider not available',
+                'state': 'error'
+            }
+        
+        try:
+            logger.debug(f"Getting file metadata from Gemini: {api_file_name}")
+            
+            limiter = get_rate_limiter(
+                Config.get_rate_limit_requests_per_minute(),
+                Config.get_rate_limit_burst_size()
+            )
+            
+            file_info = limiter.execute(
+                self.client.files.get,
+                "gemini:get_file",
+                name=api_file_name
+            )
+            
+            # Map Gemini states to our internal states
+            gemini_state = getattr(file_info, 'state', 'UNKNOWN')
+            if gemini_state == 'ACTIVE':
+                time.sleep(1)
+                internal_state = 'ready'
+                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state} (after 1s stability delay)")
+            elif gemini_state in ['PROCESSING']:
+                internal_state = 'api_processing'
+                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
+            else:
+                internal_state = 'api_processing'  # Default to processing for unknown states
+                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
+            
+            return {
+                'success': True,
+                'api_file_name': file_info.name,
+                'state': internal_state,
+                'gemini_state': gemini_state
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting file metadata from Gemini: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'state': 'error'
+            }
+    
+    def list_files(self) -> Dict[str, Any]:
+        """List all uploaded files in Gemini Files API"""
+        if not self.is_available():
+            return {
+                'success': False,
+                'error': 'Provider not available',
+                'files': []
+            }
+        
+        try:
+            logger.debug("Listing files from Gemini")
+            
+            limiter = get_rate_limiter(
+                Config.get_rate_limit_requests_per_minute(),
+                Config.get_rate_limit_burst_size()
+            )
+            
+            files_response = limiter.execute(
+                self.client.files.list,
+                "gemini:list_files"
+            )
+            
+            files = []
+            for file_info in files_response:
+                files.append({
+                    'api_file_name': file_info.name
+                })
+            
+            return {
+                'success': True,
+                'files': files
+            }
+            
+        except Exception as e:
+            logger.error(f"Error listing files from Gemini: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'files': []
+            }
+    
+    def get_file_attachments_for_request(self, chat_id: str) -> List[str]:
+        """Get list of API file names that are ready to be included in requests for this chat"""
+        from utils.db_utils import db
+        
+        try:
+            # Get files associated with this chat
+            files = db.get_all_files(chat_id=chat_id)
+            api_file_names = []
+            
+            for file in files:
+                # Include files that have been uploaded to the API and have API file names
+                if (file.get('api_state') in ['uploaded', 'processing', 'ready'] and 
+                    file.get('provider') == 'gemini' and 
+                    file.get('api_file_name')):
+                    
+                    # For uploaded files, check if they need processing time
+                    if file.get('api_state') == 'uploaded':
+                        # Try to get current file status from Gemini API
+                        try:
+                            file_info = self.client.files.get(name=file['api_file_name'])
+                            gemini_state = getattr(file_info, 'state', 'UNKNOWN')
+                            
+                            if gemini_state == 'ACTIVE':
+                                # File is ready to use - add 1 second delay to ensure stability
+                                import time
+                                time.sleep(1)
+                                api_file_names.append(file['api_file_name'])
+                                # Update state to ready in database
+                                db.update_file_api_info(file['id'], api_state='ready')
+                                logger.debug(f"Including file {file['original_name']} ({file['api_file_name']}) in chat request (after 1s stability delay)")
+                            else:
+                                # File still processing in Gemini
+                                logger.info(f"File {file['api_file_name']} still processing in Gemini (state: {gemini_state}), skipping")
+                                # Update database to reflect processing state
+                                db.update_file_api_info(file['id'], api_state='api_processing')
+                                continue
+                        except Exception as e:
+                            logger.warning(f"File {file['api_file_name']} may still be processing: {str(e)}")
+                            # Don't include if we can't verify it's ready
+                            continue
+                    else:
+                        # File is already marked as processing or ready
+                        api_file_names.append(file['api_file_name'])
+                        logger.debug(f"Including file {file['original_name']} ({file['api_file_name']}) in chat request")
+            
+            logger.info(f"Found {len(api_file_names)} ready file attachments for chat {chat_id}")
+            return api_file_names
+            
+        except Exception as e:
+            logger.error(f"Error getting file attachments for chat {chat_id}: {str(e)}")
+            return []
+    
+    def delete_file(self, api_file_name: str) -> Dict[str, Any]:
+        """Delete a file from Gemini Files API"""
+        if not self.is_available():
+            return {
+                'success': False,
+                'error': 'Provider not available'
+            }
+        
+        try:
+            logger.info(f"Deleting file from Gemini: {api_file_name}")
+            
+            limiter = get_rate_limiter(
+                Config.get_rate_limit_requests_per_minute(),
+                Config.get_rate_limit_burst_size()
+            )
+            
+            limiter.execute(
+                self.client.files.delete,
+                "gemini:delete_file",
+                name=api_file_name
+            )
+            
+            logger.info(f"File deleted successfully from Gemini: {api_file_name}")
+            
+            return {
+                'success': True,
+                'message': f'File {api_file_name} deleted successfully'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error deleting file from Gemini: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
 class HuggingFace:
     """

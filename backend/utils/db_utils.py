@@ -98,6 +98,31 @@ class DatabaseManager:
                 )
             """)
             
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS files (
+                    id TEXT PRIMARY KEY,
+                    original_name TEXT NOT NULL,
+                    stored_filename TEXT NOT NULL,
+                    file_type TEXT,
+                    file_extension TEXT,
+                    file_size INTEGER,
+                    upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    chat_id TEXT,
+                    md_filename TEXT,
+                    api_file_name TEXT,
+                    api_state TEXT DEFAULT 'local' CHECK(api_state IN ('local', 'processing_md', 'uploading', 'uploaded', 'processing', 'ready', 'error')),
+                    provider TEXT,
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_files_chat ON files(chat_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_files_upload ON files(upload_timestamp)
+            """)
+            
             conn.commit()
     
     def create_chat(self, chat_id: str, system_prompt: Optional[str] = None, name: Optional[str] = None) -> bool:
@@ -124,7 +149,6 @@ class DatabaseManager:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 
-                # Check for recent duplicates to prevent accidental duplicate saves
                 cursor.execute("""
                     SELECT id FROM messages 
                     WHERE chat_id = ? AND role = ? AND content = ?
@@ -137,7 +161,6 @@ class DatabaseManager:
                     logger.warning(f"Duplicate message detected for chat {chat_id}, returning existing ID: {existing[0]}")
                     return existing[0]
                 
-                # Save new message
                 cursor.execute("""
                     INSERT INTO messages (chat_id, role, content, thoughts, provider, model)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -290,5 +313,185 @@ class DatabaseManager:
             result = cursor.fetchone()
             return result["state"] if result else None
     
+    def save_file_record(self, file_id: str, original_name: str, stored_filename: str, 
+                        file_type: str, file_extension: str, file_size: int, 
+                        chat_id: Optional[str] = None, md_filename: Optional[str] = None,
+                        api_file_name: Optional[str] = None, api_state: str = 'local', 
+                        provider: Optional[str] = None) -> bool:
+        """Save file record to database"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO files (id, original_name, stored_filename, file_type, 
+                                     file_extension, file_size, chat_id, md_filename, 
+                                     api_file_name, api_state, provider)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (file_id, original_name, stored_filename, file_type, file_extension, file_size, chat_id, md_filename, api_file_name, api_state, provider))
+                conn.commit()
+                logger.info(f"Saved file record: {file_id} - {original_name}")
+                return True
+        except Exception as e:
+            logger.error(f"Error saving file record: {str(e)}")
+            return False
+    
+    def get_file_record(self, file_id: str) -> Optional[Dict[str, Any]]:
+        """Get file record by ID"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, original_name, stored_filename, file_type, file_extension, 
+                       file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
+                       api_state, provider
+                FROM files WHERE id = ?
+            """, (file_id,))
+            result = cursor.fetchone()
+            if result:
+                return {
+                    "id": result["id"],
+                    "original_name": result["original_name"],
+                    "stored_filename": result["stored_filename"],
+                    "file_type": result["file_type"],
+                    "file_extension": result["file_extension"],
+                    "file_size": result["file_size"],
+                    "upload_timestamp": result["upload_timestamp"],
+                    "chat_id": result["chat_id"],
+                    "md_filename": result["md_filename"],
+                    "api_file_name": result["api_file_name"],
+                    "api_state": result["api_state"],
+                    "provider": result["provider"]
+                }
+            return None
+    
+    def get_all_files(self, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all file records, optionally filtered by chat_id"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if chat_id:
+                cursor.execute("""
+                    SELECT id, original_name, stored_filename, file_type, file_extension, 
+                           file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
+                           api_state, provider
+                    FROM files WHERE chat_id = ? ORDER BY upload_timestamp DESC
+                """, (chat_id,))
+            else:
+                cursor.execute("""
+                    SELECT id, original_name, stored_filename, file_type, file_extension, 
+                           file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
+                           api_state, provider
+                    FROM files ORDER BY upload_timestamp DESC
+                """)
+            
+            files = []
+            for row in cursor.fetchall():
+                files.append({
+                    "id": row["id"],
+                    "original_name": row["original_name"],
+                    "stored_filename": row["stored_filename"],
+                    "file_type": row["file_type"],
+                    "file_extension": row["file_extension"],
+                    "file_size": row["file_size"],
+                    "upload_timestamp": row["upload_timestamp"],
+                    "chat_id": row["chat_id"],
+                    "md_filename": row["md_filename"],
+                    "api_file_name": row["api_file_name"],
+                    "api_state": row["api_state"],
+                    "provider": row["provider"]
+                })
+            return files
+    
+    def delete_file_record(self, file_id: str) -> bool:
+        """Delete file record from database"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
+                conn.commit()
+                logger.info(f"Deleted file record: {file_id}")
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error deleting file record: {str(e)}")
+            return False
+    
+    def file_exists(self, file_id: str) -> bool:
+        """Check if file record exists"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM files WHERE id = ? LIMIT 1", (file_id,))
+            return cursor.fetchone() is not None
+    
+    def associate_file_with_chat(self, file_id: str, chat_id: str) -> bool:
+        """Associate a file with a chat"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE files SET chat_id = ? WHERE id = ?", (chat_id, file_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error associating file with chat: {str(e)}")
+            return False
+    
+    def update_file_api_info(self, file_id: str, api_file_name: Optional[str] = None, 
+                            api_state: Optional[str] = None, provider: Optional[str] = None) -> bool:
+        """Update API-related information for a file"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                updates = []
+                params = []
+                
+                if api_file_name is not None:
+                    updates.append("api_file_name = ?")
+                    params.append(api_file_name)
+                
+                if api_state is not None:
+                    updates.append("api_state = ?")
+                    params.append(api_state)
+                
+                if provider is not None:
+                    updates.append("provider = ?")
+                    params.append(provider)
+                
+                if not updates:
+                    return False
+                
+                params.append(file_id)
+                query = f"UPDATE files SET {', '.join(updates)} WHERE id = ?"
+                
+                cursor.execute(query, params)
+                conn.commit()
+                
+                # Emit SSE event for file state changes
+                if cursor.rowcount > 0 and api_state is not None:
+                    try:
+                        # Use dynamic import to avoid circular dependency
+                        from route.chat_route import publish_file_state
+                        publish_file_state(file_id, api_state, provider)
+                        logger.info(f"[SSE] File state update broadcast: {file_id} -> {api_state}")
+                    except Exception as sse_error:
+                        logger.error(f"Error broadcasting file state via SSE: {str(sse_error)}")
+                
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating file API info: {str(e)}")
+            return False
+    
+    def update_file_md_info(self, file_id: str, md_filename: str) -> bool:
+        """Update markdown filename for a file"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE files SET md_filename = ?
+                    WHERE id = ?
+                """, (md_filename, file_id))
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating file MD info: {str(e)}")
+            return False
+
 
 db = DatabaseManager()

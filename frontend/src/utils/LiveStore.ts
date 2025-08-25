@@ -26,6 +26,17 @@ class LiveStore {
     this.es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data);
+        
+        // Handle file state events first (they don't have chat_id)
+        if (ev.type === 'file_state') {
+          logger.info(`[LiveStore] File state event: ${ev.file_id} -> ${ev.api_state}`);
+          window.dispatchEvent(new CustomEvent('fileStateUpdate', { 
+            detail: { file_id: ev.file_id, api_state: ev.api_state, provider: ev.provider } 
+          }));
+          return; // Don't process further
+        }
+
+        // Handle chat events (require chat_id)
         const chatId = ev.chat_id as string;
         if (!chatId) return;
 

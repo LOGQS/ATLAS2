@@ -47,6 +47,15 @@ def publish_content(chat_id: str, chunk_type: str, content: str):
     content_queues[chat_id].put({'type': chunk_type, 'content': content})
     _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
 
+def publish_file_state(file_id: str, api_state: str, provider: str = None):
+    """Publishes a file state change via SSE."""
+    _broadcast({
+        "type": "file_state", 
+        "file_id": file_id, 
+        "api_state": api_state,
+        "provider": provider
+    })
+
 def get_content_queue(chat_id: str):
     """Get or create content queue for a chat."""
     if chat_id not in content_queues:
@@ -156,6 +165,17 @@ def register_chat_routes(app: Flask):
             provider = data.get('provider', 'gemini')
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
+            attached_file_ids = data.get('attached_file_ids', [])
+            
+            # Associate attached files with this chat
+            if attached_file_ids:
+                from utils.db_utils import db
+                for file_id in attached_file_ids:
+                    try:
+                        db.associate_file_with_chat(file_id, chat_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to associate file {file_id} with chat {chat_id}: {str(e)}")
+                logger.info(f"Associated {len(attached_file_ids)} files with chat {chat_id}")
             
             if not message:
                 if not is_chat_processing(chat_id):

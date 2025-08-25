@@ -11,6 +11,15 @@ import logger from '../utils/logger';
 import { apiUrl } from '../config/api';
 import { liveStore } from '../utils/LiveStore';
 
+interface AttachedFile {
+  id: string;
+  name: string;
+  size: number;
+  type?: string;
+  api_state?: string;
+  provider?: string;
+}
+
 interface Message {
   id: number;
   role: 'user' | 'assistant';
@@ -19,6 +28,7 @@ interface Message {
   provider?: string;
   model?: string;
   timestamp: string;
+  attachedFiles?: AttachedFile[];
 }
 
 interface ChatProps {
@@ -136,7 +146,22 @@ const Chat = forwardRef<any, ChatProps>(({
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isLoading) {
       logger.info(`[Chat] Sending first message for new chat ${chatId}`);
-      handleNewMessage(firstMessage);
+      
+      // Parse first message to extract message and files
+      try {
+        const parsed = JSON.parse(firstMessage);
+        if (parsed.message && typeof parsed.message === 'string') {
+          // New format with files
+          handleNewMessage(parsed.message, parsed.files || []);
+        } else {
+          // Old format, just a string message
+          handleNewMessage(firstMessage);
+        }
+      } catch {
+        // Fallback for old format
+        handleNewMessage(firstMessage);
+      }
+      
       setFirstMessageSent(true);
       if (onFirstMessageSent) {
         onFirstMessageSent(chatId);
@@ -164,7 +189,7 @@ const Chat = forwardRef<any, ChatProps>(({
     };
   }, []);
 
-  const handleNewMessage = useCallback(async (content: string) => {
+  const handleNewMessage = useCallback(async (content: string, attachedFiles?: AttachedFile[]) => {
     if (!chatId || !isActive) {
       logger.warn(`[Chat] Cannot send message - chatId: ${chatId}, isActive: ${isActive}`);
       return;
@@ -199,7 +224,8 @@ const Chat = forwardRef<any, ChatProps>(({
       id: genId(),
       role: 'user',
       content,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      attachedFiles: attachedFiles || []
     };
     const assistantPlaceholder: Message = {
       id: genId(),
@@ -218,7 +244,8 @@ const Chat = forwardRef<any, ChatProps>(({
         body: JSON.stringify({
           message: content,
           chat_id: chatId,
-          include_reasoning: true
+          include_reasoning: true,
+          attached_file_ids: attachedFiles ? attachedFiles.map(f => f.id) : []
         })
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -260,6 +287,7 @@ const Chat = forwardRef<any, ChatProps>(({
           key={message.id}
           content={message.content}
           isFirstMessage={isFirstMessage}
+          attachedFiles={message.attachedFiles}
         />
       );
     }

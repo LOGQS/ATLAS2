@@ -202,10 +202,14 @@ class Chat:
         if chat_history and chat_history[-1]["role"] == "user":
             chat_history = chat_history[:-1]
         
-        logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages")
+        file_attachments = []
+        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         response = self.providers[provider].generate_text(
             message, model=model, include_thoughts=use_reasoning, 
-            chat_history=chat_history, **config_params
+            chat_history=chat_history, file_attachments=file_attachments, **config_params
         )
         
 
@@ -266,7 +270,11 @@ class Chat:
         full_text = ""
         full_thoughts = ""
         
-        logger.info(f"Generating streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages")
+        file_attachments = []
+        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        logger.info(f"Generating streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         
         if use_reasoning:
             db.update_chat_state(self.chat_id, "thinking")
@@ -279,7 +287,7 @@ class Chat:
         
         for chunk in self.providers[provider].generate_text_stream(
             message, model=model, include_thoughts=use_reasoning, 
-            chat_history=chat_history, **config_params
+            chat_history=chat_history, file_attachments=file_attachments, **config_params
         ):
 
             if chunk.get("type") == "thoughts":
@@ -338,7 +346,12 @@ class Chat:
         full_text = ""
         full_thoughts = ""
         
-        logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages")
+        # Get file attachments for this chat if provider supports it
+        file_attachments = []
+        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         
         try:
             if use_reasoning:
@@ -357,7 +370,7 @@ class Chat:
         
         for chunk in self.providers[provider].generate_text_stream(
             message, model=model, include_thoughts=use_reasoning, 
-            chat_history=chat_history, **config_params
+            chat_history=chat_history, file_attachments=file_attachments, **config_params
         ):
             
             if chunk.get("type") == "thoughts":

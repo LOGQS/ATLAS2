@@ -72,27 +72,44 @@ body.chat-active .main-content {
 
 .input-container {
   display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: 900px;
-  gap: 15px;
   align-items: center;
   justify-content: center;
   transition: opacity 0.15s ease;
 }
 
-.bottom-input-container {
+/* Row containing input wrapper and send button */
+.input-row {
   display: flex;
   width: 100%;
-  max-width: 900px;
   gap: 15px;
   align-items: center;
   justify-content: center;
+}
+
+/* Container for the whole bottom input area including attached files */
+.bottom-input-area {
   position: fixed;
   bottom: 40px;
   left: 50%;
   transform: translateX(-50%);
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   z-index: 100;
   animation: fadeInUp 0.2s ease forwards;
+}
+
+.bottom-input-container {
+  display: flex;
+  width: 100%;
+  gap: 15px;
+  align-items: center;
+  justify-content: center;
 }
 
 @keyframes fadeInUp {
@@ -186,6 +203,48 @@ body.chat-active .main-content {
   100% { transform: rotate(360deg); }
 }
 
+.input-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.add-file-button-inline {
+  position: absolute;
+  left: 12px;
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 146, 79, 0.2);
+  border-radius: 8px;
+  color: rgba(255, 146, 79, 0.7);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.add-file-button-inline:hover {
+  background: rgba(255, 146, 79, 0.08);
+  border-color: rgba(255, 146, 79, 0.4);
+  color: rgba(255, 146, 79, 1);
+  transform: scale(1.05);
+}
+
+.add-file-button-inline:active {
+  transform: scale(0.95);
+}
+
+.message-input.with-file-button {
+  padding-left: 56px;
+}
+
 @media (max-width: 768px) {
   .title {
     font-size: 36px;
@@ -205,5 +264,16 @@ body.chat-active .main-content {
     width: 48px;
     height: 48px;
     font-size: 18px;
+  }
+  
+  .add-file-button-inline {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+    left: 10px;
+  }
+  
+  .message-input.with-file-button {
+    padding-left: 48px;
   }
 }
