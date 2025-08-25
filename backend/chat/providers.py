@@ -31,8 +31,8 @@ class Gemini:
         }
     }
     
-    FILE_SIZE_LIMIT = 2 * 1024 * 1024 * 1024  # 2GB in bytes
-    DIRECT_UPLOAD_EXTENSIONS = {'.pdf'}  # Extensions that can be uploaded directly without MD conversion
+    FILE_SIZE_LIMIT = 2 * 1024 * 1024 * 1024  
+    DIRECT_UPLOAD_EXTENSIONS = {'.pdf'}  
     
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -93,6 +93,26 @@ class Gemini:
             logger.error(f"Token counting failed: {e}")
             return 0
     
+    def wait_until_active(self, file_names, timeout_s=120, base_sleep=0.5):
+        """Poll Files API until all are ACTIVE or timeout."""
+        deadline = time.time() + timeout_s
+        remaining = set(file_names)
+        sleep = base_sleep
+        while remaining and time.time() < deadline:
+            done = set()
+            for name in list(remaining):
+                try:
+                    info = self.client.files.get(name=name)
+                    if getattr(info, "state", "") == "ACTIVE":
+                        done.add(name)
+                except Exception:
+                    pass
+            remaining -= done
+            if remaining:
+                time.sleep(sleep)
+                sleep = min(sleep * 1.6, 5.0)
+        return len(remaining) == 0
+    
     def generate_text(self, prompt: str, model: str = "", 
                      include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                      file_attachments: List[str] = None,
@@ -112,8 +132,23 @@ class Gemini:
         
         user_parts = [{"text": prompt}]
         
-        # Add file attachments if provided
         if file_attachments:
+            try:
+                ok = self.wait_until_active(file_attachments, timeout_s=180)
+                if not ok:
+                    logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
+                    active = []
+                    for name in file_attachments:
+                        try:
+                            info = self.client.files.get(name=name)
+                            if getattr(info, "state", "") == "ACTIVE":
+                                active.append(name)
+                        except Exception:
+                            pass
+                    file_attachments = active
+            except Exception as e:
+                logger.warning(f"wait_until_active failed: {e}")
+
             for api_file_name in file_attachments:
                 try:
                     # Get file info to create proper file reference
@@ -174,8 +209,23 @@ class Gemini:
         
         user_parts = [{"text": prompt}]
         
-        # Add file attachments if provided
         if file_attachments:
+            try:
+                ok = self.wait_until_active(file_attachments, timeout_s=180)
+                if not ok:
+                    logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
+                    active = []
+                    for name in file_attachments:
+                        try:
+                            info = self.client.files.get(name=name)
+                            if getattr(info, "state", "") == "ACTIVE":
+                                active.append(name)
+                        except Exception:
+                            pass
+                    file_attachments = active
+            except Exception as e:
+                logger.warning(f"wait_until_active failed: {e}")
+
             for api_file_name in file_attachments:
                 try:
                     # Get file info to create proper file reference
@@ -315,14 +365,10 @@ class Gemini:
             # Map Gemini states to our internal states
             gemini_state = getattr(file_info, 'state', 'UNKNOWN')
             if gemini_state == 'ACTIVE':
-                time.sleep(1)
                 internal_state = 'ready'
-                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state} (after 1s stability delay)")
-            elif gemini_state in ['PROCESSING']:
-                internal_state = 'api_processing'
                 logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
             else:
-                internal_state = 'api_processing'  # Default to processing for unknown states
+                internal_state = 'api_processing'
                 logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
             
             return {
@@ -391,42 +437,18 @@ class Gemini:
             api_file_names = []
             
             for file in files:
-                # Include files that have been uploaded to the API and have API file names
-                if (file.get('api_state') in ['uploaded', 'processing', 'ready'] and 
-                    file.get('provider') == 'gemini' and 
-                    file.get('api_file_name')):
-                    
-                    # For uploaded files, check if they need processing time
-                    if file.get('api_state') == 'uploaded':
-                        # Try to get current file status from Gemini API
-                        try:
-                            file_info = self.client.files.get(name=file['api_file_name'])
-                            gemini_state = getattr(file_info, 'state', 'UNKNOWN')
-                            
-                            if gemini_state == 'ACTIVE':
-                                # File is ready to use - add 1 second delay to ensure stability
-                                import time
-                                time.sleep(1)
-                                api_file_names.append(file['api_file_name'])
-                                # Update state to ready in database
-                                db.update_file_api_info(file['id'], api_state='ready')
-                                logger.debug(f"Including file {file['original_name']} ({file['api_file_name']}) in chat request (after 1s stability delay)")
-                            else:
-                                # File still processing in Gemini
-                                logger.info(f"File {file['api_file_name']} still processing in Gemini (state: {gemini_state}), skipping")
-                                # Update database to reflect processing state
-                                db.update_file_api_info(file['id'], api_state='api_processing')
-                                continue
-                        except Exception as e:
-                            logger.warning(f"File {file['api_file_name']} may still be processing: {str(e)}")
-                            # Don't include if we can't verify it's ready
-                            continue
-                    else:
-                        # File is already marked as processing or ready
-                        api_file_names.append(file['api_file_name'])
-                        logger.debug(f"Including file {file['original_name']} ({file['api_file_name']}) in chat request")
+                if (file.get('provider') == 'gemini' and file.get('api_file_name')
+                    and file.get('api_state') in ['uploaded','api_processing','ready']):
+                    api_file_names.append(file['api_file_name'])
+
+                    try:
+                        info = self.client.files.get(name=file['api_file_name'])
+                        if getattr(info, 'state', '') == 'ACTIVE' and file.get('api_state') != 'ready':
+                            db.update_file_api_info(file['id'], api_state='ready')
+                    except Exception:
+                        pass
             
-            logger.info(f"Found {len(api_file_names)} ready file attachments for chat {chat_id}")
+            logger.info(f"Found {len(api_file_names)} file attachments to try for chat {chat_id}")
             return api_file_names
             
         except Exception as e:

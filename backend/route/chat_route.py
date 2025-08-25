@@ -229,7 +229,8 @@ def register_chat_routes(app: Flask):
                         message=message,
                         provider=provider,
                         model=model,
-                        include_reasoning=include_reasoning
+                        include_reasoning=include_reasoning,
+                        attached_file_ids=attached_file_ids
                     )
                     
                     if not success:

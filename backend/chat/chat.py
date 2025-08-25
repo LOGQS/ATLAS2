@@ -170,6 +170,23 @@ class Chat:
                     }
         return all_models
     
+    def _resolve_api_file_names(self, file_ids, provider, timeout_s=180):
+        from utils.db_utils import db
+        import time
+        deadline = time.time() + timeout_s
+        remaining = set(file_ids); names = []
+        while remaining and time.time() < deadline:
+            nxt = set()
+            for fid in list(remaining):
+                rec = db.get_file_record(fid)
+                if rec and rec.get('provider') == provider and rec.get('api_file_name'):
+                    names.append(rec['api_file_name'])
+                else:
+                    nxt.add(fid)
+            remaining = nxt
+            if remaining: time.sleep(0.6)
+        return names
+
     def generate_text(self, message: str, provider: str = "", 
                      model: Optional[str] = None, include_reasoning: bool = True,
                      **config_params) -> Dict[str, Any]:
@@ -203,7 +220,11 @@ class Chat:
             chat_history = chat_history[:-1]
         
         file_attachments = []
-        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+        ids = config_params.get("attached_file_ids") or []
+        config_params.pop("attached_file_ids", None)
+        if ids:
+            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
         logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
@@ -271,7 +292,11 @@ class Chat:
         full_thoughts = ""
         
         file_attachments = []
-        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+        ids = config_params.get("attached_file_ids") or []
+        config_params.pop("attached_file_ids", None)
+        if ids:
+            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
         logger.info(f"Generating streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
@@ -348,7 +373,11 @@ class Chat:
         
         # Get file attachments for this chat if provider supports it
         file_attachments = []
-        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+        ids = config_params.get("attached_file_ids") or []
+        config_params.pop("attached_file_ids", None)
+        if ids:
+            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
         logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
