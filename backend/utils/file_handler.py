@@ -1,11 +1,24 @@
+# status: complete
+
 import shutil
 import uuid
+import multiprocessing
 from pathlib import Path
 from typing import Dict, List, Any
 from utils.logger import get_logger
 from utils.db_utils import db
+from utils.cancellation_manager import cancellation_manager
+from utils.upload_worker import start_upload_process
 from chat.providers import Gemini
 from markitdown import MarkItDown
+import concurrent.futures
+import threading
+
+if hasattr(multiprocessing, 'set_start_method'):
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass 
 
 logger = get_logger(__name__)
 
@@ -28,7 +41,7 @@ def setup_filespace():
         logger.error(f"Error setting up file space: {str(e)}")
         raise
 
-def save_file(source_path, filename=None, file_type=None, chat_id=None):
+def save_file(source_path, filename=None, file_type=None, chat_id=None, temp_id=None):
     """Copy a file to the files directory with unique ID tracking."""
     try:
         files_dir = Path(setup_filespace())
@@ -57,7 +70,8 @@ def save_file(source_path, filename=None, file_type=None, chat_id=None):
             file_extension=file_extension,
             file_size=file_size,
             chat_id=chat_id,
-            api_state='local'
+            api_state='local',
+            temp_id=temp_id  
         )
         
         if not success:
@@ -86,6 +100,9 @@ def save_file(source_path, filename=None, file_type=None, chat_id=None):
 def delete_file(file_id):
     """Delete a file by its unique ID (handles both local and API deletion)."""
     try:
+        logger.info(f"[CANCEL] Cancelling active processing for file {file_id} before deletion")
+        cancellation_manager.cancel_file(file_id)
+        
         file_record = db.get_file_record(file_id)
         if not file_record:
             return {
@@ -97,8 +114,19 @@ def delete_file(file_id):
         
         file_path = files_dir / file_record['stored_filename']
         if file_path.exists():
-            file_path.unlink()
-            logger.info(f"Physical file deleted: {file_path}")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    file_path.unlink()
+                    logger.info(f"Physical file deleted: {file_path}")
+                    break
+                except PermissionError as e:
+                    if attempt == max_retries - 1:
+                        logger.warning(f"Could not delete file after {max_retries} attempts (file may be in use by upload): {file_path}")
+                    else:
+                        logger.info(f"File in use, retrying deletion attempt {attempt + 2}/{max_retries}: {file_path}")
+                        import time
+                        time.sleep(0.5)
         
         if file_record.get('md_filename'):
             md_path = files_dir / "md_ver" / file_record['md_filename']
@@ -122,6 +150,9 @@ def delete_file(file_id):
             }
         
         logger.info(f"File deleted: {file_id} - {file_record['original_name']}")
+        
+        cancellation_manager.cleanup_file(file_id)
+        
         return {
             'success': True,
             'message': f'File {file_record["original_name"]} deleted successfully'
@@ -143,6 +174,9 @@ def batch_delete_files(file_ids):
                 'error': 'No file IDs provided'
             }
         
+        logger.info(f"[CANCEL] Cancelling active processing for {len(file_ids)} files before deletion")
+        cancellation_manager.cancel_files(file_ids)
+        
         files_dir = Path(setup_filespace())
         successful_deletions = []
         failed_deletions = []
@@ -158,10 +192,40 @@ def batch_delete_files(file_ids):
                     continue
                 
                 file_path = files_dir / file_record['stored_filename']
-                
                 if file_path.exists():
-                    file_path.unlink()
-                    logger.debug(f"Physical file deleted: {file_path}")
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            file_path.unlink()
+                            logger.debug(f"Physical file deleted: {file_path}")
+                            break
+                        except PermissionError as e:
+                            if attempt == max_retries - 1:
+                                logger.warning(f"Could not delete file after {max_retries} attempts (file may be in use by upload): {file_path}")
+                            else:
+                                logger.debug(f"File in use, retrying deletion attempt {attempt + 2}/{max_retries}: {file_path}")
+                                import time
+                                time.sleep(0.5)
+                
+                if file_record.get('md_filename'):
+                    md_path = files_dir / "md_ver" / file_record['md_filename']
+                    if md_path.exists():
+                        md_path.unlink()
+                        logger.debug(f"Markdown file deleted: {md_path}")
+                
+                if file_record.get('api_file_name') and file_record.get('provider'):
+                    try:
+                        logger.info(f"[CLEANUP] Deleting file {file_id} from {file_record['provider']} API")
+                        api_delete_result = file_provider_manager.delete_files_from_provider(
+                            [file_id], 
+                            file_record['provider']
+                        )
+                        if api_delete_result['success']:
+                            logger.info(f"[CLEANUP] Successfully deleted file {file_id} from API")
+                        else:
+                            logger.warning(f"[CLEANUP] Failed to delete file {file_id} from API: {api_delete_result}")
+                    except Exception as e:
+                        logger.error(f"[CLEANUP] Error deleting file {file_id} from API: {str(e)}")
                 
                 db_success = db.delete_file_record(file_id)
                 if not db_success:
@@ -178,6 +242,8 @@ def batch_delete_files(file_ids):
                 })
                 logger.debug(f"File deleted: {file_id} - {file_record['original_name']}")
                 
+                cancellation_manager.cleanup_file(file_id)
+                
             except Exception as e:
                 failed_deletions.append({
                     'file_id': file_id,
@@ -193,12 +259,22 @@ def batch_delete_files(file_ids):
                 'deleted_files': successful_deletions
             }
         elif not successful_deletions:
-            logger.error(f"Batch delete failed: all {len(failed_deletions)} files failed")
-            return {
-                'success': False,
-                'error': 'All file deletions failed',
-                'failed_files': failed_deletions
-            }
+            all_not_found = all('not found' in failure.get('error', '').lower() for failure in failed_deletions)
+            if all_not_found:
+                logger.info(f"Batch delete: all {len(failed_deletions)} files were not found (likely temp files or race condition)")
+                return {
+                    'success': True,
+                    'message': f'No files needed deletion (all were temporary or already deleted)',
+                    'deleted_files': [],
+                    'skipped_files': failed_deletions
+                }
+            else:
+                logger.error(f"Batch delete failed: all {len(failed_deletions)} files failed")
+                return {
+                    'success': False,
+                    'error': 'All file deletions failed',
+                    'failed_files': failed_deletions
+                }
         else:
             logger.warning(f"Batch delete partial: {len(successful_deletions)} succeeded, {len(failed_deletions)} failed")
             return {
@@ -366,9 +442,10 @@ class FileProviderManager:
             'direct_upload_extensions': direct_extensions
         }
     
-    def _poll_until_ready(self, api_file_name: str, file_id: str, provider_name: str, timeout_s: int = 300) -> str:
+    def _poll_until_ready(self, api_file_name: str, file_id: str, provider_name: str, timeout_s: int = 300, stop_event: threading.Event = None) -> str:
         """Poll provider until file is truly ready, updating states in real-time"""
         import time
+        import random
         
         provider = self.providers.get(provider_name)
         if not provider:
@@ -376,52 +453,322 @@ class FileProviderManager:
             db.update_file_api_info(file_id, api_state='error')
             return 'error'
         
-        start_time = time.time()
-        poll_interval = 2.0
-        max_interval = 10.0
+        stagger_delay = random.uniform(0.1, 0.5)
+        time.sleep(stagger_delay)
         
-        logger.info(f"Starting readiness polling for file {file_id} ({api_file_name})")
+        start_time = time.time()
+        poll_interval = 0.5  
+        max_interval = 8.0
+        
+        db.update_file_api_info(file_id, api_state='processing')
+        logger.info(f"Starting readiness polling for file {file_id} ({api_file_name}) with {stagger_delay:.2f}s stagger")
         
         while (time.time() - start_time) < timeout_s:
             try:
-                # Check current state with provider
+                if cancellation_manager.is_cancelled(file_id):
+                    logger.info(f"[CANCEL] Polling cancelled for file {file_id}")
+                    return 'cancelled'
+                
+                if stop_event and stop_event.is_set():
+                    logger.info(f"[CANCEL] Polling stopped by event for file {file_id}")
+                    return 'cancelled'
+                
                 metadata_result = provider.get_file_metadata(api_file_name)
                 
                 if not metadata_result['success']:
-                    logger.warning(f"Failed to get metadata for {api_file_name}: {metadata_result.get('error')}")
+                    error_msg = metadata_result.get('error', '')
+                    
+                    if '403' in str(error_msg) and 'PERMISSION_DENIED' in str(error_msg):
+                        logger.info(f"File {file_id} ({api_file_name}) was likely deleted, stopping polling")
+                        db.update_file_api_info(file_id, api_state='error')
+                        return 'error'
+                    
+                    logger.warning(f"Failed to get metadata for {api_file_name}: {error_msg}")
                     time.sleep(poll_interval)
                     continue
                 
                 current_state = metadata_result['state']
-                logger.debug(f"File {file_id} polling state: {current_state}")
+                elapsed = time.time() - start_time
+                logger.info(f"[INDIVIDUAL] File {file_id} state: {current_state} after {elapsed:.1f}s")
                 
-                # Update database with current state
-                db.update_file_api_info(file_id, api_state=current_state)
-                
-                # Check if we've reached a final state
                 if current_state == 'ready':
-                    elapsed = time.time() - start_time
-                    logger.info(f"File {file_id} is ready after {elapsed:.1f}s of polling")
-                    return 'ready'
+                    db_record = db.get_file_record(file_id)
+                    db_api_file_name = db_record.get('api_file_name') if db_record else None
+                    
+                    if db_api_file_name and db_api_file_name != 'None':
+                        if not cancellation_manager.is_cancelled(file_id):
+                            db.update_file_api_info(file_id, api_state='ready')
+                        elapsed = time.time() - start_time
+                        logger.info(f"File {file_id} is ready after {elapsed:.1f}s of polling (Gemini: ready, DB: {db_api_file_name})")
+                        return 'ready'
+                    else:
+                        logger.info(f"File {file_id}: Gemini reports ready but DB api_file_name is '{db_api_file_name}' - continuing to poll")
+                        if not cancellation_manager.is_cancelled(file_id):
+                            db.update_file_api_info(file_id, api_state='processing')
+                        time.sleep(poll_interval)
+                        continue
                 elif current_state == 'error':
+                    if not cancellation_manager.is_cancelled(file_id):
+                        db.update_file_api_info(file_id, api_state='error')
                     logger.error(f"File {file_id} failed during provider processing")
                     return 'error'
+                else:
+                    if not cancellation_manager.is_cancelled(file_id):
+                        db.update_file_api_info(file_id, api_state=current_state)
                 
-                # Still processing, wait before next poll
-                time.sleep(poll_interval)
+                for _ in range(int(poll_interval * 10)): 
+                    if cancellation_manager.is_cancelled(file_id) or (stop_event and stop_event.is_set()):
+                        logger.info(f"[CANCEL] Polling cancelled during sleep for file {file_id}")
+                        return 'cancelled'
+                    time.sleep(0.1)
+                
                 poll_interval = min(poll_interval * 1.2, max_interval)  # Exponential backoff
                 
             except Exception as e:
                 logger.error(f"Error during readiness polling for file {file_id}: {str(e)}")
                 time.sleep(poll_interval)
         
-        # Timeout reached
         logger.warning(f"Readiness polling timeout for file {file_id} after {timeout_s}s")
         db.update_file_api_info(file_id, api_state='error')
         return 'error'
     
+    def _start_parallel_polling(self, uploaded_files: List[Dict[str, Any]], provider_name: str):
+        """Start parallel readiness polling for multiple files in background threads"""
+        import threading
+        
+        def poll_file_readiness(file_info: Dict[str, Any], stop_event: threading.Event):
+            """Background thread function to poll individual file readiness"""
+            try:
+                file_id = file_info['file_id']
+                api_file_name = file_info['api_file_name']
+                
+                logger.info(f"[BACKGROUND-POLL] Starting readiness polling for file {file_id}")
+                final_state = self._poll_until_ready(api_file_name, file_id, provider_name, stop_event=stop_event)
+                logger.info(f"[BACKGROUND-POLL] File {file_id} reached final state: {final_state}")
+                
+            except Exception as e:
+                logger.error(f"[BACKGROUND-POLL] Error polling file {file_info.get('file_id', 'unknown')}: {str(e)}")
+            finally:
+                cancellation_manager.unregister_task(file_id, 'polling_event')
+        
+        for file_info in uploaded_files:
+            file_id = file_info['file_id']
+            
+            stop_event = threading.Event()
+            
+            cancellation_manager.register_polling_event(file_id, stop_event)
+            
+            thread = threading.Thread(
+                target=poll_file_readiness,
+                args=(file_info, stop_event),
+                daemon=True,  
+                name=f"ReadinessPoll-{file_id[:8]}"
+            )
+            thread.start()
+            logger.info(f"[BACKGROUND-POLL] Started background polling thread for file {file_id}")
+    
+    def _batch_upload_to_api(self, upload_infos: List[Dict[str, Any]], provider_name: str) -> List[Dict[str, Any]]:
+        """Upload multiple files to API in true parallel using ThreadPoolExecutor"""
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return [{
+                'file_id': info['file_id'],
+                'success': False,
+                'error': f'Provider {provider_name} not available'
+            } for info in upload_infos]
+        
+        results = []
+        
+        def upload_single_to_api(upload_info: Dict[str, Any]) -> Dict[str, Any]:
+            """Upload a single file to API - designed for true parallel execution"""
+            file_id = upload_info['file_id']
+            upload_path = upload_info['upload_path']
+            display_name = upload_info['display_name']
+            
+            try:
+                logger.info(f"[API-UPLOAD] Starting API upload for file {file_id}")
+                
+                upload_result = provider.upload_file(
+                    upload_path, 
+                    display_name, 
+                    timeout_seconds=300,  
+                    file_id=file_id
+                )
+                
+                if upload_result['success']:
+                    db.update_file_api_info(
+                        file_id, 
+                        api_file_name=upload_result['api_file_name'],
+                        api_state=upload_result['state'],
+                        provider=provider_name
+                    )
+                    
+                    result_data = {
+                        'file_id': file_id,
+                        'success': True,
+                        'api_file_name': upload_result['api_file_name'],
+                        'state': upload_result['state']
+                    }
+                    
+                    if upload_info['md_result']:
+                        result_data['md_filename'] = upload_info['md_result']['md_filename']
+                    
+                    logger.info(f"[API-UPLOAD] Successfully uploaded file {file_id} to API")
+                    return result_data
+                else:
+                    db.update_file_api_info(file_id, api_state='error')
+                    error_msg = upload_result.get('error', 'Unknown upload error')
+                    logger.error(f"[API-UPLOAD] Failed to upload file {file_id}: {error_msg}")
+                    return {
+                        'file_id': file_id,
+                        'success': False,
+                        'error': error_msg
+                    }
+            
+            except Exception as e:
+                db.update_file_api_info(file_id, api_state='error')
+                logger.error(f"[API-UPLOAD] Exception uploading file {file_id}: {str(e)}")
+                return {
+                    'file_id': file_id,
+                    'success': False,
+                    'error': str(e)
+                }
+        
+        max_processes = min(len(upload_infos), 8) 
+        logger.info(f"[API-UPLOAD] Uploading {len(upload_infos)} files to {provider_name} API with {max_processes} parallel processes")
+        
+        
+        
+        active_processes = {}
+        
+        try:
+            for info in upload_infos:
+                file_id = info['file_id']
+                upload_path = info['upload_path']
+                display_name = info['display_name']
+                
+                logger.info(f"[MULTIPROCESS] Starting upload process for file {file_id}")
+                
+                process, conn = start_upload_process(upload_path, display_name, file_id)
+                active_processes[file_id] = {'process': process, 'conn': conn, 'info': info}
+                
+                cancellation_manager.register_process(file_id, process)
+            
+            for file_id, proc_info in active_processes.items():
+                process = proc_info['process']
+                conn = proc_info['conn']
+                info = proc_info['info']
+                
+                try:
+                    if cancellation_manager.is_cancelled(file_id):
+                        logger.info(f"[CANCEL] File {file_id} cancelled, terminating process")
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(timeout=2)
+                            if process.is_alive():
+                                process.kill()
+                        results.append({
+                            'file_id': file_id,
+                            'success': False,
+                            'error': 'Upload process cancelled'
+                        })
+                        continue
+                    
+                    process.join(timeout=300)
+                    
+                    if process.is_alive():
+                        logger.error(f"[MULTIPROCESS] Upload process for {file_id} timed out, terminating")
+                        process.terminate()
+                        process.join(timeout=2)
+                        if process.is_alive():
+                            process.kill()
+                        results.append({
+                            'file_id': file_id,
+                            'success': False,
+                            'error': 'Upload process timed out'
+                        })
+                        continue
+                    
+                    if conn.poll():
+                        try:
+                            result = conn.recv()
+                            logger.info(f"[MULTIPROCESS] Upload process completed for file {file_id}: {result.get('success')}")
+                            results.append(result)
+                        except (EOFError, OSError, ConnectionResetError) as e:
+                            logger.warning(f"[MULTIPROCESS] Process communication failed for {file_id}: {str(e)}")
+                            results.append({
+                                'file_id': file_id,
+                                'success': False,
+                                'error': f'Process communication failed: {str(e)}'
+                            })
+                    else:
+                        logger.error(f"[MULTIPROCESS] No result received from upload process for {file_id}")
+                        results.append({
+                            'file_id': file_id,
+                            'success': False,
+                            'error': 'Upload process finished but no result received'
+                        })
+                
+                except Exception as e:
+                    logger.error(f"[MULTIPROCESS] Exception handling upload process for {file_id}: {str(e)}")
+                    results.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': str(e)
+                    })
+                finally:
+                    cancellation_manager.unregister_task(file_id, 'process')
+                    try:
+                        conn.close()
+                    except:
+                        pass
+        
+        except Exception as e:
+            logger.error(f"[MULTIPROCESS] Critical error in multiprocessing upload: {str(e)}")
+            for file_id, proc_info in active_processes.items():
+                process = proc_info['process']
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=1)
+                    if process.is_alive():
+                        process.kill()
+                cancellation_manager.unregister_task(file_id, 'process')
+            raise
+        
+        uploaded_files = []
+        for result in results:
+            if result.get('success') and result.get('api_file_name'):
+                file_id = result['file_id']
+                api_file_name = result['api_file_name']
+                gemini_state = result.get('state', 'uploaded')
+                
+                state_mapping = {
+                    'active': 'processing',  # Gemini "active" means still processing for us
+                    'processing': 'processing',
+                    'ready': 'ready',
+                    'error': 'error',
+                    'failed': 'error'
+                }
+                api_state = state_mapping.get(gemini_state, 'processing')
+                
+                db.update_file_api_info(
+                    file_id,
+                    api_file_name=api_file_name,
+                    api_state=api_state,
+                    provider=provider_name
+                )
+                logger.info(f"[MULTIPROCESS-DB] Updated database for file {file_id}: api_file_name={api_file_name}, gemini_state={gemini_state}, db_state={api_state}")
+                uploaded_files.append(result)
+        
+        if uploaded_files:
+            logger.info(f"[API-UPLOAD] Starting background readiness polling for {len(uploaded_files)} files")
+            self._start_parallel_polling(uploaded_files, provider_name)
+        
+        logger.info(f"[API-UPLOAD] API upload batch completed: {len(uploaded_files)}/{len(upload_infos)} successful")
+        return results
+    
     def process_and_upload_files(self, file_ids: List[str], provider_name: str = 'gemini') -> Dict[str, Any]:
-        """Process multiple files: markdown conversion and API upload with state tracking"""
+        """Process multiple files in parallel: markdown conversion and API upload with state tracking"""
         provider = self.providers.get(provider_name)
         if not provider:
             return {
@@ -430,32 +777,32 @@ class FileProviderManager:
                 'results': []
             }
         
+        
+        
         results = []
         successful_uploads = 0
         
-        for file_id in file_ids:
+        def process_single_file(file_id: str) -> Dict[str, Any]:
+            """Process a single file - designed to run in parallel"""
             try:
-                # Don't set uploading yet - we need to do local processing first
                 db.update_file_api_info(file_id, provider=provider_name)
                 
                 file_record = db.get_file_record(file_id)
                 if not file_record:
-                    results.append({
+                    return {
                         'file_id': file_id,
                         'success': False,
                         'error': 'File not found in database'
-                    })
-                    continue
+                    }
                 
                 file_path = get_file_path(file_id)
                 if not file_path or not file_path.exists():
-                    results.append({
+                    db.update_file_api_info(file_id, api_state='error')
+                    return {
                         'file_id': file_id,
                         'success': False,
                         'error': 'Physical file not found'
-                    })
-                    db.update_file_api_info(file_id, api_state='error')
-                    continue
+                    }
                 
                 files_dir = Path(setup_filespace())
                 file_extension = Path(file_record['original_name']).suffix.lower()
@@ -463,9 +810,7 @@ class FileProviderManager:
                 provider_limits = self.get_provider_file_limits(provider_name)
                 direct_upload_extensions = provider_limits.get('direct_upload_extensions', set())
                 
-                # Define textual file extensions
                 textual_extensions = {'.txt', '.md', '.rst', '.py', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.scss', '.json', '.xml', '.yaml', '.yml', '.csv', '.log'}
-                # Define non-textual file extensions (images, audio, video)
                 non_textual_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', 
                                         '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', 
                                         '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv'}
@@ -473,99 +818,122 @@ class FileProviderManager:
                 is_textual = file_extension in textual_extensions
                 is_non_textual = file_extension in non_textual_extensions
                 
-                # DEBUG: Log file processing decision
-                logger.info(f"File {file_id} ({file_record['original_name']}) - Extension: {file_extension}, is_textual: {is_textual}, is_non_textual: {is_non_textual}, direct_upload: {file_extension in direct_upload_extensions}")
+                logger.info(f"[PARALLEL] File {file_id} ({file_record['original_name']}) - Extension: {file_extension}, is_textual: {is_textual}, is_non_textual: {is_non_textual}, direct_upload: {file_extension in direct_upload_extensions}")
                 
-                # Determine upload strategy based on file type and provider support
+                upload_info = {
+                    'file_id': file_id,
+                    'file_record': file_record,
+                    'file_path': file_path,
+                    'upload_path': None,
+                    'display_name': None,
+                    'md_result': None
+                }
+                
                 if file_extension in direct_upload_extensions:
-                    # Provider supports this extension directly, upload original file
-                    logger.info(f"File {file_id} taking DIRECT UPLOAD path -> setting uploading (blue)")
+                    logger.info(f"[PARALLEL] File {file_id} will take DIRECT UPLOAD path")
                     db.update_file_api_info(file_id, api_state='uploading')
-                    upload_result = provider.upload_file(str(file_path), file_record['original_name'])
+                    upload_info['upload_path'] = str(file_path)
+                    upload_info['display_name'] = file_record['original_name']
                 elif is_non_textual:
-                    # Non-textual file: upload original file directly without markdown processing
-                    logger.info(f"File {file_id} taking NON-TEXTUAL path -> setting uploading (blue)")
+                    logger.info(f"[PARALLEL] File {file_id} will take NON-TEXTUAL path")
                     db.update_file_api_info(file_id, api_state='uploading')
-                    upload_result = provider.upload_file(str(file_path), file_record['original_name'])
+                    upload_info['upload_path'] = str(file_path)
+                    upload_info['display_name'] = file_record['original_name']
                 else:
-                    # Textual files and unknown files: process to markdown first (orange spinner)
-                    logger.info(f"File {file_id} taking MARKDOWN processing path -> setting processing_md (orange)")
+                    logger.info(f"[PARALLEL] File {file_id} taking MARKDOWN processing path -> setting processing_md (orange)")
                     db.update_file_api_info(file_id, api_state='processing_md')
                     md_result = process_file_to_markdown(str(file_path), file_id)
                     if not md_result['success']:
-                        results.append({
+                        db.update_file_api_info(file_id, api_state='error')
+                        return {
                             'file_id': file_id,
                             'success': False,
                             'error': f'Markdown processing failed: {md_result["error"]}'
-                        })
-                        db.update_file_api_info(file_id, api_state='error')
-                        continue
+                        }
                     
-                    # Now upload to API (blue spinner)
                     db.update_file_api_info(file_id, api_state='uploading')
+                    upload_info['md_result'] = md_result
                     
                     if is_textual:
-                        # Textual file: upload only MD version unless in provider's allowed list
                         md_ver_dir = files_dir / "md_ver"
-                        upload_result = provider.upload_file(
-                            str(md_ver_dir / md_result['md_filename']), 
-                            f"{file_record['original_name']} (processed)"
-                        )
+                        upload_info['upload_path'] = str(md_ver_dir / md_result['md_filename'])
+                        upload_info['display_name'] = f"{file_record['original_name']} (processed)"
                     else:
-                        # Unknown file type: upload MD version as fallback
                         md_ver_dir = files_dir / "md_ver"
-                        upload_result = provider.upload_file(
-                            str(md_ver_dir / md_result['md_filename']), 
-                            f"{file_record['original_name']} (processed)"
-                        )
+                        upload_info['upload_path'] = str(md_ver_dir / md_result['md_filename'])
+                        upload_info['display_name'] = f"{file_record['original_name']} (processed)"
                 
-                if upload_result['success']:
-                    # Initially set the API file name and intermediate state
-                    db.update_file_api_info(
-                        file_id, 
-                        api_file_name=upload_result['api_file_name'],
-                        api_state=upload_result['state'],
-                        provider=provider_name
-                    )
-                    
-                    # Now poll until file is truly ready (instead of doing this before chat)
-                    final_state = self._poll_until_ready(
-                        upload_result['api_file_name'], 
-                        file_id, 
-                        provider_name
-                    )
-                    
-                    successful_uploads += 1
-                    result_data = {
-                        'file_id': file_id,
-                        'success': True,
-                        'api_file_name': upload_result['api_file_name'],
-                        'state': final_state
-                    }
-                    
-                    # Only include md_filename if markdown processing was done
-                    if 'md_result' in locals() and md_result.get('md_filename'):
-                        result_data['md_filename'] = md_result['md_filename']
-                    
-                    results.append(result_data)
-                    logger.info(f"Successfully processed and uploaded file {file_id}")
-                else:
-                    db.update_file_api_info(file_id, api_state='error')
-                    results.append({
-                        'file_id': file_id,
-                        'success': False,
-                        'error': upload_result['error']
-                    })
-                    logger.error(f"Failed to upload file {file_id}: {upload_result['error']}")
+                logger.info(f"[PARALLEL] File {file_id} prepared for batch upload")
+                return upload_info
             
             except Exception as e:
                 db.update_file_api_info(file_id, api_state='error')
-                results.append({
+                logger.error(f"[PARALLEL] Error processing file {file_id}: {str(e)}")
+                return {
                     'file_id': file_id,
                     'success': False,
                     'error': str(e)
-                })
-                logger.error(f"Error processing file {file_id}: {str(e)}")
+                }
+        
+        max_workers = min(len(file_ids), 5) 
+        logger.info(f"[PARALLEL] Processing {len(file_ids)} files with {max_workers} parallel workers")
+        
+        upload_infos = []
+        processing_errors = []
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(process_single_file, file_id): file_id 
+                              for file_id in file_ids}
+            
+            for future, file_id in future_to_file.items():
+                cancellation_manager.register_future(file_id, future)
+            
+            for future in concurrent.futures.as_completed(future_to_file):
+                file_id = future_to_file[future]
+                
+                try:
+                    result = future.result()
+                    
+                    if result.get('success') == False: 
+                        processing_errors.append(result)
+                    elif result.get('upload_path'): 
+                        upload_infos.append(result)
+                    else:
+                        logger.error(f"[PARALLEL] Unexpected result format for file {file_id}: {result}")
+                        processing_errors.append({
+                            'file_id': file_id,
+                            'success': False,
+                            'error': 'Unexpected result format'
+                        })
+                    
+                    cancellation_manager.unregister_task(file_id, 'future')
+                    
+                except concurrent.futures.CancelledError:
+                    logger.info(f"[CANCEL] Processing task cancelled for file {file_id}")
+                    processing_errors.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': 'Processing task cancelled'
+                    })
+                except Exception as e:
+                    logger.error(f"[PARALLEL] Exception processing file {file_id}: {str(e)}")
+                    processing_errors.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': str(e)
+                    })
+                finally:
+                    cancellation_manager.unregister_task(file_id, 'future')
+        
+        logger.info(f"[PARALLEL] File preparation completed: {len(upload_infos)} ready for upload, {len(processing_errors)} failed")
+        
+        if upload_infos:
+            logger.info(f"[PARALLEL] Starting batch API upload for {len(upload_infos)} files")
+            api_results = self._batch_upload_to_api(upload_infos, provider_name)
+            results.extend(api_results)
+            successful_uploads = len([r for r in api_results if r.get('success')])
+        
+        results.extend(processing_errors)
         
         return {
             'success': successful_uploads > 0,
@@ -600,8 +968,6 @@ class FileProviderManager:
             
             api_state = file_record.get('api_state', 'local')
             
-            # No need to poll provider anymore - files are already verified as ready during upload
-            # The database state is now the source of truth
             is_ready = api_state == 'ready'
             
             logger.debug(f"File {file_id} readiness check: state='{api_state}', ready={is_ready}")

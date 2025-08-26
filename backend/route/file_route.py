@@ -1,3 +1,5 @@
+# status: complete
+
 from flask import Flask, request, jsonify, send_file
 import tempfile
 import os
@@ -42,10 +44,14 @@ class FileRoute:
             
             chat_id = request.form.get('chat_id')
             
+            temp_ids = request.form.getlist('temp_ids') or []
+            logger.info(f"Upload received {len(files)} files with {len(temp_ids)} temp_ids: {temp_ids}")
+            
             uploaded_files = []
             errors = []
+            saved_file_ids = []
             
-            for file in files:
+            for index, file in enumerate(files):
                 if file.filename == '':
                     continue
                     
@@ -55,40 +61,20 @@ class FileRoute:
                         file.save(temp_file.name)
                         temp_path = temp_file.name
                     
+                    temp_id = temp_ids[index] if index < len(temp_ids) else None
+                    logger.info(f"Saving file {index}: {file.filename} with temp_id: {temp_id}")
+                    
                     result = save_file(
                         source_path=temp_path, 
                         filename=file.filename,
                         file_type=file.content_type,
-                        chat_id=chat_id
+                        chat_id=chat_id,
+                        temp_id=temp_id  
                     )
                     
                     if result['success']:
-                        logger.info(f"File uploaded successfully: {result['file_id']} - {result['original_name']}")
-                        
-                        # Automatically trigger API processing for the default provider
-                        default_provider = Config.get_default_provider()
-                        logger.info(f"Triggering automatic API processing for file {result['file_id']} with provider {default_provider}")
-                        
-                        try:
-                            process_result = file_provider_manager.process_and_upload_files(
-                                [result['file_id']], 
-                                default_provider
-                            )
-                            
-                            if process_result['success'] and process_result['results']:
-                                file_result = process_result['results'][0]
-                                api_state = file_result.get('state', 'local')
-                                provider = default_provider if file_result.get('success') else None
-                                
-                                logger.info(f"File {result['file_id']} processed with API state: {api_state}")
-                            else:
-                                api_state = 'error'
-                                provider = None
-                                logger.warning(f"File {result['file_id']} failed to process: {process_result}")
-                        except Exception as e:
-                            logger.error(f"Error during automatic file processing: {str(e)}")
-                            api_state = 'local'
-                            provider = None
+                        logger.info(f"File saved successfully: {result['file_id']} - {result['original_name']}")
+                        saved_file_ids.append(result['file_id'])
                         
                         uploaded_files.append({
                             'id': result['file_id'],
@@ -96,8 +82,8 @@ class FileRoute:
                             'size': result['size'],
                             'type': result['file_type'],
                             'extension': result['file_extension'],
-                            'api_state': api_state,
-                            'provider': provider
+                            'api_state': 'local',
+                            'provider': None
                         })
                     else:
                         errors.append(f"Failed to upload {file.filename}: {result['error']}")
@@ -111,6 +97,34 @@ class FileRoute:
                             os.unlink(temp_path)
                         except:
                             pass
+            
+            if saved_file_ids:
+                default_provider = Config.get_default_provider()
+                logger.info(f"[PARALLEL-UPLOAD] Starting parallel API processing for {len(saved_file_ids)} files with provider {default_provider}")
+                
+                try:
+                    process_result = file_provider_manager.process_and_upload_files(
+                        saved_file_ids, 
+                        default_provider
+                    )
+                    
+                    if process_result['success']:
+                        logger.info(f"[PARALLEL-UPLOAD] Parallel processing completed: {process_result['successful_uploads']}/{len(saved_file_ids)} files successful")
+                        
+                       
+                        for i, uploaded_file in enumerate(uploaded_files):
+                            matching_result = next((r for r in process_result['results'] if r['file_id'] == uploaded_file['id']), None)
+                            if matching_result and matching_result.get('success'):
+                                uploaded_file['api_state'] = matching_result.get('state', 'ready')
+                                uploaded_file['provider'] = default_provider
+                            else:
+                                uploaded_file['api_state'] = 'error'
+                                uploaded_file['provider'] = None
+                    else:
+                        logger.warning(f"[PARALLEL-UPLOAD] Parallel processing had issues: {process_result}")
+                
+                except Exception as e:
+                    logger.error(f"[PARALLEL-UPLOAD] Error during parallel processing: {str(e)}")
             
             if uploaded_files and not errors:
                 return jsonify({

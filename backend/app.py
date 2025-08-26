@@ -4,6 +4,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 import os
 import sys
+import multiprocessing
 
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
@@ -76,6 +77,8 @@ def create_app():
     return app
 
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
+    
     app = create_app()
     
     logger.info("Starting ATLAS2 Backend on 0.0.0.0:5000")

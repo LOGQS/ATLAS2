@@ -47,13 +47,14 @@ def publish_content(chat_id: str, chunk_type: str, content: str):
     content_queues[chat_id].put({'type': chunk_type, 'content': content})
     _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
 
-def publish_file_state(file_id: str, api_state: str, provider: str = None):
+def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_id: str = None):
     """Publishes a file state change via SSE."""
     _broadcast({
         "type": "file_state", 
         "file_id": file_id, 
         "api_state": api_state,
-        "provider": provider
+        "provider": provider,
+        "temp_id": temp_id 
     })
 
 def get_content_queue(chat_id: str):

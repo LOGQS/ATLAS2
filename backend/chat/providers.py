@@ -10,6 +10,8 @@ from utils.rate_limiter import get_rate_limiter
 from utils.config import Config
 from pathlib import Path
 import time
+from utils.upload_worker import start_upload_process
+from utils.cancellation_manager import cancellation_manager
 
 load_dotenv()
 
@@ -151,7 +153,6 @@ class Gemini:
 
             for api_file_name in file_attachments:
                 try:
-                    # Get file info to create proper file reference
                     file_info = self.client.files.get(name=api_file_name)
                     user_parts.append({"file_data": {"file_uri": file_info.uri}})
                     logger.info(f"Added file attachment {api_file_name} to request")
@@ -275,8 +276,8 @@ class Gemini:
         """Get file extensions that can be uploaded directly without MD conversion"""
         return self.DIRECT_UPLOAD_EXTENSIONS
     
-    def upload_file(self, file_path: str, display_name: Optional[str] = None) -> Dict[str, Any]:
-        """Upload a file to Gemini Files API and return metadata including API file name"""
+    def upload_file(self, file_path: str, display_name: Optional[str] = None, timeout_seconds: int = 300, file_id: Optional[str] = None) -> Dict[str, Any]:
+        """Upload a file to Gemini Files API using multiprocessing for true cancellation"""
         if not self.is_available():
             return {
                 'success': False,
@@ -293,46 +294,80 @@ class Gemini:
                     'state': 'error'
                 }
             
-            file_size = file_path_obj.stat().st_size
+            logger.info(f"Starting multiprocess upload for Gemini: {file_path}")
             
-            if file_size > self.FILE_SIZE_LIMIT:
-                return {
-                    'success': False,
-                    'error': f'File size {file_size} exceeds limit of {self.FILE_SIZE_LIMIT} bytes',
-                    'state': 'error'
-                }
+            process, conn = start_upload_process(file_path, display_name, file_id)
             
-            logger.info(f"Uploading file to Gemini: {file_path}")
+            if file_id:
+                cancellation_manager.register_process(file_id, process)
             
-            limiter = get_rate_limiter(
-                Config.get_rate_limit_requests_per_minute(),
-                Config.get_rate_limit_burst_size()
-            )
-            
-            # Set mime_type for markdown files to avoid detection issues
-            file_path_obj = Path(file_path)
-            upload_kwargs = {"file": str(file_path)}
-            
-            if file_path_obj.suffix.lower() == '.md':
-                upload_kwargs["config"] = {"mime_type": "text/markdown"}
-            
-            uploaded_file = limiter.execute(
-                self.client.files.upload,
-                "gemini:upload",
-                **upload_kwargs
-            )
-            
-            logger.info(f"File uploaded successfully to Gemini: {uploaded_file.name}")
-            
-            return {
-                'success': True,
-                'api_file_name': uploaded_file.name,
-                'display_name': display_name or file_path_obj.name,
-                'state': 'uploaded'
-            }
+            try:
+                start_time = time.time()
+                result = None
+                
+                while process.is_alive() and (time.time() - start_time) < timeout_seconds:
+                    if conn.poll(0.1):
+                        try:
+                            result = conn.recv()
+                            logger.info(f"Upload process completed for file {file_id}: {result.get('success', False)}")
+                            return result
+                        except EOFError:
+                            break
+                    
+                    if file_id and cancellation_manager.is_cancelled(file_id):
+                        logger.info(f"Upload cancelled during execution for file {file_id}")
+                        return {
+                            'success': False,
+                            'error': 'Upload cancelled',
+                            'state': 'error'
+                        }
+                
+                if process.is_alive():
+                    logger.warning(f"Upload process still running after {timeout_seconds}s, terminating")
+                    process.terminate()
+                    process.join(timeout=2)
+                    if process.is_alive():
+                        try:
+                            process.kill()
+                        except AttributeError:
+                            pass
+                    
+                    return {
+                        'success': False,
+                        'error': f'Upload operation timed out after {timeout_seconds} seconds',
+                        'state': 'error'
+                    }
+                
+                try:
+                    if conn.poll(0.1): 
+                        result = conn.recv()
+                        return result
+                except (EOFError, OSError):
+                    pass  
+                
+                if file_id and cancellation_manager.is_cancelled(file_id):
+                    return {
+                        'success': False,
+                        'error': 'Upload cancelled',
+                        'state': 'error'
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'Upload process finished unexpectedly',
+                        'state': 'error'
+                    }
+                
+            finally:
+                if file_id:
+                    cancellation_manager.unregister_process(file_id)
+                conn.close()
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=1)
             
         except Exception as e:
-            logger.error(f"Error uploading file to Gemini: {str(e)}")
+            logger.error(f"Error in multiprocess upload to Gemini: {str(e)}")
             return {
                 'success': False,
                 'error': str(e),
@@ -362,20 +397,17 @@ class Gemini:
                 name=api_file_name
             )
             
-            # Map Gemini states to our internal states
             gemini_state = getattr(file_info, 'state', 'UNKNOWN')
             
-            # Comprehensive state mapping for Gemini
             if gemini_state == 'ACTIVE':
                 internal_state = 'ready'
             elif gemini_state in ['PROCESSING', 'STATE_UNSPECIFIED', 'UNKNOWN']:
-                internal_state = 'api_processing'
+                internal_state = 'processing'
             elif gemini_state == 'FAILED':
                 internal_state = 'error'
             else:
-                # Default to processing for any unknown states
-                internal_state = 'api_processing'
-                logger.warning(f"Unknown Gemini state '{gemini_state}' for file {api_file_name}, defaulting to api_processing")
+                internal_state = 'processing'
+                logger.warning(f"Unknown Gemini state '{gemini_state}' for file {api_file_name}, defaulting to processing")
             
             logger.debug(f"File {api_file_name}: Gemini state '{gemini_state}' -> internal state '{internal_state}'")
             
@@ -440,13 +472,12 @@ class Gemini:
         from utils.db_utils import db
         
         try:
-            # Get files associated with this chat
             files = db.get_all_files(chat_id=chat_id)
             api_file_names = []
             
             for file in files:
                 if (file.get('provider') == 'gemini' and file.get('api_file_name')
-                    and file.get('api_state') in ['uploaded','api_processing','ready']):
+                    and file.get('api_state') in ['uploaded','processing','ready']):
                     api_file_names.append(file['api_file_name'])
 
                     try:

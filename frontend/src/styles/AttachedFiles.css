@@ -57,6 +57,24 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
+.file-status {
+  font-size: 12px;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.file-status.processing {
+  color: #3498db;
+}
+
+.file-status.error {
+  color: #e74c3c;
+}
+
+.file-status.ready {
+  color: #27ae60;
+}
+
 .attached-files-actions {
   display: flex;
   align-items: center;

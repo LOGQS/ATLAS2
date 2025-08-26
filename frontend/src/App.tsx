@@ -1,6 +1,7 @@
 // status: complete
 
 import React, { useState, useRef, useEffect, useCallback} from 'react';
+import { flushSync } from 'react-dom';
 import './styles/App.css';
 import LeftSidebar from './components/LeftSidebar';
 import RightSidebar from './components/RightSidebar';
@@ -13,8 +14,10 @@ import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
 import logger from './utils/logger';
 import { apiUrl } from './config/api';
-import { BrowserStorage, AttachedFile } from './utils/BrowserStorage';
+import { BrowserStorage } from './utils/BrowserStorage';
 import { liveStore } from './utils/LiveStore';
+import { useAppState } from './hooks/useAppState';
+import { useFileManagement } from './hooks/useFileManagement';
 
 interface ChatItem {
   id: string;
@@ -31,10 +34,20 @@ function App() {
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>('none');
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
-  const [activeModal, setActiveModal] = useState<string | null>(null);
   const [isAppInitialized, setIsAppInitialized] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
+  const { 
+    attachedFiles, 
+    fileInputRef, 
+    hasUnreadyFiles, 
+    initializeAttachedFiles, 
+    handleAddFileClick, 
+    handleFileSelect, 
+    handleRemoveFile, 
+    clearAttachedFiles, 
+    handleClearAllFiles 
+  } = useFileManagement(isAppInitialized);
 
   useEffect(() => {
     if (isAppInitialized) return;
@@ -46,16 +59,12 @@ function App() {
       await loadActiveChat();
       
       // Restore attached files from localStorage
-      const savedFiles = BrowserStorage.getAttachedFiles();
-      if (savedFiles.length > 0) {
-        logger.info('[App.useEffect] Restored attached files from localStorage:', savedFiles.length);
-        setAttachedFiles(savedFiles);
-      }
+      initializeAttachedFiles();
       
       setIsAppInitialized(true);
     };
     initializeApp();
-  }, [isAppInitialized]);
+  }, [isAppInitialized, initializeAttachedFiles]);
 
   useEffect(() => {
     const unsubs = chats.map(chat =>
@@ -66,74 +75,6 @@ function App() {
     return () => unsubs.forEach(unsub => unsub && unsub());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chats.map(c => c.id).join(',')]); 
-
-  // Save attached files to localStorage whenever they change
-  useEffect(() => {
-    if (isAppInitialized) {
-      BrowserStorage.setAttachedFiles(attachedFiles);
-    }
-  }, [attachedFiles, isAppInitialized]);
-
-  // Real-time file state updates via SSE (no polling needed!)
-  useEffect(() => {
-    if (!isAppInitialized) return;
-
-    const handleFileStateUpdate = (event: CustomEvent) => {
-      const { file_id, api_state, provider } = event.detail;
-      logger.info(`[App] Received SSE file state update: ${file_id} -> ${api_state}`);
-      
-      setAttachedFiles(prev => {
-        let matchFound = false;
-        let tempFileMatched = false;
-        
-        const updated = prev.map(file => {
-          // First try exact ID match
-          if (file.id === file_id) {
-            const oldState = file.api_state;
-            const newFile = { ...file, api_state, provider: provider || file.provider };
-            logger.info(`[App] Updated file state by ID: ${file.name} ${oldState} -> ${api_state}`);
-            matchFound = true;
-            return newFile;
-          }
-          return file;
-        });
-        
-        // If no ID match, try to match temp files by name (race condition fix)
-        if (!matchFound) {
-          const tempUpdated = prev.map(file => {
-            // Match temp files that are still being processed
-            if (file.id.startsWith('temp_') && ['selected', 'processing_md', 'uploading'].includes(file.api_state || 'selected')) {
-              const oldState = file.api_state;
-              const newFile = { 
-                ...file, 
-                id: file_id, // Update to real ID
-                api_state, 
-                provider: provider || file.provider 
-              };
-              logger.info(`[App] Updated temp file by name match: ${file.name} ${oldState} -> ${api_state} (ID: ${file.id} -> ${file_id})`);
-              tempFileMatched = true;
-              return newFile;
-            }
-            return file;
-          });
-          
-          if (tempFileMatched) {
-            return tempUpdated;
-          } else {
-            logger.warn(`[App] No file found with ID ${file_id}, will be updated when upload response arrives`);
-          }
-        }
-        
-        return updated;
-      });
-    };
-
-    window.addEventListener('fileStateUpdate', handleFileStateUpdate as EventListener);
-    
-    return () => {
-      window.removeEventListener('fileStateUpdate', handleFileStateUpdate as EventListener);
-    };
-  }, [isAppInitialized]);
 
   const loadActiveChat = async () => {
     try {
@@ -347,11 +288,15 @@ function App() {
 
   const handleNewChat = () => {
     logger.info('Starting new chat');
-    setHasMessageBeenSent(false);
-    setCenterFading(false);
-    setMessage('');
     
-    setActiveChatId('none');
+    // Ensure atomic state updates to prevent render artifacts
+    flushSync(() => {
+      setHasMessageBeenSent(false);
+      setCenterFading(false);
+      setActiveChatId('none');
+    });
+    
+    setMessage('');
     setChats(prev => prev.map(chat => ({ ...chat, isActive: false })));
     document.body.classList.remove('chat-active');
     
@@ -425,14 +370,6 @@ function App() {
 
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
-  
-  // Check if any files are not ready for chat (due to backend polling changes)
-  const hasUnreadyFiles = attachedFiles.some(file => {
-    // With backend polling, only 'ready' and 'local' states are truly ready for chat
-    // 'uploaded' is no longer sufficient - files must be verified as 'ready'
-    const chatReadyStates = ['ready', 'local'];
-    return !file.api_state || !chatReadyStates.includes(file.api_state);
-  });
   
   const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles;
 
@@ -587,207 +524,6 @@ function App() {
 
   const handleChatReorder = (reorderedChats: ChatItem[]) => {
     setChats(reorderedChats);
-  };
-
-  const handleOpenModal = (modalType: string) => {
-    logger.info('Opening modal:', modalType);
-    setActiveModal(modalType);
-  };
-
-  const handleCloseModal = () => {
-    logger.info('Closing modal');
-    setActiveModal(null);
-  };
-
-  const handleFileUpload = async (files: FileList) => {
-    try {
-      logger.info('[App] Starting backend upload for files:', files.length);
-      
-      const formData = new FormData();
-      
-      for (let i = 0; i < files.length; i++) {
-        formData.append('files', files[i]);
-      }
-      
-      const response = await fetch(apiUrl('/api/files/upload'), {
-        method: 'POST',
-        body: formData
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        logger.info('[App] Files uploaded to backend successfully:', data.files?.length || 1, data.files?.map((f: { name: any; api_state: any; }) => ({ name: f.name, api_state: f.api_state })));
-        
-        const uploadedFiles = data.files || [data.file];
-        
-        // Replace optimistic temp files with real backend data (avoid duplicates)
-        setAttachedFiles(prev => {
-          const existingIds = new Set(prev.map(f => f.id));
-          
-          // Remove temp files 
-          const withoutTemp = prev.filter(f => !f.id.startsWith('temp_'));
-          
-          // Only add files that don't already exist (SSE might have already added them)
-          const realFiles = uploadedFiles
-            .filter((file: any) => !existingIds.has(file.id))
-            .map((file: any) => ({
-              id: file.id,
-              name: file.name,
-              size: file.size,
-              type: file.type,
-              api_state: file.api_state || 'local',
-              provider: file.provider || undefined
-            }));
-          
-          if (realFiles.length > 0) {
-            logger.info('[App] Added new files from upload response:', realFiles.map((f: { id: any; name: any; api_state: any; }) => ({ id: f.id, name: f.name, api_state: f.api_state })));
-          } else {
-            logger.info('[App] No new files to add - already exist via SSE');
-          }
-          
-          return [...withoutTemp, ...realFiles];
-        });
-        
-        if (data.errors && data.errors.length > 0) {
-          logger.warn('Some files failed to upload:', data.errors);
-        }
-      } else {
-        const errorData = await response.json();
-        logger.error('Failed to upload files:', errorData.error || errorData.errors);
-        
-        // Remove temp files that failed to upload
-        setAttachedFiles(prev => prev.filter(f => !f.id.startsWith('temp_')));
-      }
-    } catch (error) {
-      logger.error('[App] Error uploading files:', error);
-      
-      // Remove temp files on error
-      setAttachedFiles(prev => prev.filter(f => !f.id.startsWith('temp_')));
-    }
-  };
-
-  const handleAddFileClick = () => {
-    logger.info('Add file button clicked - opening file picker');
-    fileInputRef.current?.click();
-  };
-
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (files && files.length > 0) {
-      handleFileSelectionImmediate(files);
-      event.target.value = '';
-    }
-  };
-
-  const handleFileSelectionImmediate = async (files: FileList) => {
-    try {
-      logger.info('Files selected, adding to UI immediately:', files.length);
-      
-      // Immediately add files to UI state with optimistic 'selected' state
-      const optimisticFiles = Array.from(files).map(file => ({
-        id: `temp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        api_state: 'selected' as const,
-        provider: undefined
-      }));
-      
-      logger.info('[App] Adding optimistic files:', optimisticFiles.length, optimisticFiles.map(f => ({ name: f.name, api_state: f.api_state })));
-      setAttachedFiles(prev => [...prev, ...optimisticFiles]);
-      
-      // Start upload process - this will update states from backend
-      handleFileUpload(files);
-      
-    } catch (error) {
-      logger.error('Error handling immediate file selection:', error);
-    }
-  };
-
-  const handleRemoveFile = async (fileId: string) => {
-    logger.info('Removing/canceling attached file with ID:', fileId);
-    
-    const fileToRemove = attachedFiles.find(file => file.id === fileId);
-    if (!fileToRemove) {
-      logger.warn('File not found in attached files:', fileId);
-      return;
-    }
-
-    // Immediately remove from UI (optimistic removal)
-    setAttachedFiles(prev => prev.filter(file => file.id !== fileId));
-    
-    // If it's a temp file (still being processed, not yet uploaded to backend),
-    // no backend cleanup needed
-    if (fileId.startsWith('temp_')) {
-      logger.info('Canceled temp file (no backend cleanup needed):', fileId);
-      return;
-    }
-    
-    // For real files uploaded to backend, delete from backend
-    try {
-      const response = await fetch(apiUrl(`/api/files/${fileId}`), {
-        method: 'DELETE'
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        logger.info('File deleted successfully from backend:', data.message);
-      } else {
-        const errorData = await response.json();
-        logger.error('Failed to delete file from backend:', errorData.error);
-        
-        // On backend deletion failure, restore the file to UI
-        setAttachedFiles(prev => {
-          if (prev.some(f => f.id === fileId)) return prev;
-          return [...prev, fileToRemove];
-        });
-      }
-    } catch (error) {
-      logger.error('Error deleting file from backend:', error);
-      
-      // On network error, restore the file to UI
-      setAttachedFiles(prev => {
-        if (prev.some(f => f.id === fileId)) return prev;
-        return [...prev, fileToRemove];
-      });
-    }
-  };
-
-  const clearAttachedFiles = () => {
-    setAttachedFiles([]);
-    BrowserStorage.clearAttachedFiles();
-  };
-
-  const handleClearAllFiles = async () => {
-    if (attachedFiles.length === 0) return;
-    
-    logger.info('Clearing all attached files:', attachedFiles.length);
-    
-    const filesToClear = [...attachedFiles];
-    const fileIds = filesToClear.map(file => file.id);
-    
-    clearAttachedFiles();
-    
-    try {
-      const response = await fetch(apiUrl('/api/files/batch'), {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ file_ids: fileIds })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        logger.error('Failed to batch delete files from backend:', errorData.error);
-        setAttachedFiles(filesToClear);
-      } else {
-        logger.info('Successfully cleared all attached files');
-      }
-    } catch (error) {
-      logger.error('Error during batch delete:', error);
-      setAttachedFiles(filesToClear);
-    }
   };
 
   return (

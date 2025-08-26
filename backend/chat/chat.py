@@ -176,11 +176,24 @@ class Chat:
         names = []
         for fid in file_ids:
             rec = db.get_file_record(fid)
-            if rec and rec.get('provider') == provider and rec.get('api_file_name') and rec.get('api_state') == 'ready':
-                names.append(rec['api_file_name'])
-                logger.debug(f"Resolved file {fid} to API name {rec['api_file_name']}")
+            if rec:
+                file_provider = rec.get('provider')
+                api_file_name = rec.get('api_file_name')
+                api_state = rec.get('api_state')
+                
+                logger.info(f"[FILE-RESOLVE] File {fid}: provider='{file_provider}', api_file_name='{api_file_name}', api_state='{api_state}', requested_provider='{provider}'")
+                
+                effective_provider = file_provider or 'gemini'
+                
+                if effective_provider == provider and api_file_name and api_state == 'ready':
+                    names.append(api_file_name)
+                    logger.info(f"[FILE-RESOLVE] ✅ File {fid} ({rec.get('original_name')}) resolved to API name: {api_file_name}")
+                else:
+                    logger.warning(f"[FILE-RESOLVE] ❌ File {fid} ({rec.get('original_name')}) not ready - provider: '{effective_provider}' (want: '{provider}'), api_file_name: '{api_file_name}', state: '{api_state}'")
             else:
-                logger.warning(f"File {fid} not ready for chat - state: {rec.get('api_state') if rec else 'not found'}")
+                logger.warning(f"[FILE-RESOLVE] ❌ File {fid} not found in database")
+        
+        logger.info(f"[FILE-RESOLVE] Resolved {len(names)}/{len(file_ids)} files for chat with {provider}")
         return names
 
     def generate_text(self, message: str, provider: str = "", 

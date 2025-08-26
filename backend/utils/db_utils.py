@@ -4,6 +4,7 @@ import sqlite3
 import os
 from typing import Dict, Any, Optional, List
 from utils.logger import get_logger
+from utils.cancellation_manager import cancellation_manager
 
 logger = get_logger(__name__)
 
@@ -112,9 +113,11 @@ class DatabaseManager:
                     api_file_name TEXT,
                     api_state TEXT DEFAULT 'local' CHECK(api_state IN ('local', 'processing_md', 'uploading', 'uploaded', 'processing', 'ready', 'error')),
                     provider TEXT,
+                    temp_id TEXT,  -- Store temp ID for race condition handling
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL
                 )
             """)
+            
             
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_files_chat ON files(chat_id)
@@ -317,7 +320,7 @@ class DatabaseManager:
                         file_type: str, file_extension: str, file_size: int, 
                         chat_id: Optional[str] = None, md_filename: Optional[str] = None,
                         api_file_name: Optional[str] = None, api_state: str = 'local', 
-                        provider: Optional[str] = None) -> bool:
+                        provider: Optional[str] = None, temp_id: Optional[str] = None) -> bool:
         """Save file record to database"""
         try:
             with self._connect() as conn:
@@ -325,9 +328,9 @@ class DatabaseManager:
                 cursor.execute("""
                     INSERT INTO files (id, original_name, stored_filename, file_type, 
                                      file_extension, file_size, chat_id, md_filename, 
-                                     api_file_name, api_state, provider)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (file_id, original_name, stored_filename, file_type, file_extension, file_size, chat_id, md_filename, api_file_name, api_state, provider))
+                                     api_file_name, api_state, provider, temp_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (file_id, original_name, stored_filename, file_type, file_extension, file_size, chat_id, md_filename, api_file_name, api_state, provider, temp_id))
                 conn.commit()
                 logger.info(f"Saved file record: {file_id} - {original_name}")
                 return True
@@ -463,13 +466,19 @@ class DatabaseManager:
                 cursor.execute(query, params)
                 conn.commit()
                 
-                # Emit SSE event for file state changes
                 if cursor.rowcount > 0 and api_state is not None:
                     try:
-                        # Use dynamic import to avoid circular dependency
-                        from route.chat_route import publish_file_state
-                        publish_file_state(file_id, api_state, provider)
-                        logger.info(f"[SSE] File state update broadcast: {file_id} -> {api_state}")
+                        cursor.execute("SELECT temp_id FROM files WHERE id = ?", (file_id,))
+                        result = cursor.fetchone()
+                        temp_id = result['temp_id'] if result else None
+                       
+                        if not cancellation_manager.is_cancelled(file_id):
+                            # Use dynamic import to avoid circular dependency
+                            from route.chat_route import publish_file_state
+                            publish_file_state(file_id, api_state, provider, temp_id)
+                            logger.info(f"[SSE] File state update broadcast: {file_id} (temp:{temp_id}) -> {api_state}")
+                        else:
+                            logger.info(f"[SSE] Skipped broadcast for cancelled file: {file_id} (temp:{temp_id}) -> {api_state}")
                     except Exception as sse_error:
                         logger.error(f"Error broadcasting file state via SSE: {str(sse_error)}")
                 

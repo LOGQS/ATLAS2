@@ -1,3 +1,5 @@
+# status: complete
+
 import time
 import threading
 from collections import deque
@@ -46,7 +48,7 @@ class RateLimiter:
     
     def execute(self, callback: Callable, key: str, *args, **kwargs) -> Any:
         """
-        Execute callback with rate limiting
+        Execute callback with rate limiting that allows parallel execution
         
         Args:
             callback: Function to execute
@@ -54,7 +56,7 @@ class RateLimiter:
             *args, **kwargs: Arguments for callback
         """
         tracker, lock = self._get_tracker(key)
-        
+
         with lock:
             current_time = time.time()
             self._cleanup_old(tracker, current_time)
@@ -66,11 +68,14 @@ class RateLimiter:
                     raise Exception(f"Rate limit exceeded for {key}. Wait time: {wait_time:.1f}s")
                 
                 logger.info(f"Rate limiting {key}, waiting {wait_time:.2f}s")
-                time.sleep(wait_time)
-                current_time = time.time()
             
-            tracker.append(current_time)
-            return callback(*args, **kwargs)
+            execution_time = current_time + wait_time
+            tracker.append(execution_time)
+        
+        if wait_time > 0:
+            time.sleep(wait_time)
+        
+        return callback(*args, **kwargs)
     
     def check_status(self, key: str) -> Dict[str, Any]:
         """Get current status for a key"""
