@@ -168,7 +168,6 @@ def register_chat_routes(app: Flask):
             include_reasoning = data.get('include_reasoning', True)
             attached_file_ids = data.get('attached_file_ids', [])
             
-            # Associate attached files with this chat
             if attached_file_ids:
                 from utils.db_utils import db
                 for file_id in attached_file_ids:
@@ -239,13 +238,11 @@ def register_chat_routes(app: Flask):
                         content_queue = get_content_queue(chat_id)
                         
                         try:
-                            # Send current chat state first
                             from utils.db_utils import db
                             current_state = db.get_chat_state(chat_id)
                             if current_state:
                                 yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
                             
-                            # Stream from queue without artificial delays
                             while True:
                                 try:
                                     chunk = content_queue.get(timeout=30)
@@ -273,13 +270,11 @@ def register_chat_routes(app: Flask):
                         
                         return
                     
-                    # Stream from content queue (event-driven, no polling)
                     content_queue = get_content_queue(chat_id)
                     
                     try:
                         while True:
                             try:
-                                # Block until content is available (no polling)
                                 chunk = content_queue.get(timeout=30)
                                 
                                 if chunk['type'] == 'complete':
@@ -292,24 +287,18 @@ def register_chat_routes(app: Flask):
                                 yield f"data: {json.dumps(chunk)}\n\n"
                                 
                             except queue.Empty:
-                                # Send keep-alive if no content for 30 seconds
                                 yield ": keep-alive\n\n"
                                 
-                                # Check if background thread is still running
                                 if not is_chat_processing(chat_id):
                                     break
                     except GeneratorExit:
-                        # Client disconnected - DON'T cancel background processing
                         logger.info(f"Client disconnected from chat {chat_id} stream, but background processing continues")
                         pass
                     except Exception as e:
                         logger.error(f"Error in streaming for chat {chat_id}: {e}")
                     finally:
-                        # Don't clean up content queue immediately - other clients might connect
-                        # Only clean up after a delay or when processing is complete
                         pass
                 
-                # Final cleanup only when processing is truly complete
                 cleanup_content_queue(chat_id)
                 yield f"data: {json.dumps({'type': 'complete'})}\n\n"
             

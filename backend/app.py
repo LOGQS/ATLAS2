@@ -14,7 +14,7 @@ from route.db_route import register_db_routes
 from route.file_route import register_file_routes
 from utils.config import Config
 from utils.logger import get_logger
-from utils.file_handler import setup_filespace, sync_files_with_database
+from file_utils.file_handler import setup_filespace, sync_files_with_database
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,6 @@ def create_app():
     
     setup_filespace()
     
-    # Sync files with database at startup
     sync_result = sync_files_with_database()
     if sync_result['success']:
         logger.info(f"File sync completed: {sync_result['summary']}")

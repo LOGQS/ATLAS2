@@ -1,10 +1,8 @@
 // status: complete
 
-// In-memory log storage
 let logBuffer: string[] = [];
-const MAX_LOG_ENTRIES = 5000; // Keep last 5000 log entries
+const MAX_LOG_ENTRIES = 5000;
 
-// Sampling and compacting helpers
 let counters: Record<string, number> = {};
 const sample = (key: string, n: number) => ((counters[key] = (counters[key]||0)+1) % n) === 0;
 
@@ -27,7 +25,6 @@ function addToBuffer(level: string, message: string, ...args: any[]) {
   
   logBuffer.push(logEntry);
   
-  // Keep buffer size manageable
   if (logBuffer.length > MAX_LOG_ENTRIES) {
     logBuffer = logBuffer.slice(-MAX_LOG_ENTRIES);
   }
@@ -46,8 +43,8 @@ const logger = {
       '[STREAM/catch]',
       '[RESUME/cold-start]',
       '[OWNER/retarget]',
-      '[STATE] ', // state transitions only
-      '[DIA]', // diagnostic logs
+      '[STATE] ',
+      '[DIA]', 
       '[DB-snap]',
       '[DB-merge]',
       '[DB-apply]',
@@ -69,7 +66,6 @@ const logger = {
       '[App]',
       'Error during async load',
       'Error during same-chat load',
-      // Chat flow debugging
       '[Chat] Sending message',
       '[Chat] Message sent successfully',
       '[Chat] Loading history',
@@ -113,7 +109,6 @@ const logger = {
     console.error(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   
-  // Function to download logs as a file
   downloadLogs: () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `atlas-frontend-${timestamp}.log`;
@@ -133,21 +128,17 @@ const logger = {
     console.info(`[ATLAS] Downloaded ${logBuffer.length} log entries to ${filename}`);
   },
   
-  // Function to get current log buffer
   getLogs: () => logBuffer.slice(),
   
-  // Function to clear log buffer
   clearLogs: () => {
     logBuffer = [];
     console.info(`[ATLAS] Log buffer cleared`);
   }
 };
 
-// Add global function for easy access from browser console
 (window as any).downloadAtlasLogs = logger.downloadLogs;
 (window as any).clearAtlasLogs = logger.clearLogs;
 
-// Export helpers for use in components
 export { sample, compact };
 
 export default logger;

@@ -3,7 +3,7 @@
 from flask import Flask, request, jsonify, send_file
 import tempfile
 import os
-from utils.file_handler import save_file, delete_file, batch_delete_files, edit_filename, list_files, get_file_path, file_provider_manager
+from file_utils.file_handler import save_file, delete_file, batch_delete_files, edit_filename, list_files, get_file_path, file_provider_manager
 from utils.logger import get_logger
 from utils.db_utils import db
 from utils.config import Config
@@ -296,7 +296,6 @@ class FileRoute:
             chat_id = request.args.get('chat_id')
             files = list_files(chat_id=chat_id)
             
-            # Transform files to include current processing status
             files_with_status = []
             for file in files:
                 files_with_status.append({

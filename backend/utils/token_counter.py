@@ -1,6 +1,6 @@
 # status: complete
     
-from chat.providers import *
+from utils.config import get_provider_map
 
 def count_tokens(text: str, model: str = "", provider: str = "unknown") -> int:
     """
@@ -18,12 +18,7 @@ def count_tokens(text: str, model: str = "", provider: str = "unknown") -> int:
     if provider == "unknown":
         return max(1, len(text) // 4)
     
-    provider_map = {
-        "gemini": Gemini(),
-        "huggingface": HuggingFace(),
-        "openrouter": OpenRouter()
-    }
-    
+    provider_map = get_provider_map()
     provider_instance = provider_map.get(provider)
     if provider_instance and hasattr(provider_instance, 'count_tokens'):
         return provider_instance.count_tokens(text, model)

@@ -21,7 +21,7 @@ def upload_worker(file_path: str, display_name: Optional[str], provider_config: 
         if str(backend_dir) not in sys.path:
             sys.path.insert(0, str(backend_dir))
         
-        from chat.providers import Gemini
+        from utils.config import get_provider_map
         from utils.rate_limiter import get_rate_limiter
         from utils.config import Config
         from utils.logger import get_logger
@@ -38,11 +38,13 @@ def upload_worker(file_path: str, display_name: Optional[str], provider_config: 
                 'file_id': file_id
             }
         
-        provider = Gemini()
-        if not provider.is_available():
+        provider_map = get_provider_map()
+        default_provider = Config.get_default_provider()
+        provider = provider_map.get(default_provider)
+        if not provider or not provider.is_available():
             return {
                 'success': False,
-                'error': 'Gemini provider not available',
+                'error': f'{default_provider} provider not available',
                 'state': 'error',
                 'file_id': file_id
             }

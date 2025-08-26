@@ -3,7 +3,7 @@
 import uuid
 import threading
 from typing import Dict, Any, Optional, Generator, List
-from chat.providers import Gemini, HuggingFace, OpenRouter
+from utils.config import get_provider_map, Config
 from utils.db_utils import db
 from utils.logger import get_logger
 
@@ -123,11 +123,7 @@ class Chat:
         self.chat_id = chat_id or self._generate_unique_id()
         self.system_prompt = system_prompt
         
-        self.providers = {
-            "gemini": Gemini(),
-            "huggingface": HuggingFace(),
-            "openrouter": OpenRouter()
-        }
+        self.providers = get_provider_map()
         
         if not db.chat_exists(self.chat_id):
             logger.info(f"Creating new chat: {self.chat_id}")
@@ -255,7 +251,7 @@ class Chat:
         
         return response
     
-    def generate_text_stream(self, message: str, provider: str = "gemini",
+    def generate_text_stream(self, message: str, provider: Optional[str] = None,
                            model: Optional[str] = None, include_reasoning: bool = True,
                            **config_params) -> Generator[Dict[str, Any], None, None]:
         """
@@ -273,6 +269,11 @@ class Chat:
         """
         from route.chat_route import publish_state
         db.save_message(self.chat_id, "user", message)
+        
+        if provider is None:
+            provider = Config.get_default_provider()
+        if model is None:
+            model = Config.get_default_model()
         
         if provider not in self.providers or not self.providers[provider].is_available():
             available = self.get_available_providers()
@@ -347,7 +348,7 @@ class Chat:
         publish_state(self.chat_id, "static")
     
     
-    def _process_message_background(self, message: str, provider: str = "gemini",
+    def _process_message_background(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
                                   **config_params):
         """
@@ -355,6 +356,11 @@ class Chat:
         This runs independently of frontend connection state
         """
         from route.chat_route import publish_state
+        
+        if provider is None:
+            provider = Config.get_default_provider()
+        if model is None:
+            model = Config.get_default_model()
         
         if provider not in self.providers or not self.providers[provider].is_available():
             available = self.get_available_providers()
@@ -380,7 +386,6 @@ class Chat:
         full_text = ""
         full_thoughts = ""
         
-        # Get file attachments for this chat if provider supports it
         file_attachments = []
         ids = config_params.get("attached_file_ids") or []
         config_params.pop("attached_file_ids", None)
@@ -454,13 +459,14 @@ class Chat:
         
         try:
             publish_state(self.chat_id, "static")
+            # Prevent circular import
             from route.chat_route import publish_content
             publish_content(self.chat_id, "complete", "")
             logger.info(f"Background processing completed successfully for chat {self.chat_id}")
         except Exception as publish_error:
             logger.warning(f"Failed to publish completion (non-critical): {publish_error}")
     
-    def start_background_processing(self, message: str, provider: str = "gemini",
+    def start_background_processing(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
                                   **config_params) -> bool:
         """

@@ -79,8 +79,6 @@ class DatabaseRoute:
             if not db.chat_exists(chat_id):
                 return jsonify({'error': 'Chat not found'}), 404
             
-            # Let background processing complete naturally - don't cancel it
-            # Background threads will clean themselves up when processing finishes
             logger.info(f"Deleting chat {chat_id} - background processing will complete naturally")
             
             success = db.delete_chat(chat_id)
@@ -269,14 +267,12 @@ class DatabaseRoute:
                     logger.warning(f"Skipping non-existent chat: {chat_id}")
                     continue
                 
-                # Get chat metadata
                 all_chats = db.get_all_chats()
                 chat_meta = next((chat for chat in all_chats if chat['id'] == chat_id), None)
                 
                 if not chat_meta:
                     continue
                 
-                # Get chat history
                 history = db.get_chat_history(chat_id)
                 
                 exported_chat = {
@@ -322,21 +318,17 @@ class DatabaseRoute:
                         errors.append("Chat missing ID, skipping")
                         continue
                     
-                    # Check if chat already exists
                     if db.chat_exists(chat_id):
-                        # Generate new ID for duplicate
                         import time
                         import random
                         new_chat_id = f"imported_{int(time.time())}_{random.randint(1000, 9999)}"
                         chat_id = new_chat_id
                     
-                    # Create chat
                     success = db.create_chat(chat_id, system_prompt, name)
                     if not success:
                         errors.append(f"Failed to create chat {chat_id}")
                         continue
                     
-                    # Import messages
                     for message in messages:
                         db.save_message(
                             chat_id=chat_id,
@@ -382,7 +374,6 @@ class DatabaseRoute:
                         errors.append(f"Chat {chat_id} does not exist")
                         continue
                     
-                    # Let background processing complete naturally
                     logger.info(f"Bulk deleting chat {chat_id} - background processing will complete naturally")
                     
                     success = db.delete_chat(chat_id)

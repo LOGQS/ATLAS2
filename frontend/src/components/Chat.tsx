@@ -147,18 +147,14 @@ const Chat = forwardRef<any, ChatProps>(({
     if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isLoading) {
       logger.info(`[Chat] Sending first message for new chat ${chatId}`);
       
-      // Parse first message to extract message and files
       try {
         const parsed = JSON.parse(firstMessage);
         if (parsed.message && typeof parsed.message === 'string') {
-          // New format with files
           handleNewMessage(parsed.message, parsed.files || []);
         } else {
-          // Old format, just a string message
           handleNewMessage(firstMessage);
         }
       } catch {
-        // Fallback for old format
         handleNewMessage(firstMessage);
       }
       

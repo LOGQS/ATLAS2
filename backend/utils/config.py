@@ -1,5 +1,18 @@
 # status: complete
 
+from typing import Dict, Any
+
+
+def get_provider_map() -> Dict[str, Any]:
+    """Get map of all available provider instances."""
+    from chat.providers import Gemini, HuggingFace, OpenRouter
+    
+    return {
+        "gemini": Gemini(),
+        "huggingface": HuggingFace(), 
+        "openrouter": OpenRouter()
+    }
+
 
 class Config:
     """Configuration class for ATLAS application settings."""
@@ -10,14 +23,16 @@ class Config:
 
     DEFAULT_STREAMING = True
     
-    # Rate limiting settings
     RATE_LIMIT_REQUESTS_PER_MINUTE = 60
     RATE_LIMIT_BURST_SIZE = 10
     
     @classmethod
     def get_default_provider(cls) -> str:
-        """Get the default provider name."""
-        return cls.DEFAULT_PROVIDER
+        """Get the default provider name, validated against available providers."""
+        available_providers = list(get_provider_map().keys())
+        if cls.DEFAULT_PROVIDER in available_providers:
+            return cls.DEFAULT_PROVIDER
+        return available_providers[0] if available_providers else cls.DEFAULT_PROVIDER
     
     @classmethod
     def get_default_model(cls) -> str:
@@ -43,9 +58,14 @@ class Config:
     def get_defaults(cls) -> dict:
         """Get all default configurations."""
         return {
-            "provider": cls.DEFAULT_PROVIDER,
+            "provider": cls.get_default_provider(),
             "model": cls.DEFAULT_MODEL,
             "streaming": cls.DEFAULT_STREAMING,
             "rate_limit_requests_per_minute": cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
             "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE
         }
+    
+    @classmethod
+    def get_available_providers(cls) -> list:
+        """Get list of available provider names."""
+        return list(get_provider_map().keys())

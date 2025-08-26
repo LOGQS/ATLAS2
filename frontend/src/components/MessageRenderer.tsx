@@ -18,27 +18,22 @@ const MessageRenderer: React.FC<MessageRendererProps> = ({
   const processedContent = useMemo(() => {
     if (!content) return '';
     
-    // Handle streaming - if content ends mid-LaTeX, don't render the incomplete part
     const lines = content.split('\n');
     const processedLines: string[] = [];
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       
-      // Check for incomplete inline math (single $ without closing)
       const inlineMathMatches = line.match(/\$/g);
       if (inlineMathMatches && inlineMathMatches.length % 2 !== 0 && i === lines.length - 1) {
-        // Last line with incomplete inline math - don't include the incomplete part
         const lastDollarIndex = line.lastIndexOf('$');
         processedLines.push(line.substring(0, lastDollarIndex));
         break;
       }
       
-      // Check for incomplete block math ($$)
       if (line.includes('$$') && i === lines.length - 1) {
         const blockMathMatches = line.match(/\$\$/g);
         if (blockMathMatches && blockMathMatches.length % 2 !== 0) {
-          // Incomplete block math - don't include it
           const lastBlockMathIndex = line.lastIndexOf('$$');
           processedLines.push(line.substring(0, lastBlockMathIndex));
           break;

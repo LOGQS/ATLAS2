@@ -195,7 +195,6 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const mouseY = e.clientY;
     
-    // Create larger drop zones to prevent twitching
     const topZone = rect.top + (rect.height*3);
     const bottomZone = rect.bottom - (rect.height*3);
     

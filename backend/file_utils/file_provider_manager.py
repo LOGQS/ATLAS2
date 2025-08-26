@@ -1,16 +1,14 @@
 # status: complete
 
-import shutil
-import uuid
 import multiprocessing
 from pathlib import Path
 from typing import Dict, List, Any
 from utils.logger import get_logger
 from utils.db_utils import db
 from utils.cancellation_manager import cancellation_manager
-from utils.upload_worker import start_upload_process
-from chat.providers import Gemini
-from markitdown import MarkItDown
+from file_utils.upload_worker import start_upload_process
+from utils.config import get_provider_map
+from file_utils.markdown_processor import setup_filespace, process_file_to_markdown
 import concurrent.futures
 import threading
 
@@ -21,345 +19,6 @@ if hasattr(multiprocessing, 'set_start_method'):
         pass 
 
 logger = get_logger(__name__)
-
-def setup_filespace():
-    """Create the files folder in the data directory if it doesn't exist."""
-    try:
-        backend_dir = Path(__file__).parent.parent
-        project_root = backend_dir.parent
-        data_dir = project_root / "data"
-        files_dir = data_dir / "files"
-        md_ver_dir = files_dir / "md_ver"
-        
-        files_dir.mkdir(parents=True, exist_ok=True)
-        md_ver_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"Files directories initialized at: {files_dir}")
-        return str(files_dir)
-    
-    except Exception as e:
-        logger.error(f"Error setting up file space: {str(e)}")
-        raise
-
-def save_file(source_path, filename=None, file_type=None, chat_id=None, temp_id=None):
-    """Copy a file to the files directory with unique ID tracking."""
-    try:
-        files_dir = Path(setup_filespace())
-        
-        source = Path(source_path)
-        if not source.exists():
-            raise FileNotFoundError(f"Source file does not exist: {source_path}")
-        
-        original_name = filename or source.name
-        
-        file_id = str(uuid.uuid4())
-        
-        file_extension = Path(original_name).suffix.lower()
-        
-        stored_filename = f"{file_id}_{original_name}"
-        target_path = files_dir / stored_filename
-        
-        shutil.copy2(source, target_path)
-        file_size = target_path.stat().st_size
-        
-        success = db.save_file_record(
-            file_id=file_id,
-            original_name=original_name,
-            stored_filename=stored_filename,
-            file_type=file_type or '',
-            file_extension=file_extension,
-            file_size=file_size,
-            chat_id=chat_id,
-            api_state='local',
-            temp_id=temp_id  
-        )
-        
-        if not success:
-            target_path.unlink()
-            raise Exception("Failed to save file record to database")
-        
-        logger.info(f"File saved with ID {file_id}: {source} -> {target_path}")
-        return {
-            'success': True,
-            'file_id': file_id,
-            'original_name': original_name,
-            'stored_filename': stored_filename,
-            'path': str(target_path),
-            'size': file_size,
-            'file_type': file_type,
-            'file_extension': file_extension
-        }
-    
-    except Exception as e:
-        logger.error(f"Error saving file: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-def delete_file(file_id):
-    """Delete a file by its unique ID (handles both local and API deletion)."""
-    try:
-        logger.info(f"[CANCEL] Cancelling active processing for file {file_id} before deletion")
-        cancellation_manager.cancel_file(file_id)
-        
-        file_record = db.get_file_record(file_id)
-        if not file_record:
-            return {
-                'success': False,
-                'error': 'File not found in database'
-            }
-        
-        files_dir = Path(setup_filespace())
-        
-        file_path = files_dir / file_record['stored_filename']
-        if file_path.exists():
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    file_path.unlink()
-                    logger.info(f"Physical file deleted: {file_path}")
-                    break
-                except PermissionError as e:
-                    if attempt == max_retries - 1:
-                        logger.warning(f"Could not delete file after {max_retries} attempts (file may be in use by upload): {file_path}")
-                    else:
-                        logger.info(f"File in use, retrying deletion attempt {attempt + 2}/{max_retries}: {file_path}")
-                        import time
-                        time.sleep(0.5)
-        
-        if file_record.get('md_filename'):
-            md_path = files_dir / "md_ver" / file_record['md_filename']
-            if md_path.exists():
-                md_path.unlink()
-                logger.info(f"Markdown file deleted: {md_path}")
-        
-        if file_record.get('api_file_name') and file_record.get('provider'):
-            api_delete_result = file_provider_manager.delete_files_from_provider(
-                [file_id], 
-                file_record['provider']
-            )
-            if not api_delete_result['success']:
-                logger.warning(f"Failed to delete file from API: {api_delete_result}")
-        
-        db_success = db.delete_file_record(file_id)
-        if not db_success:
-            return {
-                'success': False,
-                'error': 'Failed to delete file record from database'
-            }
-        
-        logger.info(f"File deleted: {file_id} - {file_record['original_name']}")
-        
-        cancellation_manager.cleanup_file(file_id)
-        
-        return {
-            'success': True,
-            'message': f'File {file_record["original_name"]} deleted successfully'
-        }
-    
-    except Exception as e:
-        logger.error(f"Error deleting file: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-def batch_delete_files(file_ids):
-    """Delete multiple files by their IDs in a single operation."""
-    try:
-        if not file_ids:
-            return {
-                'success': False,
-                'error': 'No file IDs provided'
-            }
-        
-        logger.info(f"[CANCEL] Cancelling active processing for {len(file_ids)} files before deletion")
-        cancellation_manager.cancel_files(file_ids)
-        
-        files_dir = Path(setup_filespace())
-        successful_deletions = []
-        failed_deletions = []
-        
-        for file_id in file_ids:
-            try:
-                file_record = db.get_file_record(file_id)
-                if not file_record:
-                    failed_deletions.append({
-                        'file_id': file_id,
-                        'error': 'File not found in database'
-                    })
-                    continue
-                
-                file_path = files_dir / file_record['stored_filename']
-                if file_path.exists():
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        try:
-                            file_path.unlink()
-                            logger.debug(f"Physical file deleted: {file_path}")
-                            break
-                        except PermissionError as e:
-                            if attempt == max_retries - 1:
-                                logger.warning(f"Could not delete file after {max_retries} attempts (file may be in use by upload): {file_path}")
-                            else:
-                                logger.debug(f"File in use, retrying deletion attempt {attempt + 2}/{max_retries}: {file_path}")
-                                import time
-                                time.sleep(0.5)
-                
-                if file_record.get('md_filename'):
-                    md_path = files_dir / "md_ver" / file_record['md_filename']
-                    if md_path.exists():
-                        md_path.unlink()
-                        logger.debug(f"Markdown file deleted: {md_path}")
-                
-                if file_record.get('api_file_name') and file_record.get('provider'):
-                    try:
-                        logger.info(f"[CLEANUP] Deleting file {file_id} from {file_record['provider']} API")
-                        api_delete_result = file_provider_manager.delete_files_from_provider(
-                            [file_id], 
-                            file_record['provider']
-                        )
-                        if api_delete_result['success']:
-                            logger.info(f"[CLEANUP] Successfully deleted file {file_id} from API")
-                        else:
-                            logger.warning(f"[CLEANUP] Failed to delete file {file_id} from API: {api_delete_result}")
-                    except Exception as e:
-                        logger.error(f"[CLEANUP] Error deleting file {file_id} from API: {str(e)}")
-                
-                db_success = db.delete_file_record(file_id)
-                if not db_success:
-                    failed_deletions.append({
-                        'file_id': file_id,
-                        'file_name': file_record['original_name'],
-                        'error': 'Failed to delete file record from database'
-                    })
-                    continue
-                
-                successful_deletions.append({
-                    'file_id': file_id,
-                    'file_name': file_record['original_name']
-                })
-                logger.debug(f"File deleted: {file_id} - {file_record['original_name']}")
-                
-                cancellation_manager.cleanup_file(file_id)
-                
-            except Exception as e:
-                failed_deletions.append({
-                    'file_id': file_id,
-                    'error': str(e)
-                })
-                logger.error(f"Error deleting file {file_id}: {str(e)}")
-        
-        if not failed_deletions:
-            logger.info(f"Batch delete successful: {len(successful_deletions)} files deleted")
-            return {
-                'success': True,
-                'message': f'{len(successful_deletions)} files deleted successfully',
-                'deleted_files': successful_deletions
-            }
-        elif not successful_deletions:
-            all_not_found = all('not found' in failure.get('error', '').lower() for failure in failed_deletions)
-            if all_not_found:
-                logger.info(f"Batch delete: all {len(failed_deletions)} files were not found (likely temp files or race condition)")
-                return {
-                    'success': True,
-                    'message': f'No files needed deletion (all were temporary or already deleted)',
-                    'deleted_files': [],
-                    'skipped_files': failed_deletions
-                }
-            else:
-                logger.error(f"Batch delete failed: all {len(failed_deletions)} files failed")
-                return {
-                    'success': False,
-                    'error': 'All file deletions failed',
-                    'failed_files': failed_deletions
-                }
-        else:
-            logger.warning(f"Batch delete partial: {len(successful_deletions)} succeeded, {len(failed_deletions)} failed")
-            return {
-                'success': True,
-                'message': f'{len(successful_deletions)} files deleted, {len(failed_deletions)} failed',
-                'deleted_files': successful_deletions,
-                'failed_files': failed_deletions
-            }
-    
-    except Exception as e:
-        logger.error(f"Error in batch delete files: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-def edit_filename(file_id, new_original_name):
-    """Update the original filename for a file (doesn't change stored filename)."""
-    try:
-        file_record = db.get_file_record(file_id)
-        if not file_record:
-            return {
-                'success': False,
-                'error': 'File not found in database'
-            }
-        
-        new_extension = Path(new_original_name).suffix.lower()
-        
-        with db._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE files 
-                SET original_name = ?, file_extension = ?
-                WHERE id = ?
-            """, (new_original_name, new_extension, file_id))
-            conn.commit()
-            
-            if cursor.rowcount == 0:
-                return {
-                    'success': False,
-                    'error': 'Failed to update file record'
-                }
-        
-        logger.info(f"File renamed: {file_record['original_name']} -> {new_original_name}")
-        return {
-            'success': True,
-            'message': f'File renamed to {new_original_name}',
-            'new_original_name': new_original_name,
-            'file_id': file_id
-        }
-    
-    except Exception as e:
-        logger.error(f"Error renaming file: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-def list_files(chat_id=None):
-    """List all files from database, optionally filtered by chat_id."""
-    try:
-        file_records = db.get_all_files(chat_id=chat_id)
-        
-        files_list = []
-        for record in file_records:
-            files_list.append({
-                'id': record['id'],
-                'name': record['original_name'], 
-                'stored_filename': record['stored_filename'], 
-                'size': record['file_size'],
-                'file_type': record['file_type'],
-                'file_extension': record['file_extension'],
-                'upload_timestamp': record['upload_timestamp'],
-                'chat_id': record['chat_id'],
-                'api_state': record.get('api_state', 'local'),
-                'provider': record.get('provider'),
-                'api_file_name': record.get('api_file_name'),
-                'md_filename': record.get('md_filename')
-            })
-        
-        return files_list
-    
-    except Exception as e:
-        logger.error(f"Error listing files: {str(e)}")
-        return []
 
 def get_file_path(file_id):
     """Get the physical file path for a file ID."""
@@ -375,56 +34,11 @@ def get_file_path(file_id):
         logger.error(f"Error getting file path: {str(e)}")
         return None
 
-def process_file_to_markdown(file_path: str, file_id: str) -> Dict[str, Any]:
-    """Process a file to markdown using markitdown and save to md_ver folder"""
-    try:
-        files_dir = Path(setup_filespace())
-        md_ver_dir = files_dir / "md_ver"
-        
-        file_path_obj = Path(file_path)
-        file_extension = file_path_obj.suffix.lower()
-        
-        md = MarkItDown()
-        
-        result = md.convert(file_path)
-        
-        metadata_only_extensions = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv',
-                                   '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a',
-                                   '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'}
-        
-        is_metadata = file_extension in metadata_only_extensions
-        
-        md_filename = f"{file_id}{'_metadata' if is_metadata else ''}.md"
-        md_path = md_ver_dir / md_filename
-        
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(result.text_content)
-        
-        db.update_file_md_info(file_id, md_filename)
-        
-        logger.info(f"Processed file to markdown: {file_path} -> {md_path}")
-        
-        return {
-            'success': True,
-            'md_filename': md_filename,
-            'md_path': str(md_path),
-            'is_metadata': is_metadata
-        }
-    
-    except Exception as e:
-        logger.error(f"Error processing file to markdown: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
 class FileProviderManager:
     """Manages file operations across different providers with state tracking"""
     
     def __init__(self):
-        self.providers = {
-            'gemini': Gemini()
-        }
+        self.providers = get_provider_map()
     
     def get_provider_file_limits(self, provider_name: str) -> Dict[str, Any]:
         """Get provider-specific file limits and restrictions"""
@@ -522,7 +136,7 @@ class FileProviderManager:
                         return 'cancelled'
                     time.sleep(0.1)
                 
-                poll_interval = min(poll_interval * 1.2, max_interval)  # Exponential backoff
+                poll_interval = min(poll_interval * 1.2, max_interval)
                 
             except Exception as e:
                 logger.error(f"Error during readiness polling for file {file_id}: {str(e)}")
@@ -810,15 +424,13 @@ class FileProviderManager:
                 provider_limits = self.get_provider_file_limits(provider_name)
                 direct_upload_extensions = provider_limits.get('direct_upload_extensions', set())
                 
-                textual_extensions = {'.txt', '.md', '.rst', '.py', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.scss', '.json', '.xml', '.yaml', '.yml', '.csv', '.log'}
                 non_textual_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', 
                                         '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', 
                                         '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv'}
                 
-                is_textual = file_extension in textual_extensions
                 is_non_textual = file_extension in non_textual_extensions
                 
-                logger.info(f"[PARALLEL] File {file_id} ({file_record['original_name']}) - Extension: {file_extension}, is_textual: {is_textual}, is_non_textual: {is_non_textual}, direct_upload: {file_extension in direct_upload_extensions}")
+                logger.info(f"[PARALLEL] File {file_id} ({file_record['original_name']}) - Extension: {file_extension}, is_non_textual: {is_non_textual}, direct_upload: {file_extension in direct_upload_extensions}")
                 
                 upload_info = {
                     'file_id': file_id,
@@ -854,14 +466,9 @@ class FileProviderManager:
                     db.update_file_api_info(file_id, api_state='uploading')
                     upload_info['md_result'] = md_result
                     
-                    if is_textual:
-                        md_ver_dir = files_dir / "md_ver"
-                        upload_info['upload_path'] = str(md_ver_dir / md_result['md_filename'])
-                        upload_info['display_name'] = f"{file_record['original_name']} (processed)"
-                    else:
-                        md_ver_dir = files_dir / "md_ver"
-                        upload_info['upload_path'] = str(md_ver_dir / md_result['md_filename'])
-                        upload_info['display_name'] = f"{file_record['original_name']} (processed)"
+                    md_ver_dir = files_dir / "md_ver"
+                    upload_info['upload_path'] = str(md_ver_dir / md_result['md_filename'])
+                    upload_info['display_name'] = f"{file_record['original_name']} (processed)"
                 
                 logger.info(f"[PARALLEL] File {file_id} prepared for batch upload")
                 return upload_info
@@ -1023,111 +630,6 @@ class FileProviderManager:
             'success': successful_deletions > 0 or len(file_ids) == 0,
             'successful_deletions': successful_deletions,
             'results': results
-        }
-
-def clear_files_from_attached_list(chat_id: str) -> Dict[str, Any]:
-    """Clear files from the attached list for a specific chat after message is sent
-    This doesn't delete the files, just removes them from being attached to future messages"""
-    try:
-        logger.info(f"Files cleared from attached list for chat {chat_id} (handled by frontend)")
-        return {
-            'success': True,
-            'message': f'Files cleared from attached list for chat {chat_id}'
-        }
-    except Exception as e:
-        logger.error(f"Error clearing files from attached list: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-def sync_files_with_database():
-    """Sync database with actual files in the files folder at startup"""
-    try:
-        files_dir = Path(setup_filespace())
-        md_ver_dir = files_dir / "md_ver"
-        
-        logger.info("Starting file system sync with database...")
-        
-        db_files = db.get_all_files()
-        db_file_map = {f['stored_filename']: f for f in db_files}
-        
-        actual_files = set()
-        if files_dir.exists():
-            for file_path in files_dir.iterdir():
-                if file_path.is_file() and file_path.name != '.gitkeep':
-                    actual_files.add(file_path.name)
-        
-        actual_md_files = set()
-        if md_ver_dir.exists():
-            for md_path in md_ver_dir.iterdir():
-                if md_path.is_file() and md_path.name != '.gitkeep':
-                    actual_md_files.add(md_path.name)
-        
-        orphaned_records = 0
-        for stored_filename, file_record in db_file_map.items():
-            file_exists = stored_filename in actual_files
-            md_exists = True
-            if file_record.get('md_filename'):
-                md_exists = file_record['md_filename'] in actual_md_files
-            
-            if not file_exists:
-                db.delete_file_record(file_record['id'])
-                orphaned_records += 1
-                logger.warning(f"Removed orphaned database record: {file_record['id']} - {file_record['original_name']}")
-            elif file_record.get('md_filename') and not md_exists:
-                db.update_file_md_info(file_record['id'], None)
-                logger.info(f"Cleared missing markdown reference for: {file_record['id']}")
-        
-        orphaned_files = 0
-        for filename in actual_files:
-            if filename not in db_file_map:
-                orphaned_file_path = files_dir / filename
-                try:
-                    orphaned_file_path.unlink()
-                    orphaned_files += 1
-                    logger.warning(f"Removed orphaned file: {filename}")
-                except Exception as e:
-                    logger.error(f"Failed to remove orphaned file {filename}: {str(e)}")
-        
-        orphaned_md_files = 0
-        db_md_files = {f.get('md_filename') for f in db_files if f.get('md_filename')}
-        for md_filename in actual_md_files:
-            if md_filename not in db_md_files:
-                orphaned_md_path = md_ver_dir / md_filename
-                try:
-                    orphaned_md_path.unlink()
-                    orphaned_md_files += 1
-                    logger.warning(f"Removed orphaned markdown file: {md_filename}")
-                except Exception as e:
-                    logger.error(f"Failed to remove orphaned markdown file {md_filename}: {str(e)}")
-        
-        interrupted_files = 0
-        for file_record in db.get_all_files():
-            api_state = file_record.get('api_state', 'local')
-            if api_state in ['uploading', 'processing_md']:
-                db.update_file_api_info(file_record['id'], api_state='local')
-                interrupted_files += 1
-                logger.info(f"Reset interrupted processing state for: {file_record['id']}")
-        
-        sync_summary = {
-            'orphaned_records_removed': orphaned_records,
-            'orphaned_files_removed': orphaned_files,
-            'orphaned_md_files_removed': orphaned_md_files,
-            'interrupted_files_reset': interrupted_files
-        }
-        
-        logger.info(f"File system sync completed: {sync_summary}")
-        return {
-            'success': True,
-            'summary': sync_summary
-        }
-    
-    except Exception as e:
-        logger.error(f"Error during file system sync: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
         }
 
 file_provider_manager = FileProviderManager()

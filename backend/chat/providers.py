@@ -10,7 +10,7 @@ from utils.rate_limiter import get_rate_limiter
 from utils.config import Config
 from pathlib import Path
 import time
-from utils.upload_worker import start_upload_process
+from file_utils.upload_worker import start_upload_process
 from utils.cancellation_manager import cancellation_manager
 
 load_dotenv()
@@ -229,7 +229,6 @@ class Gemini:
 
             for api_file_name in file_attachments:
                 try:
-                    # Get file info to create proper file reference
                     file_info = self.client.files.get(name=api_file_name)
                     user_parts.append({"file_data": {"file_uri": file_info.uri}})
                     logger.info(f"Added file attachment {api_file_name} to streaming request")
@@ -534,10 +533,26 @@ class HuggingFace:
     """
     HuggingFace API
     """
-    pass
+    
+    def __init__(self):
+        self.status = "disabled"
+    
+    def is_available(self) -> bool:
+        return False
+    
+    def get_available_models(self) -> dict:
+        return {}
 
 class OpenRouter:
     """
     OpenRouter API
     """
-    pass
+    
+    def __init__(self):
+        self.status = "disabled"
+    
+    def is_available(self) -> bool:
+        return False
+    
+    def get_available_models(self) -> dict:
+        return {}

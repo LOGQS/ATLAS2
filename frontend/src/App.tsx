@@ -58,7 +58,6 @@ function App() {
       await loadChatsFromDatabase();
       await loadActiveChat();
       
-      // Restore attached files from localStorage
       initializeAttachedFiles();
       
       setIsAppInitialized(true);
@@ -197,7 +196,7 @@ function App() {
         const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const chatName = message.split(' ').slice(0, 4).join(' ');
         const messageToSend = message;
-        const filesToSend = [...attachedFiles]; // Make a copy
+        const filesToSend = [...attachedFiles];
         
         setCenterFading(true);
         setHasMessageBeenSent(true);
@@ -221,8 +220,7 @@ function App() {
       } else {
         if (activeChatId !== 'none' && chatRef.current) {
           logger.info('Sending message to active chat:', activeChatId);
-          // Pass the current attached files to the chat component
-          const filesToSend = [...attachedFiles]; // Make a copy
+          const filesToSend = [...attachedFiles]; 
           chatRef.current.handleNewMessage(message, filesToSend);
           setMessage('');
           clearAttachedFiles();
@@ -289,7 +287,6 @@ function App() {
   const handleNewChat = () => {
     logger.info('Starting new chat');
     
-    // Ensure atomic state updates to prevent render artifacts
     flushSync(() => {
       setHasMessageBeenSent(false);
       setCenterFading(false);
