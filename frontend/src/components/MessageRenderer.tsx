@@ -1,8 +1,10 @@
 import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
+import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import '../styles/MessageRenderer.css';
 
 interface MessageRendererProps {
   content: string;
@@ -49,10 +51,9 @@ const MessageRenderer: React.FC<MessageRendererProps> = ({
   return (
     <div className={`message-renderer ${className}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkMath]}
+        remarkPlugins={[remarkMath, remarkGfm]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          // Customize rendering for specific elements
           p: ({ children }) => <p className="markdown-paragraph">{children}</p>,
           code: ({ className, children, ...props }: any) => {
             const isInline = !String(children).includes('\n');
