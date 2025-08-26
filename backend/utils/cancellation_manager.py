@@ -8,12 +8,17 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 class CancellationManager:
-    """Global manager for handling file processing cancellation"""
+    """Global manager for handling file processing and chat thread cancellation"""
     
     def __init__(self):
         self._cancelled_files: Set[str] = set()
         self._active_tasks: Dict[str, Dict[str, Any]] = {}
         self._active_processes: Dict[str, multiprocessing.Process] = {}
+        
+        self._cancelled_chats: Set[str] = set()
+        self._active_chat_threads: Dict[str, threading.Thread] = {}
+        self._chat_cancel_events: Dict[str, threading.Event] = {}
+        
         self._lock = threading.Lock()
     
     def is_cancelled(self, file_id: str) -> bool:
@@ -106,5 +111,45 @@ class CancellationManager:
                 del self._active_tasks[file_id]
             if file_id in self._active_processes:
                 del self._active_processes[file_id]
+    
+    def is_chat_cancelled(self, chat_id: str) -> bool:
+        """Check if a chat has been cancelled"""
+        with self._lock:
+            return chat_id in self._cancelled_chats
+    
+    def cancel_chat(self, chat_id: str):
+        """Mark a chat as cancelled and stop all its active threads"""
+        with self._lock:
+            self._cancelled_chats.add(chat_id)
+            logger.info(f"[CANCEL] Chat {chat_id} marked for cancellation")
+            
+            if chat_id in self._chat_cancel_events:
+                self._chat_cancel_events[chat_id].set()
+                logger.info(f"[CANCEL] Set cancel event for chat {chat_id}")
+    
+    def register_chat_thread(self, chat_id: str, thread: threading.Thread, cancel_event: threading.Event):
+        """Register a chat thread and its cancel event for tracking"""
+        with self._lock:
+            self._active_chat_threads[chat_id] = thread
+            self._chat_cancel_events[chat_id] = cancel_event
+            logger.info(f"[CANCEL] Registered chat thread for {chat_id}")
+    
+    def unregister_chat_thread(self, chat_id: str):
+        """Unregister a completed chat thread"""
+        with self._lock:
+            if chat_id in self._active_chat_threads:
+                del self._active_chat_threads[chat_id]
+            if chat_id in self._chat_cancel_events:
+                del self._chat_cancel_events[chat_id]
+            logger.debug(f"[CANCEL] Unregistered chat thread for {chat_id}")
+    
+    def cleanup_chat(self, chat_id: str):
+        """Clean up all tracking for a chat"""
+        with self._lock:
+            self._cancelled_chats.discard(chat_id)
+            if chat_id in self._active_chat_threads:
+                del self._active_chat_threads[chat_id]
+            if chat_id in self._chat_cancel_events:
+                del self._chat_cancel_events[chat_id]
 
 cancellation_manager = CancellationManager()

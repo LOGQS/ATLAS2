@@ -5,6 +5,7 @@ import json
 from utils.db_utils import db
 from utils.logger import get_logger
 from utils.config import Config
+from utils.cancellation_manager import cancellation_manager
 
 logger = get_logger(__name__)
 
@@ -79,11 +80,13 @@ class DatabaseRoute:
             if not db.chat_exists(chat_id):
                 return jsonify({'error': 'Chat not found'}), 404
             
-            logger.info(f"Deleting chat {chat_id} - background processing will complete naturally")
+            logger.info(f"[CANCEL] Cancelling active processing for chat {chat_id} before deletion")
+            cancellation_manager.cancel_chat(chat_id)
             
             success = db.delete_chat(chat_id)
             
             if success:
+                cancellation_manager.cleanup_chat(chat_id)
                 return jsonify({
                     'message': 'Chat deleted successfully',
                     'chat_id': chat_id
@@ -374,10 +377,12 @@ class DatabaseRoute:
                         errors.append(f"Chat {chat_id} does not exist")
                         continue
                     
-                    logger.info(f"Bulk deleting chat {chat_id} - background processing will complete naturally")
+                    logger.info(f"[CANCEL] Bulk cancelling active processing for chat {chat_id} before deletion")
+                    cancellation_manager.cancel_chat(chat_id)
                     
                     success = db.delete_chat(chat_id)
                     if success:
+                        cancellation_manager.cleanup_chat(chat_id)
                         deleted_count += 1
                     else:
                         errors.append(f"Failed to delete chat {chat_id}")

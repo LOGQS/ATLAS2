@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, Generator, List
 from utils.config import get_provider_map, Config
 from utils.db_utils import db
 from utils.logger import get_logger
+from utils.cancellation_manager import cancellation_manager
 
 logger = get_logger(__name__)
 
@@ -52,10 +53,7 @@ def cancel_chat_thread(chat_id: str) -> bool:
 
 def is_chat_cancelled(chat_id: str) -> bool:
     """Check if a chat's processing has been cancelled"""
-    with _chat_threads_lock:
-        if chat_id in _chat_thread_cancel_flags:
-            return _chat_thread_cancel_flags[chat_id].is_set()
-        return False
+    return cancellation_manager.is_chat_cancelled(chat_id)
 
 def _start_background_processing(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
     """Start background processing thread for a chat"""
@@ -70,25 +68,31 @@ def _start_background_processing(chat_id: str, chat_instance, message: str, prov
                 _chat_thread_status.pop(chat_id, None)
                 _chat_thread_cancel_flags.pop(chat_id, None)
         
+        cancel_event = threading.Event()
+        
         thread = threading.Thread(
             target=_background_process_wrapper,
-            args=(chat_id, chat_instance, message, provider, model, include_reasoning),
+            args=(chat_id, chat_instance, message, provider, model, include_reasoning, cancel_event),
             kwargs=config_params
         )
         thread.daemon = True
         _chat_threads[chat_id] = thread
         _chat_thread_status[chat_id] = 'running'
+        _chat_thread_cancel_flags[chat_id] = cancel_event
+        
+        cancellation_manager.register_chat_thread(chat_id, thread, cancel_event)
+        
         thread.start()
         
         logger.info(f"Started background processing thread for chat {chat_id}")
         return True
 
-def _background_process_wrapper(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
+def _background_process_wrapper(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, cancel_event: threading.Event, **config_params):
     """Wrapper for background processing with error handling"""
     try:
         logger.info(f"Background processing started for chat {chat_id}")
         
-        chat_instance._process_message_background(message, provider, model, include_reasoning, **config_params)
+        chat_instance._process_message_background(message, provider, model, include_reasoning, cancel_event, **config_params)
         
         with _chat_threads_lock:
             _chat_thread_status[chat_id] = 'completed'
@@ -113,6 +117,8 @@ def _background_process_wrapper(chat_id: str, chat_instance, message: str, provi
             publish_state(chat_id, "static")
         except Exception as cleanup_error:
             logger.warning(f"Failed to publish error state (non-critical): {str(cleanup_error)}")
+    finally:
+        cancellation_manager.unregister_chat_thread(chat_id)
 
 class Chat:
     """
@@ -350,7 +356,7 @@ class Chat:
     
     def _process_message_background(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
-                                  **config_params):
+                                  cancel_event: Optional[threading.Event] = None, **config_params):
         """
         Process message in background thread - writes only to DB, no HTTP streaming
         This runs independently of frontend connection state
@@ -415,6 +421,13 @@ class Chat:
             message, model=model, include_thoughts=use_reasoning, 
             chat_history=chat_history, file_attachments=file_attachments, **config_params
         ):
+            if cancel_event and cancel_event.is_set():
+                logger.info(f"[CANCEL] Chat {self.chat_id} processing cancelled, stopping stream")
+                break
+            
+            if cancellation_manager.is_chat_cancelled(self.chat_id):
+                logger.info(f"[CANCEL] Chat {self.chat_id} marked as cancelled, stopping stream")
+                break
             
             if chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
