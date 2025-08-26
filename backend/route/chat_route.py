@@ -17,6 +17,54 @@ content_queues = {}
 _subscribers = []
 _sub_lock = Lock()
 
+def get_sse_headers(include_cors=False):
+    """Get standardized SSE headers"""
+    headers = {
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    }
+    if include_cors:
+        headers['Access-Control-Allow-Origin'] = '*'
+    return headers
+
+def format_sse_data(data, ensure_ascii=None):
+    """Format data as SSE message"""
+    if ensure_ascii is None:
+        json_str = json.dumps(data)  
+    else:
+        json_str = json.dumps(data, ensure_ascii=ensure_ascii)
+    return f"data: {json_str}\n\n"
+
+def stream_from_content_queue(chat_id: str, initial_state=None):
+    """Unified generator for streaming from content queue"""
+    content_queue = get_content_queue(chat_id)
+    
+    if initial_state:
+        yield format_sse_data({'type': 'chat_state', 'chat_id': chat_id, 'state': initial_state})
+    
+    try:
+        while True:
+            try:
+                chunk = content_queue.get(timeout=30)
+                
+                if chunk['type'] in ['complete', 'error']:
+                    yield format_sse_data(chunk)
+                    break
+                
+                yield format_sse_data(chunk)
+                
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+                
+                if not is_chat_processing(chat_id):
+                    logger.info(f"Background processing completed for chat {chat_id} while client was connected")
+                    break
+    except GeneratorExit:
+        logger.info(f"Client disconnected from stream for chat {chat_id} - backend continues")
+    except Exception as e:
+        logger.error(f"Error in stream for chat {chat_id}: {e}")
+
 def _subscribe():
     q = queue.Queue()
     with _sub_lock:
@@ -94,15 +142,11 @@ def register_chat_routes(app: Flask):
             while True:
                 try:
                     data = state_change_queue.get(timeout=30)
-                    yield f"data: {json.dumps(data)}\n\n"
+                    yield format_sse_data(data)
                 except queue.Empty:
                     yield ": keep-alive\n\n"
         
-        return Response(generate(), mimetype='text/event-stream', headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no'
-        })
+        return Response(generate(), mimetype='text/event-stream', headers=get_sse_headers())
     
     @app.route('/api/chat/stream/all', methods=['GET'])
     def stream_all():
@@ -113,15 +157,10 @@ def register_chat_routes(app: Flask):
                 yield 'event: ping\ndata: {}\n\n'
                 while True:
                     ev = q.get()
-                    yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                    yield format_sse_data(ev, ensure_ascii=False) 
             finally:
                 _unsubscribe(q)
-        return Response(generate(), mimetype='text/event-stream', headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no',
-            'Access-Control-Allow-Origin': '*'
-        })
+        return Response(generate(), mimetype='text/event-stream', headers=get_sse_headers(include_cors=True))
 
     @app.route('/api/chat/send', methods=['POST'])
     def send_message():
@@ -185,149 +224,43 @@ def register_chat_routes(app: Flask):
             chat = Chat(chat_id=chat_id)
             
             def generate():
-                """Generator for streaming response using event-driven queues"""
+                """Unified generator for streaming response using helper functions"""
                 yield "retry: 1500\n\n"
-                yield f"data: {json.dumps({'type': 'chat_id', 'content': chat.chat_id})}\n\n"
+                yield format_sse_data({'type': 'chat_id', 'content': chat.chat_id})
                 
                 if not message:
-                    content_queue = get_content_queue(chat_id)
-                    
-                    try:
-                        from utils.db_utils import db
-                        current_state = db.get_chat_state(chat_id)
-                        if current_state:
-                            yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
-                        
-                        while True:
-                            try:
-                                chunk = content_queue.get(timeout=30)
-                                
-                                if chunk['type'] == 'complete':
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    break
-                                elif chunk['type'] == 'error':
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    break
-                                
-                                yield f"data: {json.dumps(chunk)}\n\n"
-                                
-                            except queue.Empty:
-                                yield ": keep-alive\n\n"
-                                
-                                if not is_chat_processing(chat_id):
-                                    logger.info(f"Background processing completed for chat {chat_id} while client was connected")
-                                    break
-                    except GeneratorExit:
-                        logger.info(f"Client disconnected from ongoing stream for chat {chat_id} - backend continues")
-                        pass
-                    except Exception as e:
-                        logger.error(f"Error connecting to ongoing stream for chat {chat_id}: {e}")
-                    
+                    from utils.db_utils import db
+                    current_state = db.get_chat_state(chat_id)
+                    yield from stream_from_content_queue(chat_id, current_state)
                     return
-                else:
-                    success = chat.start_background_processing(
-                        message=message,
-                        provider=provider,
-                        model=model,
-                        include_reasoning=include_reasoning,
-                        attached_file_ids=attached_file_ids
-                    )
-                    
-                    if not success:
-                        logger.info(f"Chat {chat_id} already processing, connecting client to ongoing stream")
-                        content_queue = get_content_queue(chat_id)
-                        
-                        try:
-                            from utils.db_utils import db
-                            current_state = db.get_chat_state(chat_id)
-                            if current_state:
-                                yield f"data: {json.dumps({'type': 'chat_state', 'chat_id': chat_id, 'state': current_state})}\n\n"
-                            
-                            while True:
-                                try:
-                                    chunk = content_queue.get(timeout=30)
-                                    
-                                    if chunk['type'] == 'complete':
-                                        yield f"data: {json.dumps(chunk)}\n\n"
-                                        break
-                                    elif chunk['type'] == 'error':
-                                        yield f"data: {json.dumps(chunk)}\n\n"
-                                        break
-                                    
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    
-                                except queue.Empty:
-                                    yield ": keep-alive\n\n"
-                                    
-                                    if not is_chat_processing(chat_id):
-                                        logger.info(f"Background processing completed for chat {chat_id} while client was connected")
-                                        break
-                        except GeneratorExit:
-                            logger.info(f"Client disconnected from ongoing stream for chat {chat_id} - backend continues")
-                            pass
-                        except Exception as e:
-                            logger.error(f"Error connecting to ongoing stream for chat {chat_id}: {e}")
-                        
-                        return
-                    
-                    content_queue = get_content_queue(chat_id)
-                    
-                    try:
-                        while True:
-                            try:
-                                chunk = content_queue.get(timeout=30)
-                                
-                                if chunk['type'] == 'complete':
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    break
-                                elif chunk['type'] == 'error':
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                    break
-                                    
-                                yield f"data: {json.dumps(chunk)}\n\n"
-                                
-                            except queue.Empty:
-                                yield ": keep-alive\n\n"
-                                
-                                if not is_chat_processing(chat_id):
-                                    break
-                    except GeneratorExit:
-                        logger.info(f"Client disconnected from chat {chat_id} stream, but background processing continues")
-                        pass
-                    except Exception as e:
-                        logger.error(f"Error in streaming for chat {chat_id}: {e}")
-                    finally:
-                        pass
                 
+                success = chat.start_background_processing(
+                    message=message,
+                    provider=provider,
+                    model=model,
+                    include_reasoning=include_reasoning,
+                    attached_file_ids=attached_file_ids
+                )
+                
+                if not success:
+                    logger.info(f"Chat {chat_id} already processing, connecting client to ongoing stream")
+                    from utils.db_utils import db
+                    current_state = db.get_chat_state(chat_id)
+                    yield from stream_from_content_queue(chat_id, current_state)
+                    return
+                
+                yield from stream_from_content_queue(chat_id)
                 cleanup_content_queue(chat_id)
-                yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+                yield format_sse_data({'type': 'complete'})
             
-            return Response(
-                generate(),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache, no-transform',
-                    'Connection': 'keep-alive',
-                    'X-Accel-Buffering': 'no',
-                    'Access-Control-Allow-Origin': '*'
-                }
-            )
+            return Response(generate(), mimetype='text/event-stream', headers=get_sse_headers(include_cors=True))
             
         except Exception as e:
             logger.error(f"Error in stream_message: {str(e)}")
             def error_stream():
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                yield format_sse_data({'type': 'error', 'content': str(e)})
             
-            return Response(
-                error_stream(),
-                mimetype='text/event-stream',
-                headers={
-                    'Cache-Control': 'no-cache, no-transform',
-                    'Connection': 'keep-alive',
-                    'X-Accel-Buffering': 'no',
-                    'Access-Control-Allow-Origin': '*'
-                }
-            )
+            return Response(error_stream(), mimetype='text/event-stream', headers=get_sse_headers(include_cors=True))
     
     @app.route('/api/chat/history/<chat_id>', methods=['GET'])
     def get_chat_history(chat_id: str):

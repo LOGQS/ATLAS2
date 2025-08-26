@@ -172,6 +172,39 @@ class Chat:
                     }
         return all_models
     
+    def _prepare_streaming_context(self, provider: str, model: str, **config_params):
+        """Common setup logic for streaming methods"""
+        if provider is None:
+            provider = Config.get_default_provider()
+        if model is None:
+            model = Config.get_default_model()
+        
+        if provider not in self.providers or not self.providers[provider].is_available():
+            available = self.get_available_providers()
+            return None, f"Provider '{provider}' not available. Available: {available}"
+        
+        use_reasoning = config_params.pop('include_reasoning', True) and self.supports_reasoning(provider, model)
+        
+        chat_history = self.get_chat_history()
+        if chat_history and chat_history[-1]["role"] == "user":
+            chat_history = chat_history[:-1]
+        
+        file_attachments = []
+        ids = config_params.pop("attached_file_ids", None) or []
+        if ids:
+            file_attachments = self._resolve_api_file_names(ids, provider)
+        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        return {
+            'provider': provider,
+            'model': model,
+            'use_reasoning': use_reasoning,
+            'chat_history': chat_history,
+            'file_attachments': file_attachments,
+            'config_params': config_params  
+        }, None
+    
     def _resolve_api_file_names(self, file_ids, provider):
         """Resolve file IDs to API file names for ready files only"""
         from utils.db_utils import db
@@ -276,24 +309,18 @@ class Chat:
         from route.chat_route import publish_state
         db.save_message(self.chat_id, "user", message)
         
-        if provider is None:
-            provider = Config.get_default_provider()
-        if model is None:
-            model = Config.get_default_model()
-        
-        if provider not in self.providers or not self.providers[provider].is_available():
-            available = self.get_available_providers()
-            yield {
-                "type": "error",
-                "content": f"Provider '{provider}' not available. Available: {available}"
-            }
+        config_params['include_reasoning'] = include_reasoning
+        context, error = self._prepare_streaming_context(provider, model, **config_params)
+        if error:
+            yield {"type": "error", "content": error}
             return
         
-        use_reasoning = include_reasoning and self.supports_reasoning(provider, model)
-        
-        chat_history = self.get_chat_history()
-        if chat_history and chat_history[-1]["role"] == "user":
-            chat_history = chat_history[:-1]
+        provider = context['provider']
+        model = context['model']
+        use_reasoning = context['use_reasoning']
+        chat_history = context['chat_history']
+        file_attachments = context['file_attachments']
+        config_params = context['config_params']
  
         assistant_message_id = db.save_message(
             self.chat_id,
@@ -306,14 +333,6 @@ class Chat:
         
         full_text = ""
         full_thoughts = ""
-        
-        file_attachments = []
-        ids = config_params.get("attached_file_ids") or []
-        config_params.pop("attached_file_ids", None)
-        if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider)
-        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
-            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
         logger.info(f"Generating streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         
@@ -363,22 +382,18 @@ class Chat:
         """
         from route.chat_route import publish_state
         
-        if provider is None:
-            provider = Config.get_default_provider()
-        if model is None:
-            model = Config.get_default_model()
-        
-        if provider not in self.providers or not self.providers[provider].is_available():
-            available = self.get_available_providers()
-            error_msg = f"Provider '{provider}' not available. Available: {available}"
-            logger.error(f"Background processing error for chat {self.chat_id}: {error_msg}")
+        config_params['include_reasoning'] = include_reasoning
+        context, error = self._prepare_streaming_context(provider, model, **config_params)
+        if error:
+            logger.error(f"Background processing error for chat {self.chat_id}: {error}")
             return
         
-        use_reasoning = include_reasoning and self.supports_reasoning(provider, model)
-        
-        chat_history = self.get_chat_history()
-        if chat_history and chat_history[-1]["role"] == "user":
-            chat_history = chat_history[:-1]
+        provider = context['provider']
+        model = context['model']
+        use_reasoning = context['use_reasoning']
+        chat_history = context['chat_history']
+        file_attachments = context['file_attachments']
+        config_params = context['config_params']
  
         assistant_message_id = db.save_message(
             self.chat_id,
@@ -391,14 +406,6 @@ class Chat:
         
         full_text = ""
         full_thoughts = ""
-        
-        file_attachments = []
-        ids = config_params.get("attached_file_ids") or []
-        config_params.pop("attached_file_ids", None)
-        if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider)
-        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
-            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
         logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         

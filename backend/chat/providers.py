@@ -60,6 +60,41 @@ class Gemini:
         """Check if specific model supports reasoning"""
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
     
+    def _prepare_file_attachments(self, file_attachments: List[str], user_parts: list, is_streaming=False):
+        """Common file attachment handling for both streaming and non-streaming requests"""
+        if not file_attachments:
+            return user_parts
+            
+        try:
+            ok = self.wait_until_active(file_attachments, timeout_s=180)
+            if not ok:
+                logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
+                active = []
+                for name in file_attachments:
+                    try:
+                        info = self.client.files.get(name=name)
+                        if getattr(info, "state", "") == "ACTIVE":
+                            active.append(name)
+                    except Exception:
+                        pass
+                file_attachments = active
+        except Exception as e:
+            logger.warning(f"wait_until_active failed: {e}")
+
+        for api_file_name in file_attachments:
+            try:
+                file_info = self.client.files.get(name=api_file_name)
+                user_parts.append({"file_data": {"file_uri": file_info.uri}})
+                if is_streaming:
+                    logger.info(f"Added file attachment {api_file_name} to streaming request")
+                else:
+                    logger.info(f"Added file attachment {api_file_name} to request")
+            except Exception as e:
+                error_suffix = "to streaming request" if is_streaming else ""
+                logger.error(f"Failed to add file attachment {api_file_name} {error_suffix}: {str(e)}")
+        
+        return user_parts
+    
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Gemini format"""
         formatted_history = []
@@ -133,31 +168,7 @@ class Gemini:
             contents.extend(formatted_history)
         
         user_parts = [{"text": prompt}]
-        
-        if file_attachments:
-            try:
-                ok = self.wait_until_active(file_attachments, timeout_s=180)
-                if not ok:
-                    logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
-                    active = []
-                    for name in file_attachments:
-                        try:
-                            info = self.client.files.get(name=name)
-                            if getattr(info, "state", "") == "ACTIVE":
-                                active.append(name)
-                        except Exception:
-                            pass
-                    file_attachments = active
-            except Exception as e:
-                logger.warning(f"wait_until_active failed: {e}")
-
-            for api_file_name in file_attachments:
-                try:
-                    file_info = self.client.files.get(name=api_file_name)
-                    user_parts.append({"file_data": {"file_uri": file_info.uri}})
-                    logger.info(f"Added file attachment {api_file_name} to request")
-                except Exception as e:
-                    logger.error(f"Failed to add file attachment {api_file_name}: {str(e)}")
+        user_parts = self._prepare_file_attachments(file_attachments, user_parts, is_streaming=False)
         
         contents.append({"role": "user", "parts": user_parts})
             
@@ -209,31 +220,7 @@ class Gemini:
             contents.extend(formatted_history)
         
         user_parts = [{"text": prompt}]
-        
-        if file_attachments:
-            try:
-                ok = self.wait_until_active(file_attachments, timeout_s=180)
-                if not ok:
-                    logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
-                    active = []
-                    for name in file_attachments:
-                        try:
-                            info = self.client.files.get(name=name)
-                            if getattr(info, "state", "") == "ACTIVE":
-                                active.append(name)
-                        except Exception:
-                            pass
-                    file_attachments = active
-            except Exception as e:
-                logger.warning(f"wait_until_active failed: {e}")
-
-            for api_file_name in file_attachments:
-                try:
-                    file_info = self.client.files.get(name=api_file_name)
-                    user_parts.append({"file_data": {"file_uri": file_info.uri}})
-                    logger.info(f"Added file attachment {api_file_name} to streaming request")
-                except Exception as e:
-                    logger.error(f"Failed to add file attachment {api_file_name} to streaming request: {str(e)}")
+        user_parts = self._prepare_file_attachments(file_attachments, user_parts, is_streaming=True)
         
         contents.append({"role": "user", "parts": user_parts})
         
