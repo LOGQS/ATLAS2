@@ -294,6 +294,14 @@ function App() {
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
+      if (isSendDisabled) {
+        logger.info('Enter key pressed but send is disabled:', {
+          isActiveChatStreaming,
+          hasUnreadyFiles,
+          activeChatId
+        });
+        return;
+      }
       logger.info('Enter key pressed on input, sending message for active chat:', activeChatId);
       handleSend();
     }
@@ -418,13 +426,15 @@ function App() {
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
   
-  // Check if any files are currently processing (not ready for sending)
-  const hasProcessingFiles = attachedFiles.some(file => {
-    const processingStates = ['selected', 'uploading', 'processing', 'processing_md', 'local_processing', 'api_processing'];
-    return file.api_state && processingStates.includes(file.api_state);
+  // Check if any files are not ready for chat (due to backend polling changes)
+  const hasUnreadyFiles = attachedFiles.some(file => {
+    // With backend polling, only 'ready' and 'local' states are truly ready for chat
+    // 'uploaded' is no longer sufficient - files must be verified as 'ready'
+    const chatReadyStates = ['ready', 'local'];
+    return !file.api_state || !chatReadyStates.includes(file.api_state);
   });
   
-  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasProcessingFiles;
+  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles;
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -827,9 +837,16 @@ function App() {
                 }} 
                 className={`send-button ${isSendDisabled ? 'loading' : ''}`}
                 disabled={isSendDisabled}
+                title={
+                  isActiveChatStreaming ? 'Chat is processing...' :
+                  hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                  'Send message'
+                }
               >
                 {isActiveChatStreaming ? (
                   <div className="loading-spinner"></div>
+                ) : hasUnreadyFiles ? (
+                  <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
                 ) : (
                   '→'
                 )}
@@ -842,6 +859,22 @@ function App() {
               onClearAll={handleClearAllFiles}
               className="main-screen-attached"
             />
+            
+            {attachedFiles.length > 0 && hasUnreadyFiles && (
+              <div style={{ 
+                fontSize: '12px', 
+                color: 'rgba(255, 255, 255, 0.6)', 
+                textAlign: 'center', 
+                marginTop: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px'
+              }}>
+                <span>📎</span>
+                <span>Files are still processing... Send will be enabled when ready</span>
+              </div>
+            )}
           </div>
         </div>
         
@@ -865,6 +898,23 @@ function App() {
                 onClearAll={handleClearAllFiles}
                 className="chat-screen-attached"
               />
+              
+              {attachedFiles.length > 0 && hasUnreadyFiles && (
+                <div style={{ 
+                  fontSize: '11px', 
+                  color: 'rgba(255, 255, 255, 0.5)', 
+                  textAlign: 'center', 
+                  marginTop: '6px',
+                  marginBottom: '4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px'
+                }}>
+                  <span>📎</span>
+                  <span>Files processing... Send disabled until ready</span>
+                </div>
+              )}
               
               <div className="bottom-input-container">
                 <div className="input-wrapper">
@@ -892,9 +942,16 @@ function App() {
                   }} 
                   className={`send-button ${isSendDisabled ? 'loading' : ''}`}
                   disabled={isSendDisabled}
+                  title={
+                    isActiveChatStreaming ? 'Chat is processing...' :
+                    hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                    'Send message'
+                  }
                 >
                   {isActiveChatStreaming ? (
                     <div className="loading-spinner"></div>
+                  ) : hasUnreadyFiles ? (
+                    <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
                   ) : (
                     '→'
                   )}

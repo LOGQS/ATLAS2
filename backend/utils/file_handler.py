@@ -366,6 +366,60 @@ class FileProviderManager:
             'direct_upload_extensions': direct_extensions
         }
     
+    def _poll_until_ready(self, api_file_name: str, file_id: str, provider_name: str, timeout_s: int = 300) -> str:
+        """Poll provider until file is truly ready, updating states in real-time"""
+        import time
+        
+        provider = self.providers.get(provider_name)
+        if not provider:
+            logger.error(f"Provider {provider_name} not available for polling")
+            db.update_file_api_info(file_id, api_state='error')
+            return 'error'
+        
+        start_time = time.time()
+        poll_interval = 2.0
+        max_interval = 10.0
+        
+        logger.info(f"Starting readiness polling for file {file_id} ({api_file_name})")
+        
+        while (time.time() - start_time) < timeout_s:
+            try:
+                # Check current state with provider
+                metadata_result = provider.get_file_metadata(api_file_name)
+                
+                if not metadata_result['success']:
+                    logger.warning(f"Failed to get metadata for {api_file_name}: {metadata_result.get('error')}")
+                    time.sleep(poll_interval)
+                    continue
+                
+                current_state = metadata_result['state']
+                logger.debug(f"File {file_id} polling state: {current_state}")
+                
+                # Update database with current state
+                db.update_file_api_info(file_id, api_state=current_state)
+                
+                # Check if we've reached a final state
+                if current_state == 'ready':
+                    elapsed = time.time() - start_time
+                    logger.info(f"File {file_id} is ready after {elapsed:.1f}s of polling")
+                    return 'ready'
+                elif current_state == 'error':
+                    logger.error(f"File {file_id} failed during provider processing")
+                    return 'error'
+                
+                # Still processing, wait before next poll
+                time.sleep(poll_interval)
+                poll_interval = min(poll_interval * 1.2, max_interval)  # Exponential backoff
+                
+            except Exception as e:
+                logger.error(f"Error during readiness polling for file {file_id}: {str(e)}")
+                time.sleep(poll_interval)
+        
+        # Timeout reached
+        logger.warning(f"Readiness polling timeout for file {file_id} after {timeout_s}s")
+        db.update_file_api_info(file_id, api_state='error')
+        return 'error'
+    
     def process_and_upload_files(self, file_ids: List[str], provider_name: str = 'gemini') -> Dict[str, Any]:
         """Process multiple files: markdown conversion and API upload with state tracking"""
         provider = self.providers.get(provider_name)
@@ -466,6 +520,7 @@ class FileProviderManager:
                         )
                 
                 if upload_result['success']:
+                    # Initially set the API file name and intermediate state
                     db.update_file_api_info(
                         file_id, 
                         api_file_name=upload_result['api_file_name'],
@@ -473,12 +528,19 @@ class FileProviderManager:
                         provider=provider_name
                     )
                     
+                    # Now poll until file is truly ready (instead of doing this before chat)
+                    final_state = self._poll_until_ready(
+                        upload_result['api_file_name'], 
+                        file_id, 
+                        provider_name
+                    )
+                    
                     successful_uploads += 1
                     result_data = {
                         'file_id': file_id,
                         'success': True,
                         'api_file_name': upload_result['api_file_name'],
-                        'state': upload_result['state']
+                        'state': final_state
                     }
                     
                     # Only include md_filename if markdown processing was done
@@ -514,7 +576,7 @@ class FileProviderManager:
         }
     
     def check_files_readiness(self, file_ids: List[str], provider_name: str = 'gemini') -> Dict[str, Any]:
-        """Check if files are ready for use (both local and API processing complete)"""
+        """Check if files are ready for use based on database state (no provider polling needed)"""
         provider = self.providers.get(provider_name)
         if not provider:
             return {
@@ -538,15 +600,11 @@ class FileProviderManager:
             
             api_state = file_record.get('api_state', 'local')
             
-            if api_state in ['uploaded', 'processing'] and file_record.get('api_file_name'):
-                metadata_result = provider.get_file_metadata(file_record['api_file_name'])
-                if metadata_result['success']:
-                    new_state = metadata_result['state']
-                    if new_state != api_state:
-                        db.update_file_api_info(file_id, api_state=new_state)
-                        api_state = new_state
-            
+            # No need to poll provider anymore - files are already verified as ready during upload
+            # The database state is now the source of truth
             is_ready = api_state == 'ready'
+            
+            logger.debug(f"File {file_id} readiness check: state='{api_state}', ready={is_ready}")
             if not is_ready:
                 all_ready = False
             

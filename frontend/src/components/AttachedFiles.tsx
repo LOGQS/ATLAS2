@@ -57,8 +57,10 @@ const getFileStateIcon = (apiState?: string): string => {
   switch (apiState) {
     case 'uploading':
     case 'processing':
+    case 'api_processing':
       return '🔄';
     case 'uploaded':
+      return '⬆️';
     case 'ready':
       return '✅';
     case 'error':
@@ -76,8 +78,9 @@ const getFileStateColor = (apiState?: string): string => {
     case 'api_processing':
       return 'var(--loading-color, #3498db)';
     case 'uploaded':
+      return '#ffa500'; // Orange-ish to show intermediate state
     case 'ready':
-      return 'var(--success-color, #27ae60)';
+      return 'var(--success-color, #27ae60)'; // Bright green for truly ready
     case 'error':
       return 'var(--error-color, #e74c3c)';
     case 'processing_md':
@@ -96,10 +99,10 @@ const getDisplayStateText = (apiState?: string): string => {
     case 'uploading':
       return 'uploading';
     case 'uploaded':
-      return 'ready';
+      return 'uploaded';
     case 'processing':
     case 'api_processing':
-      return 'processing';
+      return 'verifying';
     case 'ready':
       return 'ready';
     case 'error':
@@ -178,8 +181,8 @@ const AttachedFiles: React.FC<AttachedFilesProps> = ({
         <div className="attached-files-list">
           {files.map((file, index) => {
             const localProcessingStates = ['selected', 'processing_md'];
-            const apiProcessingStates = ['uploading', 'processing', 'api_processing'];
-            const readyStates = ['uploaded', 'ready', 'local'];
+            const apiProcessingStates = ['uploading', 'uploaded', 'processing', 'api_processing'];
+            const readyStates = ['ready', 'local'];
             const errorStates = ['error'];
             
             // Exclusive spinner logic: API processing takes priority over local processing

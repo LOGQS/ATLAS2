@@ -364,12 +364,20 @@ class Gemini:
             
             # Map Gemini states to our internal states
             gemini_state = getattr(file_info, 'state', 'UNKNOWN')
+            
+            # Comprehensive state mapping for Gemini
             if gemini_state == 'ACTIVE':
                 internal_state = 'ready'
-                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
-            else:
+            elif gemini_state in ['PROCESSING', 'STATE_UNSPECIFIED', 'UNKNOWN']:
                 internal_state = 'api_processing'
-                logger.debug(f"File {api_file_name} Gemini state: {gemini_state} -> internal state: {internal_state}")
+            elif gemini_state == 'FAILED':
+                internal_state = 'error'
+            else:
+                # Default to processing for any unknown states
+                internal_state = 'api_processing'
+                logger.warning(f"Unknown Gemini state '{gemini_state}' for file {api_file_name}, defaulting to api_processing")
+            
+            logger.debug(f"File {api_file_name}: Gemini state '{gemini_state}' -> internal state '{internal_state}'")
             
             return {
                 'success': True,

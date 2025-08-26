@@ -170,21 +170,17 @@ class Chat:
                     }
         return all_models
     
-    def _resolve_api_file_names(self, file_ids, provider, timeout_s=180):
+    def _resolve_api_file_names(self, file_ids, provider):
+        """Resolve file IDs to API file names for ready files only"""
         from utils.db_utils import db
-        import time
-        deadline = time.time() + timeout_s
-        remaining = set(file_ids); names = []
-        while remaining and time.time() < deadline:
-            nxt = set()
-            for fid in list(remaining):
-                rec = db.get_file_record(fid)
-                if rec and rec.get('provider') == provider and rec.get('api_file_name'):
-                    names.append(rec['api_file_name'])
-                else:
-                    nxt.add(fid)
-            remaining = nxt
-            if remaining: time.sleep(0.6)
+        names = []
+        for fid in file_ids:
+            rec = db.get_file_record(fid)
+            if rec and rec.get('provider') == provider and rec.get('api_file_name') and rec.get('api_state') == 'ready':
+                names.append(rec['api_file_name'])
+                logger.debug(f"Resolved file {fid} to API name {rec['api_file_name']}")
+            else:
+                logger.warning(f"File {fid} not ready for chat - state: {rec.get('api_state') if rec else 'not found'}")
         return names
 
     def generate_text(self, message: str, provider: str = "", 
@@ -223,7 +219,7 @@ class Chat:
         ids = config_params.get("attached_file_ids") or []
         config_params.pop("attached_file_ids", None)
         if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+            file_attachments = self._resolve_api_file_names(ids, provider)
         elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
@@ -295,7 +291,7 @@ class Chat:
         ids = config_params.get("attached_file_ids") or []
         config_params.pop("attached_file_ids", None)
         if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+            file_attachments = self._resolve_api_file_names(ids, provider)
         elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
@@ -376,7 +372,7 @@ class Chat:
         ids = config_params.get("attached_file_ids") or []
         config_params.pop("attached_file_ids", None)
         if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider, timeout_s=180)
+            file_attachments = self._resolve_api_file_names(ids, provider)
         elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
         
