@@ -37,6 +37,7 @@ interface ChatProps {
   onChatStateChange?: (chatId: string, state: 'thinking' | 'responding' | 'static') => void;
   onFirstMessageSent?: (chatId: string) => void;
   onActiveStateChange?: (chatId: string, isReallyActive: boolean) => void;
+  onBusyStateChange?: () => void;
   isActive?: boolean;
   defaultProvider?: string;
   defaultModel?: string;
@@ -52,6 +53,7 @@ const Chat = forwardRef<any, ChatProps>(({
   onChatStateChange, 
   onFirstMessageSent, 
   onActiveStateChange, 
+  onBusyStateChange,
   isActive = true, 
   firstMessage 
 }, ref) => {
@@ -184,6 +186,12 @@ const Chat = forwardRef<any, ChatProps>(({
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (onBusyStateChange && chatId) {
+      onBusyStateChange();
+    }
+  }, [liveOverlay.state, onBusyStateChange, chatId]);
 
   const handleNewMessage = useCallback(async (content: string, attachedFiles?: AttachedFile[]) => {
     if (!chatId || !isActive) {

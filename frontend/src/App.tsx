@@ -35,6 +35,7 @@ function App() {
   const [activeChatId, setActiveChatId] = useState<string>('none');
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
   const [isAppInitialized, setIsAppInitialized] = useState(false);
+  const [forceRender, setForceRender] = useState(0);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
   const { 
@@ -145,6 +146,7 @@ function App() {
       logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
     }
   };
+  const centerInputRef = useRef<HTMLInputElement>(null);
   const bottomInputRef = useRef<HTMLInputElement>(null);
   const chatRef = useRef<any>(null);
 
@@ -191,7 +193,17 @@ function App() {
 
 
   const handleSend = async () => {
-    if (message.trim() && !isActiveChatStreaming) {
+    logger.info('[SEND_DEBUG] handleSend called:', {
+      messageLength: message.length,
+      messageTrimmed: message.trim().length,
+      isSendDisabled,
+      isActiveChatStreaming,
+      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+      hasUnreadyFiles,
+      activeChatId
+    });
+    
+    if (message.trim() && !isSendDisabled) {
       if (!hasMessageBeenSent || activeChatId === 'none') {
         const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const chatName = message.split(' ').slice(0, 4).join(' ');
@@ -214,7 +226,7 @@ function App() {
         setActiveChatId(chatId);
         setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({message: messageToSend, files: filesToSend})));
         
-        bottomInputRef.current?.focus();
+        setTimeout(() => bottomInputRef.current?.focus(), 100);
         
         createNewChatInBackground(chatId, chatName, messageToSend);
       } else {
@@ -224,6 +236,8 @@ function App() {
           chatRef.current.handleNewMessage(message, filesToSend);
           setMessage('');
           clearAttachedFiles();
+          
+          setTimeout(() => bottomInputRef.current?.focus(), 0);
         } else {
           logger.warn('Attempted to send message but no active chat or invalid ref:', { activeChatId, hasRef: !!chatRef.current });
         }
@@ -369,6 +383,7 @@ function App() {
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
   
   const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles;
+  void forceRender; 
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -393,6 +408,11 @@ function App() {
     } else {
       setActiveChatId(prev => prev === chatId ? 'none' : prev);
     }
+  }, []);
+
+  const handleBusyStateChange = useCallback(() => {
+    logger.info('[SEND_DEBUG] Chat busy state changed, forcing re-render');
+    setForceRender(prev => prev + 1);
   }, []);
 
   const handleBulkDelete = async (chatIds: string[]) => {
@@ -555,9 +575,19 @@ function App() {
                   +
                 </button>
                 <input
+                  ref={centerInputRef}
                   type="text"
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => {
+                    logger.info('[INPUT_DEBUG] Center input onChange:', {
+                      newValue: e.target.value,
+                      oldValue: message,
+                      isSendDisabled,
+                      isActiveChatStreaming,
+                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
+                    });
+                    setMessage(e.target.value);
+                  }}
                   onKeyDown={handleKeyPress}
                   className="message-input with-file-button"
                   placeholder=""
@@ -565,7 +595,14 @@ function App() {
               </div>
               <button 
                 onClick={() => {
-                  logger.info('Send button clicked for active chat:', activeChatId);
+                  logger.info('[SEND_DEBUG] Center send button clicked:', {
+                    activeChatId,
+                    messageLength: message.length,
+                    isSendDisabled,
+                    isActiveChatStreaming,
+                    chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+                    hasUnreadyFiles
+                  });
                   handleSend();
                 }} 
                 className={`send-button ${isSendDisabled ? 'loading' : ''}`}
@@ -622,6 +659,7 @@ function App() {
               onChatStateChange={handleChatStateChange}
               onFirstMessageSent={handleFirstMessageSent}
               onActiveStateChange={handleActiveStateChange}
+              onBusyStateChange={handleBusyStateChange}
             />
             
             <div className="bottom-input-area">
@@ -662,7 +700,16 @@ function App() {
                     ref={bottomInputRef}
                     type="text"
                     value={message}
-                    onChange={(e) => setMessage(e.target.value)}
+                    onChange={(e) => {
+                      logger.info('[INPUT_DEBUG] Bottom input onChange:', {
+                        newValue: e.target.value,
+                        oldValue: message,
+                        isSendDisabled,
+                        isActiveChatStreaming,
+                        chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
+                      });
+                      setMessage(e.target.value);
+                    }}
                     onKeyDown={handleKeyPress}
                     className="message-input with-file-button"
                     placeholder=""
@@ -670,7 +717,14 @@ function App() {
                 </div>
                 <button 
                   onClick={() => {
-                    logger.info('Bottom send button clicked for active chat:', activeChatId);
+                    logger.info('[SEND_DEBUG] Bottom send button clicked:', {
+                      activeChatId,
+                      messageLength: message.length,
+                      isSendDisabled,
+                      isActiveChatStreaming,
+                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+                      hasUnreadyFiles
+                    });
                     handleSend();
                   }} 
                   className={`send-button ${isSendDisabled ? 'loading' : ''}`}
