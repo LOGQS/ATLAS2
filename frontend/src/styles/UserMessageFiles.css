@@ -108,6 +108,278 @@ body.dark-theme .user-message-file-item:hover {
   border-color: rgba(255, 255, 255, 0.2);
 }
 
+/* Unavailable file states */
+.user-message-file-item.unavailable {
+  position: relative;
+  background: rgba(var(--error-rgb, 231, 76, 60), 0.1);
+  border-color: rgba(var(--error-rgb, 231, 76, 60), 0.2);
+}
+
+.user-message-file-item.clickable {
+  cursor: pointer;
+}
+
+.user-message-file-item.clickable:hover {
+  background: rgba(var(--error-rgb, 231, 76, 60), 0.15);
+  border-color: rgba(var(--error-rgb, 231, 76, 60), 0.3);
+}
+
+.file-retry-overlay {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.8);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 0.7em;
+  line-height: 1;
+  opacity: 1;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.retry-icon {
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.file-unavailable-status {
+  font-size: 0.6em;
+  color: var(--error-color, #e74c3c);
+  font-weight: 500;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+/* Modal styles */
+.file-reupload-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.file-reupload-modal {
+  background: var(--card-bg, white);
+  border-radius: 12px;
+  padding: 0;
+  min-width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: between;
+  align-items: center;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-color);
+  flex: 1;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.modal-close-btn:hover {
+  background: rgba(var(--primary-rgb), 0.1);
+  color: var(--text-color);
+}
+
+.modal-body {
+  padding: 16px 24px;
+}
+
+.modal-body p {
+  margin: 0 0 12px;
+  color: var(--text-color);
+  line-height: 1.5;
+}
+
+.modal-body p:last-child {
+  margin-bottom: 0;
+  font-weight: 500;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px 20px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  min-width: 80px;
+}
+
+.modal-btn-secondary {
+  background: var(--bg-secondary, #f8f9fa);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-btn-secondary:hover {
+  background: var(--bg-tertiary, #e9ecef);
+}
+
+.modal-btn-primary {
+  background: var(--primary-color, #007bff);
+  color: white;
+}
+
+.modal-btn-primary:hover {
+  background: var(--primary-hover, #0056b3);
+}
+
+/* Dark theme modal adjustments */
+body.dark-theme .file-reupload-modal {
+  background: var(--card-bg-dark, #2d3748);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .modal-header,
+body.dark-theme .modal-actions {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .modal-btn-secondary {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+body.dark-theme .modal-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* File delete button styles */
+.user-message-file-item {
+  position: relative;
+}
+
+.file-delete-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s ease;
+  z-index: 10;
+  line-height: 1;
+  padding: 0;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.user-message-file-item:hover .file-delete-btn {
+  opacity: 1;
+}
+
+.file-delete-btn:hover {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.file-delete-loading {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.delete-spinner {
+  font-size: 10px;
+  animation: spin 1s linear infinite;
+}
+
+.user-message-file-item.deleting {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Dark theme adjustments for delete button */
+body.dark-theme .file-delete-btn {
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.8);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+body.dark-theme .file-delete-btn:hover {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+body.dark-theme .file-delete-loading {
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.6);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
 /* Responsive design */
 @media (max-width: 600px) {
   .user-message-files-grid {

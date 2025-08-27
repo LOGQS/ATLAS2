@@ -112,6 +112,11 @@ def delete_file(file_id):
             if not api_delete_result['success']:
                 logger.warning(f"Failed to delete file from API: {api_delete_result}")
         
+        with db._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as count FROM message_files WHERE file_id = ?", (file_id,))
+            message_count = cursor.fetchone()['count']
+        
         db_success = db.delete_file_record(file_id)
         if not db_success:
             return {
@@ -119,7 +124,7 @@ def delete_file(file_id):
                 'error': 'Failed to delete file record from database'
             }
         
-        logger.info(f"File deleted: {file_id} - {file_record['original_name']}")
+        logger.info(f"File deleted: {file_id} - {file_record['original_name']} (was attached to {message_count} messages)")
         
         cancellation_manager.cleanup_file(file_id)
         

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import '../styles/UserMessageFiles.css';
 
 interface AttachedFile {
@@ -8,10 +8,14 @@ interface AttachedFile {
   type?: string;
   api_state?: string;
   provider?: string;
+  api_file_name?: string;
 }
 
 interface UserMessageFilesProps {
   files: AttachedFile[];
+  onFileReupload?: (file: AttachedFile) => void;
+  onFileDelete?: (fileId: string) => Promise<void>;
+  isStatic?: boolean;
 }
 
 const getFileIcon = (filename: string): string => {
@@ -48,12 +52,64 @@ const formatFileSize = (bytes: number): string => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-const UserMessageFiles: React.FC<UserMessageFilesProps> = ({ files }) => {
+
+const isFileUnavailable = (file: AttachedFile): boolean => {
+  return file.api_state === 'unavailable' || file.api_state === 'error';
+};
+
+const getRetryIcon = (): string => {
+  return '🔄';
+};
+
+const UserMessageFiles: React.FC<UserMessageFilesProps> = ({ files, onFileReupload, onFileDelete, isStatic = true }) => {
+  const [showModal, setShowModal] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<AttachedFile | null>(null);
+  const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set());
+  
   if (!files || files.length === 0) {
     return null;
   }
+  
+  const handleFileClick = (file: AttachedFile) => {
+    if (isFileUnavailable(file)) {
+      setSelectedFile(file);
+      setShowModal(true);
+    }
+  };
+  
+  const handleReupload = () => {
+    if (selectedFile && onFileReupload) {
+      onFileReupload(selectedFile);
+    }
+    setShowModal(false);
+    setSelectedFile(null);
+  };
+  
+  const handleModalClose = () => {
+    setShowModal(false);
+    setSelectedFile(null);
+  };
 
-  // Create concatenated names for display
+  const handleDeleteFile = async (file: AttachedFile, event: React.MouseEvent) => {
+    event.stopPropagation();
+    
+    if (!onFileDelete) return;
+    
+    setDeletingFiles(prev => new Set(Array.from(prev).concat(file.id)));
+    
+    try {
+      await onFileDelete(file.id);
+    } catch (error) {
+      console.error('Failed to delete file:', error);
+    } finally {
+      setDeletingFiles(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(file.id);
+        return newSet;
+      });
+    }
+  };
+
   const fileNames = files.map(file => file.name);
   const displayNames = fileNames.length > 3 
     ? `${fileNames.slice(0, 3).join(', ')} and ${fileNames.length - 3} more`
@@ -70,22 +126,89 @@ const UserMessageFiles: React.FC<UserMessageFilesProps> = ({ files }) => {
       </div>
       
       <div className="user-message-files-grid">
-        {files.map((file, index) => (
-          <div key={index} className="user-message-file-item">
-            <div className="file-icon">
-              {getFileIcon(file.name)}
+        {files.map((file, index) => {
+          const isUnavailable = isFileUnavailable(file);
+          const isClickable = isUnavailable;
+          const isDeleting = deletingFiles.has(file.id);
+          
+          return (
+            <div 
+              key={index} 
+              className={`user-message-file-item ${isUnavailable ? 'unavailable' : ''} ${isClickable ? 'clickable' : ''} ${isDeleting ? 'deleting' : ''}`}
+              onClick={() => handleFileClick(file)}
+              style={{ opacity: isUnavailable ? 0.6 : 1 }}
+              title={isUnavailable ? 'File no longer available - click to reupload' : file.name}
+            >
+              <div className="file-icon">
+                {getFileIcon(file.name)}
+              </div>
+              
+              {onFileDelete && !isUnavailable && !isDeleting && isStatic && (
+                <button 
+                  className="file-delete-btn"
+                  onClick={(e) => handleDeleteFile(file, e)}
+                  title="Delete file"
+                  aria-label={`Delete ${file.name}`}
+                >
+                  ×
+                </button>
+              )}
+              
+              {isDeleting && (
+                <div className="file-delete-loading">
+                  <span className="delete-spinner">⌛</span>
+                </div>
+              )}
+              
+              {isUnavailable && isStatic && (
+                <div className="file-retry-overlay">
+                  <span className="retry-icon">{getRetryIcon()}</span>
+                </div>
+              )}
+              
+              <div className="file-info">
+                <div className="file-name" title={file.name}>
+                  {file.name.length > 20 ? `${file.name.substring(0, 20)}...` : file.name}
+                </div>
+                <div className="file-size">
+                  {formatFileSize(file.size)}
+                </div>
+                {isUnavailable && (
+                  <div className="file-unavailable-status">
+                    File unavailable
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="file-info">
-              <div className="file-name" title={file.name}>
-                {file.name.length > 20 ? `${file.name.substring(0, 20)}...` : file.name}
-              </div>
-              <div className="file-size">
-                {formatFileSize(file.size)}
-              </div>
+          );
+        })}
+      </div>
+      
+      {showModal && selectedFile && (
+        <div className="file-reupload-modal-overlay" onClick={handleModalClose}>
+          <div className="file-reupload-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>File No Longer Available</h3>
+              <button className="modal-close-btn" onClick={handleModalClose}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>
+                The file <strong>{selectedFile.name}</strong> is no longer available in the chat history.
+                It may have been automatically deleted from the server after 48 hours.
+              </p>
+              <p>Do you want to reupload this file to add it back to the history?</p>
+            </div>
+            <div className="modal-actions">
+              <button className="modal-btn modal-btn-secondary" onClick={handleModalClose}>
+                Cancel
+              </button>
+              <button className="modal-btn modal-btn-primary" onClick={handleReupload}>
+                Reupload File
+              </button>
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

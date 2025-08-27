@@ -172,6 +172,7 @@ def register_chat_routes(app: Flask):
             provider = data.get('provider', 'gemini')
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
+            attached_file_ids = data.get('attached_file_ids', [])
             
             if not message:
                 logger.warning("Chat request missing message")
@@ -183,7 +184,8 @@ def register_chat_routes(app: Flask):
                 message=message,
                 provider=provider,
                 model=model,
-                include_reasoning=include_reasoning
+                include_reasoning=include_reasoning,
+                attached_file_ids=attached_file_ids
             )
             
             return jsonify({
@@ -206,15 +208,6 @@ def register_chat_routes(app: Flask):
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
             attached_file_ids = data.get('attached_file_ids', [])
-            
-            if attached_file_ids:
-                from utils.db_utils import db
-                for file_id in attached_file_ids:
-                    try:
-                        db.associate_file_with_chat(file_id, chat_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to associate file {file_id} with chat {chat_id}: {str(e)}")
-                logger.info(f"Associated {len(attached_file_ids)} files with chat {chat_id}")
             
             if not message:
                 if not is_chat_processing(chat_id):

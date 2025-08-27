@@ -458,20 +458,18 @@ class Gemini:
         from utils.db_utils import db
         
         try:
-            files = db.get_all_files(chat_id=chat_id)
-            api_file_names = []
+            file_records = db.get_chat_file_attachments_for_provider(chat_id, 'gemini')
             
-            for file in files:
-                if (file.get('provider') == 'gemini' and file.get('api_file_name')
-                    and file.get('api_state') in ['uploaded','processing','ready']):
-                    api_file_names.append(file['api_file_name'])
-
-                    try:
-                        info = self.client.files.get(name=file['api_file_name'])
-                        if getattr(info, 'state', '') == 'ACTIVE' and file.get('api_state') != 'ready':
-                            db.update_file_api_info(file['id'], api_state='ready')
-                    except Exception:
-                        pass
+            api_file_names = []
+            for file_record in file_records:
+                api_file_names.append(file_record['api_file_name'])
+                
+                try:
+                    info = self.client.files.get(name=file_record['api_file_name'])
+                    if getattr(info, 'state', '') == 'ACTIVE' and file_record['api_state'] != 'ready':
+                        db.update_file_api_info(file_record['id'], api_state='ready')
+                except Exception:
+                    pass
             
             logger.info(f"Found {len(api_file_names)} file attachments to try for chat {chat_id}")
             return api_file_names

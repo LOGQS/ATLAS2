@@ -305,6 +305,34 @@ const Chat = forwardRef<any, ChatProps>(({
     return out;
   })();
 
+  const handleFileDelete = async (fileId: string): Promise<void> => {
+    try {
+      const response = await fetch(apiUrl(`/api/files/${fileId}`), {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Failed to delete file: ${response.statusText}`);
+      }
+
+      setMessages(prevMessages => 
+        prevMessages.map(msg => ({
+          ...msg,
+          attachedFiles: msg.attachedFiles?.filter(file => file.id !== fileId)
+        }))
+      );
+      
+      logger.info(`File deleted successfully: ${fileId}`);
+    } catch (error) {
+      logger.error('Failed to delete file:', error);
+      throw error;
+    }
+  };
+
   const renderMessage = (message: Message, originalIndex: number) => {
     if (message.role === 'user') {
       const isFirstMessage = originalIndex === 0;
@@ -314,6 +342,8 @@ const Chat = forwardRef<any, ChatProps>(({
           content={message.content}
           isFirstMessage={isFirstMessage}
           attachedFiles={message.attachedFiles}
+          onFileDelete={handleFileDelete}
+          isStatic={liveOverlay.state === 'static'}
         />
       );
     }

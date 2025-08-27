@@ -190,11 +190,16 @@ class Chat:
             chat_history = chat_history[:-1]
         
         file_attachments = []
-        ids = config_params.pop("attached_file_ids", None) or []
-        if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider)
-        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        new_file_ids = config_params.pop("attached_file_ids", None) or []
+        if new_file_ids:
+            new_file_attachments = self._resolve_api_file_names(new_file_ids, provider)
+            existing_names = set(file_attachments)
+            for new_file in new_file_attachments:
+                if new_file not in existing_names:
+                    file_attachments.append(new_file)
         
         return {
             'provider': provider,
@@ -233,7 +238,7 @@ class Chat:
 
     def generate_text(self, message: str, provider: str = "", 
                      model: Optional[str] = None, include_reasoning: bool = True,
-                     **config_params) -> Dict[str, Any]:
+                     attached_file_ids: List[str] = None, **config_params) -> Dict[str, Any]:
         """
         Generate text response using specified provider
         
@@ -242,12 +247,13 @@ class Chat:
             provider: Provider to use
             model: Model to use
             include_reasoning: Whether to include reasoning/thoughts
+            attached_file_ids: List of file IDs to attach to the user message
             **config_params: Additional configuration parameters
             
         Returns:
             Dict with response, reasoning, and metadata
         """
-        db.save_message(self.chat_id, "user", message)
+        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
         if provider not in self.providers or not self.providers[provider].is_available():
             available = self.get_available_providers()
@@ -264,12 +270,17 @@ class Chat:
             chat_history = chat_history[:-1]
         
         file_attachments = []
-        ids = config_params.get("attached_file_ids") or []
-        config_params.pop("attached_file_ids", None)
-        if ids:
-            file_attachments = self._resolve_api_file_names(ids, provider)
-        elif hasattr(self.providers[provider], 'get_file_attachments_for_request'):
+        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
             file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
+        
+        new_file_ids = attached_file_ids or config_params.get("attached_file_ids") or []
+        config_params.pop("attached_file_ids", None)
+        if new_file_ids:
+            new_file_attachments = self._resolve_api_file_names(new_file_ids, provider)
+            existing_names = set(file_attachments)
+            for new_file in new_file_attachments:
+                if new_file not in existing_names:
+                    file_attachments.append(new_file)
         
         logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         response = self.providers[provider].generate_text(
@@ -292,7 +303,7 @@ class Chat:
     
     def generate_text_stream(self, message: str, provider: Optional[str] = None,
                            model: Optional[str] = None, include_reasoning: bool = True,
-                           **config_params) -> Generator[Dict[str, Any], None, None]:
+                           attached_file_ids: List[str] = None, **config_params) -> Generator[Dict[str, Any], None, None]:
         """
         Generate streaming text response
         
@@ -301,15 +312,18 @@ class Chat:
             provider: Provider to use
             model: Model to use
             include_reasoning: Whether to include reasoning/thoughts
+            attached_file_ids: List of file IDs to attach to the user message
             **config_params: Additional configuration parameters
             
         Yields:
             Streaming response chunks
         """
         from route.chat_route import publish_state
-        db.save_message(self.chat_id, "user", message)
+        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
         config_params['include_reasoning'] = include_reasoning
+        if attached_file_ids:
+            config_params['attached_file_ids'] = attached_file_ids
         context, error = self._prepare_streaming_context(provider, model, **config_params)
         if error:
             yield {"type": "error", "content": error}
@@ -488,13 +502,15 @@ class Chat:
     
     def start_background_processing(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
-                                  **config_params) -> bool:
+                                  attached_file_ids: List[str] = None, **config_params) -> bool:
         """
         Start background processing of a message (non-blocking)
         Returns True if started successfully, False if already running
         """
-        db.save_message(self.chat_id, "user", message)
+        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
+        if attached_file_ids:
+            config_params['attached_file_ids'] = attached_file_ids
         return _start_background_processing(
             self.chat_id, self, message, provider, model, include_reasoning, **config_params
         )

@@ -49,7 +49,7 @@ class DatabaseManager:
                     value TEXT
                 )
             """)
-            cursor.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
+            cursor.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','2')")
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS chats (
@@ -111,7 +111,7 @@ class DatabaseManager:
                     chat_id TEXT,
                     md_filename TEXT,
                     api_file_name TEXT,
-                    api_state TEXT DEFAULT 'local' CHECK(api_state IN ('local', 'processing_md', 'uploading', 'uploaded', 'processing', 'ready', 'error')),
+                    api_state TEXT DEFAULT 'local' CHECK(api_state IN ('local', 'processing_md', 'uploading', 'uploaded', 'processing', 'ready', 'error', 'unavailable')),
                     provider TEXT,
                     temp_id TEXT,  -- Store temp ID for race condition handling
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL
@@ -124,6 +124,24 @@ class DatabaseManager:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_files_upload ON files(upload_timestamp)
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS message_files (
+                    message_id INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (message_id, file_id),
+                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_files_message ON message_files(message_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_files_file ON message_files(file_id)
             """)
             
             conn.commit()
@@ -146,8 +164,8 @@ class DatabaseManager:
     
     def save_message(self, chat_id: str, role: str, content: str, 
                     thoughts: Optional[str] = None, provider: Optional[str] = None, 
-                    model: Optional[str] = None) -> Optional[int]:
-        """Save message to chat history and return message ID"""
+                    model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None) -> Optional[int]:
+        """Save message to chat history with optional file attachments and return message ID"""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
@@ -169,6 +187,15 @@ class DatabaseManager:
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (chat_id, role, content, thoughts, provider, model))
                 message_id = cursor.lastrowid
+                
+                if attached_file_ids:
+                    for file_id in attached_file_ids:
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO message_files (message_id, file_id)
+                            VALUES (?, ?)
+                        """, (message_id, file_id))
+                    logger.debug(f"Linked {len(attached_file_ids)} files to message {message_id}")
+                
                 conn.commit()
                 logger.debug(f"Saved new message {message_id} for chat {chat_id}: {role} - {content[:50]}...")
                 return message_id
@@ -193,7 +220,7 @@ class DatabaseManager:
             return False
     
     def get_chat_history(self, chat_id: str) -> List[Dict[str, Any]]:
-        """Get chat history for a specific chat"""
+        """Get chat history for a specific chat including attached files"""
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -205,7 +232,29 @@ class DatabaseManager:
             
             messages = []
             for row in cursor.fetchall():
-                messages.append({
+                message_id = row["id"]
+                
+                cursor.execute("""
+                    SELECT f.id, f.original_name, f.file_size, f.file_type, f.api_state, f.provider, f.api_file_name
+                    FROM message_files mf
+                    JOIN files f ON mf.file_id = f.id
+                    WHERE mf.message_id = ?
+                    ORDER BY mf.created_at ASC
+                """, (message_id,))
+                
+                attached_files = []
+                for file_row in cursor.fetchall():
+                    attached_files.append({
+                        "id": file_row["id"],
+                        "name": file_row["original_name"],
+                        "size": file_row["file_size"],
+                        "type": file_row["file_type"],
+                        "api_state": file_row["api_state"],
+                        "provider": file_row["provider"],
+                        "api_file_name": file_row["api_file_name"]
+                    })
+                
+                message_dict = {
                     "id": row["id"],
                     "role": row["role"],
                     "content": row["content"],
@@ -213,7 +262,12 @@ class DatabaseManager:
                     "provider": row["provider"],
                     "model": row["model"],
                     "timestamp": row["timestamp"]
-                })
+                }
+                
+                if attached_files:
+                    message_dict["attachedFiles"] = attached_files
+                
+                messages.append(message_dict)
             return messages
     
     def get_all_chats(self) -> List[Dict[str, Any]]:
@@ -501,6 +555,164 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error updating file MD info: {str(e)}")
             return False
+    
+    def link_files_to_message(self, message_id: int, file_ids: List[str]) -> bool:
+        """Link multiple files to a message"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                for file_id in file_ids:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO message_files (message_id, file_id)
+                        VALUES (?, ?)
+                    """, (message_id, file_id))
+                conn.commit()
+                logger.debug(f"Linked {len(file_ids)} files to message {message_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Error linking files to message: {str(e)}")
+            return False
+    
+    def get_message_files(self, message_id: int) -> List[Dict[str, Any]]:
+        """Get all files attached to a specific message"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT f.id, f.original_name, f.file_size, f.file_type, f.api_state, f.provider, f.api_file_name
+                FROM message_files mf
+                JOIN files f ON mf.file_id = f.id
+                WHERE mf.message_id = ?
+                ORDER BY mf.created_at ASC
+            """, (message_id,))
+            
+            files = []
+            for row in cursor.fetchall():
+                files.append({
+                    "id": row["id"],
+                    "name": row["original_name"],
+                    "size": row["file_size"],
+                    "type": row["file_type"],
+                    "api_state": row["api_state"],
+                    "provider": row["provider"],
+                    "api_file_name": row["api_file_name"]
+                })
+            return files
+    
+    def get_chat_file_attachments_for_provider(self, chat_id: str, provider: str) -> List[Dict[str, Any]]:
+        """Get list of file attachments that are ready to be included in requests for this chat and provider"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT DISTINCT f.id, f.provider, f.api_file_name, f.api_state
+                    FROM files f
+                    JOIN message_files mf ON f.id = mf.file_id
+                    JOIN messages m ON mf.message_id = m.id
+                    WHERE m.chat_id = ?
+                    AND f.provider = ? 
+                    AND f.api_file_name IS NOT NULL
+                    AND f.api_state IN ('uploaded', 'processing', 'ready')
+                """, (chat_id, provider))
+                
+                files = []
+                for row in cursor.fetchall():
+                    files.append({
+                        'id': row['id'],
+                        'provider': row['provider'],
+                        'api_file_name': row['api_file_name'],
+                        'api_state': row['api_state']
+                    })
+                
+                logger.debug(f"Found {len(files)} file attachments for chat {chat_id} and provider {provider}")
+                return files
+                
+        except Exception as e:
+            logger.error(f"Error getting file attachments for chat {chat_id} and provider {provider}: {str(e)}")
+            return []
+
+    def verify_files_availability(self, chat_id: str) -> Dict[str, Any]:
+        """Verify which files are still available in the API and update their states"""
+        try:
+            from utils.config import get_provider_map
+            
+            providers = get_provider_map()
+            gemini_provider = providers.get('gemini')
+            
+            if not gemini_provider or not gemini_provider.is_available():
+                logger.warning("Gemini provider not available for file verification")
+                return {
+                    'success': False,
+                    'error': 'Gemini provider not available',
+                    'verified_count': 0,
+                    'unavailable_count': 0
+                }
+            
+            chat_files = self.get_all_files(chat_id=chat_id)
+            api_files = [f for f in chat_files if f.get('api_file_name') and f.get('provider') == 'gemini']
+            
+            if not api_files:
+                return {
+                    'success': True,
+                    'verified_count': 0,
+                    'unavailable_count': 0,
+                    'message': 'No API files to verify'
+                }
+            
+            list_result = gemini_provider.list_files()
+            if not list_result['success']:
+                logger.error(f"Failed to list files from Gemini: {list_result.get('error')}")
+                return {
+                    'success': False,
+                    'error': f"Failed to list files from API: {list_result.get('error')}",
+                    'verified_count': 0,
+                    'unavailable_count': 0
+                }
+            
+            available_api_file_names = set(f['api_file_name'] for f in list_result['files'])
+            verified_count = 0
+            unavailable_count = 0
+            
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                for file_record in api_files:
+                    file_id = file_record['id']
+                    api_file_name = file_record['api_file_name']
+                    current_state = file_record.get('api_state', 'unknown')
+                    
+                    if api_file_name in available_api_file_names:
+                        if current_state in ['error', 'unavailable']:
+                            cursor.execute("""
+                                UPDATE files SET api_state = 'ready' WHERE id = ?
+                            """, (file_id,))
+                            logger.info(f"File {file_id} ({api_file_name}) is now available again")
+                        verified_count += 1
+                    else:
+                        if current_state != 'unavailable':
+                            cursor.execute("""
+                                UPDATE files SET api_state = 'unavailable' WHERE id = ?
+                            """, (file_id,))
+                            logger.info(f"File {file_id} ({api_file_name}) is no longer available in API")
+                        unavailable_count += 1
+                
+                conn.commit()
+            
+            logger.info(f"File verification for chat {chat_id}: {verified_count} available, {unavailable_count} unavailable")
+            return {
+                'success': True,
+                'verified_count': verified_count,
+                'unavailable_count': unavailable_count,
+                'total_checked': len(api_files)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error verifying files availability: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'verified_count': 0,
+                'unavailable_count': 0
+            }
 
 
 db = DatabaseManager()

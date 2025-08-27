@@ -18,18 +18,26 @@ interface UserMessageProps {
   content: string;
   isFirstMessage?: boolean;
   attachedFiles?: AttachedFile[];
+  onFileDelete?: (fileId: string) => Promise<void>;
+  isStatic?: boolean;
 }
 
 const UserMessage: React.FC<UserMessageProps> = ({ 
   content, 
   isFirstMessage = false,
-  attachedFiles
+  attachedFiles,
+  onFileDelete,
+  isStatic = true
 }) => {
   return (
     <div className={`user-message ${isFirstMessage ? 'first-message' : ''}`}>
       <div className="user-message-bubble">
         {attachedFiles && attachedFiles.length > 0 && (
-          <UserMessageFiles files={attachedFiles} />
+          <UserMessageFiles 
+            files={attachedFiles} 
+            onFileDelete={onFileDelete}
+            isStatic={isStatic}
+          />
         )}
         <MessageRenderer content={content} />
       </div>

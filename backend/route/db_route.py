@@ -32,6 +32,7 @@ class DatabaseRoute:
         self.app.route('/api/db/chats/bulk-export', methods=['POST'])(self.bulk_export_chats)
         self.app.route('/api/db/chats/bulk-import', methods=['POST'])(self.bulk_import_chats)
         self.app.route('/api/db/chats/bulk-delete', methods=['POST'])(self.bulk_delete_chats)
+        self.app.route('/api/db/files/verify/<chat_id>', methods=['POST'])(self.verify_chat_files)
     
     def get_all_chats(self):
         """Get all chat sessions with basic info"""
@@ -58,20 +59,32 @@ class DatabaseRoute:
             return jsonify({'error': str(e)}), 500
     
     def get_chat(self, chat_id: str):
-        """Get specific chat with full history"""
+        """Get specific chat with full history and verify file availability"""
         try:
             if not db.chat_exists(chat_id):
                 return jsonify({'error': 'Chat not found'}), 404
             
+            verification_result = db.verify_files_availability(chat_id)
+            logger.info(f"File verification for chat {chat_id}: {verification_result}")
+            
             history = db.get_chat_history(chat_id)
             
-            return jsonify({
+            response_data = {
                 'chat_id': chat_id,
                 'history': history
-            })
+            }
+            
+            if verification_result.get('total_checked', 0) > 0:
+                response_data['file_verification'] = {
+                    'verified_count': verification_result.get('verified_count', 0),
+                    'unavailable_count': verification_result.get('unavailable_count', 0),
+                    'total_checked': verification_result.get('total_checked', 0)
+                }
+            
+            return jsonify(response_data)
             
         except Exception as e:
-            logger.error(f"Error getting all chats: {str(e)}")
+            logger.error(f"Error getting chat {chat_id}: {str(e)}")
             return jsonify({'error': str(e)}), 500
     
     def delete_chat(self, chat_id: str):
@@ -398,6 +411,36 @@ class DatabaseRoute:
             
         except Exception as e:
             logger.error(f"Error bulk deleting chats: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    
+    def verify_chat_files(self, chat_id: str):
+        """Verify file availability for a specific chat"""
+        try:
+            if not db.chat_exists(chat_id):
+                return jsonify({'error': 'Chat not found'}), 404
+            
+            result = db.verify_files_availability(chat_id)
+            
+            if result['success']:
+                return jsonify({
+                    'success': True,
+                    'chat_id': chat_id,
+                    'verified_count': result['verified_count'],
+                    'unavailable_count': result['unavailable_count'],
+                    'total_checked': result.get('total_checked', 0),
+                    'message': f"File verification completed: {result['verified_count']} available, {result['unavailable_count']} unavailable"
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'chat_id': chat_id,
+                    'error': result.get('error', 'File verification failed'),
+                    'verified_count': 0,
+                    'unavailable_count': 0
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"Error verifying files for chat {chat_id}: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
 def register_db_routes(app: Flask):
