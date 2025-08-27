@@ -50,6 +50,7 @@ npm install
 Create `.env` file in root dir:
 ```env
 GEMINI_API_KEY=your_key_here
+REACT_APP_API_BASE_URL=http://localhost:5000 (or wherever you want to run it in)
 ```
 
 Run it:
