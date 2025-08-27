@@ -112,6 +112,15 @@ class CancellationManager:
             if file_id in self._active_processes:
                 del self._active_processes[file_id]
     
+    def cleanup_process(self, process_id: str):
+        """Clean up all tracking for a process (TTS, etc.)"""
+        with self._lock:
+            self._cancelled_files.discard(process_id)
+            if process_id in self._active_tasks:
+                del self._active_tasks[process_id]
+            if process_id in self._active_processes:
+                del self._active_processes[process_id]
+    
     def is_chat_cancelled(self, chat_id: str) -> bool:
         """Check if a chat has been cancelled"""
         with self._lock:
