@@ -71,14 +71,21 @@ export function useScrollControl({
     if (!container) return;
 
     const handleScroll = (event: Event) => {
-      if (scrollType === 'thinkbox' && streamingState !== 'static') {
-        return; 
-      }
-      
       if (event.isTrusted && !programmaticScrolling.current) {
         const now = Date.now();
         if (now - lastScrollTime.current > 16) { 
           handleUserScroll();
+          
+          if (scrollType === 'thinkbox' && streamingState !== 'static' && scrollDown) {
+            const { scrollTop } = container;
+            const scrolledUp = scrollTop < lastScrollTop.current;
+            
+            if (scrolledUp) {
+              logger.info(`[SCROLL] ThinkBox scroll up during streaming (${chatId}), immediately disabling auto-scroll`);
+              setScrollDown(false);
+            }
+          }
+          
           checkScrollPosition(container, true);
           lastScrollTime.current = now;
           logger.debug(`[SCROLL] User scroll detected in ${scrollType} for ${chatId}`);
