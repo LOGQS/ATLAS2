@@ -29,7 +29,7 @@ An AI chat application.
 Need Node.js 16+ and Python 3.8+
 
 ```bash
-git clone <repo-url>
+git clone [<repo-url>](https://github.com/LOGQS/ATLAS2.git)
 cd ATLAS2
 python -m venv .venv
 call .venv\Scripts\activate.bat
@@ -39,7 +39,7 @@ npm run install:all
 If `npm run install:all` does not work, manually install:              
 
 ```bash
-git clone <repo-url>
+git clone [<repo-url>](https://github.com/LOGQS/ATLAS2.git)
 cd ATLAS2
 npm install
 python -m venv .venv
