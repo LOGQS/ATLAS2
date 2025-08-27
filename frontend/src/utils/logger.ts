@@ -36,7 +36,7 @@ const logger = {
     console.debug(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   info: (message: string, ...args: any[]) => {
-    const allowedPatterns = ['[STATE]'];
+    const allowedPatterns = ['[]'];
     
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     

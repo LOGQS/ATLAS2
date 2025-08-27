@@ -10,6 +10,7 @@ import '../styles/MessageRenderer.css';
 import logger from '../utils/logger';
 import { apiUrl } from '../config/api';
 import { liveStore } from '../utils/LiveStore';
+import useScrollControl from '../hooks/useScrollControl';
 
 interface AttachedFile {
   id: string;
@@ -66,14 +67,27 @@ const Chat = forwardRef<any, ChatProps>(({
   });
   const [firstMessageSent, setFirstMessageSent] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLElement>(null);
   const mountedRef = useRef(true);
+  
+  const scrollControl = useScrollControl({ 
+    chatId, 
+    streamingState: liveOverlay.state,
+    containerRef: messagesContainerRef,
+    scrollType: 'chat'
+  });
 
   const scrollToBottom = useCallback(() => {
+    if (!scrollControl.shouldAutoScroll()) {
+      return;
+    }
+    
     const container = messagesEndRef.current?.parentElement;
     if (container) {
       container.scrollTop = container.scrollHeight;
+      logger.debug(`[SCROLL] Auto-scrolled to bottom for ${chatId}`);
     }
-  }, []);
+  }, [scrollControl, chatId]);
 
   const loadHistory = useCallback(async () => {
     if (!chatId) return;
@@ -167,6 +181,14 @@ const Chat = forwardRef<any, ChatProps>(({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, isActive, firstMessage, firstMessageSent, isLoading]);
+
+  useEffect(() => {
+    const container = messagesEndRef.current?.parentElement;
+    if (container && messagesContainerRef.current !== container) {
+      messagesContainerRef.current = container;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesEndRef.current]);
 
   useEffect(() => {
     if (liveOverlay.state !== 'static' || messages.length > 0) {
