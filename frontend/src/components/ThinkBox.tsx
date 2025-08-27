@@ -10,21 +10,30 @@ interface ThinkBoxProps {
   isStreaming?: boolean;
   isVisible?: boolean;
   chatId?: string;
+  messageId?: number;
+  chatScrollControl?: {
+    shouldAutoScroll: () => boolean;
+    onStreamStart: () => void;
+    resetToAutoScroll: () => void;
+  };
 }
 
 const ThinkBox: React.FC<ThinkBoxProps> = ({ 
   thoughts, 
   isStreaming = false, 
   isVisible = true,
-  chatId 
+  chatId,
+  messageId,
+  chatScrollControl
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [displayedThoughts, setDisplayedThoughts] = useState('');
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
   const thinkBoxContentRef = useRef<HTMLElement>(null);
+  const hasExpandedForCurrentStream = useRef<boolean>(false);
   
   const thinkBoxScrollControl = useScrollControl({
-    chatId: `thinkbox-${chatId}`,
+    chatId: `thinkbox-${chatId}-${messageId}`,
     streamingState: isStreaming ? 'thinking' : 'static',
     containerRef: thinkBoxContentRef,
     scrollType: 'thinkbox'
@@ -36,35 +45,48 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
       return;
     }
     
+    if (chatScrollControl && !chatScrollControl.shouldAutoScroll()) {
+      return;
+    }
+    
     requestAnimationFrame(() => {
-      thoughtsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      logger.debug(`[SCROLL] ThinkBox internal scroll for ${chatId}`);
+      if (thoughtsEndRef.current) {
+        thoughtsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
     });
-  }, [thinkBoxScrollControl, chatId]);
+  }, [thinkBoxScrollControl, chatScrollControl]);
 
   useEffect(() => {
     if (isStreaming && thoughts) {
       setDisplayedThoughts(thoughts);
-      setTimeout(scrollToBottom, 0);
+      if (thinkBoxScrollControl.shouldAutoScroll()) {
+        setTimeout(scrollToBottom, 0);
+      }
     } else if (!isStreaming) {
       setDisplayedThoughts(thoughts);
     }
-  }, [thoughts, isStreaming, scrollToBottom]);
+  }, [thoughts, isStreaming, scrollToBottom, thinkBoxScrollControl]);
 
   useEffect(() => {
-    if (isStreaming) {
+    if (isStreaming && !hasExpandedForCurrentStream.current) {
+      hasExpandedForCurrentStream.current = true;
       setIsCollapsed(false);
       logger.debug(`[THINKBOX] Expanding ThinkBox for ${chatId} (streaming started)`);
       
       setTimeout(() => {
-        const thinkBoxElement = thoughtsEndRef.current;
-        const chatContainer = thinkBoxElement?.closest('.chat-messages')?.querySelector('.messages-container');
-        if (chatContainer) {
-          chatContainer.scrollTop = 0;
-          logger.info(`[SCROLL] ThinkBox triggered scroll to top for chat: ${chatId || 'unknown'}`);
+        if (chatScrollControl?.shouldAutoScroll()) {
+          const thinkBoxElement = thoughtsEndRef.current;
+          const chatContainer = thinkBoxElement?.closest('.chat-messages')?.querySelector('.messages-container');
+          if (chatContainer) {
+            chatContainer.scrollTop = 0;
+            logger.info(`[SCROLL] ThinkBox triggered scroll to top for chat: ${chatId || 'unknown'}`);
+          }
+        } else {
+          logger.debug(`[SCROLL] ThinkBox scroll to top suppressed for ${chatId} (auto-scroll disabled)`);
         }
       }, 100);
     } else if (!isStreaming && thoughts) {
+      hasExpandedForCurrentStream.current = false;
       const timer = setTimeout(() => {
         setIsCollapsed(true);
         logger.debug(`[THINKBOX] Collapsing ThinkBox for ${chatId} (streaming ended)`);
@@ -72,7 +94,7 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
       return () => clearTimeout(timer);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, isStreaming]); 
+  }, [chatId, isStreaming, chatScrollControl]); 
 
   useEffect(() => {
     const thinkBoxContent = thoughtsEndRef.current?.closest('.think-box-content');

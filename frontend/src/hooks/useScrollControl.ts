@@ -22,6 +22,7 @@ export function useScrollControl({
 }: UseScrollControlOptions = {}): ScrollControlActions {
   const [scrollDown, setScrollDown] = useState(true);
   const [isUserScrolling, setIsUserScrolling] = useState(false);
+  const userDisabledAutoScroll = useRef<boolean>(false);
   const lastScrollTop = useRef<number>(0);
   const userScrollTimeout = useRef<NodeJS.Timeout | undefined>(undefined);
   const isScrollbarDragging = useRef<boolean>(false);
@@ -45,11 +46,27 @@ export function useScrollControl({
     if (!container || !isUserInitiated) return;
 
     const { scrollTop, scrollHeight, clientHeight } = container;
-    const isAtBottom = Math.abs(scrollTop + clientHeight - scrollHeight) < 3;
+    
+    const viewportFactor = Math.max(clientHeight / 800, 0.7); 
+    
+    const now = Date.now();
+    const timeDelta = Math.max(now - lastScrollTime.current, 16);
+    const scrollSpeed = Math.abs(scrollTop - lastScrollTop.current) / timeDelta; 
+    const velocityFactor = Math.min(1 + scrollSpeed * 2, 2.5); 
+    
+    const baseAtBottomThreshold = scrollHeight * 0.0008 * viewportFactor * velocityFactor;
+    const atBottomThreshold = Math.min(Math.max(baseAtBottomThreshold, 2), 30);
+    const isAtBottom = Math.abs(scrollTop + clientHeight - scrollHeight) < atBottomThreshold;
+    
     const scrolledUp = scrollTop < lastScrollTop.current;
     const scrollDelta = Math.abs(scrollTop - lastScrollTop.current);
 
-    const minScrollDelta = scrollType === 'thinkbox' ? 1 : 3;
+    const baseMinDelta = scrollType === 'thinkbox' ? 1 : 2;
+    const adaptiveMaxDelta = scrollHeight > 50000 ? 50 : 35;
+    const minScrollDelta = Math.min(Math.max(scrollHeight * 0.0005, baseMinDelta), adaptiveMaxDelta);
+    
+    logger.debug(`[SCROLL-RELATIVE] ${scrollType}-${chatId}: scrollHeight=${scrollHeight}px, viewport=${clientHeight}px, speed=${scrollSpeed.toFixed(3)}px/ms, velocity×${velocityFactor.toFixed(1)}, atBottom=${atBottomThreshold.toFixed(1)}px, minDelta=${minScrollDelta.toFixed(1)}px`);
+    
     if (scrollDelta < minScrollDelta) {
       return;
     }
@@ -57,10 +74,12 @@ export function useScrollControl({
     if (scrolledUp && streamingState !== 'static' && scrollDown && isUserInitiated) {
       logger.info(`[SCROLL] User scrolled up during streaming (${scrollType}-${chatId}), disabling auto-scroll`);
       setScrollDown(false);
+      userDisabledAutoScroll.current = true;
     }
     else if (isAtBottom && !scrollDown && isUserScrolling && isUserInitiated) {
       logger.info(`[SCROLL] User manually scrolled to bottom (${scrollType}-${chatId}), enabling auto-scroll`);
       setScrollDown(true);
+      userDisabledAutoScroll.current = false;
     }
 
     lastScrollTop.current = scrollTop;
@@ -83,6 +102,7 @@ export function useScrollControl({
             if (scrolledUp) {
               logger.info(`[SCROLL] ThinkBox scroll up during streaming (${chatId}), immediately disabling auto-scroll`);
               setScrollDown(false);
+              userDisabledAutoScroll.current = true;
             }
           }
           
@@ -100,6 +120,7 @@ export function useScrollControl({
         if (scrollType === 'thinkbox' && event.deltaY < 0 && streamingState !== 'static' && scrollDown) {
           logger.info(`[SCROLL] ThinkBox wheel up during streaming (${chatId}), immediately disabling auto-scroll`);
           setScrollDown(false);
+          userDisabledAutoScroll.current = true;
         }
         
         checkScrollPosition(container, true); 
@@ -119,6 +140,7 @@ export function useScrollControl({
         if (scrollType === 'thinkbox' && streamingState !== 'static' && scrollDown) {
           logger.info(`[SCROLL] ThinkBox scrollbar drag during streaming (${chatId}), immediately disabling auto-scroll`);
           setScrollDown(false);
+          userDisabledAutoScroll.current = true;
         }
         
         logger.debug(`[SCROLL] Scrollbar drag started in ${scrollType} for ${chatId}`);
@@ -171,20 +193,27 @@ export function useScrollControl({
 
   const onStreamStart = useCallback(() => {
     if (streamingState !== 'static') {
-      logger.info(`[SCROLL] Stream started for ${scrollType}-${chatId}, resetting scroll state to true`);
-      setScrollDown(true);
+      if (userDisabledAutoScroll.current) {
+        logger.info(`[SCROLL] Stream started for ${scrollType}-${chatId}, preserving user scroll resistance (scrollDown = false)`);
+        setScrollDown(false);
+      } else {
+        logger.info(`[SCROLL] Stream started for ${scrollType}-${chatId}, resetting scroll state to true`);
+        setScrollDown(true);
+      }
       setIsUserScrolling(false);
     }
   }, [chatId, streamingState, scrollType]);
 
   const shouldAutoScroll = useCallback((): boolean => {
+    logger.debug(`[SCROLL-CHECK] shouldAutoScroll called for ${scrollType}-${chatId}: streamingState=${streamingState}, scrollDown=${scrollDown}, userDisabledAutoScroll=${userDisabledAutoScroll.current}`);
+    
     if (streamingState === 'static') {
       logger.debug(`[SCROLL] Auto-scroll disabled for ${scrollType}-${chatId} (not streaming)`);
       return false;
     }
 
     if (!scrollDown) {
-      logger.debug(`[SCROLL] Auto-scroll suppressed for ${scrollType}-${chatId} (scrollDown = false)`);
+      logger.info(`[SCROLL] Auto-scroll suppressed for ${scrollType}-${chatId} (scrollDown = false, userDisabledAutoScroll = ${userDisabledAutoScroll.current})`);
       return false;
     }
 
@@ -196,6 +225,7 @@ export function useScrollControl({
     logger.info(`[SCROLL] Force resetting scroll state to auto-scroll for ${scrollType}-${chatId}`);
     setScrollDown(true);
     setIsUserScrolling(false);
+    userDisabledAutoScroll.current = false;
   }, [chatId, scrollType]);
 
   useEffect(() => {
@@ -218,6 +248,7 @@ export function useScrollControl({
     logger.info(`[SCROLL] Initializing scroll control for ${scrollType}-${chatId} with scrollDown = true`);
     setScrollDown(true);
     setIsUserScrolling(false);
+    userDisabledAutoScroll.current = false;
     
     return () => {
       if (userScrollTimeout.current) {

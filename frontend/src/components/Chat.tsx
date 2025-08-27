@@ -1,6 +1,6 @@
 // status: complete
 
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useCallback } from 'react';
+import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle, useCallback, useMemo } from 'react';
 import UserMessage from './UserMessage';
 import ThinkBox from './ThinkBox';
 import MessageRenderer from './MessageRenderer';
@@ -48,7 +48,7 @@ interface ChatProps {
 let _mid = 0;
 const genId = () => Date.now() * 1000 + (_mid++);
 
-const Chat = forwardRef<any, ChatProps>(({ 
+const Chat = React.memo(forwardRef<any, ChatProps>(({ 
   chatId, 
   onMessageSent, 
   onChatStateChange, 
@@ -85,9 +85,8 @@ const Chat = forwardRef<any, ChatProps>(({
     const container = messagesEndRef.current?.parentElement;
     if (container) {
       container.scrollTop = container.scrollHeight;
-      logger.debug(`[SCROLL] Auto-scrolled to bottom for ${chatId}`);
     }
-  }, [scrollControl, chatId]);
+  }, [scrollControl]);
 
   const loadHistory = useCallback(async () => {
     if (!chatId) return;
@@ -187,14 +186,19 @@ const Chat = forwardRef<any, ChatProps>(({
     if (container && messagesContainerRef.current !== container) {
       messagesContainerRef.current = container;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messagesEndRef.current]);
+  }, []);
 
   useEffect(() => {
-    if (liveOverlay.state !== 'static' || messages.length > 0) {
+    if (liveOverlay.state === 'responding') {
       scrollToBottom();
     }
-  }, [messages, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, liveOverlay.state, scrollToBottom]);
+  }, [liveOverlay.contentBuf, liveOverlay.state, scrollToBottom]);
+
+  useEffect(() => {
+    if (liveOverlay.state === 'static') {
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom, liveOverlay.state]);
 
   useEffect(() => {
     if (onActiveStateChange && chatId) {
@@ -287,7 +291,7 @@ const Chat = forwardRef<any, ChatProps>(({
     isBusy: () => liveOverlay.state !== 'static'
   }));
 
-  const rendered = (() => {
+  const rendered = useMemo(() => {
     const out = [...messages];
     
     const lastIdx = [...out].reverse().findIndex(m => m.role === 'assistant');
@@ -303,9 +307,9 @@ const Chat = forwardRef<any, ChatProps>(({
     }
     
     return out;
-  })();
+  }, [messages, liveOverlay.contentBuf, liveOverlay.thoughtsBuf]);
 
-  const handleFileDelete = async (fileId: string): Promise<void> => {
+  const handleFileDelete = useCallback(async (fileId: string): Promise<void> => {
     try {
       const response = await fetch(apiUrl(`/api/files/${fileId}`), {
         method: 'DELETE',
@@ -331,9 +335,13 @@ const Chat = forwardRef<any, ChatProps>(({
       logger.error('Failed to delete file:', error);
       throw error;
     }
-  };
+  }, []);
 
-  const renderMessage = (message: Message, originalIndex: number) => {
+  const lastAssistantMessage = useMemo(() => {
+    return [...rendered].reverse().find(m => m.role === 'assistant');
+  }, [rendered]);
+
+  const renderMessage = useCallback((message: Message, originalIndex: number) => {
     if (message.role === 'user') {
       const isFirstMessage = originalIndex === 0;
       return (
@@ -348,7 +356,6 @@ const Chat = forwardRef<any, ChatProps>(({
       );
     }
 
-    const lastAssistantMessage = [...rendered].reverse().find(m => m.role === 'assistant');
     const isLastAssistantMessage = message.id === lastAssistantMessage?.id;
     const showCursor = isLastAssistantMessage && liveOverlay.state === 'responding';
 
@@ -356,10 +363,13 @@ const Chat = forwardRef<any, ChatProps>(({
       <div key={message.id} className="assistant-message">
         {message.thoughts && (
           <ThinkBox 
+            key={`thinkbox-${message.id}`}
             thoughts={message.thoughts}
             isStreaming={isLastAssistantMessage && liveOverlay.state === 'thinking'}
             isVisible={true}
             chatId={chatId}
+            messageId={message.id}
+            chatScrollControl={scrollControl}
           />
         )}
         
@@ -371,28 +381,34 @@ const Chat = forwardRef<any, ChatProps>(({
         </div>
       </div>
     );
-  };
+  }, [lastAssistantMessage, handleFileDelete, liveOverlay.state, chatId, scrollControl]);
 
   return (
     <div className="chat-messages">
       <div className="messages-container">
         <div className="spacer" style={{flexGrow: 1}}></div>
-        {isLoading ? (
-          <div className="messages-skeleton">
-            <div className="msg-skel" />
-            <div className="msg-skel" />
-          </div>
-        ) : (
-          rendered.slice().reverse().map((message) => {
-            const originalIndex = messages.findIndex(m => m.id === message.id);
+{useMemo(() => {
+          if (isLoading) {
+            return (
+              <div className="messages-skeleton">
+                <div className="msg-skel" />
+                <div className="msg-skel" />
+              </div>
+            );
+          }
+          
+          const indexMap = new Map(messages.map((msg, idx) => [msg.id, idx]));
+          
+          return rendered.slice().reverse().map((message) => {
+            const originalIndex = indexMap.get(message.id) ?? -1;
             return renderMessage(message, originalIndex);
-          })
-        )}
+          });
+        }, [isLoading, rendered, messages, renderMessage])}
         <div ref={messagesEndRef} />
       </div>
     </div>
   );
-});
+}));
 
 Chat.displayName = 'Chat';
 

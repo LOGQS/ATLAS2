@@ -36,6 +36,7 @@ function App() {
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
   const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [forceRender, setForceRender] = useState(0);
+  const [isMessageBeingSent, setIsMessageBeingSent] = useState(false);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
   const { 
@@ -204,6 +205,7 @@ function App() {
     });
     
     if (message.trim() && !isSendDisabled) {
+      setIsMessageBeingSent(true);
       if (!hasMessageBeenSent || activeChatId === 'none') {
         const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const chatName = message.split(' ').slice(0, 4).join(' ');
@@ -382,7 +384,7 @@ function App() {
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
   
-  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles;
+  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isMessageBeingSent;
   void forceRender; 
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
@@ -390,7 +392,11 @@ function App() {
     setChats(prev => prev.map(chat => 
       chat.id === chatId ? { ...chat, state } : chat
     ));
-  }, []);
+    
+    if (chatId === activeChatId && (state === 'thinking' || state === 'responding')) {
+      setIsMessageBeingSent(false);
+    }
+  }, [activeChatId]);
 
   const handleFirstMessageSent = useCallback((chatId: string) => {
     logger.info('First message sent for chat:', chatId);
