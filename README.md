@@ -33,15 +33,17 @@ An AI chat application.
 Need Node.js 16+ and Python 3.8+
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/LOGQS/ATLAS2.git
 cd ATLAS2
+python -m venv .venv
+call .venv\Scripts\activate.bat
 npm run install:all
 ```
 
 If `npm run install:all` does not work, manually install:              
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/LOGQS/ATLAS2.git
 cd ATLAS2
 npm install
 python -m venv .venv
@@ -54,6 +56,7 @@ npm install
 Create `.env` file in root dir:
 ```env
 GEMINI_API_KEY=your_key_here
+REACT_APP_API_BASE_URL=http://localhost:5000 (or wherever you want to run it in)
 ```
 
 Run it:
