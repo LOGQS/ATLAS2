@@ -1,0 +1,45 @@
+/* TEMPORARY_DEBUG_TRIGGERLOG - REMOVE AFTER DEBUGGING */
+/* To remove all TriggerLog debugging code, search for: TEMPORARY_DEBUG_TRIGGERLOG */
+.trigger-log-container {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.trigger-log-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(255, 100, 100, 0.15);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  user-select: none;
+}
+
+.trigger-log-button:hover {
+  background: rgba(255, 100, 100, 0.25);
+  border-color: rgba(255, 100, 100, 0.5);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(255, 100, 100, 0.2);
+}
+
+.trigger-log-button:active {
+  transform: translateY(0);
+  background: rgba(255, 100, 100, 0.35);
+}
+
+.trigger-log-icon {
+  font-size: 14px;
+}
+
+.trigger-log-text {
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}

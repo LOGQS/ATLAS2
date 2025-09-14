@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import '../styles/SearchWindow.css';
+import '../styles/sections/SearchWindow.css';
 
 const SearchWindow: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');

@@ -5,12 +5,16 @@ from flask_cors import CORS
 import os
 import sys
 import multiprocessing
+from pathlib import Path
 
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
 
 from route.chat_route import register_chat_routes
-from route.db_route import register_db_routes
+from route.db_chat_management_route import register_db_chat_management_routes
+from route.db_message_route import register_db_message_routes
+from route.db_bulk_route import register_db_bulk_routes
+from route.db_versioning_route import register_db_versioning_routes
 from route.file_route import register_file_routes
 from utils.config import Config
 from utils.logger import get_logger
@@ -33,7 +37,10 @@ def create_app():
         logger.error(f"File sync failed: {sync_result['error']}")
     
     register_chat_routes(app)
-    register_db_routes(app)
+    register_db_chat_management_routes(app)
+    register_db_message_routes(app)
+    register_db_bulk_routes(app)
+    register_db_versioning_routes(app)
     register_file_routes(app)
     
     @app.route('/health')
@@ -77,6 +84,15 @@ def create_app():
 
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
+    
+    logs_dir = Path("..") / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_file = logs_dir / "atlas.log"
+    try:
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.truncate(0)
+    except (OSError, IOError):
+        pass
     
     app = create_app()
     

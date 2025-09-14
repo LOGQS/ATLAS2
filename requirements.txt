@@ -3,4 +3,3 @@ flask
 flask-cors
 google-genai
 markitdown[all]
-pyttsx3

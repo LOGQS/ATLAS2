@@ -1,0 +1,198 @@
+.tree-visualization {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+}
+
+.tree-visualization canvas {
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  /* subtle grid background */
+  background:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(135deg, rgba(255,146,79,0.06), rgba(74,144,226,0.05));
+  contain: strict;
+  will-change: contents;
+}
+
+.tree-legend {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  background: rgba(24, 24, 26, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 8px 12px;
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.legend-color.main { background: #9C27B0; }
+
+.legend-color.version { background: #2196F3; }
+
+.legend-color.active { background: #ff924f; }
+
+/* Simple HTML Tree Visualization */
+.simple-tree-visualization {
+  padding: 20px;
+  overflow: auto;
+  max-height: 500px;
+}
+
+.tree-node-wrapper {
+  margin: 8px 0;
+}
+
+.tree-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  backdrop-filter: blur(8px) saturate(120%);
+}
+
+.tree-node:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.18); transform: translateX(2px); }
+
+.tree-node.active {
+  background: linear-gradient(135deg, rgba(255, 146, 79, 0.15), rgba(74, 144, 226, 0.12));
+  border-color: rgba(255, 146, 79, 0.35);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(255, 146, 79, 0.15);
+}
+
+.tree-node.main { box-shadow: inset 0 0 0 2px rgba(156, 39, 176, 0.5); }
+
+.tree-node.version { box-shadow: inset 0 0 0 2px rgba(33, 150, 243, 0.5); }
+
+.node-name {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.node-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.node-actions {
+  display: none;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.tree-node:hover .node-actions {
+  display: flex;
+}
+
+.node-actions button {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.node-actions button:hover {
+  background: var(--surface-hover);
+}
+
+.tree-children {
+  position: relative;
+  margin-left: 20px;
+}
+
+.tree-children::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: -8px;
+  bottom: 8px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Version actions in list view */
+.version-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.version-action-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  transition: background 0.15s ease;
+}
+
+.version-action-btn:hover {
+  background: var(--surface-hover);
+}
+
+.version-action-btn.delete:hover {
+  background: rgba(255, 0, 0, 0.1);
+  color: #ff4444;
+}
+
+/* Tree view specific styles */
+.versions-tree {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .tree-visualization canvas { /* grid handled above */ }
+
+[data-theme="dark"] .tree-legend { /* handled by translucent backgrounds */ }
+
+[data-theme="dark"] .tree-node {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .tree-node:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}

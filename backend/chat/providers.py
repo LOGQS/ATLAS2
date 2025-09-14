@@ -34,7 +34,20 @@ class Gemini:
     }
     
     FILE_SIZE_LIMIT = 2 * 1024 * 1024 * 1024  
-    DIRECT_UPLOAD_EXTENSIONS = {'.pdf'}  
+    DIRECT_UPLOAD_EXTENSIONS = {'.pdf'}
+    
+    # All of the following timeout constants are in "seconds"
+    FILE_PROCESSING_TIMEOUT = 180  
+    FILE_ACTIVE_TIMEOUT = 120      
+    UPLOAD_DEFAULT_TIMEOUT = 300   
+    
+    POLLING_BASE_SLEEP = 0.5      
+    POLLING_MULTIPLIER = 1.6
+    POLLING_MAX_SLEEP = 5.0      
+    POLLING_INTERVAL = 0.1        
+
+    PROCESS_TERMINATE_TIMEOUT = 2  
+    PROCESS_JOIN_TIMEOUT = 1      
     
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -60,13 +73,60 @@ class Gemini:
         """Check if specific model supports reasoning"""
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
     
+    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
+        """Common rate limiting wrapper for all API calls"""
+        limiter = get_rate_limiter(
+            Config.get_rate_limit_requests_per_minute(),
+            Config.get_rate_limit_burst_size()
+        )
+        return limiter.execute(method, operation_name, *args, **kwargs)
+    
+    def _validate_historical_files(self, attached_files: List[Dict[str, Any]]) -> List[str]:
+        """Validate historical files and return list of available API file names"""
+        if not attached_files:
+            return []
+        
+        available_files = []
+        for file_info in attached_files:
+            api_file_name = file_info.get('api_file_name')
+            api_state = file_info.get('api_state')
+            
+            if not api_file_name or api_state != 'ready':
+                continue
+                
+            try:
+                file_data = self.client.files.get(name=api_file_name)
+                if getattr(file_data, "state", "") == "ACTIVE":
+                    available_files.append(api_file_name)
+                else:
+                    logger.info(f"Historical file {api_file_name} no longer ACTIVE, excluding from history")
+            except Exception as e:
+                logger.warning(f"Historical file {api_file_name} not accessible: {str(e)}")
+        
+        return available_files
+    
+    def _add_files_to_parts(self, file_attachments: List[str], user_parts: list, context: str = "request") -> list:
+        """Add file attachments to user parts array"""
+        if not file_attachments:
+            return user_parts
+            
+        for api_file_name in file_attachments:
+            try:
+                file_info = self.client.files.get(name=api_file_name)
+                user_parts.append({"file_data": {"file_uri": file_info.uri}})
+                logger.info(f"Added file attachment {api_file_name} to {context}")
+            except Exception as e:
+                logger.error(f"Failed to add file attachment {api_file_name} to {context}: {str(e)}")
+        
+        return user_parts
+    
     def _prepare_file_attachments(self, file_attachments: List[str], user_parts: list, is_streaming=False):
         """Common file attachment handling for both streaming and non-streaming requests"""
         if not file_attachments:
             return user_parts
             
         try:
-            ok = self.wait_until_active(file_attachments, timeout_s=180)
+            ok = self.wait_until_active(file_attachments, timeout_s=self.FILE_PROCESSING_TIMEOUT)
             if not ok:
                 logger.info(f"Some files not ACTIVE after timeout; excluding them this turn")
                 active = []
@@ -81,33 +141,43 @@ class Gemini:
         except Exception as e:
             logger.warning(f"wait_until_active failed: {e}")
 
-        for api_file_name in file_attachments:
-            try:
-                file_info = self.client.files.get(name=api_file_name)
-                user_parts.append({"file_data": {"file_uri": file_info.uri}})
-                if is_streaming:
-                    logger.info(f"Added file attachment {api_file_name} to streaming request")
-                else:
-                    logger.info(f"Added file attachment {api_file_name} to request")
-            except Exception as e:
-                error_suffix = "to streaming request" if is_streaming else ""
-                logger.error(f"Failed to add file attachment {api_file_name} {error_suffix}: {str(e)}")
-        
-        return user_parts
+        context = "streaming request" if is_streaming else "request"
+        return self._add_files_to_parts(file_attachments, user_parts, context)
     
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """Convert database chat history to Gemini format"""
+        """Convert database chat history to Gemini format, including historical file attachments.
+
+        Important: Gemini merges adjacent messages that have the same role into a single turn.
+        When a model response is deleted, it's possible to have back-to-back user messages in
+        our DB/frontend. To preserve them as separate turns for Gemini, we inject a minimal
+        model separator between consecutive user messages.
+        """
         formatted_history = []
-        
+        prev_role = None
+
         for message in chat_history:
             role = message.get("role")
             content = message.get("content", "")
-            
+            attached_files = message.get("attachedFiles", [])
+
             if role == "user":
-                formatted_history.append({"role": "user", "parts": [{"text": content}]})
+                if prev_role == "user":
+                    formatted_history.append({"role": "model", "parts": [{"text": " "}]})
+
+                user_parts = [{"text": content}]
+
+                if attached_files:
+                    available_files = self._validate_historical_files(attached_files)
+                    if available_files:
+                        user_parts = self._add_files_to_parts(available_files, user_parts, "historical message")
+                        logger.info(f"Added {len(available_files)} historical files to message in chat history")
+
+                formatted_history.append({"role": "user", "parts": user_parts})
+                prev_role = "user"
             elif role == "assistant":
                 formatted_history.append({"role": "model", "parts": [{"text": content}]})
-                
+                prev_role = "model"
+
         return formatted_history
     
     def count_tokens(self, contents: Any, model: str) -> int:
@@ -116,13 +186,9 @@ class Gemini:
             return 0
         
         try:
-            limiter = get_rate_limiter(
-                Config.get_rate_limit_requests_per_minute(),
-                Config.get_rate_limit_burst_size()
-            )
-            result = limiter.execute(
-                self.client.models.count_tokens,
+            result = self._execute_with_rate_limit(
                 f"gemini:{model}",
+                self.client.models.count_tokens,
                 model=model, contents=contents
             )
             return result.total_tokens
@@ -130,8 +196,16 @@ class Gemini:
             logger.error(f"Token counting failed: {e}")
             return 0
     
-    def wait_until_active(self, file_names, timeout_s=120, base_sleep=0.5):
+    def wait_until_active(self, file_names, timeout_s=None, base_sleep=None):
         """Poll Files API until all are ACTIVE or timeout."""
+        if not file_names:
+            return True 
+        
+        if timeout_s is None:
+            timeout_s = self.FILE_ACTIVE_TIMEOUT
+        if base_sleep is None:
+            base_sleep = self.POLLING_BASE_SLEEP
+            
         deadline = time.time() + timeout_s
         remaining = set(file_names)
         sleep = base_sleep
@@ -147,7 +221,7 @@ class Gemini:
             remaining -= done
             if remaining:
                 time.sleep(sleep)
-                sleep = min(sleep * 1.6, 5.0)
+                sleep = min(sleep * self.POLLING_MULTIPLIER, self.POLLING_MAX_SLEEP)
         return len(remaining) == 0
     
     def generate_text(self, prompt: str, model: str = "", 
@@ -166,19 +240,18 @@ class Gemini:
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
             contents.extend(formatted_history)
-        
+
         user_parts = [{"text": prompt}]
         user_parts = self._prepare_file_attachments(file_attachments, user_parts, is_streaming=False)
-        
+
+        if contents and contents[-1].get("role") == "user":
+            contents.append({"role": "model", "parts": [{"text": " "}]})
+
         contents.append({"role": "user", "parts": user_parts})
             
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
-        response = limiter.execute(
-            self.client.models.generate_content,
+        response = self._execute_with_rate_limit(
             f"gemini:{model}",
+            self.client.models.generate_content,
             model=model,
             contents=contents,
             config=config
@@ -187,13 +260,17 @@ class Gemini:
         thoughts = ""
         answer = ""
         
-        for part in response.candidates[0].content.parts:
-            if not part.text:
-                continue
-            if part.thought:
-                thoughts += part.text
-            else:
-                answer += part.text
+        if (response and response.candidates and len(response.candidates) > 0 
+            and response.candidates[0].content and response.candidates[0].content.parts):
+            for part in response.candidates[0].content.parts:
+                if not part.text:
+                    continue
+                if part.thought:
+                    thoughts += part.text
+                else:
+                    answer += part.text
+        else:
+            logger.warning("Received empty or invalid response from Gemini API")
         
         return {
             "text": answer,
@@ -218,28 +295,32 @@ class Gemini:
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
             contents.extend(formatted_history)
-        
+
         user_parts = [{"text": prompt}]
         user_parts = self._prepare_file_attachments(file_attachments, user_parts, is_streaming=True)
-        
+
+        if contents and contents[-1].get("role") == "user":
+            contents.append({"role": "model", "parts": [{"text": " "}]})
+
         contents.append({"role": "user", "parts": user_parts})
         
         thoughts = ""
         answer = ""
         
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
-        stream = limiter.execute(
-            self.client.models.generate_content_stream,
+        stream = self._execute_with_rate_limit(
             f"gemini:{model}",
+            self.client.models.generate_content_stream,
             model=model,
             contents=contents,
             config=config
         )
         
         for chunk in stream:
+            if (not chunk or not chunk.candidates or len(chunk.candidates) == 0 
+                or not chunk.candidates[0].content or not chunk.candidates[0].content.parts):
+                logger.warning(f"Received empty or invalid chunk from Gemini streaming API: {chunk}")
+                continue
+                
             for part in chunk.candidates[0].content.parts:
                 if not part.text:
                     continue
@@ -262,7 +343,7 @@ class Gemini:
         """Get file extensions that can be uploaded directly without MD conversion"""
         return self.DIRECT_UPLOAD_EXTENSIONS
     
-    def upload_file(self, file_path: str, display_name: Optional[str] = None, timeout_seconds: int = 300, file_id: Optional[str] = None) -> Dict[str, Any]:
+    def upload_file(self, file_path: str, display_name: Optional[str] = None, timeout_seconds: Optional[int] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
         """Upload a file to Gemini Files API using multiprocessing for true cancellation"""
         if not self.is_available():
             return {
@@ -288,11 +369,14 @@ class Gemini:
                 cancellation_manager.register_process(file_id, process)
             
             try:
+                if timeout_seconds is None:
+                    timeout_seconds = self.UPLOAD_DEFAULT_TIMEOUT
+                    
                 start_time = time.time()
                 result = None
                 
                 while process.is_alive() and (time.time() - start_time) < timeout_seconds:
-                    if conn.poll(0.1):
+                    if conn.poll(self.POLLING_INTERVAL):
                         try:
                             result = conn.recv()
                             logger.info(f"Upload process completed for file {file_id}: {result.get('success', False)}")
@@ -311,7 +395,7 @@ class Gemini:
                 if process.is_alive():
                     logger.warning(f"Upload process still running after {timeout_seconds}s, terminating")
                     process.terminate()
-                    process.join(timeout=2)
+                    process.join(timeout=self.PROCESS_TERMINATE_TIMEOUT)
                     if process.is_alive():
                         try:
                             process.kill()
@@ -325,32 +409,28 @@ class Gemini:
                     }
                 
                 try:
-                    if conn.poll(0.1): 
+                    if conn.poll(self.POLLING_INTERVAL): 
                         result = conn.recv()
                         return result
                 except (EOFError, OSError):
                     pass  
                 
-                if file_id and cancellation_manager.is_cancelled(file_id):
-                    return {
-                        'success': False,
-                        'error': 'Upload cancelled',
-                        'state': 'error'
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': 'Upload process finished unexpectedly',
-                        'state': 'error'
-                    }
+                return {
+                    'success': False,
+                    'error': 'Upload cancelled' if file_id and cancellation_manager.is_cancelled(file_id) else 'Upload process finished unexpectedly',
+                    'state': 'error'
+                }
                 
             finally:
                 if file_id:
-                    cancellation_manager.unregister_process(file_id)
-                conn.close()
+                    cancellation_manager.unregister_task(file_id, 'process')
+                try:
+                    conn.close()
+                except:
+                    pass  
                 if process.is_alive():
                     process.terminate()
-                    process.join(timeout=1)
+                    process.join(timeout=self.PROCESS_JOIN_TIMEOUT)
             
         except Exception as e:
             logger.error(f"Error in multiprocess upload to Gemini: {str(e)}")
@@ -372,14 +452,9 @@ class Gemini:
         try:
             logger.debug(f"Getting file metadata from Gemini: {api_file_name}")
             
-            limiter = get_rate_limiter(
-                Config.get_rate_limit_requests_per_minute(),
-                Config.get_rate_limit_burst_size()
-            )
-            
-            file_info = limiter.execute(
-                self.client.files.get,
+            file_info = self._execute_with_rate_limit(
                 "gemini:get_file",
+                self.client.files.get,
                 name=api_file_name
             )
             
@@ -418,20 +493,16 @@ class Gemini:
             return {
                 'success': False,
                 'error': 'Provider not available',
+                'state': 'error',
                 'files': []
             }
         
         try:
             logger.debug("Listing files from Gemini")
             
-            limiter = get_rate_limiter(
-                Config.get_rate_limit_requests_per_minute(),
-                Config.get_rate_limit_burst_size()
-            )
-            
-            files_response = limiter.execute(
-                self.client.files.list,
-                "gemini:list_files"
+            files_response = self._execute_with_rate_limit(
+                "gemini:list_files",
+                self.client.files.list
             )
             
             files = []
@@ -450,6 +521,7 @@ class Gemini:
             return {
                 'success': False,
                 'error': str(e),
+                'state': 'error',
                 'files': []
             }
     
@@ -483,20 +555,16 @@ class Gemini:
         if not self.is_available():
             return {
                 'success': False,
-                'error': 'Provider not available'
+                'error': 'Provider not available',
+                'state': 'error'
             }
         
         try:
             logger.info(f"Deleting file from Gemini: {api_file_name}")
             
-            limiter = get_rate_limiter(
-                Config.get_rate_limit_requests_per_minute(),
-                Config.get_rate_limit_burst_size()
-            )
-            
-            limiter.execute(
-                self.client.files.delete,
+            self._execute_with_rate_limit(
                 "gemini:delete_file",
+                self.client.files.delete,
                 name=api_file_name
             )
             
@@ -504,22 +572,23 @@ class Gemini:
             
             return {
                 'success': True,
-                'message': f'File {api_file_name} deleted successfully'
+                'message': f'File {api_file_name} deleted successfully',
+                'state': 'success'
             }
             
         except Exception as e:
             logger.error(f"Error deleting file from Gemini: {str(e)}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'state': 'error'
             }
 
-class HuggingFace:
-    """
-    HuggingFace API
-    """
+class DisabledProvider:
+    """Base class for disabled/placeholder providers"""
     
-    def __init__(self):
+    def __init__(self, name: str = "DisabledProvider"):
+        self.name = name
         self.status = "disabled"
     
     def is_available(self) -> bool:
@@ -528,16 +597,14 @@ class HuggingFace:
     def get_available_models(self) -> dict:
         return {}
 
-class OpenRouter:
-    """
-    OpenRouter API
-    """
+class HuggingFace(DisabledProvider):
+    """HuggingFace API (currently disabled)"""
     
     def __init__(self):
-        self.status = "disabled"
+        super().__init__("HuggingFace")
+
+class OpenRouter(DisabledProvider):
+    """OpenRouter API (currently disabled)"""
     
-    def is_available(self) -> bool:
-        return False
-    
-    def get_available_models(self) -> dict:
-        return {}
+    def __init__(self):
+        super().__init__("OpenRouter")

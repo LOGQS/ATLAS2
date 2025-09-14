@@ -1,6 +1,7 @@
 # status: complete
 
 import uuid
+import multiprocessing
 import threading
 from typing import Dict, Any, Optional, Generator, List
 from utils.config import get_provider_map, Config
@@ -10,115 +11,281 @@ from utils.cancellation_manager import cancellation_manager
 
 logger = get_logger(__name__)
 
-_chat_threads_lock = threading.Lock()
-_chat_threads: Dict[str, threading.Thread] = {}
-_chat_thread_status: Dict[str, str] = {} 
-_chat_thread_cancel_flags: Dict[str, threading.Event] = {}
+PROCESS_TERMINATE_TIMEOUT = 1.0
+PROCESS_KILL_TIMEOUT = 2.0
+CANCEL_RESPONSE_TIMEOUT = 2.0
+INIT_RESPONSE_TIMEOUT = 20.0
+POLL_INTERVAL = 0.1
 
-def get_chat_thread_status(chat_id: str) -> Optional[str]:
-    """Get the status of a chat's background thread"""
-    with _chat_threads_lock:
-        return _chat_thread_status.get(chat_id)
+_chat_processes_lock = threading.Lock()
+_chat_processes: Dict[str, multiprocessing.Process] = {}
+_chat_process_connections: Dict[str, Any] = {}
+_chat_process_status: Dict[str, str] = {}
+
+def _terminate_process_safely(process: multiprocessing.Process, chat_id: str) -> None:
+    """Safely terminate a process with proper error handling"""
+    if not process or not process.is_alive():
+        return
+    
+    try:
+        logger.info(f"Terminating process for chat {chat_id}")
+        process.terminate()
+        process.join(timeout=PROCESS_TERMINATE_TIMEOUT)
+        if process.is_alive():
+            logger.warning(f"Force killing process for chat {chat_id}")
+            process.kill()
+            process.join(timeout=0.5)
+    except (OSError, AttributeError) as e:
+        logger.warning(f"Error terminating process for {chat_id}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error during process cleanup for {chat_id}: {e}")
+
+def _close_connection_safely(conn: Any, chat_id: str) -> None:
+    """Safely close a connection with proper error handling"""
+    if not conn:
+        return
+    
+    try:
+        if hasattr(conn, 'close'):
+            conn.close()
+    except (OSError, BrokenPipeError) as e:
+        logger.debug(f"Expected error closing connection for {chat_id}: {e}")
+    except Exception as e:
+        logger.warning(f"Unexpected error closing connection for {chat_id}: {e}")
+
+def get_chat_process_status(chat_id: str) -> Optional[str]:
+    """Get the status of a chat's background process"""
+    with _chat_processes_lock:
+        return _chat_process_status.get(chat_id)
 
 def is_chat_processing(chat_id: str) -> bool:
     """Check if a chat is currently being processed in background"""
-    with _chat_threads_lock:
-        return (chat_id in _chat_threads and 
-                _chat_threads[chat_id].is_alive() and 
-                _chat_thread_status.get(chat_id) == 'running')
+    with _chat_processes_lock:
+        status = _chat_process_status.get(chat_id)
+        if status in ['completed', 'cancelled']:
+            return False
+            
+        return (chat_id in _chat_processes and 
+                _chat_processes[chat_id].is_alive() and 
+                status == 'running')
 
-def cleanup_completed_threads():
-    """Clean up completed/dead threads"""
-    with _chat_threads_lock:
+def cleanup_completed_processes():
+    """Clean up completed/dead processes"""
+    with _chat_processes_lock:
         completed_chats = []
-        for chat_id, thread in list(_chat_threads.items()):
-            if not thread.is_alive():
+        for chat_id, process in list(_chat_processes.items()):
+            status = _chat_process_status.get(chat_id)
+            if not process.is_alive() or status in ['completed', 'cancelled']:
                 completed_chats.append(chat_id)
         
         for chat_id in completed_chats:
-            del _chat_threads[chat_id]
-            _chat_thread_status.pop(chat_id, None)
-            _chat_thread_cancel_flags.pop(chat_id, None)
-            logger.info(f"Cleaned up completed thread for chat {chat_id}")
+            if chat_id in _chat_processes:
+                process = _chat_processes[chat_id]
+                _terminate_process_safely(process, chat_id)
+                del _chat_processes[chat_id]
+            if chat_id in _chat_process_connections:
+                conn = _chat_process_connections[chat_id]
+                _close_connection_safely(conn, chat_id)
+                del _chat_process_connections[chat_id]
+            _chat_process_status.pop(chat_id, None)
+            cancellation_manager.cleanup_chat(chat_id)
+            logger.info(f"Cleaned up completed process for chat {chat_id}")
 
-def cancel_chat_thread(chat_id: str) -> bool:
-    """Cancel a running background thread for a chat (only for explicit user cancellation)"""
-    with _chat_threads_lock:
-        if chat_id in _chat_thread_cancel_flags:
-            logger.info(f"Cancelling background thread for chat {chat_id}")
-            _chat_thread_cancel_flags[chat_id].set()
-            _chat_thread_status[chat_id] = 'cancelled'
-            return True
+def cancel_chat_process(chat_id: str) -> bool:
+    """Cancel a running background process for a chat"""
+    with _chat_processes_lock:
+        if chat_id in _chat_process_connections:
+            logger.info(f"Cancelling background process for chat {chat_id}")
+            try:
+                conn = _chat_process_connections[chat_id]
+                conn.send({'command': 'cancel'})
+                
+                if conn.poll(CANCEL_RESPONSE_TIMEOUT):
+                    response = conn.recv()
+                    logger.info(f"Cancel response for {chat_id}: {response}")
+                
+                _chat_process_status[chat_id] = 'cancelled'
+                cancellation_manager.cancel_chat(chat_id)
+                return True
+            except (OSError, BrokenPipeError) as e:
+                logger.warning(f"Connection error sending cancel command to {chat_id}: {e}")
+                if chat_id in _chat_processes:
+                    process = _chat_processes[chat_id]
+                    _terminate_process_safely(process, chat_id)
+                return True
+            except Exception as e:
+                logger.error(f"Unexpected error sending cancel command to {chat_id}: {e}")
+                if chat_id in _chat_processes:
+                    process = _chat_processes[chat_id]
+                    _terminate_process_safely(process, chat_id)
+                return True
         return False
 
 def is_chat_cancelled(chat_id: str) -> bool:
     """Check if a chat's processing has been cancelled"""
     return cancellation_manager.is_chat_cancelled(chat_id)
 
-def _start_background_processing(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, **config_params):
-    """Start background processing thread for a chat"""
-    with _chat_threads_lock:
-        if chat_id in _chat_threads:
-            old_thread = _chat_threads[chat_id]
-            if old_thread.is_alive():
-                logger.warning(f"Chat {chat_id} already has a running thread, keeping existing one")
-                return False
-            else:
-                del _chat_threads[chat_id]
-                _chat_thread_status.pop(chat_id, None)
-                _chat_thread_cancel_flags.pop(chat_id, None)
-        
-        cancel_event = threading.Event()
-        
-        thread = threading.Thread(
-            target=_background_process_wrapper,
-            args=(chat_id, chat_instance, message, provider, model, include_reasoning, cancel_event),
-            kwargs=config_params
-        )
-        thread.daemon = True
-        _chat_threads[chat_id] = thread
-        _chat_thread_status[chat_id] = 'running'
-        _chat_thread_cancel_flags[chat_id] = cancel_event
-        
-        cancellation_manager.register_chat_thread(chat_id, thread, cancel_event)
-        
-        thread.start()
-        
-        logger.info(f"Started background processing thread for chat {chat_id}")
-        return True
+def force_cleanup_chat_process(chat_id: str):
+    """Force cleanup of a specific chat's process status"""
+    with _chat_processes_lock:
+        if chat_id in _chat_processes:
+            process = _chat_processes[chat_id]
+            _terminate_process_safely(process, chat_id)
+            del _chat_processes[chat_id]
+        if chat_id in _chat_process_connections:
+            conn = _chat_process_connections[chat_id]
+            _close_connection_safely(conn, chat_id)
+            del _chat_process_connections[chat_id]
+        _chat_process_status.pop(chat_id, None)
+        cancellation_manager.cleanup_chat(chat_id)
+        logger.info(f"Force cleaned up process for chat {chat_id}")
 
-def _background_process_wrapper(chat_id: str, chat_instance, message: str, provider: str, model: str, include_reasoning: bool, cancel_event: threading.Event, **config_params):
-    """Wrapper for background processing with error handling"""
+def _prepare_background_process(chat_id: str) -> bool:
+    """Check if background process can be started for chat"""
+    if chat_id in _chat_processes:
+        old_process = _chat_processes[chat_id]
+        old_status = _chat_process_status.get(chat_id)
+        
+        if old_status in ['completed', 'cancelled']:
+            logger.info(f"Chat {chat_id} process marked as {old_status}, cleaning up")
+            cleanup_completed_processes()
+        elif old_process.is_alive():
+            logger.warning(f"Chat {chat_id} already has a running process, keeping existing one")
+            return False
+        else:
+            cleanup_completed_processes()
+    return True
+
+def _initialize_chat_process(chat_id: str):
+    """Initialize a new chat process"""
+    from chat.chat_worker import start_chat_process
+    
+    process, conn = start_chat_process(chat_id)
+    _chat_processes[chat_id] = process
+    _chat_process_connections[chat_id] = conn
+    _chat_process_status[chat_id] = 'starting'
+    cancellation_manager.register_process(chat_id, process)
+    return process, conn
+
+def _configure_chat_process(conn, chat_id: str, message: str, provider: str, model: str, 
+                          include_reasoning: bool, attached_file_ids: List[str], 
+                          user_message_id: int, is_retry: bool) -> bool:
+    """Configure and start the chat process"""
+    if conn.poll(INIT_RESPONSE_TIMEOUT):
+        response = conn.recv()
+        if response.get('success'):
+            _chat_process_status[chat_id] = 'running'
+            
+            conn.send({
+                'command': 'process',
+                'message': message,
+                'provider': provider,
+                'model': model,
+                'include_reasoning': include_reasoning,
+                'attached_file_ids': attached_file_ids,
+                'user_message_id': user_message_id,
+                'is_retry': is_retry
+            })
+            
+            relay_thread = threading.Thread(
+                target=_relay_worker_messages,
+                args=(chat_id, conn),
+                daemon=True
+            )
+            relay_thread.start()
+            
+            logger.info(f"Started background processing for chat {chat_id}")
+            return True
+        else:
+            error = response.get('error', 'Unknown initialization error')
+            logger.error(f"Failed to initialize chat process {chat_id}: {error}")
+            cleanup_completed_processes()
+            return False
+    else:
+        logger.error(f"Chat process initialization timeout for {chat_id}")
+        cleanup_completed_processes()
+        return False
+
+def _start_background_processing(chat_id: str, message: str, provider: str, model: str, include_reasoning: bool, attached_file_ids: List[str], user_message_id: int, is_retry: bool = False):
+    """Start background processing using multiprocessing"""
+    
+    with _chat_processes_lock:
+        if not _prepare_background_process(chat_id):
+            return False
+        
+        try:
+            process, conn = _initialize_chat_process(chat_id)
+            return _configure_chat_process(conn, chat_id, message, provider, model,
+                                         include_reasoning, attached_file_ids, 
+                                         user_message_id, is_retry)
+                
+        except (OSError, IOError) as e:
+            logger.error(f"System error starting chat process for {chat_id}: {str(e)}")
+            cleanup_completed_processes()
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error starting chat process for {chat_id}: {str(e)}")
+            cleanup_completed_processes()
+            return False
+
+
+def _relay_worker_messages(chat_id: str, conn):
+    """Relay messages from worker process to SSE system"""
     try:
-        logger.info(f"Background processing started for chat {chat_id}")
+        from route.chat_route import publish_state, publish_content
         
-        chat_instance._process_message_background(message, provider, model, include_reasoning, cancel_event, **config_params)
+        logger.info(f"Started message relay for chat {chat_id}")
         
-        with _chat_threads_lock:
-            _chat_thread_status[chat_id] = 'completed'
-        
-        logger.info(f"Background processing completed for chat {chat_id}")
-        
+        while True:
+            try:
+                if conn.poll(POLL_INTERVAL): 
+                    message = conn.recv()
+                    message_type = message.get('type')
+                    
+                    if not message_type:
+                        continue
+                    
+                    if message_type == 'state_update':
+                        state = message.get('state')
+                        if state:
+                            publish_state(chat_id, state)
+                            logger.debug(f"[RELAY] Published state update for {chat_id}: {state}")
+                    
+                    elif message_type == 'content':
+                        content_type = message.get('content_type')
+                        content = message.get('content', '')
+                        if content_type:
+                            publish_content(chat_id, content_type, content)
+                            logger.debug(f"[RELAY] Published content for {chat_id}: {content_type}")
+                    
+                    if message_type == 'content' and message.get('content_type') == 'complete':
+                        logger.info(f"[RELAY] Processing completed for chat {chat_id}")
+                        with _chat_processes_lock:
+                            _chat_process_status[chat_id] = 'completed'
+                        break
+                
+                with _chat_processes_lock:
+                    process = _chat_processes.get(chat_id)
+                    if not process or not process.is_alive():
+                        logger.info(f"[RELAY] Chat process {chat_id} ended, stopping relay")
+                        break
+                        
+            except (OSError, EOFError) as relay_error:
+                logger.warning(f"[RELAY] Connection error relaying message for {chat_id}: {str(relay_error)}")
+                break
+            except Exception as relay_error:
+                logger.error(f"[RELAY] Unexpected error relaying message for {chat_id}: {str(relay_error)}")
+                break
+                
     except Exception as e:
-        logger.error(f"Background processing error for chat {chat_id}: {str(e)}", exc_info=True)
-        
-        with _chat_threads_lock:
-            _chat_thread_status[chat_id] = 'error'
-        
-        try:
-            db.update_chat_state(chat_id, "static")
-            logger.info(f"Reset DB state to 'static' for chat {chat_id} after error")
-        except Exception as db_error:
-            logger.critical(f"CRITICAL: Failed to reset DB state for chat {chat_id}: {str(db_error)}")
-        
-        try:
-            from route.chat_route import publish_state, publish_content
-            publish_content(chat_id, "error", str(e))
-            publish_state(chat_id, "static")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to publish error state (non-critical): {str(cleanup_error)}")
+        logger.error(f"[RELAY] Fatal error in message relay for {chat_id}: {str(e)}")
     finally:
-        cancellation_manager.unregister_chat_thread(chat_id)
+        logger.info(f"[RELAY] Message relay stopped for chat {chat_id}")
+        with _chat_processes_lock:
+            if chat_id in _chat_process_status:
+                _chat_process_status[chat_id] = 'completed'
+        
+        threading.Thread(target=cleanup_completed_processes, daemon=True).start()
 
 class Chat:
     """
@@ -190,16 +357,9 @@ class Chat:
             chat_history = chat_history[:-1]
         
         file_attachments = []
-        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
-            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
-        
         new_file_ids = config_params.pop("attached_file_ids", None) or []
         if new_file_ids:
-            new_file_attachments = self._resolve_api_file_names(new_file_ids, provider)
-            existing_names = set(file_attachments)
-            for new_file in new_file_attachments:
-                if new_file not in existing_names:
-                    file_attachments.append(new_file)
+            file_attachments = self._resolve_api_file_names(new_file_ids, provider)
         
         return {
             'provider': provider,
@@ -212,29 +372,32 @@ class Chat:
     
     def _resolve_api_file_names(self, file_ids, provider):
         """Resolve file IDs to API file names for ready files only"""
+        if not file_ids:
+            return []
+            
         from utils.db_utils import db
-        names = []
+        resolved_names = []
+        
         for fid in file_ids:
             rec = db.get_file_record(fid)
-            if rec:
-                file_provider = rec.get('provider')
-                api_file_name = rec.get('api_file_name')
-                api_state = rec.get('api_state')
+            if not rec:
+                logger.warning(f"[FILE-RESOLVE] File {fid} not found in database")
+                continue
                 
-                logger.info(f"[FILE-RESOLVE] File {fid}: provider='{file_provider}', api_file_name='{api_file_name}', api_state='{api_state}', requested_provider='{provider}'")
-                
-                effective_provider = file_provider or 'gemini'
-                
-                if effective_provider == provider and api_file_name and api_state == 'ready':
-                    names.append(api_file_name)
-                    logger.info(f"[FILE-RESOLVE] ✅ File {fid} ({rec.get('original_name')}) resolved to API name: {api_file_name}")
-                else:
-                    logger.warning(f"[FILE-RESOLVE] ❌ File {fid} ({rec.get('original_name')}) not ready - provider: '{effective_provider}' (want: '{provider}'), api_file_name: '{api_file_name}', state: '{api_state}'")
+            file_provider = rec.get('provider')
+            api_file_name = rec.get('api_file_name')
+            api_state = rec.get('api_state')
+            
+            effective_provider = file_provider or 'gemini'
+            
+            if effective_provider == provider and api_file_name and api_state == 'ready':
+                resolved_names.append(api_file_name)
+                logger.debug(f"[FILE-RESOLVE] File {fid} ({rec.get('original_name')}) resolved to {api_file_name}")
             else:
-                logger.warning(f"[FILE-RESOLVE] ❌ File {fid} not found in database")
+                logger.debug(f"[FILE-RESOLVE] File {fid} ({rec.get('original_name')}) not ready for {provider} - provider: '{effective_provider}', state: '{api_state}'")
         
-        logger.info(f"[FILE-RESOLVE] Resolved {len(names)}/{len(file_ids)} files for chat with {provider}")
-        return names
+        logger.info(f"[FILE-RESOLVE] Resolved {len(resolved_names)}/{len(file_ids)} files for {provider}")
+        return resolved_names
 
     def generate_text(self, message: str, provider: str = "", 
                      model: Optional[str] = None, include_reasoning: bool = True,
@@ -270,17 +433,10 @@ class Chat:
             chat_history = chat_history[:-1]
         
         file_attachments = []
-        if hasattr(self.providers[provider], 'get_file_attachments_for_request'):
-            file_attachments = self.providers[provider].get_file_attachments_for_request(self.chat_id)
-        
         new_file_ids = attached_file_ids or config_params.get("attached_file_ids") or []
         config_params.pop("attached_file_ids", None)
         if new_file_ids:
-            new_file_attachments = self._resolve_api_file_names(new_file_ids, provider)
-            existing_names = set(file_attachments)
-            for new_file in new_file_attachments:
-                if new_file not in existing_names:
-                    file_attachments.append(new_file)
+            file_attachments = self._resolve_api_file_names(new_file_ids, provider)
         
         logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
         response = self.providers[provider].generate_text(
@@ -387,118 +543,6 @@ class Chat:
         publish_state(self.chat_id, "static")
     
     
-    def _process_message_background(self, message: str, provider: Optional[str] = None,
-                                  model: Optional[str] = None, include_reasoning: bool = True,
-                                  cancel_event: Optional[threading.Event] = None, **config_params):
-        """
-        Process message in background thread - writes only to DB, no HTTP streaming
-        This runs independently of frontend connection state
-        """
-        from route.chat_route import publish_state
-        
-        config_params['include_reasoning'] = include_reasoning
-        context, error = self._prepare_streaming_context(provider, model, **config_params)
-        if error:
-            logger.error(f"Background processing error for chat {self.chat_id}: {error}")
-            return
-        
-        provider = context['provider']
-        model = context['model']
-        use_reasoning = context['use_reasoning']
-        chat_history = context['chat_history']
-        file_attachments = context['file_attachments']
-        config_params = context['config_params']
- 
-        assistant_message_id = db.save_message(
-            self.chat_id,
-            "assistant", 
-            "",
-            thoughts=None,
-            provider=provider,
-            model=model
-        )
-        
-        full_text = ""
-        full_thoughts = ""
-        
-        logger.info(f"Background processing streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
-        
-        try:
-            if use_reasoning:
-                db.update_chat_state(self.chat_id, "thinking")
-                publish_state(self.chat_id, "thinking")
-                current_state = "thinking"
-                logger.info(f"Chat {self.chat_id} entering thinking state")
-            else:
-                db.update_chat_state(self.chat_id, "responding")
-                publish_state(self.chat_id, "responding")
-                current_state = "responding"
-                logger.info(f"Chat {self.chat_id} entering responding state")
-        except Exception as state_error:
-            logger.error(f"Failed to set initial state for chat {self.chat_id}: {state_error}")
-            current_state = "responding"
-        
-        for chunk in self.providers[provider].generate_text_stream(
-            message, model=model, include_thoughts=use_reasoning, 
-            chat_history=chat_history, file_attachments=file_attachments, **config_params
-        ):
-            if cancel_event and cancel_event.is_set():
-                logger.info(f"[CANCEL] Chat {self.chat_id} processing cancelled, stopping stream")
-                break
-            
-            if cancellation_manager.is_chat_cancelled(self.chat_id):
-                logger.info(f"[CANCEL] Chat {self.chat_id} marked as cancelled, stopping stream")
-                break
-            
-            if chunk.get("type") == "thoughts":
-                full_thoughts += chunk.get("content", "")
-                try:
-                    from route.chat_route import publish_content
-                    publish_content(self.chat_id, "thoughts", chunk.get("content", ""))
-                except Exception as pub_error:
-                    logger.warning(f"Failed to publish thoughts chunk for chat {self.chat_id}: {pub_error}")
-                
-            elif chunk.get("type") == "answer":
-                full_text += chunk.get("content", "")
-                try:
-                    from route.chat_route import publish_content
-                    publish_content(self.chat_id, "answer", chunk.get("content", ""))
-                except Exception as pub_error:
-                    logger.warning(f"Failed to publish answer chunk for chat {self.chat_id}: {pub_error}")
-                
-                if current_state == "thinking":
-                    try:
-                        db.update_chat_state(self.chat_id, "responding")
-                        publish_state(self.chat_id, "responding")
-                        current_state = "responding"
-                    except Exception as state_error:
-                        logger.warning(f"Failed to update state to responding for chat {self.chat_id}: {state_error}")
-            
-            if assistant_message_id and (full_text or full_thoughts):
-                try:
-                    db.update_message(
-                        assistant_message_id,
-                        full_text,
-                        thoughts=full_thoughts if full_thoughts else None
-                    )
-                except Exception as db_error:
-                    logger.error(f"Error updating message in DB for chat {self.chat_id}: {db_error}")
-        
-        try:
-            db.update_chat_state(self.chat_id, "static")
-            logger.info(f"Successfully updated DB state to 'static' for chat {self.chat_id}")
-        except Exception as db_error:
-            logger.critical(f"CRITICAL: Failed to mark chat {self.chat_id} as static in DB: {db_error}")
-            logger.critical(f"Chat {self.chat_id} may be stuck in non-static state in DB")
-        
-        try:
-            publish_state(self.chat_id, "static")
-            # Prevent circular import
-            from route.chat_route import publish_content
-            publish_content(self.chat_id, "complete", "")
-            logger.info(f"Background processing completed successfully for chat {self.chat_id}")
-        except Exception as publish_error:
-            logger.warning(f"Failed to publish completion (non-critical): {publish_error}")
     
     def start_background_processing(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
@@ -507,10 +551,50 @@ class Chat:
         Start background processing of a message (non-blocking)
         Returns True if started successfully, False if already running
         """
-        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
+        if provider is None:
+            provider = Config.get_default_provider()
+        if model is None:
+            model = Config.get_default_model()
+            
+        is_edit_regeneration = config_params.get('is_edit_regeneration', False)
+        existing_message_id = config_params.get('existing_message_id')
         
-        if attached_file_ids:
-            config_params['attached_file_ids'] = attached_file_ids
+        attached_file_ids = attached_file_ids or []
+
+        if is_edit_regeneration and existing_message_id:
+            user_message_id = existing_message_id
+            logger.info(f"[DUPLICATE_FIX] Edit regeneration - using existing edited message {user_message_id}")
+
+            if not attached_file_ids:
+                try:
+                    files = db.get_message_files(existing_message_id)
+                    attached_file_ids = [f.get('id') for f in files if f.get('id')]
+                    logger.info(f"[DUPLICATE_FIX] Edit regeneration - preserved {len(attached_file_ids)} attached files from message {existing_message_id}")
+                except Exception as e:
+                    logger.warning(f"[DUPLICATE_FIX] Failed to load files for {existing_message_id}: {e}")
+
+        elif config_params.get('is_retry', False):
+            existing_history = db.get_chat_history(self.chat_id)
+            user_message_id = None
+            last_user_attached_ids = []
+            for msg in reversed(existing_history):
+                if msg['role'] == 'user':
+                    user_message_id = msg['id']
+                    try:
+                        file_objs = msg.get('attachedFiles', [])
+                        last_user_attached_ids = [f.get('id') for f in file_objs if f.get('id')]
+                    except Exception:
+                        last_user_attached_ids = []
+                    break
+            logger.info(f"Retry detected - reusing existing user message {user_message_id}")
+            if not attached_file_ids and last_user_attached_ids:
+                attached_file_ids = last_user_attached_ids
+                logger.info(f"Retry preserved {len(attached_file_ids)} attached files from last user message {user_message_id}")
+        else:
+            user_message_id = db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids)
+            logger.info(f"[DUPLICATE_FIX] Normal flow - created new user message {user_message_id}")
+        
         return _start_background_processing(
-            self.chat_id, self, message, provider, model, include_reasoning, **config_params
+            self.chat_id, message, provider, model, include_reasoning, 
+            attached_file_ids, user_message_id, config_params.get('is_retry', False)
         )

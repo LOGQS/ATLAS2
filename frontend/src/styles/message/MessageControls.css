@@ -1,0 +1,173 @@
+/* Message Controls */
+.message-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  margin-top: 3px; /* Increased 1.5x from 2px */
+  width: 100%;
+  height: 28px; /* Reserve space to prevent jumping */
+}
+
+/* Always visible when explicitly set */
+.message-controls.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* User message controls - aligned to the right, hug container edge */
+.message-wrapper.user .message-controls,
+.message-wrapper.user-message-wrapper .message-controls {
+  justify-content: flex-end;
+  padding-right: 0;
+  margin-left: auto;
+  margin-right: -20px; /* Extend to container edge */
+  padding-right: 12px; /* Reduced spacing for less gap */
+}
+
+/* Assistant message controls - aligned to the left, hug container edge */
+.message-wrapper.assistant .message-controls {
+  justify-content: flex-start;
+  padding-left: 0;
+  margin-left: -20px; /* Extend to container edge */
+  margin-right: -20px; /* Full width */
+  padding-left: 20px; /* Maintain visual spacing */
+  padding-right: 20px;
+}
+
+.message-controls-left,
+.message-controls-right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Show all controls for all message types - as per requirements */
+/* All messages show both left (copy, TTS) and right (retry, edit, delete) controls */
+
+.message-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.8);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  pointer-events: all;
+}
+
+/* Hide buttons when controls are not visible */
+.message-controls.hidden .message-control-btn {
+  pointer-events: none;
+  cursor: default;
+}
+
+.message-control-btn:hover {
+  background: rgba(255, 146, 79, 0.2);
+  color: #ff924f;
+  border-color: rgba(255, 146, 79, 0.3);
+  transform: translateY(-1px);
+}
+
+.message-control-btn:active {
+  transform: translateY(0);
+  background: rgba(255, 146, 79, 0.3);
+}
+
+/* Copy button states */
+.message-copy-btn.copied {
+  background: rgba(76, 175, 80, 0.2);
+  color: #4caf50;
+  border-color: rgba(76, 175, 80, 0.3);
+}
+
+.message-copy-btn.copied:hover {
+  background: rgba(76, 175, 80, 0.3);
+}
+
+/* TTS button states */
+.message-tts-btn.enabled {
+  background: rgba(255, 146, 79, 0.2);
+  color: #ff924f;
+  border-color: rgba(255, 146, 79, 0.3);
+}
+
+.message-tts-btn.enabled:hover {
+  background: rgba(255, 146, 79, 0.3);
+}
+
+.message-tts-btn.playing {
+  background: rgba(255, 146, 79, 0.3);
+  color: #ff924f;
+  border-color: rgba(255, 146, 79, 0.5);
+  animation: messageTTSPulse 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes messageTTSPulse {
+  from {
+    box-shadow: 0 0 8px rgba(255, 146, 79, 0.3);
+  }
+  to {
+    box-shadow: 0 0 16px rgba(255, 146, 79, 0.6);
+  }
+}
+
+/* Delete button */
+.message-delete-btn:hover {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+  border-color: rgba(244, 67, 54, 0.3);
+}
+
+/* Retry button */
+.message-retry-btn:hover {
+  background: rgba(33, 150, 243, 0.2);
+  color: #2196f3;
+  border-color: rgba(33, 150, 243, 0.3);
+}
+
+/* Edit button */
+.message-edit-btn:hover {
+  background: rgba(156, 39, 176, 0.2);
+  color: #9c27b0;
+  border-color: rgba(156, 39, 176, 0.3);
+}
+
+/* Button icons */
+.message-control-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .message-control-btn {
+    width: 32px;
+    height: 32px;
+  }
+  
+  .message-control-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  
+  .message-controls-left,
+  .message-controls-right {
+    gap: 8px;
+  }
+  
+  /* Maintain proper spacing on mobile */
+  .message-controls {
+    margin-top: 4.5px; /* Increased 1.5x from 3px */
+    height: 32px; /* Larger reserved space on mobile */
+  }
+}

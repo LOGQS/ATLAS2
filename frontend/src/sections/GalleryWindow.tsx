@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import '../styles/GalleryWindow.css';
+import '../styles/sections/GalleryWindow.css';
 
 interface MediaItem {
   id: number;

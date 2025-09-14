@@ -1,29 +1,33 @@
 // status: complete
 
 import React, { useState, useRef, useEffect, useCallback} from 'react';
-import { flushSync } from 'react-dom';
-import './styles/App.css';
-import LeftSidebar from './components/LeftSidebar';
-import RightSidebar from './components/RightSidebar';
-import Chat from './components/Chat';
-import ModalWindow from './components/ModalWindow';
-import AttachedFiles from './components/AttachedFiles';
+import './styles/app/App.css';
+import LeftSidebar from './components/layout/LeftSidebar';
+import RightSidebar from './components/layout/RightSidebar';
+import Chat from './components/chat/Chat';
+import ModalWindow from './components/ui/ModalWindow';
+import AttachedFiles from './components/files/AttachedFiles';
+import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
-import logger from './utils/logger';
+import logger from './utils/core/logger';
 import { apiUrl } from './config/api';
-import { BrowserStorage } from './utils/BrowserStorage';
-import { liveStore } from './utils/LiveStore';
-import { useAppState } from './hooks/useAppState';
-import { useFileManagement } from './hooks/useFileManagement';
+import { BrowserStorage } from './utils/storage/BrowserStorage';
+import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
+import { useAppState } from './hooks/app/useAppState';
+import { useFileManagement } from './hooks/files/useFileManagement';
+import { useDragDrop } from './hooks/files/useDragDrop';
+// TEST_FRAMEWORK_IMPORT - Remove this line and the next to remove test framework
+import TestUI from './tests/versioning/TestUI';
 
 interface ChatItem {
   id: string;
   name: string;
   isActive: boolean;
   state?: 'thinking' | 'responding' | 'static';
+  last_active?: string;
 }
 
 
@@ -36,7 +40,19 @@ function App() {
   const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
   const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [forceRender, setForceRender] = useState(0);
-  const [isMessageBeingSent, setIsMessageBeingSent] = useState(false);
+  const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
+  const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
+  const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
+    setSendingByChat(prev => {
+      const next = new Map(prev);
+      if (activeChatId && activeChatId !== 'none') {
+        const current = prev.get(activeChatId) ?? false;
+        const final = typeof value === 'function' ? (value as (prevState: boolean) => boolean)(current) : value;
+        next.set(activeChatId, final);
+      }
+      return next;
+    });
+  }, [activeChatId]);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
   const { 
@@ -46,6 +62,7 @@ function App() {
     initializeAttachedFiles, 
     handleAddFileClick, 
     handleFileSelect, 
+    handleFileSelectionImmediate,
     handleRemoveFile, 
     clearAttachedFiles, 
     handleClearAllFiles 
@@ -66,6 +83,7 @@ function App() {
     };
     initializeApp();
   }, [isAppInitialized, initializeAttachedFiles]);
+  
 
   useEffect(() => {
     const unsubs = chats.map(chat =>
@@ -76,6 +94,21 @@ function App() {
     return () => unsubs.forEach(unsub => unsub && unsub());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chats.map(c => c.id).join(',')]); 
+
+  useEffect(() => {
+    if (!activeChatId || activeChatId === 'none') {
+      setSendDisabledFlag(false);
+      return;
+    }
+    const unsubscribe = sendButtonStateManager.subscribe(activeChatId, (isDisabled) => {
+      setSendDisabledFlag(isDisabled);
+      // Nudge a render in case nothing else changes
+      setForceRender(v => v + 1);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [activeChatId]);
 
   const loadActiveChat = async () => {
     try {
@@ -88,13 +121,9 @@ function App() {
         
         if (activeChat && activeChat !== 'none') {
           setActiveChatId(activeChat);
+          logger.info(`[ActiveChatId] Set initial active chat: ${activeChat}`);
           setHasMessageBeenSent(true);
           document.body.classList.add('chat-active');
-          
-          setChats(prev => prev.map(chat => ({ 
-            ...chat, 
-            isActive: chat.id === activeChat 
-          })));
         }
       }
     } catch (error) {
@@ -113,8 +142,9 @@ function App() {
         const chatsFromDb = data.chats.map((chat: any) => ({
           id: chat.id,
           name: chat.name,
-          isActive: false,
-          state: chat.state || 'static'
+          isActive: chat.isActive,
+          state: chat.state || 'static',
+          last_active: chat.last_active
         }));
         
         const settings = BrowserStorage.getUISettings();
@@ -147,8 +177,8 @@ function App() {
       logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
     }
   };
-  const centerInputRef = useRef<HTMLInputElement>(null);
-  const bottomInputRef = useRef<HTMLInputElement>(null);
+  const centerInputRef = useRef<HTMLTextAreaElement>(null);
+  const bottomInputRef = useRef<HTMLTextAreaElement>(null);
   const chatRef = useRef<any>(null);
 
   const createNewChatInBackground = async (chatId: string, chatName: string, firstMessage: string) => {
@@ -170,9 +200,14 @@ function App() {
         const data = await response.json();
         logger.error('Failed to create chat in database:', data.error);
         return;
+      } else {
+        const data = await response.json();
+        if (data.message === 'Chat already exists') {
+          logger.info('Chat already exists in database (auto-created), proceeding');
+        } else {
+          logger.info('Chat created successfully in DB');
+        }
       }
-
-      logger.info('Chat created successfully in DB');
       
       try {
         await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
@@ -226,6 +261,8 @@ function App() {
         };
         setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
         setActiveChatId(chatId);
+        logger.info(`[ActiveChatId] Changed to new chat: ${chatId}`);
+        logger.info(`[SidebarHighlight] Set to highlight new chat: ${chatId} (${chatName})`);
         setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({message: messageToSend, files: filesToSend})));
         
         setTimeout(() => bottomInputRef.current?.focus(), 100);
@@ -248,7 +285,8 @@ function App() {
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       if (isSendDisabled) {
         logger.info('Enter key pressed but send is disabled:', {
           isActiveChatStreaming,
@@ -279,38 +317,116 @@ function App() {
   };
 
 
-  const handleChatSelect = useCallback((chatId: string) => {
+  const handleChatSelect = useCallback(async (chatId: string) => {
     if (activeChatId === chatId) return;
     
-    logger.info('Switching to chat:', chatId);
+    logger.info('[MANUAL_SWITCH] ===== STARTING MANUAL CHAT SWITCH =====');
+    logger.info('[MANUAL_SWITCH] Switching to chat:', chatId);
     
-    setActiveChatId(chatId);
-    logger.info(`[DIA][APP-switch] to=${chatId}`);
+    const clickedChat = chats.find(chat => chat.id === chatId);
+    let targetChatId = chatId;
+    
+    if (clickedChat?.last_active && clickedChat.last_active !== chatId) {
+      logger.info(`[VersionMemory] Main chat ${chatId} has remembered version: ${clickedChat.last_active}`);
+      
+      try {
+        const checkResponse = await fetch(apiUrl(`/api/db/chat/${clickedChat.last_active}`));
+        if (checkResponse.ok) {
+          targetChatId = clickedChat.last_active;
+          logger.info(`[VersionMemory] Switching to remembered version: ${targetChatId}`);
+        } else {
+          logger.info(`[VersionMemory] Remembered version ${clickedChat.last_active} no longer exists, using main chat`);
+          targetChatId = chatId;
+        }
+      } catch (error) {
+        logger.warn(`[VersionMemory] Error checking remembered version: ${error}, using main chat`);
+        targetChatId = chatId;
+      }
+    }
+    
+    logger.info(`[MANUAL_SWITCH] Setting activeChatId to: ${targetChatId}`);
+    setActiveChatId(targetChatId);
+    logger.info(`[MANUAL_SWITCH] ActiveChatId changed to: ${targetChatId}`);
+    logger.info(`[MANUAL_SWITCH] Updating sidebar highlighting`);
     setChats(prev => prev.map(chat => ({ 
       ...chat, 
       isActive: chat.id === chatId 
     })));
+    logger.info(`[MANUAL_SWITCH] Sidebar highlighted: ${chatId}`);
+    logger.info(`[MANUAL_SWITCH] Clearing input and message states`);
     setMessage('');
+    setSendingByChat(prev => {
+      const next = new Map(prev);
+      next.set(targetChatId, false);
+      return next;
+    });
     
     if (!hasMessageBeenSent) {
+      logger.info(`[MANUAL_SWITCH] Setting hasMessageBeenSent=true`);
       setHasMessageBeenSent(true);
       document.body.classList.add('chat-active');
     }
     
-    syncActiveChat(chatId);
-  }, [activeChatId, hasMessageBeenSent]);
+    logger.info(`[MANUAL_SWITCH] Syncing active chat with backend`);
+    await syncActiveChat(targetChatId);
+    logger.info(`[MANUAL_SWITCH] Backend sync completed`);
+    
+    if (targetChatId !== chatId) {
+      logger.info(`[MANUAL_SWITCH] Reloading chats for version highlighting update`);
+      await loadChatsFromDatabase();
+    }
+    
+    logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
+  }, [activeChatId, hasMessageBeenSent, chats]);
+
+  const handleChatSwitch = useCallback(async (newChatId: string) => {
+    logger.info('[VERSION_SWITCH] ===== STARTING VERSION CHAT SWITCH =====');
+    logger.info('[VERSION_SWITCH] Switching to version chat:', newChatId);
+    
+    if (activeChatId !== 'none') {
+      setSendingByChat(prev => {
+        const next = new Map(prev);
+        next.delete(activeChatId);
+        logger.info(`[VERSION_SWITCH] Cleared sending state for parent chat: ${activeChatId}`);
+        return next;
+      });
+    }
+    
+    logger.info(`[VERSION_SWITCH] Setting activeChatId to: ${newChatId}`);
+    setActiveChatId(newChatId);
+    logger.info(`[VERSION_SWITCH] ActiveChatId changed to version chat: ${newChatId}`);
+    
+    logger.info(`[VERSION_SWITCH] Syncing active chat with backend`);
+    await syncActiveChat(newChatId);
+    logger.info(`[VERSION_SWITCH] Backend sync completed`);
+    
+    logger.info(`[VERSION_SWITCH] Reloading chats for parent highlighting update`);
+    await loadChatsFromDatabase();
+    logger.info(`[VERSION_SWITCH] Chats reloaded`);
+    
+    logger.info('[VERSION_SWITCH] ===== VERSION CHAT SWITCH COMPLETED =====');
+  }, [activeChatId]);
+
+  useEffect(() => {
+    (window as any).handleChatSwitch = handleChatSwitch;
+    
+    return () => {
+      delete (window as any).handleChatSwitch;
+    };
+  }, [handleChatSwitch]);
 
   const handleNewChat = () => {
     logger.info('Starting new chat');
     
-    flushSync(() => {
-      setHasMessageBeenSent(false);
-      setCenterFading(false);
-      setActiveChatId('none');
-    });
+    setHasMessageBeenSent(false);
+    setCenterFading(false);
+    setActiveChatId('none');
     
+    logger.info(`[ActiveChatId] Changed to: none`);
     setMessage('');
+    setSendingByChat(new Map());
     setChats(prev => prev.map(chat => ({ ...chat, isActive: false })));
+    logger.info(`[SidebarHighlight] Cleared all highlighting (none selected)`);
     document.body.classList.remove('chat-active');
     
     syncActiveChat('none');
@@ -329,9 +445,7 @@ function App() {
       return newMap;
     });
     
-    if (activeChatId === chatId) {
-      handleNewChat();
-    }
+    let shouldReturnToMainScreen = activeChatId === chatId;
     
     try {
       const response = await fetch(apiUrl(`/api/db/chat/${chatId}`), {
@@ -339,7 +453,19 @@ function App() {
       });
       
       if (response.ok) {
+        const data = await response.json();
         logger.info('Chat deleted successfully');
+        
+        if (data.cascade_deleted && data.deleted_chats && activeChatId !== 'none') {
+          shouldReturnToMainScreen = data.deleted_chats.includes(activeChatId);
+          if (shouldReturnToMainScreen) {
+            logger.info(`[CASCADE_DELETE] Current active chat ${activeChatId} was cascade deleted, returning to main screen`);
+          }
+        }
+        
+        if (shouldReturnToMainScreen) {
+          handleNewChat();
+        }
       } else {
         const data = await response.json();
         logger.error('Failed to delete chat:', data.error);
@@ -383,8 +509,15 @@ function App() {
 
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
-  
-  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isMessageBeingSent;
+  const isSendInProgressForActive = sendingByChat.get(activeChatId) === true;
+  const isGlobalSendDisabled = sendDisabledFlag;
+  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled;
+
+  const { isDragOver, dragHandlers } = useDragDrop({
+    onFilesDropped: handleFileSelectionImmediate,
+    disabled: isSendDisabled
+  });
+
   void forceRender; 
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
@@ -392,11 +525,7 @@ function App() {
     setChats(prev => prev.map(chat => 
       chat.id === chatId ? { ...chat, state } : chat
     ));
-    
-    if (chatId === activeChatId && (state === 'thinking' || state === 'responding')) {
-      setIsMessageBeingSent(false);
-    }
-  }, [activeChatId]);
+  }, []);
 
   const handleFirstMessageSent = useCallback((chatId: string) => {
     logger.info('First message sent for chat:', chatId);
@@ -421,6 +550,7 @@ function App() {
     setForceRender(prev => prev + 1);
   }, []);
 
+
   const handleBulkDelete = async (chatIds: string[]) => {
     try {
       logger.info('Bulk deleting chats:', chatIds);
@@ -436,16 +566,19 @@ function App() {
         const data = await response.json();
         logger.info('Bulk delete completed:', data.message);
         
-        setChats(prev => prev.filter(chat => !chatIds.includes(chat.id)));
+        const actuallyDeletedChats = data.deleted_chats || chatIds;
+        logger.info(`[BULK_DELETE] Removed ${actuallyDeletedChats.length} chats from UI (requested: ${chatIds.length}, cascade: ${data.cascade_deleted})`);
         
+        setChats(prev => prev.filter(chat => !actuallyDeletedChats.includes(chat.id)));
         
         setPendingFirstMessages(prev => {
           const newMap = new Map(prev);
-          chatIds.forEach(id => newMap.delete(id));
+          actuallyDeletedChats.forEach((id: string) => newMap.delete(id));
           return newMap;
         });
         
-        if (chatIds.includes(activeChatId)) {
+        if (data.active_chat_cleared) {
+          logger.info('[BULK_DELETE] Active chat was cleared by backend, creating new chat');
           await handleNewChat();
         }
       } else {
@@ -549,6 +682,13 @@ function App() {
     setChats(reorderedChats);
   };
 
+  // TEST_FRAMEWORK_CONDITIONAL - Remove this block to remove test framework
+  // Access test UI by adding ?test=versioning to the URL
+  if (window.location.search.includes('test=versioning')) {
+    return <TestUI />;
+  }
+  // END_TEST_FRAMEWORK_CONDITIONAL
+
   return (
     <div className="app">
       <LeftSidebar 
@@ -564,6 +704,10 @@ function App() {
         onChatsReload={loadChatsFromDatabase}
         onChatReorder={handleChatReorder}
         onOpenModal={handleOpenModal}
+        // TEMPORARY_DEBUG_TRIGGERLOG - props for debugging MessageVersionSwitcher visibility
+        triggerLogProps={{
+          activeChatId
+        }}
       />
       <div className="main-content">
         <div className="chat-container">
@@ -572,7 +716,10 @@ function App() {
           </h1>
           <div className={`input-container center ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             <div className="input-row">
-              <div className="input-wrapper">
+              <div 
+                className={`input-wrapper ${isDragOver ? 'drag-over' : ''}`}
+                {...dragHandlers}
+              >
                 <button 
                   className="add-file-button-inline"
                   title="Add File"
@@ -580,9 +727,8 @@ function App() {
                 >
                   +
                 </button>
-                <input
+                <textarea
                   ref={centerInputRef}
-                  type="text"
                   value={message}
                   onChange={(e) => {
                     logger.info('[INPUT_DEBUG] Center input onChange:', {
@@ -597,6 +743,7 @@ function App() {
                   onKeyDown={handleKeyPress}
                   className="message-input with-file-button"
                   placeholder=""
+                  rows={1}
                 />
               </div>
               <button 
@@ -666,6 +813,8 @@ function App() {
               onFirstMessageSent={handleFirstMessageSent}
               onActiveStateChange={handleActiveStateChange}
               onBusyStateChange={handleBusyStateChange}
+              setIsMessageBeingSent={setIsMessageBeingSent}
+              onChatSwitch={handleChatSwitch}
             />
             
             <div className="bottom-input-area">
@@ -694,7 +843,10 @@ function App() {
               )}
               
               <div className="bottom-input-container">
-                <div className="input-wrapper">
+                <div 
+                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''}`}
+                  {...dragHandlers}
+                >
                   <button 
                     className="add-file-button-inline"
                     title="Add File"
@@ -702,9 +854,8 @@ function App() {
                   >
                     +
                   </button>
-                  <input
+                  <textarea
                     ref={bottomInputRef}
-                    type="text"
                     value={message}
                     onChange={(e) => {
                       logger.info('[INPUT_DEBUG] Bottom input onChange:', {
@@ -719,6 +870,7 @@ function App() {
                     onKeyDown={handleKeyPress}
                     className="message-input with-file-button"
                     placeholder=""
+                    rows={1}
                   />
                 </div>
                 <button 
@@ -754,7 +906,10 @@ function App() {
           </>
         )}
       </div>
-      <RightSidebar onOpenModal={handleOpenModal} />
+      <RightSidebar 
+        onOpenModal={handleOpenModal} 
+        chatId={activeChatId !== 'none' ? activeChatId : undefined}
+      />
       
       <ModalWindow 
         isOpen={activeModal === 'gallery'} 
@@ -811,6 +966,12 @@ function App() {
       >
         <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} />
       </ModalWindow>
+
+      <ChatVersionsWindow
+        isOpen={activeModal === 'chat-versions'}
+        onClose={handleCloseModal}
+        chatId={activeChatId !== 'none' ? activeChatId : undefined}
+      />
       
       <input
         ref={fileInputRef}

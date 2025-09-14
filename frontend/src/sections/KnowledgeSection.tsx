@@ -2,7 +2,7 @@ import React from 'react';
 import SearchWindow from './SearchWindow';
 import GalleryWindow from './GalleryWindow';
 import SettingsWindow from './SettingsWindow';
-import '../styles/KnowledgeSection.css';
+import '../styles/sections/KnowledgeSection.css';
 
 interface KnowledgeSectionProps {
   activeSubsection: string;

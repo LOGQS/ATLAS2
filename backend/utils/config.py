@@ -26,12 +26,6 @@ class Config:
     RATE_LIMIT_REQUESTS_PER_MINUTE = 60
     RATE_LIMIT_BURST_SIZE = 10
     
-    DEFAULT_TTS_PROVIDER = "pyttsx3"
-    DEFAULT_TTS_VOICE = None  
-    DEFAULT_TTS_RATE = 200    
-    DEFAULT_TTS_VOLUME = 0.9  
-    TTS_ENABLED = True
-    
     @classmethod
     def get_default_provider(cls) -> str:
         """Get the default provider name, validated against available providers."""
@@ -61,31 +55,6 @@ class Config:
         return cls.RATE_LIMIT_BURST_SIZE
     
     @classmethod
-    def get_tts_enabled(cls) -> bool:
-        """Get TTS enabled state."""
-        return cls.TTS_ENABLED
-    
-    @classmethod
-    def get_default_tts_provider(cls) -> str:
-        """Get the default TTS provider name."""
-        return cls.DEFAULT_TTS_PROVIDER
-    
-    @classmethod
-    def get_default_tts_voice(cls):
-        """Get the default TTS voice."""
-        return cls.DEFAULT_TTS_VOICE
-    
-    @classmethod
-    def get_default_tts_rate(cls) -> int:
-        """Get the default TTS speech rate."""
-        return cls.DEFAULT_TTS_RATE
-    
-    @classmethod
-    def get_default_tts_volume(cls) -> float:
-        """Get the default TTS volume."""
-        return cls.DEFAULT_TTS_VOLUME
-    
-    @classmethod
     def get_defaults(cls) -> dict:
         """Get all default configurations."""
         return {
@@ -93,12 +62,7 @@ class Config:
             "model": cls.DEFAULT_MODEL,
             "streaming": cls.DEFAULT_STREAMING,
             "rate_limit_requests_per_minute": cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
-            "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE,
-            "tts_enabled": cls.TTS_ENABLED,
-            "tts_provider": cls.DEFAULT_TTS_PROVIDER,
-            "tts_voice": cls.DEFAULT_TTS_VOICE,
-            "tts_rate": cls.DEFAULT_TTS_RATE,
-            "tts_volume": cls.DEFAULT_TTS_VOLUME
+            "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE
         }
     
     @classmethod

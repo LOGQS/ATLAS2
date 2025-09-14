@@ -2,22 +2,109 @@
 
 import sqlite3
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
+from utils.db_validation import DatabaseValidator
+import time
+from collections import defaultdict
 
 logger = get_logger(__name__)
 
 class DatabaseManager:
     """
-    Global database manager for ATLAS application
+    Global database manager for ATLAS application.
+
+    This class provides a centralized interface for all database operations,
+    managing SQLite connections, transactions, and CRUD operations for the
+    application's core entities: chats, messages, files, and their relationships.
     """
     
+    MAX_LINEAGE_DEPTH = 50
+    MAX_DESCENDANT_DEPTH = 50
+    MAX_SEARCH_ITERATIONS = 50
+
+    _validator = DatabaseValidator
+
+    def _handle_db_error(self, operation: str, error: Exception, return_value=None, reraise: bool = False):
+        """Centralized error handling for database operations"""
+        logger.error(f"Error {operation}: {str(error)}")
+        if reraise:
+            raise
+        return return_value
+    
+    def _execute_with_connection(self, operation: str, query_func, return_on_error=None, reraise: bool = False):
+        """Execute database operation with standardized connection handling and error handling"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                return query_func(conn, cursor)
+        except Exception as e:
+            return self._handle_db_error(operation, e, return_on_error, reraise)
+    
+    def _safe_json_parse(self, json_string: str, context: str = "JSON parsing") -> Dict[str, Any]:
+        """Safely parse JSON with error handling and logging"""
+        try:
+            import json
+            return json.loads(json_string) if json_string else {}
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"Error parsing JSON during {context}: {str(e)}")
+            return {}
+    
+    def _execute_query_with_params(self, cursor, query: str, params: tuple = (), fetch_one: bool = True):
+        """Execute query with parameters and return result with error handling"""
+        cursor.execute(query, params)
+        return cursor.fetchone() if fetch_one else cursor.fetchall()
+    
+    def _validate_id(self, id_value, id_name: str = "ID") -> bool:
+        """Validate that an ID is a positive integer"""
+        return self._validator.validate_id(id_value, id_name)
+
+    def _validate_string(self, string_value, string_name: str = "string", max_length: int = None) -> bool:
+        """Validate that a string is non-empty and within length limits"""
+        return self._validator.validate_string(string_value, string_name, max_length)
+
+    def _validate_table_column(self, table: str, column: str = None) -> bool:
+        """Validate table and column names to prevent SQL injection"""
+        return self._validator.validate_table_column(table, column)
+
+    def _exists_in_table(self, table: str, id_column: str, id_value, connection=None) -> bool:
+        """Check if a record exists in a table"""
+        if not self._validate_table_column(table, id_column):
+            return False
+
+        def check_exists(conn, cursor):
+            cursor.execute(f"SELECT 1 FROM {table} WHERE {id_column} = ?", (id_value,))
+            return cursor.fetchone() is not None
+
+        if connection:
+            return check_exists(connection, connection.cursor())
+        else:
+            return self._execute_with_connection(f"checking existence in {table}", check_exists, False)
+    
+    def _transaction_wrapper(self, operation: str, transaction_func, *args, **kwargs):
+        """Wrapper for database operations that need transaction handling with rollback support"""
+        def execute_transaction(conn, cursor):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                result = transaction_func(conn, cursor, *args, **kwargs)
+                conn.commit()
+                return result
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+                raise e
+        
+        return self._execute_with_connection(operation, execute_transaction, reraise=True)
+
     def __init__(self, db_name: str = "atlas.db"):
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(os.path.dirname(backend_dir))
         self.data_dir = os.path.join(project_root, "data")
         self.db_path = os.path.join(self.data_dir, db_name)
+        self._file_state_callback = None 
         self._ensure_data_directory()
         self._init_database()
     
@@ -34,6 +121,10 @@ class DatabaseManager:
         conn.row_factory = sqlite3.Row
         return conn
     
+    def get_connection(self):
+        """Public method to get database connection for other modules"""
+        return self._connect()
+    
     def _ensure_data_directory(self):
         """Ensure data directory exists"""
         os.makedirs(self.data_dir, exist_ok=True)
@@ -43,13 +134,7 @@ class DatabaseManager:
         with self._connect() as conn:
             cursor = conn.cursor()
             
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS meta (
-                    key TEXT PRIMARY KEY, 
-                    value TEXT
-                )
-            """)
-            cursor.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','2')")
+            # No meta/migration tables needed since we are currently in active development
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS chats (
@@ -57,13 +142,16 @@ class DatabaseManager:
                     name TEXT,
                     system_prompt TEXT,
                     state TEXT DEFAULT 'static' CHECK(state IN ('thinking', 'responding', 'static')),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    isversion INTEGER DEFAULT 0 CHECK(isversion IN (0,1)),
+                    belongsto TEXT,
+                    last_active TEXT
                 )
             """)
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT PRIMARY KEY,
                     chat_id TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('system','user','assistant','tool')),
                     content TEXT NOT NULL,
@@ -128,7 +216,7 @@ class DatabaseManager:
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS message_files (
-                    message_id INTEGER NOT NULL,
+                    message_id TEXT NOT NULL,
                     file_id TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (message_id, file_id),
@@ -144,49 +232,145 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_message_files_file ON message_files(file_id)
             """)
             
-            conn.commit()
-    
-    def create_chat(self, chat_id: str, system_prompt: Optional[str] = None, name: Optional[str] = None) -> bool:
-        """Create new chat session"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO chats (id, name, system_prompt) VALUES (?, ?, ?)",
-                    (chat_id, name, system_prompt)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS message_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_message_id TEXT NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    chat_version_id TEXT NOT NULL,
+                    operation TEXT NOT NULL CHECK(operation IN ('original', 'edit', 'retry')),
+                    content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(original_message_id, chat_version_id),
+                    FOREIGN KEY (original_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY (chat_version_id) REFERENCES chats(id) ON DELETE CASCADE
                 )
-                conn.commit()
-                logger.info(f"Created new chat: {chat_id}")
-                return True
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_versions_original ON message_versions(original_message_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_message_versions_chat ON message_versions(chat_version_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chats_belongsto ON chats(belongsto)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chats_isversion ON chats(isversion)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_files_provider_state ON files(provider, api_state)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS message_lineage (
+                    message_id TEXT PRIMARY KEY,
+                    parent_message_id TEXT,
+                    root_message_id TEXT NOT NULL,
+                    role TEXT CHECK(role IN ('user','assistant')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY (parent_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+                    FOREIGN KEY (root_message_id) REFERENCES messages(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lineage_root ON message_lineage(root_message_id)
+            """)
+
+            # No migration logic required fresh schema creation only during development
+            
+            conn.commit()
+
+
+    def create_chat(self, chat_id: str, system_prompt: Optional[str] = None, name: Optional[str] = None,
+                   isversion: bool = False, belongsto: Optional[str] = None, last_active: Optional[str] = None) -> bool:
+        """
+        Create a new chat session.
+
+        Args:
+            chat_id: Unique identifier for the chat
+            system_prompt: Optional system prompt for the chat
+            name: Optional display name for the chat
+            isversion: Whether this is a version of another chat
+            belongsto: Parent chat ID if this is a version
+            last_active: Last active version for this chat
+
+        Returns:
+            bool: True if chat was created successfully, False otherwise
+        """
+        if not self._validate_string(chat_id, "chat_id"):
+            return False
+
+        def create_operation(conn, cursor):
+            cursor.execute(
+                "INSERT INTO chats (id, name, system_prompt, isversion, belongsto, last_active) VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, name, system_prompt, 1 if isversion else 0, belongsto, last_active)
+            )
+            conn.commit()
+            logger.info(f"Created new chat: {chat_id}")
+            return True
+
+        try:
+            return self._execute_with_connection("creating chat", create_operation, False)
         except sqlite3.IntegrityError:
             logger.warning(f"Chat already exists: {chat_id}")
             return False
-    
-    def save_message(self, chat_id: str, role: str, content: str, 
-                    thoughts: Optional[str] = None, provider: Optional[str] = None, 
-                    model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None) -> Optional[int]:
-        """Save message to chat history with optional file attachments and return message ID"""
+
+    def _generate_message_id(self, chat_id: str) -> str:
+        """Generate position-based message ID in format: {chat_id}_{position}"""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 
-                cursor.execute("""
-                    SELECT id FROM messages 
-                    WHERE chat_id = ? AND role = ? AND content = ?
-                    AND datetime(timestamp, 'localtime') > datetime('now', '-1 minute', 'localtime')
-                    ORDER BY timestamp DESC LIMIT 1
-                """, (chat_id, role, content))
+                cursor.execute("SELECT COUNT(*) as count FROM messages WHERE chat_id = ?", (chat_id,))
+                result = cursor.fetchone()
+                position = (result['count'] if result else 0) + 1
                 
-                existing = cursor.fetchone()
-                if existing:
-                    logger.warning(f"Duplicate message detected for chat {chat_id}, returning existing ID: {existing[0]}")
-                    return existing[0]
+                message_id = f"{chat_id}_{position}"
+                logger.debug(f"Generated message ID: {message_id} (position: {position})")
+                return message_id
+                
+        except Exception as e:
+            logger.error(f"Error generating message ID for chat {chat_id}: {str(e)}")
+            return f"{chat_id}_{int(time.time() * 1000)}"
+    
+    def save_message(self, chat_id: str, role: str, content: str,
+                    thoughts: Optional[str] = None, provider: Optional[str] = None,
+                    model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None) -> Optional[str]:
+        """
+        Save message to chat history with optional file attachments.
+
+        Args:
+            chat_id: ID of the chat to add message to
+            role: Message role (system/user/assistant/tool)
+            content: Message content text
+            thoughts: Optional thinking/reasoning text
+            provider: Optional AI provider used
+            model: Optional AI model used
+            attached_file_ids: Optional list of file IDs to attach
+
+        Returns:
+            Optional[str]: Generated message ID if successful, None if failed
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                message_id = self._generate_message_id(chat_id)
                 
                 cursor.execute("""
-                    INSERT INTO messages (chat_id, role, content, thoughts, provider, model)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (chat_id, role, content, thoughts, provider, model))
-                message_id = cursor.lastrowid
+                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (message_id, chat_id, role, content, thoughts, provider, model))
                 
                 if attached_file_ids:
                     for file_id in attached_file_ids:
@@ -197,77 +381,268 @@ class DatabaseManager:
                     logger.debug(f"Linked {len(attached_file_ids)} files to message {message_id}")
                 
                 conn.commit()
+                
                 logger.debug(f"Saved new message {message_id} for chat {chat_id}: {role} - {content[:50]}...")
                 return message_id
         except Exception as e:
             logger.error(f"Error saving message: {str(e)}")
             return None
+
+    def get_chat_meta(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, name, isversion, belongsto, created_at FROM chats WHERE id = ?", (chat_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'id': row['id'],
+                    'name': row['name'],
+                    'isversion': bool(row['isversion']),
+                    'belongsto': row['belongsto'],
+                    'created_at': row['created_at']
+                }
+        except Exception as e:
+            logger.error(f"Error getting chat meta for {chat_id}: {e}")
+            return None
+
+    def record_lineage(self, message_id: str, role: str, parent_message_id: Optional[str] = None) -> bool:
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                root_id = message_id
+                if parent_message_id:
+                    cursor.execute("SELECT 1 FROM message_lineage WHERE message_id = ?", (parent_message_id,))
+                    parent_exists = cursor.fetchone() is not None
+                    if not parent_exists:
+                        cursor.execute("SELECT role FROM messages WHERE id = ?", (parent_message_id,))
+                        rrow = cursor.fetchone()
+                        parent_role = rrow[0] if rrow else None
+                        cursor.execute(
+                            """
+                            INSERT OR REPLACE INTO message_lineage(message_id, parent_message_id, root_message_id, role)
+                            VALUES(?,?,?,?)
+                            """,
+                            (parent_message_id, None, parent_message_id, parent_role)
+                        )
+                    cursor.execute("SELECT root_message_id FROM message_lineage WHERE message_id = ?", (parent_message_id,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        root_id = row[0]
+                    else:
+                        root_id = parent_message_id
+                cursor.execute("""
+                    INSERT OR REPLACE INTO message_lineage(message_id, parent_message_id, root_message_id, role)
+                    VALUES(?,?,?,?)
+                """, (message_id, parent_message_id, root_id, role))
+                conn.commit()
+                logger.info(f"[LINEAGE] Recorded lineage: msg={message_id}, parent={parent_message_id}, root={root_id}, role={role}")
+                return True
+        except Exception as e:
+            logger.error(f"[LINEAGE] Failed to record lineage for {message_id}: {e}")
+            return False
+
+    def get_lineage_root(self, message_id: str) -> Optional[str]:
+        """
+        Find the root message in a lineage chain.
+
+        Traverses the parent relationships upward to find the original
+        message that started this conversation branch.
+
+        Args:
+            message_id: Message ID to find the root for
+
+        Returns:
+            Optional[str]: Root message ID if found, None if error
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                current = message_id
+                visited = set()
+                for _ in range(self.MAX_SEARCH_ITERATIONS):
+                    cursor.execute("SELECT parent_message_id, root_message_id FROM message_lineage WHERE message_id = ?", (current,))
+                    row = cursor.fetchone()
+                    if not row:
+                        return current
+                    parent = row[0]
+                    root = row[1]
+                    if parent is None:
+                        return root or current
+                    if current in visited:
+                        return root or current
+                    visited.add(current)
+                    current = parent
+        except Exception as e:
+            logger.error(f"[LINEAGE] Failed to get lineage root for {message_id}: {e}")
+            return None
+
+    def get_lineage_versions(self, message_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all versions in a message's lineage tree.
+
+        Returns all messages that share the same root message, representing
+        different versions or branches of the same conversation point.
+
+        Args:
+            message_id: Message ID to get lineage versions for
+
+        Returns:
+            List[Dict[str, Any]]: List of version information including
+                message_id, chat_version_id, operation type, and timestamps
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                root = self.get_lineage_root(message_id) or message_id
+                cursor.execute("SELECT message_id, role, created_at FROM message_lineage WHERE root_message_id = ?", (root,))
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+                items = []
+                for r in rows:
+                    mid = r['message_id']
+                    chat_id = mid.rsplit('_', 1)[0] if '_' in mid else None
+                    op = 'original'
+                    try:
+                        if chat_id:
+                            cursor.execute("SELECT name, isversion FROM chats WHERE id = ?", (chat_id,))
+                            crow = cursor.fetchone()
+                            nm = (crow['name'] if crow and 'name' in crow.keys() else '') or ''
+                            isv = bool(crow['isversion']) if crow and 'isversion' in crow.keys() else False
+                            nml = nm.lower()
+                            if isv:
+                                if nml.startswith('edit_'):
+                                    op = 'edit'
+                                elif nml.startswith('retry_'):
+                                    op = 'retry'
+                                else:
+                                    op = 'retry'
+                            else:
+                                op = 'original'
+                    except Exception:
+                        op = 'original'
+                    items.append({
+                        'message_id': mid,
+                        'chat_version_id': chat_id,
+                        'operation': op,
+                        'created_at': r['created_at']
+                    })
+                items.sort(key=lambda x: (x['created_at'] or ''))
+                for idx, it in enumerate(items, start=1):
+                    it['version_number'] = idx
+                return items
+        except Exception as e:
+            logger.error(f"[LINEAGE] Failed to get lineage versions for {message_id}: {e}")
+            return []
     
-    def update_message(self, message_id: int, content: str, thoughts: Optional[str] = None) -> bool:
+    def update_message(self, message_id: str, content: str, thoughts: Optional[str] = None) -> bool:
         """Update existing message content and thoughts"""
+        if not self._validate_string(message_id, "message_id"):
+            return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("""
+                UPDATE messages
+                SET content = ?, thoughts = ?, timestamp = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (content, thoughts, message_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating message", update_operation, False)
+    
+    def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single message by ID"""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    UPDATE messages 
-                    SET content = ?, thoughts = ?, timestamp = CURRENT_TIMESTAMP
+                    SELECT id, chat_id, role, content, thoughts, provider, model, timestamp
+                    FROM messages 
                     WHERE id = ?
-                """, (content, thoughts, message_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Error updating message: {str(e)}")
-            return False
-    
-    def get_chat_history(self, chat_id: str) -> List[Dict[str, Any]]:
-        """Get chat history for a specific chat including attached files"""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, role, content, thoughts, provider, model, timestamp
-                FROM messages 
-                WHERE chat_id = ?
-                ORDER BY id ASC
-            """, (chat_id,))
-            
-            messages = []
-            for row in cursor.fetchall():
-                message_id = row["id"]
-                
-                cursor.execute("""
-                    SELECT f.id, f.original_name, f.file_size, f.file_type, f.api_state, f.provider, f.api_file_name
-                    FROM message_files mf
-                    JOIN files f ON mf.file_id = f.id
-                    WHERE mf.message_id = ?
-                    ORDER BY mf.created_at ASC
                 """, (message_id,))
                 
-                attached_files = []
-                for file_row in cursor.fetchall():
-                    attached_files.append({
-                        "id": file_row["id"],
-                        "name": file_row["original_name"],
-                        "size": file_row["file_size"],
-                        "type": file_row["file_type"],
-                        "api_state": file_row["api_state"],
-                        "provider": file_row["provider"],
-                        "api_file_name": file_row["api_file_name"]
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "id": row["id"],
+                        "chat_id": row["chat_id"],
+                        "role": row["role"],
+                        "content": row["content"],
+                        "thoughts": row["thoughts"],
+                        "provider": row["provider"],
+                        "model": row["model"],
+                        "timestamp": row["timestamp"]
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"Error getting message {message_id}: {str(e)}")
+            return None
+
+    def get_chat_history(self, chat_id: str) -> List[Dict[str, Any]]:
+        """Get chat history for a specific chat including attached files - Optimized to avoid N+1 queries"""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT
+                    m.id as message_id, m.role, m.content, m.thoughts,
+                    m.provider as message_provider, m.model, m.timestamp,
+                    f.id as file_id, f.original_name, f.file_size, f.file_type,
+                    f.api_state, f.provider as file_provider, f.api_file_name,
+                    mf.created_at as file_attached_at
+                FROM messages m
+                LEFT JOIN message_files mf ON m.id = mf.message_id
+                LEFT JOIN files f ON mf.file_id = f.id
+                WHERE m.chat_id = ?
+                ORDER BY m.id ASC, mf.created_at ASC
+            """, (chat_id,))
+
+            messages_map = defaultdict(lambda: {
+                "id": None,
+                "role": None,
+                "content": None,
+                "thoughts": None,
+                "provider": None,
+                "model": None,
+                "timestamp": None,
+                "attachedFiles": []
+            })
+
+            for row in cursor.fetchall():
+                message_id = row["message_id"]
+
+                if messages_map[message_id]["id"] is None:
+                    messages_map[message_id].update({
+                        "id": message_id,
+                        "role": row["role"],
+                        "content": row["content"],
+                        "thoughts": row["thoughts"],
+                        "provider": row["message_provider"],
+                        "model": row["model"],
+                        "timestamp": row["timestamp"]
                     })
-                
-                message_dict = {
-                    "id": row["id"],
-                    "role": row["role"],
-                    "content": row["content"],
-                    "thoughts": row["thoughts"],
-                    "provider": row["provider"],
-                    "model": row["model"],
-                    "timestamp": row["timestamp"]
-                }
-                
-                if attached_files:
-                    message_dict["attachedFiles"] = attached_files
-                
-                messages.append(message_dict)
+
+                if row["file_id"]:
+                    messages_map[message_id]["attachedFiles"].append({
+                        "id": row["file_id"],
+                        "name": row["original_name"],
+                        "size": row["file_size"],
+                        "type": row["file_type"],
+                        "api_state": row["api_state"],
+                        "provider": row["file_provider"],
+                        "api_file_name": row["api_file_name"]
+                    })
+
+            messages = []
+            for message_id in sorted(messages_map.keys()):
+                message = dict(messages_map[message_id])
+                if not message["attachedFiles"]:
+                    del message["attachedFiles"]
+                messages.append(message)
+
             return messages
     
     def get_all_chats(self) -> List[Dict[str, Any]]:
@@ -275,7 +650,7 @@ class DatabaseManager:
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, name, system_prompt, state, created_at
+                SELECT id, name, system_prompt, state, created_at, isversion, belongsto, last_active
                 FROM chats
                 ORDER BY created_at DESC
             """)
@@ -287,80 +662,235 @@ class DatabaseManager:
                     "name": row["name"],
                     "system_prompt": row["system_prompt"],
                     "state": row["state"],
-                    "created_at": row["created_at"]
+                    "created_at": row["created_at"],
+                    "isversion": bool(row["isversion"]),
+                    "belongsto": row["belongsto"],
+                    "last_active": row["last_active"]
                 })
             return chats
     
     def delete_chat(self, chat_id: str) -> bool:
-        """Delete chat and all its messages"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error deleting chat: {str(e)}")
+        """Delete main chat and all its descendant versions"""
+        if not self._validate_string(chat_id, "chat_id"):
             return False
+            
+        def delete_operation(conn, cursor):
+            descendants = self.find_all_descendants(chat_id)
+            all_chats_to_delete = descendants + [chat_id]
+            
+            logger.info(f"[CASCADE_DELETE] Deleting main chat {chat_id} and {len(descendants)} descendants: {all_chats_to_delete}")
+            
+            for target_chat_id in all_chats_to_delete:
+                cursor.execute("DELETE FROM chats WHERE id = ?", (target_chat_id,))
+                if cursor.rowcount > 0:
+                    logger.info(f"[CASCADE_DELETE] Deleted: {target_chat_id}")
+            
+            conn.commit()
+            return True
+            
+        return self._execute_with_connection("deleting chat", delete_operation, False)
+    
     
     def chat_exists(self, chat_id: str) -> bool:
-        """Check if chat exists"""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM chats WHERE id = ? LIMIT 1", (chat_id,))
-            return cursor.fetchone() is not None
+        """Check if chat exists - REFACTORED to use utility functions"""
+        return self._exists_in_table("chats", "id", chat_id)
     
-    def save_user_setting(self, key: str, value: str) -> bool:
-        """Save user setting"""
+    def find_main_chat(self, chat_id: str) -> Optional[str]:
+        """
+        Follow belongsto chain to find the main chat (isversion: false).
+
+        This method traverses the chat hierarchy upward through the belongsto
+        relationships until it finds a chat where isversion=false (the main chat).
+        Includes circular reference detection and depth limiting.
+
+        Args:
+            chat_id: Starting chat ID to trace back from
+
+        Returns:
+            Optional[str]: Main chat ID if found, None if error or not found
+        """
+        if not chat_id or chat_id == 'none':
+            return chat_id
+            
+        logger.debug(f"[FIND_MAIN_CHAT] Starting search for main chat from: {chat_id}")
+        
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO user_settings (key, value, updated_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                """, (key, value))
-                conn.commit()
-                return True
+                
+                current_chat_id = chat_id
+                visited_chats = set()
+                depth = 0
+
+                while current_chat_id and depth < self.MAX_LINEAGE_DEPTH:
+                    if current_chat_id in visited_chats:
+                        logger.error(f"[FIND_MAIN_CHAT] Circular reference detected in belongsto chain starting from {chat_id}")
+                        return None
+                    
+                    visited_chats.add(current_chat_id)
+                    
+                    cursor.execute("""
+                        SELECT isversion, belongsto
+                        FROM chats
+                        WHERE id = ?
+                    """, (current_chat_id,))
+                    
+                    result = cursor.fetchone()
+                    if not result:
+                        logger.error(f"[FIND_MAIN_CHAT] Chat {current_chat_id} not found while following belongsto chain")
+                        return None
+                    
+                    is_version = bool(result["isversion"])
+                    belongs_to = result["belongsto"]
+                    
+                    logger.debug(f"[FIND_MAIN_CHAT] Depth {depth}: Chat {current_chat_id} -> isversion: {is_version}, belongsto: {belongs_to}")
+                    
+                    if not is_version:
+                        logger.info(f"[FIND_MAIN_CHAT] Found main chat: {current_chat_id} (started from {chat_id})")
+                        return current_chat_id
+                    
+                    if not belongs_to:
+                        logger.warning(f"[FIND_MAIN_CHAT] Version chat {current_chat_id} has no belongsto value")
+                        return None
+                    
+                    current_chat_id = belongs_to
+                    depth += 1
+                
+                if depth >= self.MAX_LINEAGE_DEPTH:
+                    logger.error(f"[FIND_MAIN_CHAT] Exceeded max depth while following belongsto chain from {chat_id}")
+                
+                return None
+                
         except Exception as e:
-            logger.error(f"Error saving user setting: {str(e)}")
+            logger.error(f"Error following belongsto chain from {chat_id}: {str(e)}")
+            return None
+    
+    def find_all_descendants(self, chat_id: str) -> List[str]:
+        """
+        Find all descendant versions of a chat recursively.
+
+        This method traverses the chat hierarchy downward to find all chats
+        that have this chat as an ancestor through belongsto relationships.
+        Includes circular reference detection and depth limiting.
+
+        Args:
+            chat_id: Parent chat ID to find descendants for
+
+        Returns:
+            List[str]: List of descendant chat IDs
+        """
+        if not chat_id or chat_id == 'none':
+            return []
+            
+        logger.debug(f"[FIND_DESCENDANTS] Starting search for all descendants of: {chat_id}")
+        
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                descendants = []
+                visited_chats = set()
+
+                def find_children(parent_id: str, depth: int = 0):
+                    if depth >= self.MAX_DESCENDANT_DEPTH or parent_id in visited_chats:
+                        return
+                    
+                    visited_chats.add(parent_id)
+                    
+                    cursor.execute("""
+                        SELECT id FROM chats 
+                        WHERE belongsto = ? AND isversion = 1
+                    """, (parent_id,))
+                    
+                    children = cursor.fetchall()
+                    for child in children:
+                        child_id = child["id"]
+                        descendants.append(child_id)
+                        logger.debug(f"[FIND_DESCENDANTS] Depth {depth}: Found child {child_id} of {parent_id}")
+                        
+                        find_children(child_id, depth + 1)
+                
+                find_children(chat_id)
+                
+                logger.info(f"[FIND_DESCENDANTS] Found {len(descendants)} descendants of {chat_id}: {descendants}")
+                return descendants
+                
+        except Exception as e:
+            logger.error(f"Error finding descendants of {chat_id}: {str(e)}")
+            return []
+
+    def save_user_setting(self, key: str, value: str) -> bool:
+        """Save user setting"""
+        if not self._validate_string(key, "setting key") or not self._validate_string(value, "setting value", self._validator.SETTING_VALUE_MAX_LENGTH):
             return False
+            
+        def save_operation(conn, cursor):
+            cursor.execute("""
+                INSERT OR REPLACE INTO user_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (key, value))
+            conn.commit()
+            return True
+            
+        return self._execute_with_connection("saving user setting", save_operation, False)
     
     def get_user_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """Get user setting"""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM user_settings WHERE key = ?", (key,))
-            result = cursor.fetchone()
+        if not self._validate_string(key, "setting key"):
+            return default
+            
+        def get_operation(conn, cursor):
+            result = self._execute_query_with_params(cursor, 
+                "SELECT value FROM user_settings WHERE key = ?", (key,))
             return result["value"] if result else default
+            
+        return self._execute_with_connection("getting user setting", get_operation, default)
     
     def update_chat_name(self, chat_id: str, name: str) -> bool:
         """Update chat name"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE chats SET name = ? WHERE id = ?", (name, chat_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Error updating chat name: {str(e)}")
+        if not self._validate_string(chat_id, "chat_id"):
             return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("UPDATE chats SET name = ? WHERE id = ?", (name, chat_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating chat name", update_operation, False)
     
     def update_chat_state(self, chat_id: str, state: str) -> bool:
         """Update chat state (thinking/responding/static)"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE chats SET state = ? WHERE id = ?", (state, chat_id))
-                conn.commit()
-                updated = cursor.rowcount > 0
-                if updated:
-                    logger.debug(f"Updated chat {chat_id} state to '{state}'")
-                else:
-                    logger.warning(f"Failed to update chat {chat_id} state to '{state}' - chat may not exist")
-                return updated
-        except Exception as e:
-            logger.error(f"Error updating chat state for {chat_id}: {str(e)}")
+        if not self._validate_string(chat_id, "chat_id") or not self._validator.validate_chat_state(state):
             return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("UPDATE chats SET state = ? WHERE id = ?", (state, chat_id))
+            conn.commit()
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.debug(f"Updated chat {chat_id} state to '{state}'")
+            else:
+                logger.warning(f"Failed to update chat {chat_id} state to '{state}' - chat may not exist")
+            return updated
+
+        return self._execute_with_connection("updating chat state", update_operation, False)
+    
+    def update_chat_last_active(self, chat_id: str, last_active_chat_id: str) -> bool:
+        """Update last_active field for a chat (used for version memory)"""
+        if not self._validate_string(chat_id, "chat_id"):
+            return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("UPDATE chats SET last_active = ? WHERE id = ?", (last_active_chat_id, chat_id))
+            conn.commit()
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.debug(f"Updated chat {chat_id} last_active to '{last_active_chat_id}'")
+            else:
+                logger.warning(f"Failed to update chat {chat_id} last_active - chat may not exist")
+            return updated
+
+        return self._execute_with_connection("updating chat last_active", update_operation, False)
     
     def get_chat_state(self, chat_id: str) -> Optional[str]:
         """Get current chat state"""
@@ -369,7 +899,7 @@ class DatabaseManager:
             cursor.execute("SELECT state FROM chats WHERE id = ?", (chat_id,))
             result = cursor.fetchone()
             return result["state"] if result else None
-    
+
     def save_file_record(self, file_id: str, original_name: str, stored_filename: str, 
                         file_type: str, file_extension: str, file_size: int, 
                         chat_id: Optional[str] = None, md_filename: Optional[str] = None,
@@ -392,69 +922,61 @@ class DatabaseManager:
             logger.error(f"Error saving file record: {str(e)}")
             return False
     
+    def _get_file_base_query(self) -> str:
+        """Common file query to reduce duplication"""
+        return """
+            SELECT id, original_name, stored_filename, file_type, file_extension,
+                   file_size, upload_timestamp, chat_id, md_filename, api_file_name,
+                   api_state, provider
+            FROM files
+        """
+
+    def _build_file_dict(self, row) -> Dict[str, Any]:
+        """Build file dictionary from database row to reduce duplication"""
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "original_name": row["original_name"],
+            "stored_filename": row["stored_filename"],
+            "file_type": row["file_type"],
+            "file_extension": row["file_extension"],
+            "file_size": row["file_size"],
+            "upload_timestamp": row["upload_timestamp"],
+            "chat_id": row["chat_id"],
+            "md_filename": row["md_filename"],
+            "api_file_name": row["api_file_name"],
+            "api_state": row["api_state"],
+            "provider": row["provider"]
+        }
+
     def get_file_record(self, file_id: str) -> Optional[Dict[str, Any]]:
         """Get file record by ID"""
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, original_name, stored_filename, file_type, file_extension, 
-                       file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
-                       api_state, provider
-                FROM files WHERE id = ?
-            """, (file_id,))
+            query = self._get_file_base_query() + " WHERE id = ?"
+            cursor.execute(query, (file_id,))
             result = cursor.fetchone()
-            if result:
-                return {
-                    "id": result["id"],
-                    "original_name": result["original_name"],
-                    "stored_filename": result["stored_filename"],
-                    "file_type": result["file_type"],
-                    "file_extension": result["file_extension"],
-                    "file_size": result["file_size"],
-                    "upload_timestamp": result["upload_timestamp"],
-                    "chat_id": result["chat_id"],
-                    "md_filename": result["md_filename"],
-                    "api_file_name": result["api_file_name"],
-                    "api_state": result["api_state"],
-                    "provider": result["provider"]
-                }
-            return None
+            return self._build_file_dict(result)
     
     def get_all_files(self, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all file records, optionally filtered by chat_id"""
         with self._connect() as conn:
             cursor = conn.cursor()
+            query = self._get_file_base_query()
+
             if chat_id:
-                cursor.execute("""
-                    SELECT id, original_name, stored_filename, file_type, file_extension, 
-                           file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
-                           api_state, provider
-                    FROM files WHERE chat_id = ? ORDER BY upload_timestamp DESC
-                """, (chat_id,))
+                query += " WHERE chat_id = ? ORDER BY upload_timestamp DESC"
+                cursor.execute(query, (chat_id,))
             else:
-                cursor.execute("""
-                    SELECT id, original_name, stored_filename, file_type, file_extension, 
-                           file_size, upload_timestamp, chat_id, md_filename, api_file_name, 
-                           api_state, provider
-                    FROM files ORDER BY upload_timestamp DESC
-                """)
-            
+                query += " ORDER BY upload_timestamp DESC"
+                cursor.execute(query)
+
             files = []
             for row in cursor.fetchall():
-                files.append({
-                    "id": row["id"],
-                    "original_name": row["original_name"],
-                    "stored_filename": row["stored_filename"],
-                    "file_type": row["file_type"],
-                    "file_extension": row["file_extension"],
-                    "file_size": row["file_size"],
-                    "upload_timestamp": row["upload_timestamp"],
-                    "chat_id": row["chat_id"],
-                    "md_filename": row["md_filename"],
-                    "api_file_name": row["api_file_name"],
-                    "api_state": row["api_state"],
-                    "provider": row["provider"]
-                })
+                file_dict = self._build_file_dict(row)
+                if file_dict:
+                    files.append(file_dict)
             return files
     
     def delete_file_record(self, file_id: str) -> bool:
@@ -479,15 +1001,15 @@ class DatabaseManager:
     
     def associate_file_with_chat(self, file_id: str, chat_id: str) -> bool:
         """Associate a file with a chat"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE files SET chat_id = ? WHERE id = ?", (chat_id, file_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Error associating file with chat: {str(e)}")
+        if not self._validate_string(file_id, "file_id") or not self._validate_string(chat_id, "chat_id"):
             return False
+
+        def associate_operation(conn, cursor):
+            cursor.execute("UPDATE files SET chat_id = ? WHERE id = ?", (chat_id, file_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("associating file with chat", associate_operation, False)
     
     def update_file_api_info(self, file_id: str, api_file_name: Optional[str] = None, 
                             api_state: Optional[str] = None, provider: Optional[str] = None) -> bool:
@@ -516,47 +1038,52 @@ class DatabaseManager:
                 
                 params.append(file_id)
                 query = f"UPDATE files SET {', '.join(updates)} WHERE id = ?"
-                
+
                 cursor.execute(query, params)
+                rows_affected = cursor.rowcount
                 conn.commit()
-                
-                if cursor.rowcount > 0 and api_state is not None:
+
+                if rows_affected > 0 and api_state is not None:
                     try:
                         cursor.execute("SELECT temp_id FROM files WHERE id = ?", (file_id,))
                         result = cursor.fetchone()
                         temp_id = result['temp_id'] if result else None
-                       
+
                         if not cancellation_manager.is_cancelled(file_id):
-                            # Use dynamic import to avoid circular dependency
-                            from route.chat_route import publish_file_state
-                            publish_file_state(file_id, api_state, provider, temp_id)
-                            logger.info(f"[SSE] File state update broadcast: {file_id} (temp:{temp_id}) -> {api_state}")
+                            if hasattr(self, '_file_state_callback') and self._file_state_callback:
+                                try:
+                                    self._file_state_callback(file_id, api_state, provider, temp_id)
+                                    logger.info(f"[SSE] File state update signaled: {file_id} (temp:{temp_id}) -> {api_state}")
+                                except Exception as callback_error:
+                                    logger.error(f"Error in file state callback: {str(callback_error)}")
+                            else:
+                                logger.debug(f"No file state callback registered for {file_id}")
                         else:
-                            logger.info(f"[SSE] Skipped broadcast for cancelled file: {file_id} (temp:{temp_id}) -> {api_state}")
+                            logger.info(f"[SSE] Skipped signal for cancelled file: {file_id} (temp:{temp_id}) -> {api_state}")
                     except Exception as sse_error:
                         logger.error(f"Error broadcasting file state via SSE: {str(sse_error)}")
-                
-                return cursor.rowcount > 0
+
+                return rows_affected > 0
         except Exception as e:
             logger.error(f"Error updating file API info: {str(e)}")
             return False
     
     def update_file_md_info(self, file_id: str, md_filename: str) -> bool:
         """Update markdown filename for a file"""
-        try:
-            with self._connect() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE files SET md_filename = ?
-                    WHERE id = ?
-                """, (md_filename, file_id))
-                conn.commit()
-                return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"Error updating file MD info: {str(e)}")
+        if not self._validate_string(file_id, "file_id"):
             return False
-    
-    def link_files_to_message(self, message_id: int, file_ids: List[str]) -> bool:
+
+        def update_operation(conn, cursor):
+            cursor.execute("""
+                UPDATE files SET md_filename = ?
+                WHERE id = ?
+            """, (md_filename, file_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating file MD info", update_operation, False)
+
+    def link_files_to_message(self, message_id: str, file_ids: List[str]) -> bool:
         """Link multiple files to a message"""
         try:
             with self._connect() as conn:
@@ -572,11 +1099,30 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error linking files to message: {str(e)}")
             return False
+
+    def unlink_file_from_message(self, message_id: str, file_id: str) -> bool:
+        """Unlink a single file from a specific message without deleting the file"""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM message_files WHERE message_id = ? AND file_id = ?",
+                    (message_id, file_id)
+                )
+                conn.commit()
+                success = cursor.rowcount > 0
+                if success:
+                    logger.info(f"Unlinked file {file_id} from message {message_id}")
+                else:
+                    logger.warning(f"No link found to unlink for file {file_id} and message {message_id}")
+                return success
+        except Exception as e:
+            logger.error(f"Error unlinking file from message: {str(e)}")
+            return False
     
-    def get_message_files(self, message_id: int) -> List[Dict[str, Any]]:
+    def get_message_files(self, message_id: str) -> List[Dict[str, Any]]:
         """Get all files attached to a specific message"""
-        with self._connect() as conn:
-            cursor = conn.cursor()
+        def get_files_operation(conn, cursor):
             cursor.execute("""
                 SELECT f.id, f.original_name, f.file_size, f.file_type, f.api_state, f.provider, f.api_file_name
                 FROM message_files mf
@@ -584,7 +1130,7 @@ class DatabaseManager:
                 WHERE mf.message_id = ?
                 ORDER BY mf.created_at ASC
             """, (message_id,))
-            
+
             files = []
             for row in cursor.fetchall():
                 files.append({
@@ -597,6 +1143,8 @@ class DatabaseManager:
                     "api_file_name": row["api_file_name"]
                 })
             return files
+
+        return self._execute_with_connection("getting message files", get_files_operation, [])
     
     def get_chat_file_attachments_for_provider(self, chat_id: str, provider: str) -> List[Dict[str, Any]]:
         """Get list of file attachments that are ready to be included in requests for this chat and provider"""
@@ -631,7 +1179,20 @@ class DatabaseManager:
             return []
 
     def verify_files_availability(self, chat_id: str) -> Dict[str, Any]:
-        """Verify which files are still available in the API and update their states"""
+        """
+        Verify which files are still available in the API and update their states.
+
+        This method checks all files associated with a chat against the API
+        provider to ensure they are still accessible, updating their states
+        to 'unavailable' if they have been deleted from the provider.
+
+        Args:
+            chat_id: ID of the chat to verify files for
+
+        Returns:
+            Dict[str, Any]: Verification results including counts of available
+                and unavailable files
+        """
         try:
             from utils.config import get_provider_map
             
@@ -713,6 +1274,127 @@ class DatabaseManager:
                 'verified_count': 0,
                 'unavailable_count': 0
             }
+
+
+    def cascade_delete_message(self, message_id: str, chat_id: str) -> int:
+        """
+        Delete a message and all messages after it in the conversation.
+
+        This performs a cascade delete of the specified message and all
+        subsequent messages in the chat, maintaining referential integrity.
+
+        Args:
+            message_id: ID of the message to start deletion from
+            chat_id: ID of the chat containing the message
+
+        Returns:
+            int: Number of messages deleted
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT id FROM messages 
+                    WHERE chat_id = ?
+                    ORDER BY id ASC
+                """, (chat_id,))
+                
+                all_message_ids = [row["id"] for row in cursor.fetchall()]
+                
+                if message_id not in all_message_ids:
+                    logger.warning(f"Message {message_id} not found in chat {chat_id}")
+                    return 0
+                
+                message_index = all_message_ids.index(message_id)
+                messages_to_delete = all_message_ids[message_index:]
+                
+                if not messages_to_delete:
+                    return 0
+                
+                ids_str = ','.join('?' * len(messages_to_delete))
+                
+                cursor.execute(f"""
+                    DELETE FROM message_files 
+                    WHERE message_id IN ({ids_str})
+                """, messages_to_delete)
+                
+                cursor.execute(f"""
+                    DELETE FROM messages 
+                    WHERE id IN ({ids_str})
+                """, messages_to_delete)
+                
+                deleted_count = cursor.rowcount
+                conn.commit()
+                
+                logger.info(f"Cascade deleted {deleted_count} messages starting from {message_id}")
+                return deleted_count
+                
+        except Exception as e:
+            logger.error(f"Error cascade deleting messages: {str(e)}")
+            return 0
+
+    def cascade_delete_message_after(self, message_id: str, chat_id: str) -> int:
+        """
+        Delete all messages after a specific message (not including the message itself).
+
+        This is useful for retrying from a specific point in the conversation
+        while preserving the current message.
+
+        Args:
+            message_id: ID of the message to keep (delete everything after)
+            chat_id: ID of the chat containing the message
+
+        Returns:
+            int: Number of messages deleted
+        """
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT id FROM messages 
+                    WHERE chat_id = ?
+                    ORDER BY id ASC
+                """, (chat_id,))
+                
+                all_message_ids = [row["id"] for row in cursor.fetchall()]
+                
+                if message_id not in all_message_ids:
+                    logger.warning(f"Message {message_id} not found in chat {chat_id}")
+                    return 0
+                
+                message_index = all_message_ids.index(message_id)
+                messages_to_delete = all_message_ids[message_index + 1:]
+                
+                if not messages_to_delete:
+                    return 0
+                
+                ids_str = ','.join('?' * len(messages_to_delete))
+                
+                cursor.execute(f"""
+                    DELETE FROM message_files 
+                    WHERE message_id IN ({ids_str})
+                """, messages_to_delete)
+                
+                cursor.execute(f"""
+                    DELETE FROM messages 
+                    WHERE id IN ({ids_str})
+                """, messages_to_delete)
+                
+                deleted_count = cursor.rowcount
+                conn.commit()
+                
+                logger.info(f"Cascade deleted {deleted_count} messages after {message_id}")
+                return deleted_count
+                
+        except Exception as e:
+            logger.error(f"Error cascade deleting messages after {message_id}: {str(e)}")
+            return 0
+
+    def set_file_state_callback(self, callback: Callable[[str, str, str, str], None]) -> None:
+        """Set callback for file state changes to avoid circular imports"""
+        self._file_state_callback = callback
 
 
 db = DatabaseManager()

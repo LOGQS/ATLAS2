@@ -1,0 +1,112 @@
+/* Message Wrapper */
+.message-wrapper {
+  position: relative;
+  width: 100%;
+  transition: all 0.2s ease;
+}
+
+/* User message wrapper */
+.message-wrapper.user-message-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-bottom: 0; /* UserMessage component already has margin */
+}
+
+/* Assistant message wrapper */
+.message-wrapper.assistant {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+/* Message content container */
+.message-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* Hover state styling - disabled during editing */
+.message-wrapper:hover:not(.editing) {
+  /* Removed transform to prevent message bump */
+}
+
+/* Editing state styling */
+.message-wrapper.editing {
+  /* No special transform needed */
+}
+
+/* Show controls state */
+.message-wrapper.show-controls .message-controls.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* User message content styling */
+.message-wrapper.user-message-wrapper .message-content {
+  max-width: 400px;
+}
+
+/* Assistant message content styling */
+.message-wrapper.assistant .message-content {
+  width: 100%;
+}
+
+/* Controls container positioning for user messages */
+.message-wrapper.user-message-wrapper .message-controls {
+  align-self: stretch; /* Allow full width for hugging container */
+  min-width: 400px; /* Ensure at least message width coverage */
+}
+
+/* Controls container positioning for assistant messages */
+.message-wrapper.assistant .message-controls {
+  align-self: stretch; /* Allow full width for hugging container */
+  width: calc(100% + 40px); /* Account for negative margins */
+}
+
+
+/* Smooth transitions for all interactive elements */
+.message-wrapper * {
+  transition: opacity 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+}
+
+/* Focus styles for accessibility - removed to prevent unwanted outline on click */
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .message-wrapper.user-message-wrapper .message-content {
+    max-width: 280px;
+  }
+  
+  .message-wrapper.user-message-wrapper .message-controls {
+    min-width: 280px; /* Match content width */
+    margin-right: -8px; /* Less extension on mobile */
+    padding-right: 8px; /* Reduced padding on mobile */
+  }
+  
+  
+  /* On mobile, show controls on hover (same as desktop) */
+  .message-wrapper.show-controls .message-controls.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .message-wrapper:hover {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .message-wrapper,
+  .message-wrapper:hover,
+  .message-controls.visible {
+    transition: none;
+    transform: none;
+  }
+}

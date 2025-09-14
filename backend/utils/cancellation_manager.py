@@ -2,7 +2,8 @@
 
 import threading
 import multiprocessing
-from typing import Dict, List, Any, Set
+from typing import Dict, List, Set, Union
+from concurrent.futures import Future
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -12,7 +13,7 @@ class CancellationManager:
     
     def __init__(self):
         self._cancelled_files: Set[str] = set()
-        self._active_tasks: Dict[str, Dict[str, Any]] = {}
+        self._active_tasks: Dict[str, Dict[str, Union[Future, threading.Event]]] = {}
         self._active_processes: Dict[str, multiprocessing.Process] = {}
         
         self._cancelled_chats: Set[str] = set()
@@ -43,7 +44,9 @@ class CancellationManager:
                         try:
                             process.kill()
                         except AttributeError:
-                            pass  
+                            logger.warning(f"[CANCEL] Unable to force kill process for file {file_id} - kill() not supported")
+                        except Exception as e:
+                            logger.error(f"[CANCEL] Error force killing process for file {file_id}: {e}")  
                     logger.info(f"[CANCEL] Upload process terminated for file {file_id}")
                 del self._active_processes[file_id]
             
@@ -66,19 +69,24 @@ class CancellationManager:
         for file_id in file_ids:
             self.cancel_file(file_id)
     
-    def register_future(self, file_id: str, future: Any):
+    def _ensure_task_entry(self, file_id: str):
+        """Ensure a task entry exists for the given file_id"""
+        if file_id not in self._active_tasks:
+            self._active_tasks[file_id] = {}
+
+    def register_future(self, file_id: str, future: Future):
         """Register a ThreadPoolExecutor future for cancellation tracking"""
         with self._lock:
-            if file_id not in self._active_tasks:
-                self._active_tasks[file_id] = {}
+            self._ensure_task_entry(file_id)
             self._active_tasks[file_id]['future'] = future
-    
+            logger.debug(f"[CANCEL] Registered future for file {file_id}")
+
     def register_polling_event(self, file_id: str, stop_event: threading.Event):
         """Register a polling thread's stop event for cancellation"""
         with self._lock:
-            if file_id not in self._active_tasks:
-                self._active_tasks[file_id] = {}
+            self._ensure_task_entry(file_id)
             self._active_tasks[file_id]['polling_event'] = stop_event
+            logger.debug(f"[CANCEL] Registered polling event for file {file_id}")
     
     def unregister_task(self, file_id: str, task_type: str):
         """Unregister a completed task"""
@@ -96,12 +104,7 @@ class CancellationManager:
         """Register a upload process for cancellation tracking"""
         with self._lock:
             self._active_processes[file_id] = process
-    
-    def unregister_process(self, file_id: str):
-        """Unregister a completed upload process"""
-        with self._lock:
-            if file_id in self._active_processes:
-                del self._active_processes[file_id]
+            logger.debug(f"[CANCEL] Registered process for file {file_id}")
     
     def cleanup_file(self, file_id: str):
         """Clean up all tracking for a file"""
@@ -111,15 +114,7 @@ class CancellationManager:
                 del self._active_tasks[file_id]
             if file_id in self._active_processes:
                 del self._active_processes[file_id]
-    
-    def cleanup_process(self, process_id: str):
-        """Clean up all tracking for a process (TTS, etc.)"""
-        with self._lock:
-            self._cancelled_files.discard(process_id)
-            if process_id in self._active_tasks:
-                del self._active_tasks[process_id]
-            if process_id in self._active_processes:
-                del self._active_processes[process_id]
+            logger.debug(f"[CANCEL] Cleaned up all tracking for file {file_id}")
     
     def is_chat_cancelled(self, chat_id: str) -> bool:
         """Check if a chat has been cancelled"""
@@ -152,6 +147,12 @@ class CancellationManager:
                 del self._chat_cancel_events[chat_id]
             logger.debug(f"[CANCEL] Unregistered chat thread for {chat_id}")
     
+    def clear_chat_cancelled_state(self, chat_id: str):
+        """Clear only the cancelled state for a chat, preserving thread tracking"""
+        with self._lock:
+            self._cancelled_chats.discard(chat_id)
+            logger.info(f"[CANCEL] Cleared cancelled state for chat {chat_id}")
+
     def cleanup_chat(self, chat_id: str):
         """Clean up all tracking for a chat"""
         with self._lock:
@@ -160,5 +161,6 @@ class CancellationManager:
                 del self._active_chat_threads[chat_id]
             if chat_id in self._chat_cancel_events:
                 del self._chat_cancel_events[chat_id]
+            logger.debug(f"[CANCEL] Cleaned up all tracking for chat {chat_id}")
 
 cancellation_manager = CancellationManager()

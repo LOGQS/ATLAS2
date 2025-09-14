@@ -1,0 +1,471 @@
+/* UserMessageFiles - Scoped to avoid conflicts with AttachedFiles */
+.user-message-files {
+  width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.2); /* Grey border */
+  border-radius: 8px;
+  background: rgba(64, 64, 64, 0.15); /* Dark grey background */
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+  transition: all 0.3s ease;
+  font-size: 0.9em;
+}
+
+.user-message-files:hover {
+  border-color: rgba(255, 146, 79, 0.2);
+  background: rgba(80, 80, 80, 0.2);
+}
+
+.user-message-files-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s ease;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.user-message-files-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.user-message-files-header:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.user-message-files-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.user-message-files-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 146, 79, 0.2);
+  border: 2px solid rgba(255, 146, 79, 0.6);
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7em;
+}
+
+.user-message-files-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.file-count {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 146, 79, 0.9);
+}
+
+.file-names {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.2;
+  cursor: help;
+}
+
+/* Collapse Arrow - same as ThinkBox */
+.user-message-files-collapse-arrow {
+  transition: transform 0.3s ease;
+  transform-origin: center;
+}
+
+.user-message-files-collapse-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.user-message-files-arrow-icon {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid rgba(255, 255, 255, 0.6);
+  transition: border-color 0.2s ease;
+}
+
+.user-message-files-header:hover .user-message-files-arrow-icon {
+  border-top-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Content - exact ThinkBox approach */
+.user-message-files-content {
+  max-height: 300px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  border-top: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.user-message-files-content.collapsed {
+  max-height: 0;
+  padding: 0;
+  border-top: none;
+}
+
+.user-message-files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 16px;
+  background: rgba(96, 96, 96, 0.08);
+}
+
+/* Custom scrollbar for content like ThinkBox */
+.user-message-files-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.user-message-files-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.user-message-files-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+.user-message-files-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.user-message-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px 8px;
+  transition: all 0.2s ease;
+}
+
+.user-message-file-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.user-message-file-item .user-message-file-icon {
+  font-size: 1em;
+  flex-shrink: 0;
+}
+
+.user-message-file-item .user-message-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.user-message-file-item .user-message-file-name {
+  font-size: 0.75em;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.user-message-file-item .user-message-file-size {
+  font-size: 0.65em;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1;
+}
+
+/* Focus styles for accessibility */
+.user-message-files-header:focus {
+  outline: 2px solid rgba(255, 146, 79, 0.4);
+  outline-offset: -2px;
+}
+
+.user-message-files-header:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Animation for initial load */
+.user-message-files {
+  animation: userFilesFadeIn 0.3s ease-out;
+}
+
+@keyframes userFilesFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* The main styling uses grey/black theme compatible colors */
+
+/* Unavailable file states */
+.user-message-file-item.unavailable {
+  position: relative;
+  background: rgba(var(--error-rgb, 231, 76, 60), 0.1);
+  border-color: rgba(var(--error-rgb, 231, 76, 60), 0.2);
+}
+
+.user-message-file-item.clickable {
+  cursor: pointer;
+}
+
+.user-message-file-item.clickable:hover {
+  background: rgba(var(--error-rgb, 231, 76, 60), 0.15);
+  border-color: rgba(var(--error-rgb, 231, 76, 60), 0.3);
+}
+
+.file-retry-overlay {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.8);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 0.7em;
+  line-height: 1;
+  opacity: 1;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.retry-icon {
+  animation: userMessageFileSpin 2s linear infinite;
+}
+
+@keyframes userMessageFileSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.file-unavailable-status {
+  font-size: 0.6em;
+  color: var(--error-color, #e74c3c);
+  font-weight: 500;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+/* Modal styles */
+.file-reupload-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.file-reupload-modal {
+  background: var(--card-bg, white);
+  border-radius: 12px;
+  padding: 0;
+  min-width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: between;
+  align-items: center;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-color);
+  flex: 1;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.modal-close-btn:hover {
+  background: rgba(var(--primary-rgb), 0.1);
+  color: var(--text-color);
+}
+
+.modal-body {
+  padding: 16px 24px;
+}
+
+.modal-body p {
+  margin: 0 0 12px;
+  color: var(--text-color);
+  line-height: 1.5;
+}
+
+.modal-body p:last-child {
+  margin-bottom: 0;
+  font-weight: 500;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px 20px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  min-width: 80px;
+}
+
+.modal-btn-secondary {
+  background: var(--bg-secondary, #f8f9fa);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, #e1e5e9);
+}
+
+.modal-btn-secondary:hover {
+  background: var(--bg-tertiary, #e9ecef);
+}
+
+.modal-btn-primary {
+  background: var(--primary-color, #007bff);
+  color: white;
+}
+
+.modal-btn-primary:hover {
+  background: var(--primary-hover, #0056b3);
+}
+
+/* Modal styling uses CSS variables that adapt to theme automatically */
+
+/* File delete button styles */
+.user-message-file-item {
+  position: relative;
+}
+
+.file-delete-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s ease;
+  z-index: 15;
+  line-height: 1;
+  padding: 0;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.user-message-file-item:hover .file-delete-btn {
+  opacity: 1;
+}
+
+.file-delete-btn:hover {
+  background: rgba(255, 255, 255, 1);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.file-delete-loading {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 15;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.delete-spinner {
+  font-size: 10px;
+  animation: userMessageFileSpin 1s linear infinite;
+}
+
+.user-message-file-item.deleting {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Delete button styling is already appropriate for dark theme */
+
+/* Responsive design */
+@media (max-width: 600px) {
+  .user-message-files-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 6px;
+  }
+  
+  .user-message-file-item {
+    padding: 4px 6px;
+  }
+  
+  .user-message-file-item .file-name {
+    font-size: 0.7em;
+  }
+  
+  .user-message-file-item .file-size {
+    font-size: 0.6em;
+  }
+}

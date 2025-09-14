@@ -1,0 +1,131 @@
+- For chat changes (e.g. by editing, deleting, retrying messages) there is the versioning window. You can delete, rename different versions.
+But the versioning window is not the only option to change between different versions. Under each message (ONLY IF IT WAS EDITED OR RETRIED,
+IT IS NOT POSSIBLE TO DO THIS WITH DELETION), when it got retry previously, it keeps a switch that you can switch between versions of that
+message (e.g. 1 would be before retry 2 would be after, if you have retried/edited only once) and the chat after that edited message would
+change accordingly. Since this would be equivalent to a version, it would be handled as normal switching in the version window and both of these
+mechanisms would use the same state to keep coherency. We would keep these versions inside the db. Each chat would have versions section in which
+we can store different versions (e.g. with their actions names etc., non interfering). All versions get deleted when the chat gets deleted.  
+
+Edit:
+- If edited user message, remove everything after and the user message, then send the "new user message"
+to chat. Rest would be handled as normally when user sends a message.
+- If edited model response, just edit the message from frontend and backend. No sending.
+
+Retry:
+- If retried user message, remove everything after and the user message, then send the "same user message"
+to chat. Rest would be handled as normally when user sends a message.
+- If retried model response, just trigger "retry" for the last user message just before that "retried" model 
+response. (e.g. if clicked on retry on a n+1 position model response, it would handle it EXACT SAME as triggering
+retry on the user message at n position, EVERYTHING EXACTLY SAME)
+
+Delete:
+- Handled same for both user messages and model responses. Just remove it and everything that comes after it.
+
+  
+  
+  DETAILED OPERATION ANALYSIS
+
+  CASE 1: USER MESSAGE EDIT
+
+  Scenario: User clicks edit on "hi", changes to "yo"
+
+  Per operations.txt: "If edited user message, remove everything after and the user message, then send the 'new user message' to chat"
+
+  Step-by-Step Process:
+  1. Loading starts → Skeleton shows
+  2. Version switch → Still loading, skeleton continues
+  3. Load identical version → Still loading, skeleton shows "hi" + "Hi there! How can I help..."
+  4. Apply edit operation:
+    - Edit "hi" → "yo" in database
+    - Remove everything after = Delete assistant response
+    - Reload messages → Database now has ONLY "yo" message
+    - Loading ends → User sees: "yo" (no assistant response)
+  5. Send "yo" as fresh message → Start streaming new response
+
+  Final Flow: Loading → See "yo" alone → Stream fresh response to "yo"
+
+  CASE 2: USER MESSAGE RETRY
+
+  Scenario: User clicks retry on "hi"
+
+  Per operations.txt: "If retried user message, remove everything after and the user message, then send the 'same user message' to chat"
+
+  Step-by-Step Process:
+  1. Loading starts → Skeleton shows
+  2. Version switch → Still loading, skeleton continues
+  3. Load identical version → Still loading, skeleton shows "hi" + "Hi there! How can I help..."
+  4. Apply retry operation:
+    - Remove everything after user message = Delete assistant response
+    - Reload messages → Database now has ONLY "hi" message
+    - Loading ends → User sees: "hi" (no assistant response)
+  5. Send "hi" as fresh message → Start streaming new response
+
+  Final Flow: Loading → See "hi" alone → Stream fresh response to "hi"
+
+  CASE 3: ASSISTANT MESSAGE EDIT
+
+  Scenario: User edits assistant response content
+
+  Per operations.txt: "If edited model response, just edit the message from frontend and backend. No sending."
+
+  Step-by-Step Process:
+  1. Loading starts → Skeleton shows
+  2. Version switch → Still loading, skeleton continues
+  3. Load identical version → Still loading, skeleton shows original conversation
+  4. Apply edit operation:
+    - Edit assistant message content in database
+    - Reload messages → Shows conversation with edited assistant response
+    - Loading ends → User sees: Full conversation with edited response
+  5. No streaming → Operation complete
+
+  Final Flow: Loading → See edited conversation → Done (no streaming)
+
+  CASE 4: ASSISTANT MESSAGE RETRY
+
+  Scenario: User clicks retry on assistant response
+
+  Per operations.txt: "If retried model response, just trigger 'retry' for the last user message just before that 'retried' model response... EVERYTHING EXACTLY SAME"
+
+  Step-by-Step Process:
+  1. Loading starts → Skeleton shows
+  2. Version switch → Still loading, skeleton continues
+  3. Load identical version → Still loading, skeleton shows full conversation
+  4. Apply retry operation:
+    - Delete assistant response and everything after
+    - Reload messages → Database now has ONLY the user message before the assistant
+    - Loading ends → User sees: Just the user message (no assistant response)
+  5. Send that user message as retry → Start streaming fresh response
+
+  Final Flow: Loading → See user message alone → Stream fresh response
+
+  CASE 5: DELETE ANY MESSAGE
+
+  Scenario: User deletes any message
+
+  Per operations.txt: "Handled same for both user messages and model responses. Just remove it and everything that comes after it."
+
+  Step-by-Step Process:
+  1. Loading starts → Skeleton shows
+  2. Version switch → Still loading, skeleton continues
+  3. Load identical version → Still loading, skeleton shows original conversation
+  4. Apply delete operation:
+    - Delete target message and everything after it
+    - Reload messages → Shows remaining conversation before deleted message
+    - Loading ends → User sees: Remaining conversation
+  5. No streaming → Operation complete
+
+  Final Flow: Loading → See remaining conversation → Done (no streaming)
+
+  IMPLEMENTATION REQUIREMENTS
+
+  Loading Animation Rules:
+
+  - Continues until the user can see the correct intermediate state per operations.txt
+  - Ends when the database changes are applied and reloaded
+  - Never overlaps with streaming for operations that require streaming
+
+  Streaming Rules:
+
+  - Only starts after loading animation ends
+  - Only for operations that require "sending" messages (user edit/retry, assistant retry)
+  - Never for operations that just edit content (assistant edit, delete)

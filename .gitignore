@@ -20,6 +20,8 @@ data/
 
 # AI coder
 .claude/
+CLAUDE.md
 
 # Notes/Guides
-*.md
+*_guide.md
+# *.md

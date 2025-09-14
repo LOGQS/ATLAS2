@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import '../styles/SettingsWindow.css';
+import '../styles/sections/SettingsWindow.css';
 
 const SettingsWindow: React.FC = () => {
   const [theme, setTheme] = useState('dark');
