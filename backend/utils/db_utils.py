@@ -891,7 +891,25 @@ class DatabaseManager:
             return updated
 
         return self._execute_with_connection("updating chat last_active", update_operation, False)
-    
+
+    def set_all_chats_static(self) -> int:
+        """Set all non-static chats to static state. Returns number of chats updated."""
+        def update_operation(conn, cursor):
+            cursor.execute("""
+                UPDATE chats
+                SET state = 'static'
+                WHERE state IN ('thinking', 'responding')
+            """)
+            conn.commit()
+            updated_count = cursor.rowcount
+            if updated_count > 0:
+                logger.info(f"Set {updated_count} active chat(s) to static state during shutdown")
+            else:
+                logger.debug("No active chats to set to static during shutdown")
+            return updated_count
+
+        return self._execute_with_connection("setting all chats to static", update_operation, 0)
+
     def get_chat_state(self, chat_id: str) -> Optional[str]:
         """Get current chat state"""
         with self._connect() as conn:

@@ -6,6 +6,8 @@ import os
 import sys
 import multiprocessing
 from pathlib import Path
+import signal
+import atexit
 
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
@@ -19,8 +21,40 @@ from route.file_route import register_file_routes
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
+from utils.db_utils import db
 
 logger = get_logger(__name__)
+
+_shutdown_handled = False
+
+def handle_shutdown(signum=None, frame=None):
+    """Handle graceful shutdown - set all active chats to static state"""
+    global _shutdown_handled
+
+    if _shutdown_handled:
+        logger.debug("Shutdown handler already executed, skipping duplicate call")
+        return
+
+    _shutdown_handled = True
+
+    logger.info("===== ATLAS2 SHUTDOWN INITIATED =====")
+
+    if signum:
+        logger.info(f"Received signal: {signum}")
+
+    try:
+        updated_count = db.set_all_chats_static()
+        if updated_count > 0:
+            logger.info(f"Successfully set {updated_count} chat(s) to static state")
+        else:
+            logger.info("No active chats to update during shutdown")
+
+        logger.info("===== ATLAS2 SHUTDOWN COMPLETED =====")
+    except Exception as e:
+        logger.error(f"Error during shutdown handler: {e}")
+
+    if signum is not None:
+        sys.exit(0)
 
 def create_app():
     """Create and configure the Flask application"""
@@ -84,7 +118,7 @@ def create_app():
 
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
-    
+
     logs_dir = Path("..") / "logs"
     logs_dir.mkdir(exist_ok=True)
     log_file = logs_dir / "atlas.log"
@@ -93,11 +127,23 @@ if __name__ == '__main__':
             f.truncate(0)
     except (OSError, IOError):
         pass
-    
+
     app = create_app()
-    
+
+    logger.info("Registering shutdown handlers...")
+
+    atexit.register(handle_shutdown)
+
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, handle_shutdown)
+
+    logger.info("Shutdown handlers registered successfully")
     logger.info("Starting ATLAS2 Backend on 0.0.0.0:5000")
-    
+
     app.run(
         host='0.0.0.0',
         port=5000,
