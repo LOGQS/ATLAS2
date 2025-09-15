@@ -275,18 +275,31 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId, onChatStateChange, loadHistory]);
 
   const loadHistoryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const previousChatIdRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
-    if (chatId) {
+    if (chatId && chatId !== previousChatIdRef.current) {
       logger.info(`[CHAT_SWITCH] ===== CHAT COMPONENT RECEIVED NEW CHATID =====`);
-      logger.info(`[CHAT_SWITCH] New chatId: ${chatId}`);
+      logger.info(`[CHAT_SWITCH] Previous chatId: ${previousChatIdRef.current}, New chatId: ${chatId}`);
       logger.info(`[CHAT_SWITCH] Current messages count: ${messages.length}`);
       logger.info(`[CHAT_SWITCH] isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
-      
+
+      if (previousChatIdRef.current) {
+        logger.info(`[CHAT_SWITCH] Clearing state for fast switch`);
+        setMessages([]);
+        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', state: 'static' });
+        setFirstMessageSent(false);
+        setPersistingAfterStream(false);
+        setWasStreaming(false);
+      }
+
+      previousChatIdRef.current = chatId;
+
       if (loadHistoryTimeoutRef.current) {
         clearTimeout(loadHistoryTimeoutRef.current);
         logger.info(`[DOUBLE_MOUNT] Cancelled pending loadHistory call due to rapid remount`);
       }
-      
+
       loadHistoryTimeoutRef.current = setTimeout(() => {
         logger.info(`[CHAT_SWITCH] Calling loadHistory() after debounce`);
         loadHistory().then(() => {
@@ -296,7 +309,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         });
       }, LOAD_HISTORY_DEBOUNCE_MS);
     }
-    
+
     return () => {
       if (loadHistoryTimeoutRef.current) {
         clearTimeout(loadHistoryTimeoutRef.current);
@@ -307,7 +320,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
 
   useEffect(() => {
-    if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isLoading && !isOperationLoading) {
+    logger.debug(`[FirstMessage] Effect triggered - chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}, firstMessageSent: ${firstMessageSent}, isOperationLoading: ${isOperationLoading}`);
+
+    if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isOperationLoading) {
       logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
 
       performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
@@ -329,7 +344,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, isActive, firstMessage, firstMessageSent, isLoading, isOperationLoading]);
+  }, [chatId, isActive, firstMessage, firstMessageSent, isOperationLoading]);
 
 
   useEffect(() => {
@@ -612,7 +627,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
       performanceTracker.mark(performanceTracker.MARKS.API_CALL_START, cid);
 
-      const response = await fetch(apiUrl('/api/chat/stream'), {
+      const fetchPromise = fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -625,6 +640,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
 
       performanceTracker.mark(performanceTracker.MARKS.API_CALL_SENT, cid);
+
+      const response = await fetchPromise;
 
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       logger.debug(`[Chat] Message sent successfully for ${chatId}`);

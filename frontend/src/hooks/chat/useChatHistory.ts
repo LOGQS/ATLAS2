@@ -21,9 +21,10 @@ interface LoadHistoryOptions {
 
 export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistoryProps) => {
   const [isLoading, setIsLoading] = useState(true);
-  
+
   const setMessagesRef = useRef(setMessages);
-  
+  const abortControllerRef = useRef<AbortController | undefined>(undefined);
+
   useEffect(() => {
     setMessagesRef.current = setMessages;
     logger.info(`[RECONCILE] Updated setMessages ref for chatId: ${chatId}`);
@@ -35,10 +36,18 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
     const forceReplaceMessages = options.forceReplace ?? false;
     const silent = options.silent ?? false;
 
+    if (abortControllerRef.current) {
+      logger.info(`[ChatHistory] Aborting previous loadHistory for ${targetChatId}`);
+      abortControllerRef.current.abort();
+    }
+
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
+
     if (!silent) setIsLoading(true);
     try {
       logger.info(`[ChatHistory] === LOAD HISTORY CALLED FOR ${targetChatId} (forceReplace: ${forceReplaceMessages}) ===`);
-      const res = await fetch(apiUrl(`/api/db/chat/${targetChatId}`));
+      const res = await fetch(apiUrl(`/api/db/chat/${targetChatId}`), { signal });
       const data: { history?: Message[]; error?: string } = await res.json();
       
       if (res.ok) {
@@ -115,8 +124,12 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
       } else {
         logger.error(`[ChatHistory] Failed to load history for ${targetChatId}:`, data.error);
       }
-    } catch (e) {
-      logger.error(`[ChatHistory] Error loading history for ${targetChatId}:`, e);
+    } catch (e: any) {
+      if (e.name === 'AbortError') {
+        logger.info(`[ChatHistory] Load history aborted for ${targetChatId}`);
+      } else {
+        logger.error(`[ChatHistory] Error loading history for ${targetChatId}:`, e);
+      }
     } finally {
       if (!silent) setIsLoading(false);
     }
@@ -130,12 +143,15 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.info(`[RELOAD_NOTIFIER] Reload notification received for ${chatId} - calling loadHistory(forceReplace: true)`);
         loadHistory({ forceReplace: true });
       };
-      
+
       reloadNotifier.register(chatId, reloadFn);
-      
+
       return () => {
         logger.info(`[RELOAD_NOTIFIER] Component unmounting - unregistering reload for ${chatId}`);
         reloadNotifier.unregister(chatId);
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
       };
     }
   }, [chatId, loadHistory]);

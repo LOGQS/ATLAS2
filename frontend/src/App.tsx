@@ -438,10 +438,10 @@ function App() {
 
   const handleDeleteChat = async (chatId: string) => {
     logger.info('Deleting chat:', chatId);
-    
+
     const originalChats = chats;
     const originalPendingMessages = new Map(pendingFirstMessages);
-    
+
     setChats(prev => prev.filter(chat => chat.id !== chatId));
     setPendingFirstMessages(prev => {
       const newMap = new Map(prev);
@@ -473,13 +473,13 @@ function App() {
       } else {
         const data = await response.json();
         logger.error('Failed to delete chat:', data.error);
-        
+
         setChats(originalChats);
         setPendingFirstMessages(originalPendingMessages);
       }
     } catch (error) {
       logger.error('Failed to delete chat:', error);
-      
+
       setChats(originalChats);
       setPendingFirstMessages(originalPendingMessages);
     }
@@ -540,6 +540,7 @@ function App() {
     });
   }, []);
 
+
   const handleActiveStateChange = useCallback((chatId: string, isReallyActive: boolean) => {
     logger.info('Chat confirms active state:', chatId, isReallyActive);
     if (isReallyActive) {
@@ -574,7 +575,7 @@ function App() {
         logger.info(`[BULK_DELETE] Removed ${actuallyDeletedChats.length} chats from UI (requested: ${chatIds.length}, cascade: ${data.cascade_deleted})`);
         
         setChats(prev => prev.filter(chat => !actuallyDeletedChats.includes(chat.id)));
-        
+
         setPendingFirstMessages(prev => {
           const newMap = new Map(prev);
           actuallyDeletedChats.forEach((id: string) => newMap.delete(id));
@@ -807,10 +808,10 @@ function App() {
         
         {(hasMessageBeenSent && activeChatId !== 'none') && (
           <>
-            <Chat 
-              key={activeChatId} 
-              ref={chatRef} 
-              chatId={activeChatId} 
+            <Chat
+              key="main-chat"
+              ref={chatRef}
+              chatId={activeChatId}
               isActive={true}
               firstMessage={pendingFirstMessages.get(activeChatId) || ''}
               onChatStateChange={handleChatStateChange}
