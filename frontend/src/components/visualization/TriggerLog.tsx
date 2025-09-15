@@ -4,141 +4,167 @@ import React from 'react';
 import '../../styles/visualization/TriggerLog.css';
 import { apiUrl } from '../../config/api';
 import { liveStore } from '../../utils/chat/LiveStore';
+import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 
 interface TriggerLogProps {
   // Minimal dependency: we only need the active chat id
   activeChatId: string;
 }
 
-// Helper to parse message position from id like "<chat_id>_<pos>"
-const parsePosition = (id: string): { base: string; pos: number } | null => {
-  if (!id || id.indexOf('_') === -1) return null;
-  const parts = id.split('_');
-  const last = parts.pop();
-  if (!last) return null;
-  const pos = parseInt(last, 10);
-  if (Number.isNaN(pos)) return null;
-  const base = parts.join('_');
-  return { base, pos };
-};
 
 const TriggerLog: React.FC<TriggerLogProps> = ({ activeChatId }) => {
   const handleClick = async () => {
     const timestamp = new Date().toISOString();
-    console.group(`🔍 TriggerLog - MessageVersionSwitcher visibility @ ${timestamp}`);
+    console.group(`🔍 TriggerLog - Chat Loading Animation Analysis @ ${timestamp}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log(`Active Chat: ${activeChatId}`);
+    console.log(`📍 QUESTION: Is chat loading animation active in the current chat? If so why. All states that can cause this and which ones are causing it`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`🎯 Active Chat: ${activeChatId}`);
 
     if (!activeChatId || activeChatId === 'none') {
-      console.log('No active chat.');
+      console.log('❌ No active chat - cannot analyze loading states.');
       console.groupEnd();
       return;
     }
 
     try {
-      // 1) Fetch latest chat history for deterministic debugging
-      const res = await fetch(apiUrl(`/api/db/chat/${activeChatId}`));
-      const data = await res.json();
-      if (!res.ok) {
-        console.error('Failed to load chat for debug:', data.error);
-        console.groupEnd();
-        return;
-      }
-      const history: Array<{ id: string; role: 'user' | 'assistant'; content: string }>
-        = (data.history || []) as any;
+      // 1) Get LiveStore state (streaming states)
+      const liveState = liveStore.get(activeChatId);
+      const streamingState = liveState?.state ?? 'static';
+      const isStreaming = streamingState !== 'static';
 
-      // 2) Determine live state and last assistant id (matches Chat logic)
-      const live = liveStore.get(activeChatId);
-      const liveState = live?.state ?? 'static';
-      const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
-      const lastAssistantId = lastAssistant?.id;
+      console.groupCollapsed(`📡 LiveStore Streaming State`);
+      console.log(`State: ${streamingState}`);
+      console.log(`Is Streaming: ${isStreaming}`);
+      console.log(`Content Buffer: ${liveState?.contentBuf?.length || 0} chars`);
+      console.log(`Thoughts Buffer: ${liveState?.thoughtsBuf?.length || 0} chars`);
+      console.log(`Last Assistant ID: ${liveState?.lastAssistantId || 'none'}`);
+      console.log(`Version: ${liveState?.version || 0}`);
+      console.groupEnd();
 
-      // 3) Helper to check versions for a message id (with assistant fallback)
-      const checkHasVersions = async (msgId: string, role: 'user' | 'assistant') => {
-        const cache: Map<string, any[]> | undefined = (window as any).messageVersionsCache;
-        const getFromCache = (id: string): any[] | undefined => cache?.get(id);
+      // 2) Get Version Switch Loading state
+      const versionLoadingState = versionSwitchLoadingManager.getState();
+      const isVersionSwitchLoading = versionSwitchLoadingManager.isLoadingForChat(activeChatId);
 
-        const fetchVersions = async (id: string): Promise<{ list: any[]; debug?: any }> => {
-          try {
-            const resp = await fetch(apiUrl(`/api/messages/${id}/versions`));
-            if (!resp.ok) return { list: [] };
-            const j = await resp.json();
-            return { list: j.versions || [], debug: j.debug };
-          } catch { return { list: [] }; }
-        };
+      console.groupCollapsed(`🔄 Version Switch Loading State`);
+      console.log(`Is Loading: ${versionLoadingState.isLoading}`);
+      console.log(`Operation: ${versionLoadingState.operation || 'none'}`);
+      console.log(`Target Chat ID: ${versionLoadingState.targetChatId || 'none'}`);
+      console.log(`Loading for Current Chat: ${isVersionSwitchLoading}`);
+      console.groupEnd();
 
-        // Direct check
-        let direct = getFromCache?.(msgId);
-        let directDebug: any = undefined;
-        if (!direct) {
-          const r = await fetchVersions(msgId);
-          direct = r.list;
-          directDebug = r.debug;
+      // 3) Simulate Chat History Loading states by checking current loading patterns
+      // Since we can't directly access the useChatHistory hook state from here, we'll note the patterns
+      console.groupCollapsed(`📚 Chat History Loading Indicators`);
+      console.log(`Note: Cannot directly access useChatHistory loading state from TriggerLog component`);
+      console.log(`Loading happens when:`);
+      console.log(`  - Chat switches occur`);
+      console.log(`  - History fetch API calls are made`);
+      console.log(`  - Component mounts/remounts`);
+      console.log(`  - Reload notifications are received`);
+      console.groupEnd();
+
+      // 4) Check for chat messages to understand loading context
+      let messageCount = 0;
+      let hasMessages = false;
+      let lastAssistant = null;
+      try {
+        const res = await fetch(apiUrl(`/api/db/chat/${activeChatId}`));
+        if (res.ok) {
+          const data = await res.json();
+          const history = data.history || [];
+          messageCount = history.length;
+          hasMessages = messageCount > 0;
+          lastAssistant = [...history].reverse().find((m: any) => m.role === 'assistant');
         }
-        const directCount = direct?.length ?? 0;
-
-        let usedFallback = false;
-        let fallbackCount = 0;
-        let fallbackId: string | null = null;
-
-        if ((directCount <= 1) && role === 'assistant') {
-          const parsed = parsePosition(msgId);
-          if (parsed && parsed.pos > 1) {
-            fallbackId = `${parsed.base}_${parsed.pos - 1}`;
-            let prev = getFromCache?.(fallbackId);
-            if (!prev) {
-              const r2 = await fetchVersions(fallbackId);
-              prev = r2.list;
-            }
-            fallbackCount = prev?.length ?? 0;
-            usedFallback = fallbackCount > 1;
-          }
-        }
-
-        const hasVersions = (directCount > 1) || (fallbackCount > 1);
-        return { hasVersions, directCount, fallbackCount, usedFallback, fallbackId, directDebug };
-      };
-
-      // 4) Walk each message and compute the same base-visibility checks as MessageWrapper/Switcher
-      for (let i = 0; i < history.length; i++) {
-        const m = history[i];
-        const isUser = m.role === 'user';
-        const isLastAssistant = !isUser && (m.id === lastAssistantId);
-        const isStaticForWrapper = isUser
-          ? true
-          : ((liveState === 'static' || !isLastAssistant) && !(isLastAssistant && !(m.content || '').trim()));
-
-        const { hasVersions, directCount, fallbackCount, usedFallback, fallbackId, directDebug } = await checkHasVersions(m.id, m.role);
-
-        const baseConditions = {
-          currentChatIdPresent: !!activeChatId,
-          onVersionSwitchPresent: true, // Chat always passes switchToVersion
-          isStaticForWrapper,
-          hasVersions
-        };
-        const shouldShow = baseConditions.currentChatIdPresent && baseConditions.onVersionSwitchPresent && baseConditions.isStaticForWrapper && baseConditions.hasVersions;
-
-        console.groupCollapsed(`◽ [${i + 1}/${history.length}] ${m.id} (${m.role}) → shouldShow: ${shouldShow}`);
-        console.log(`isStaticForWrapper=${isStaticForWrapper} | liveState=${liveState} | isLastAssistant=${isLastAssistant}`);
-        if (directDebug) {
-          console.log(`versions: direct=${directCount} (group=${directDebug.group_msg_id}, base=${directDebug.base_chat_id}, main=${directDebug.main_chat_id}, pos=${directDebug.msg_position}) ${usedFallback ? `(fallback ${fallbackId}=${fallbackCount})` : ''}`);
-        } else {
-          console.log(`versions: direct=${directCount} ${usedFallback ? `(fallback ${fallbackId}=${fallbackCount})` : ''}`);
-        }
-        console.log('baseConditions:', JSON.parse(JSON.stringify(baseConditions)));
-        console.groupEnd();
+      } catch (e) {
+        console.log(`Failed to fetch chat history: ${e}`);
       }
 
+      console.groupCollapsed(`💬 Chat State Context`);
+      console.log(`Message Count: ${messageCount}`);
+      console.log(`Has Messages: ${hasMessages}`);
+      console.log(`Last Assistant Message: ${lastAssistant ? `${lastAssistant.id} (${lastAssistant.content?.substring(0, 50)}...)` : 'none'}`);
+      console.groupEnd();
+
+      // 5) Loading Animation Analysis
+      console.group(`🎬 LOADING ANIMATION ANALYSIS`);
+
+      const loadingCauses = [];
+      let hasLoadingAnimation = false;
+
+      // Check streaming states
+      if (isStreaming) {
+        loadingCauses.push(`🌊 Live Streaming (${streamingState})`);
+        hasLoadingAnimation = true;
+      }
+
+      // Check version switch loading
+      if (isVersionSwitchLoading) {
+        loadingCauses.push(`🔄 Version Switch Loading (${versionLoadingState.operation})`);
+        hasLoadingAnimation = true;
+      }
+
+      // Check skeleton loading conditions (simulated)
+      const couldShowSkeleton = !hasMessages && !isStreaming;
+      if (couldShowSkeleton) {
+        loadingCauses.push(`💀 Skeleton Loading (no messages + not streaming)`);
+        hasLoadingAnimation = true;
+      }
+
+      // Check for potential "persisting after stream" state
+      if (!isStreaming && liveState?.contentBuf && liveState.contentBuf.length > 0) {
+        loadingCauses.push(`⏳ Post-Stream Persistence (content buffer not cleared)`);
+        hasLoadingAnimation = true;
+      }
+
+      console.log(`🎯 ANSWER: Is chat loading animation active? ${hasLoadingAnimation ? '✅ YES' : '❌ NO'}`);
+      console.log('');
+
+      if (hasLoadingAnimation) {
+        console.log(`🔍 ACTIVE LOADING CAUSES (${loadingCauses.length}):`);
+        loadingCauses.forEach((cause, index) => {
+          console.log(`  ${index + 1}. ${cause}`);
+        });
+      } else {
+        console.log(`✨ No loading animations are currently active for chat ${activeChatId}`);
+      }
+
+      console.log('');
+      console.log(`📋 ALL POSSIBLE LOADING ANIMATION CAUSES:`);
+      console.log(`  1. 🌊 LiveStore Streaming States:`);
+      console.log(`     • state: 'thinking' - AI is processing/thinking`);
+      console.log(`     • state: 'responding' - AI is generating response`);
+      console.log(`     • contentBuf/thoughtsBuf accumulation during streaming`);
+      console.log(`  2. 🔄 Version Switch Loading:`);
+      console.log(`     • edit operations on messages`);
+      console.log(`     • retry operations on messages`);
+      console.log(`     • delete operations on messages`);
+      console.log(`  3. 📚 Chat History Loading:`);
+      console.log(`     • Initial chat load (useChatHistory.isLoading)`);
+      console.log(`     • Chat switching operations`);
+      console.log(`     • History refetch/reload operations`);
+      console.log(`  4. 💀 Skeleton Loading:`);
+      console.log(`     • Empty chat + loading state + timing conditions`);
+      console.log(`     • skeletonReady + (isLoading || isOperationLoading)`);
+      console.log(`  5. ⚙️ Message Operation Loading:`);
+      console.log(`     • useVersioning.isOperationLoading`);
+      console.log(`     • Individual message operations in progress`);
+      console.log(`  6. ⏳ Post-Stream States:`);
+      console.log(`     • persistingAfterStream - cleanup after streaming`);
+      console.log(`     • notLoadingSettled - timing state transitions`);
+
+      console.groupEnd();
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.groupEnd();
     } catch (err) {
-      console.error('TriggerLog error:', err);
+      console.error('❌ TriggerLog analysis error:', err);
       console.groupEnd();
     }
   };
 
   return (
-    <div className="trigger-log-container" onClick={handleClick} title="Click to log MessageVersionSwitcher state for all messages">
+    <div className="trigger-log-container" onClick={handleClick} title="Click to analyze chat loading animation states">
       <div className="trigger-log-button">
         <span className="trigger-log-icon">🐛</span>
         <span className="trigger-log-text">TriggerLog</span>
