@@ -278,6 +278,15 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const previousChatIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
+    if (!chatId) return;
+    try {
+      logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
+      loadHistory({ forceReplace: true, silent: false }).catch(() => {});
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  useEffect(() => {
     if (chatId && chatId !== previousChatIdRef.current) {
       logger.info(`[CHAT_SWITCH] ===== CHAT COMPONENT RECEIVED NEW CHATID =====`);
       logger.info(`[CHAT_SWITCH] Previous chatId: ${previousChatIdRef.current}, New chatId: ${chatId}`);
