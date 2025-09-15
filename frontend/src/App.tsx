@@ -43,6 +43,42 @@ function App() {
   const [forceRender, setForceRender] = useState(0);
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
+  const [isBottomInputToggled, setIsBottomInputToggled] = useState(() => {
+    const settings = BrowserStorage.getUISettings();
+    return settings.bottomInputToggled;
+  });
+  const TOGGLE_OUTLINE_TIMEOUT_MS = 3000;
+
+  const [isBottomInputHovering, setIsBottomInputHovering] = useState(false);
+  const [showToggleOutline, setShowToggleOutline] = useState(false);
+  const toggleOutlineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetToggleOutlineTimer = useCallback(() => {
+    if (toggleOutlineTimeoutRef.current) {
+      clearTimeout(toggleOutlineTimeoutRef.current);
+    }
+    setShowToggleOutline(true);
+    if (isBottomInputToggled) {
+      toggleOutlineTimeoutRef.current = setTimeout(() => {
+        setShowToggleOutline(false);
+      }, TOGGLE_OUTLINE_TIMEOUT_MS);
+    }
+  }, [isBottomInputToggled]);
+
+  useEffect(() => {
+    if (!isBottomInputToggled) {
+      setShowToggleOutline(false);
+      if (toggleOutlineTimeoutRef.current) {
+        clearTimeout(toggleOutlineTimeoutRef.current);
+      }
+    }
+    return () => {
+      if (toggleOutlineTimeoutRef.current) {
+        clearTimeout(toggleOutlineTimeoutRef.current);
+      }
+    };
+  }, [isBottomInputToggled]);
+
   const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
     setSendingByChat(prev => {
       const next = new Map(prev);
@@ -103,7 +139,6 @@ function App() {
     }
     const unsubscribe = sendButtonStateManager.subscribe(activeChatId, (isDisabled) => {
       setSendDisabledFlag(isDisabled);
-      // Nudge a render in case nothing else changes
       setForceRender(v => v + 1);
     });
     return () => {
@@ -228,6 +263,12 @@ function App() {
     }
   };
 
+  const handleBottomInputDoubleClick = () => {
+    const newToggleState = !isBottomInputToggled;
+    logger.info('Double-click toggling bottom input bar:', newToggleState);
+    setIsBottomInputToggled(newToggleState);
+    BrowserStorage.updateUISetting('bottomInputToggled', newToggleState);
+  };
 
   const handleSend = async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
@@ -822,19 +863,27 @@ function App() {
               onChatSwitch={handleChatSwitch}
             />
             
-            <div className="bottom-input-area">
+            <div
+              className={`bottom-input-area ${(isBottomInputToggled || isBottomInputHovering) ? 'visible' : ''} ${isBottomInputToggled && showToggleOutline ? 'toggled-on' : ''}`}
+              onMouseEnter={() => setIsBottomInputHovering(true)}
+              onMouseLeave={() => setIsBottomInputHovering(false)}
+              onDoubleClick={(e) => {
+                handleBottomInputDoubleClick();
+                resetToggleOutlineTimer();
+              }}
+            >
               <AttachedFiles
                 files={attachedFiles}
                 onRemoveFile={handleRemoveFile}
                 onClearAll={handleClearAllFiles}
                 className="chat-screen-attached"
               />
-              
+
               {attachedFiles.length > 0 && hasUnreadyFiles && (
-                <div style={{ 
-                  fontSize: '11px', 
-                  color: 'rgba(255, 255, 255, 0.5)', 
-                  textAlign: 'center', 
+                <div style={{
+                  fontSize: '11px',
+                  color: 'rgba(255, 255, 255, 0.5)',
+                  textAlign: 'center',
                   marginTop: '6px',
                   marginBottom: '4px',
                   display: 'flex',
@@ -846,7 +895,7 @@ function App() {
                   <span>Files processing... Send disabled until ready</span>
                 </div>
               )}
-              
+
               <div className="bottom-input-container">
                 <div 
                   className={`input-wrapper ${isDragOver ? 'drag-over' : ''}`}
@@ -908,6 +957,14 @@ function App() {
                 </button>
               </div>
             </div>
+
+            {!isBottomInputToggled && (
+              <div
+                className="bottom-hover-zone"
+                onMouseEnter={() => setIsBottomInputHovering(true)}
+                onMouseLeave={() => setIsBottomInputHovering(false)}
+              />
+            )}
           </>
         )}
       </div>

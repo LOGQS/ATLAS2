@@ -101,7 +101,6 @@ body.chat-active .main-content {
   flex-direction: column;
   align-items: center;
   z-index: 100;
-  animation: fadeInUp 0.2s ease forwards;
 }
 
 .bottom-input-container {
@@ -357,4 +356,91 @@ body.chat-active .main-content {
   .message-input.with-file-button {
     padding-left: 48px;
   }
+}
+
+/* Bottom Input Toggle Styles - match sidebar behavior */
+.bottom-input-area {
+  transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Only animate when visible or toggled on, so hidden state can override */
+.bottom-input-area.visible,
+.bottom-input-area.toggled-on {
+  animation: fadeInUp 0.2s ease forwards;
+}
+
+/* Hidden state - animate disappearance as reverse of appearance */
+.bottom-input-area:not(.visible):not(.toggled-on) {
+  pointer-events: none;
+  animation: fadeOutDown 0.2s ease forwards;
+}
+
+/* Cool blue outline when toggled on - shiny and attractive with smooth fadeout */
+.bottom-input-area.toggled-on::before {
+  content: '';
+  position: absolute;
+  inset: -12px;
+  border-radius: 28px;
+  border: 2px solid rgba(66, 165, 245, 0.4);
+  box-shadow:
+    0 0 30px rgba(0, 142, 255, 0.2),
+    0 0 60px rgba(66, 165, 245, 0.1),
+    0 0 90px rgba(0, 200, 255, 0.05);
+  pointer-events: none;
+  animation: coolBluePulse 4s ease-in-out infinite, fadeOutSlowly 3s ease-out forwards;
+  z-index: -1;
+}
+
+@keyframes fadeOutSlowly {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes coolBluePulse {
+  0%, 100% {
+    opacity: 0.7;
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.01);
+    filter: brightness(1.1);
+  }
+}
+
+/* Disappear animation (reverse of fadeInUp) */
+@keyframes fadeOutDown {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+}
+
+/* Hover zone at bottom */
+.bottom-hover-zone {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  z-index: 99;
+  pointer-events: all;
+}
+
+/* Re-enable text selection for inputs */
+.bottom-input-area .message-input,
+.bottom-input-area button {
+  user-select: auto;
+  -webkit-user-select: auto;
 }

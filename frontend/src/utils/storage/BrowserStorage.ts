@@ -3,6 +3,7 @@
 export interface UISettings {
   leftSidebarToggled: boolean;
   rightSidebarToggled: boolean;
+  bottomInputToggled: boolean;
   chatOrder?: string[];
   attachedFilesCollapsed?: boolean;
 }
@@ -18,7 +19,8 @@ export interface AttachedFile {
 
 const DEFAULT_SETTINGS: UISettings = {
   leftSidebarToggled: true,
-  rightSidebarToggled: false,
+  rightSidebarToggled: true,
+  bottomInputToggled: true,
   attachedFilesCollapsed: false,
 };
 
