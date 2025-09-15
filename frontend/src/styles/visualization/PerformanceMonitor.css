@@ -1,0 +1,320 @@
+/* Small widget always visible */
+.perf-monitor-widget {
+  position: fixed;
+  bottom: 120px;
+  right: 20px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: #ffffff;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  z-index: 10000;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+  min-width: 120px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.perf-monitor-widget:hover {
+  background: rgba(0, 0, 0, 0.9);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: scale(1.02);
+}
+
+/* Modal window styling */
+.perf-monitor-modal {
+  width: 90vw;
+  max-width: 800px;
+  max-height: 80vh;
+  background: rgba(0, 0, 0, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: #ffffff;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+
+.perf-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.perf-modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.perf-modal-content {
+  padding: 20px;
+  max-height: calc(80vh - 80px);
+  overflow-y: auto;
+}
+
+.perf-monitor-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.perf-monitor-time {
+  font-weight: 600;
+  color: #3498db;
+  white-space: nowrap;
+}
+
+.perf-monitor-mini-timeline {
+  flex: 1;
+  height: 16px;
+  min-width: 40px;
+}
+
+.perf-history-toggle {
+  margin-left: 8px;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.perf-history-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+
+.perf-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perf-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.perf-total-time {
+  font-size: 14px;
+}
+
+.perf-total-time strong {
+  color: #3498db;
+  font-size: 16px;
+}
+
+.perf-chat-info {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.perf-timeline {
+  position: relative;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Mini timeline in widget */
+.perf-monitor-mini-timeline .perf-timeline {
+  height: 16px;
+  border-radius: 3px;
+}
+
+.perf-monitor-mini-timeline .perf-timeline-label {
+  display: none; /* Hide text in mini version */
+}
+
+.perf-timeline-segment {
+  position: absolute;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+  cursor: pointer;
+}
+
+.perf-timeline-segment:hover {
+  opacity: 0.8;
+}
+
+.perf-timeline-label {
+  color: white;
+  font-size: 10px;
+  font-weight: 500;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.perf-phases {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.perf-phase {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.perf-phase:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.perf-phase-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.perf-phase-name {
+  flex: 1;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.perf-phase-time {
+  margin-left: 10px;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.perf-phase-percent {
+  margin-left: 10px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.perf-timestamps {
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.perf-timestamps-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.perf-timestamp {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.perf-timestamp-mark {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.perf-timestamp-time {
+  color: #3498db;
+  font-weight: 500;
+}
+
+.perf-no-data {
+  padding: 20px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.5);
+  font-style: italic;
+}
+
+.perf-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perf-history-title {
+  font-weight: 600;
+  font-size: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.perf-history-item {
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.perf-history-header {
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Scrollbar styling */
+.perf-modal-content::-webkit-scrollbar,
+.perf-timestamps::-webkit-scrollbar {
+  width: 6px;
+}
+
+.perf-modal-content::-webkit-scrollbar-track,
+.perf-timestamps::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+}
+
+.perf-modal-content::-webkit-scrollbar-thumb,
+.perf-timestamps::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
+
+.perf-modal-content::-webkit-scrollbar-thumb:hover,
+.perf-timestamps::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Animation for new metrics */
+@keyframes perf-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(52, 152, 219, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(52, 152, 219, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 152, 219, 0);
+  }
+}
+
+.perf-monitor-widget.has-new-data {
+  animation: perf-pulse 1s;
+}

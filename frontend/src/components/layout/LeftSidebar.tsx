@@ -6,6 +6,7 @@ import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import logger from '../../utils/core/logger';
 import { DeleteModal } from '../ui/ModalWindow';
 import TriggerLog from '../visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
+import PerformanceMonitor from '../visualization/PerformanceMonitor';
 
 interface Chat {
   id: string;
@@ -498,7 +499,12 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
         {triggerLogProps && (
           <TriggerLog activeChatId={triggerLogProps.activeChatId} />
         )}
-        
+
+        {/* Performance Monitor */}
+        {triggerLogProps && (
+          <PerformanceMonitor activeChatId={triggerLogProps.activeChatId} />
+        )}
+
         <DeleteModal
           isOpen={!!deletingChatId}
           onConfirm={() => deletingChatId && handleDeleteConfirm(deletingChatId)}

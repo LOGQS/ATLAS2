@@ -9,6 +9,7 @@ import MessageWrapper from '../message/MessageWrapper';
 import { liveStore } from '../../utils/chat/LiveStore';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
+import { performanceTracker } from '../../utils/core/performanceTracker';
 import { apiUrl } from '../../config/api';
 import { computeIsScrollable, MessageDuplicateChecker } from '../../utils/chat/chatHelpers';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -76,11 +77,16 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     mountCountRef.current++;
     const mountCount = mountCountRef.current;
     logger.info(`[COMPONENT_LIFECYCLE] Chat component mount #${mountCount} for chatId: ${chatId}`);
-    
+
+    // Mark component mounted for performance tracking
+    if (chatId) {
+      performanceTracker.mark(performanceTracker.MARKS.COMPONENT_MOUNTED, chatId);
+    }
+
     if (mountCount > 1) {
       logger.info(`[DOUBLE_MOUNT] Chat component mounted ${mountCount} times for chatId: ${chatId}`);
     }
-    
+
     return () => {
       logger.info(`[COMPONENT_LIFECYCLE] Chat component unmount #${mountCount} for chatId: ${chatId}`);
     };
@@ -303,7 +309,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useEffect(() => {
     if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isLoading && !isOperationLoading) {
       logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
-      
+
+      performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
+
       try {
         const parsed = JSON.parse(firstMessage);
         if (parsed.message && typeof parsed.message === 'string') {
@@ -314,7 +322,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       } catch {
         handleNewMessage(firstMessage);
       }
-      
+
       setFirstMessageSent(true);
       if (onFirstMessageSent) {
         onFirstMessageSent(chatId);
@@ -579,6 +587,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     const cid = crypto.randomUUID();
 
+    performanceTracker.linkClientId(cid, chatId);
+
     const userMsg: Message = {
       id: `temp_${Date.now()}_user`,
       clientId: cid,
@@ -599,6 +609,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     try {
       logger.debug(`[Chat] Sending message to ${chatId}: "${content.substring(0, 50)}..."`);
+
+      performanceTracker.mark(performanceTracker.MARKS.API_CALL_START, cid);
+
       const response = await fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -610,6 +623,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           attached_file_ids: attachedFiles ? attachedFiles.map(f => f.id) : []
         })
       });
+
+      performanceTracker.mark(performanceTracker.MARKS.API_CALL_SENT, cid);
+
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       logger.debug(`[Chat] Message sent successfully for ${chatId}`);
       onMessageSent?.(content);

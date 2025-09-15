@@ -1,6 +1,7 @@
 // status: complete
 import { apiUrl } from '../../config/api';
 import logger from '../core/logger';
+import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
 
 type ChatLive = {
@@ -106,6 +107,13 @@ class LiveStore {
     next.state = ev.state || 'static';
     next.version++;
     logger.info(`[LIVESTORE_SSE] State change for ${chatId}: ${oldState} -> ${next.state}`);
+
+    if (next.state === 'thinking' && oldState !== 'thinking') {
+      performanceTracker.mark(performanceTracker.MARKS.STREAM_THINKING, chatId);
+    } else if (next.state === 'responding' && oldState !== 'responding') {
+      performanceTracker.mark(performanceTracker.MARKS.STREAM_RESPONDING, chatId);
+    }
+
     if ((next.state === 'thinking' || next.state === 'responding')) {
       this.enableParentFromBridge(chatId, 'First state');
     }
@@ -141,6 +149,9 @@ class LiveStore {
     next.version++;
     logger.info(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
     logger.info(`[LIVESTORE_SSE] Final buffers - content: ${next.contentBuf.length}chars, thoughts: ${next.thoughtsBuf.length}chars`);
+
+    performanceTracker.mark(performanceTracker.MARKS.STREAM_COMPLETE, chatId);
+
     if (this.pendingVersionStreamParents.has(chatId)) {
       const parentId = this.pendingVersionStreamParents.get(chatId)!;
       sendButtonStateManager.setSendButtonDisabled(chatId, false);
@@ -205,6 +216,10 @@ class LiveStore {
         const cur = this.byChat.get(chatId) ?? {
           state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', version: 0
         };
+
+        if (!this.byChat.has(chatId) && (ev.type === 'chat_state' || ev.type === 'thoughts' || ev.type === 'answer')) {
+          performanceTracker.mark(performanceTracker.MARKS.FIRST_STREAM_EVENT, chatId);
+        }
 
         logger.info(`[LIVESTORE_SSE] Current state for ${chatId}: state=${cur.state}, content=${cur.contentBuf.length}chars, thoughts=${cur.thoughtsBuf.length}chars`);
 

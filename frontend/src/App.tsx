@@ -13,6 +13,7 @@ import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
 import logger from './utils/core/logger';
+import { performanceTracker } from './utils/core/performanceTracker';
 import { apiUrl } from './config/api';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
@@ -238,12 +239,15 @@ function App() {
       hasUnreadyFiles,
       activeChatId
     });
-    
+
     if (message.trim() && !isSendDisabled) {
       setIsMessageBeingSent(true);
       if (!hasMessageBeenSent || activeChatId === 'none') {
         const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
         const chatName = message.split(' ').slice(0, 4).join(' ');
+
+        performanceTracker.startTracking(chatId, chatId);
+        performanceTracker.mark(performanceTracker.MARKS.CHAT_CREATED, chatId);
         const messageToSend = message;
         const filesToSend = [...attachedFiles];
         
