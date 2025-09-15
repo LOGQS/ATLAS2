@@ -246,3 +246,80 @@
     transform: scale(1);
   }
 }
+
+/* Scroll to bottom button */
+.scroll-to-bottom-button {
+  position: fixed;
+  bottom: 100px;
+  right: calc(50% - 430px);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.9);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: fadeInScale 0.3s ease-out;
+  z-index: 100;
+}
+
+.scroll-to-bottom-button:hover {
+  background: rgba(0, 0, 0, 0.95);
+  transform: scale(1.08);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  color: #ffffff;
+}
+
+.scroll-to-bottom-button:active {
+  transform: scale(0.95);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.scroll-to-bottom-button svg {
+  width: 20px;
+  height: 20px;
+  transition: transform 0.2s ease;
+}
+
+.scroll-to-bottom-button:hover svg {
+  transform: translateY(2px);
+}
+
+@keyframes fadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Responsive positioning for scroll button */
+@media (max-width: 1400px) {
+  .scroll-to-bottom-button {
+    right: 40px;
+  }
+}
+
+@media (max-width: 768px) {
+  .scroll-to-bottom-button {
+    right: 20px;
+    bottom: 80px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .scroll-to-bottom-button svg {
+    width: 18px;
+    height: 18px;
+  }
+}

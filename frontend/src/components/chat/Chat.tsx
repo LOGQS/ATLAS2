@@ -71,6 +71,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const [skeletonReady, setSkeletonReady] = useState(false);
 
   const [versionSwitchLoading, setVersionSwitchLoading] = useState(false);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   const mountCountRef = useRef(0);
   useEffect(() => {
@@ -78,7 +79,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     const mountCount = mountCountRef.current;
     logger.info(`[COMPONENT_LIFECYCLE] Chat component mount #${mountCount} for chatId: ${chatId}`);
 
-    // Mark component mounted for performance tracking
     if (chatId) {
       performanceTracker.mark(performanceTracker.MARKS.COMPONENT_MOUNTED, chatId);
     }
@@ -249,7 +249,15 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     if (!scrollControl.shouldAutoScroll()) {
       return;
     }
-    
+
+    const container = messagesEndRef.current?.parentElement;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [scrollControl]);
+
+  const handleScrollToBottom = useCallback(() => {
+    scrollControl.resetToAutoScroll();
     const container = messagesEndRef.current?.parentElement;
     if (container) {
       container.scrollTop = container.scrollHeight;
@@ -403,8 +411,18 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useEffect(() => {
     if (liveOverlay.state === 'responding') {
       scrollToBottom();
+      const shouldShow = !scrollControl.shouldAutoScroll();
+      setShowScrollButton(shouldShow);
+    } else if (liveOverlay.state === 'static') {
+      setShowScrollButton(false);
     }
-  }, [liveOverlay.contentBuf, liveOverlay.state, scrollToBottom]);
+  }, [liveOverlay.contentBuf, liveOverlay.state, scrollToBottom, scrollControl]);
+
+  useEffect(() => {
+    if (showScrollButton && scrollControl.shouldAutoScroll()) {
+      setShowScrollButton(false);
+    }
+  }, [scrollControl, showScrollButton]);
 
   useEffect(() => {
     if (liveOverlay.state === 'static') {
@@ -899,7 +917,37 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           <div ref={messagesEndRef} />
         </div>
       </div>
-      
+
+      {/* Scroll to bottom button */}
+      {showScrollButton && (
+        <button
+          className="scroll-to-bottom-button"
+          onClick={handleScrollToBottom}
+          aria-label="Scroll to bottom"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 20 20"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M10 3L10 14M10 14L6 10M10 14L14 10"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M4 17L16 17"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      )}
     </>
   );
 }));
