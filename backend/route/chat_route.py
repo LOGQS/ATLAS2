@@ -120,6 +120,22 @@ def _broadcast(event: dict):
             except queue.Full:
                 _subscribers.remove(q)
 
+def get_active_streaming_chats():
+    """Get all chats currently in thinking or responding state"""
+    try:
+        chats = db.get_all_chats()
+        active_streams = []
+        for chat in chats:
+            if chat.get('state') and chat['state'] != 'static':
+                active_streams.append({
+                    'chat_id': chat['id'],
+                    'state': chat['state']
+                })
+        return active_streams
+    except Exception as e:
+        logger.error(f"Error getting active streaming chats: {e}")
+        return []
+
 def publish_state(chat_id: str, state: str):
     """Publishes a chat state change to the queue."""
     state_change_queue.put({'chat_id': chat_id, 'state': state})
@@ -196,9 +212,19 @@ def register_chat_routes(app: Flask):
             q = _subscribe()
             try:
                 yield 'event: ping\ndata: {}\n\n'
+
+                active_streams = get_active_streaming_chats()
+                for stream in active_streams:
+                    logger.info(f"[SSE_RECONNECT] Emitting active stream state: chat_id={stream['chat_id']}, state={stream['state']}")
+                    yield format_sse_data({
+                        "chat_id": stream['chat_id'],
+                        "type": "chat_state",
+                        "state": stream['state']
+                    }, ensure_ascii=False)
+
                 while True:
                     ev = q.get()
-                    yield format_sse_data(ev, ensure_ascii=False) 
+                    yield format_sse_data(ev, ensure_ascii=False)
             finally:
                 _unsubscribe(q)
         return create_sse_response(generate, include_cors=True)
