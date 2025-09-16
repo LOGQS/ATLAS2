@@ -69,7 +69,14 @@ def create_app():
         logger.info(f"File sync completed: {sync_result['summary']}")
     else:
         logger.error(f"File sync failed: {sync_result['error']}")
-    
+
+    # Reset all chats to static state at startup to handle any previous unclean shutdown
+    startup_reset_count = db.set_all_chats_static()
+    if startup_reset_count > 0:
+        logger.info(f"Startup: Reset {startup_reset_count} chat(s) to static state")
+    else:
+        logger.debug("Startup: No active chats to reset")
+
     register_chat_routes(app)
     register_db_chat_management_routes(app)
     register_db_message_routes(app)
