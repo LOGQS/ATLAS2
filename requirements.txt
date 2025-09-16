@@ -3,3 +3,5 @@ flask
 flask-cors
 google-genai
 markitdown[all]
+groq
+faster-whisper
