@@ -188,23 +188,6 @@ export const useVersioning = ({
     setupOperation(operation, messageId);
 
     const originalMessages = [...messages];
-    if (operation === 'delete') {
-      const targetIndex = messages.findIndex(m => m.id === messageId);
-      if (targetIndex >= 0) {
-        setMessages(messages.slice(0, targetIndex));
-      }
-    } else if (operation === 'edit' && newContent) {
-      const targetIndex = messages.findIndex(m => m.id === messageId);
-      if (targetIndex >= 0) {
-        const updatedMessages = [...messages];
-        updatedMessages[targetIndex] = { ...updatedMessages[targetIndex], content: newContent };
-        if (messages[targetIndex].role === 'user') {
-          setMessages(updatedMessages.slice(0, targetIndex + 1));
-        } else {
-          setMessages(updatedMessages);
-        }
-      }
-    }
 
     try {
       const response = await fetch(apiUrl(API_ENDPOINTS.VERSIONING_NOTIFY), {
@@ -282,7 +265,7 @@ export const useVersioning = ({
     } finally {
       cleanupOperation(messageId);
     }
-  }, [chatId, currentOperation, messages, setMessages, onChatSwitch, invalidateCache, setupOperation, cleanupOperation, handleOperationError]);
+  }, [chatId, currentOperation, messages, onChatSwitch, invalidateCache, setupOperation, cleanupOperation, handleOperationError]);
 
   const handleDelete = useCallback(async (messageId: string): Promise<boolean> => {
     return executeOperation('delete', messageId);
