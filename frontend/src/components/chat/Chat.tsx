@@ -7,6 +7,7 @@ import ThinkBox from './ThinkBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
 import { liveStore } from '../../utils/chat/LiveStore';
+import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
 import { performanceTracker } from '../../utils/core/performanceTracker';
@@ -100,6 +101,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const messagesContainerRef = useRef<HTMLElement>(null);
   const mountedRef = useRef(true);
   const duplicateCheckerRef = useRef<MessageDuplicateChecker>(new MessageDuplicateChecker(DUPLICATE_WINDOW_MS));
+  const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
 
   const isDuplicateMessage = useCallback((content: string): boolean => {
     const isDuplicate = duplicateCheckerRef.current.isDuplicate(chatId, content);
@@ -269,13 +271,18 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     if (!chatId) return;
     
     return liveStore.subscribe(chatId, (_id, snap) => {
+      if (snap.state === 'thinking' || snap.state === 'responding') {
+        chatHistoryCache.markStreaming(chatId);
+      } else if (snap.state === 'static') {
+      }
+
       setLiveOverlay({
         contentBuf: snap.contentBuf,
         thoughtsBuf: snap.thoughtsBuf,
         state: snap.state
       });
-      
-      
+
+
       if (onChatStateChange) {
         onChatStateChange(_id, snap.state);
       }
@@ -287,12 +294,24 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   useEffect(() => {
     if (!chatId) return;
+
+    initialLoadStrategyRef.current = null;
+
     try {
-      logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
-      loadHistory({ forceReplace: true, silent: false }).catch(() => {});
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId]);
+      const hasCleanCache = chatHistoryCache.hasClean(chatId);
+      if (hasCleanCache) {
+        logger.info(`[CHAT_SWITCH] Using cached history for ${chatId} (background validation scheduled)`);
+        initialLoadStrategyRef.current = 'cached';
+        loadHistory({ silent: false }).catch(() => {});
+      } else {
+        logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
+        initialLoadStrategyRef.current = 'forced';
+        loadHistory({ forceReplace: true, silent: false }).catch(() => {});
+      }
+    } catch (error) {
+      logger.warn(`[CHAT_SWITCH] Initial load scheduling failed for ${chatId}:`, error);
+    }
+  }, [chatId, loadHistory]);
 
   useEffect(() => {
     if (chatId && chatId !== previousChatIdRef.current) {
@@ -302,13 +321,17 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       logger.info(`[CHAT_SWITCH] isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
 
       if (previousChatIdRef.current) {
-        logger.info(`[CHAT_SWITCH] Clearing state for fast switch`);
-        setMessages([]);
+        const shouldClearState = initialLoadStrategyRef.current !== 'cached';
+        logger.info(`[CHAT_SWITCH] Clearing state for fast switch (shouldClearState: ${shouldClearState})`);
+        if (shouldClearState) {
+          setMessages([]);
+        }
         setLiveOverlay({ contentBuf: '', thoughtsBuf: '', state: 'static' });
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
         setWasStreaming(false);
       }
+
 
       previousChatIdRef.current = chatId;
 
@@ -317,14 +340,19 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         logger.info(`[DOUBLE_MOUNT] Cancelled pending loadHistory call due to rapid remount`);
       }
 
-      loadHistoryTimeoutRef.current = setTimeout(() => {
-        logger.info(`[CHAT_SWITCH] Calling loadHistory() after debounce`);
-        loadHistory().then(() => {
-          logger.info(`[CHAT_SWITCH] loadHistory() completed for ${chatId}`);
-        }).catch((error) => {
-          logger.error(`[CHAT_SWITCH] loadHistory() failed for ${chatId}:`, error);
-        });
-      }, LOAD_HISTORY_DEBOUNCE_MS);
+      const shouldScheduleDebouncedLoad = initialLoadStrategyRef.current !== 'cached';
+      if (shouldScheduleDebouncedLoad) {
+        loadHistoryTimeoutRef.current = setTimeout(() => {
+          logger.info(`[CHAT_SWITCH] Calling loadHistory() after debounce`);
+          loadHistory().then(() => {
+            logger.info(`[CHAT_SWITCH] loadHistory() completed for ${chatId}`);
+          }).catch((error) => {
+            logger.error(`[CHAT_SWITCH] loadHistory() failed for ${chatId}:`, error);
+          });
+        }, LOAD_HISTORY_DEBOUNCE_MS);
+      } else {
+        logger.info(`[CHAT_SWITCH] Debounced load skipped for ${chatId} (cache already hydrated)`);
+      }
     }
 
     return () => {
@@ -601,6 +629,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       logger.debug(`[Chat] Duplicate message blocked for chat ${chatId}`);
       return;
     }
+
+    chatHistoryCache.markDirty(chatId);
 
     if (setIsMessageBeingSent) {
       setIsMessageBeingSent(true);

@@ -3,6 +3,7 @@ import { apiUrl } from '../../config/api';
 import { liveStore, reloadNotifier } from '../../utils/chat/LiveStore';
 import logger from '../../utils/core/logger';
 import { reconcileMessages, handleNewChatScenario } from '../../utils/chat/chatUtils';
+import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import type { Message } from '../../types/messages';
 
 const CALLBACK_CHECK_DELAY_MS = 10;
@@ -21,20 +22,78 @@ interface LoadHistoryOptions {
 
 export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistoryProps) => {
   const [isLoading, setIsLoading] = useState(true);
+  const [isValidating, setIsValidating] = useState(false);
 
   const setMessagesRef = useRef(setMessages);
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
+  const validationAbortControllerRef = useRef<AbortController | undefined>(undefined);
 
   useEffect(() => {
     setMessagesRef.current = setMessages;
     logger.info(`[RECONCILE] Updated setMessages ref for chatId: ${chatId}`);
   }, [setMessages, chatId]);
 
+  const validateCache = useCallback(async (targetChatId: string) => {
+    try {
+      if (validationAbortControllerRef.current) {
+        validationAbortControllerRef.current.abort();
+      }
+      validationAbortControllerRef.current = new AbortController();
+      const signal = validationAbortControllerRef.current.signal;
+
+      const res = await fetch(apiUrl(`/api/db/chat/${targetChatId}`), { signal });
+      const data: { history?: Message[]; error?: string } = await res.json();
+
+      if (res.ok) {
+        const freshMessages = data.history || [];
+
+        if (!chatHistoryCache.validateMetadata(targetChatId, freshMessages)) {
+          logger.info(`[ChatCache] Cache invalidated for ${targetChatId}, updating with fresh data`);
+
+          setMessagesRef.current(prev => {
+            const result = reconcileMessages(prev, freshMessages, targetChatId, false);
+            const currentLiveState = liveStore.get(targetChatId);
+            if (currentLiveState?.state === 'static') {
+              chatHistoryCache.put(targetChatId, result, 'clean-static');
+            }
+            return result;
+          });
+        } else {
+          logger.info(`[ChatCache] Cache validated successfully for ${targetChatId}`);
+        }
+      }
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        logger.error(`[ChatCache] Validation failed for ${targetChatId}:`, error);
+      }
+    } finally {
+      setIsValidating(false);
+    }
+  }, []);
+
   const loadHistory = useCallback(async (options: LoadHistoryOptions = {}) => {
     const targetChatId = options.chatId || chatId;
     if (!targetChatId) return;
     const forceReplaceMessages = options.forceReplace ?? false;
     const silent = options.silent ?? false;
+
+    if (!forceReplaceMessages && !silent) {
+      const cached = chatHistoryCache.get(targetChatId);
+      if (cached) {
+        logger.info(`[ChatCache] Using cached messages for ${targetChatId} (${cached.messages.length} messages)`);
+
+        setMessagesRef.current(() => {
+          logger.info(`[ChatCache] Setting cached messages immediately`);
+          return cached.messages;
+        });
+
+        setIsLoading(false);
+
+        setIsValidating(true);
+        validateCache(targetChatId);
+        return;
+      }
+    }
 
     if (abortControllerRef.current) {
       logger.info(`[ChatHistory] Aborting previous loadHistory for ${targetChatId}`);
@@ -89,12 +148,17 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
               const contentPreview = m.content ? m.content.substring(0, 50) : '';
               logger.info(`[MESSAGE_STATE] RESULT[${i}]: ${m.id}(${m.role}) content="${contentPreview}..."`);
             });
-            
+
+            const currentLiveState = liveStore.get(targetChatId);
+            if (currentLiveState?.state === 'static') {
+              chatHistoryCache.put(targetChatId, result, 'clean-static');
+              logger.info(`[ChatCache] Cached ${result.length} messages for ${targetChatId}`);
+            }
             const hasChanged = prev !== result && JSON.stringify(prev) !== JSON.stringify(result);
             logger.info(`[RECONCILE] State update check - hasChanged: ${hasChanged}, prev===result: ${prev === result}`);
             logger.info(`[RECONCILE] RETURNING RESULT TO REACT STATE - ${result.length} messages for ${targetChatId}`);
             logger.info(`[RECONCILE] ===== SETMESSAGES CALLBACK COMPLETED =====`);
-            
+
             return result;
           });
           
@@ -134,13 +198,14 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
       if (!silent) setIsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId]); 
+  }, [chatId, validateCache]); 
 
   useEffect(() => {
     if (chatId) {
       logger.info(`[RELOAD_NOTIFIER] Component mounting - registering reload for ${chatId}`);
       const reloadFn = () => {
         logger.info(`[RELOAD_NOTIFIER] Reload notification received for ${chatId} - calling loadHistory(forceReplace: true)`);
+        chatHistoryCache.markDirty(chatId);
         loadHistory({ forceReplace: true });
       };
 
@@ -158,6 +223,7 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
 
   return {
     isLoading,
+    isValidating,
     loadHistory
   };
 };

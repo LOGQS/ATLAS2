@@ -6,6 +6,7 @@ import logger from '../../utils/core/logger';
 import type { Message } from '../../types/messages';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import { sendButtonStateManager, reloadNotifier, liveStore } from '../../utils/chat/LiveStore';
+import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 
 const OPERATIONS = {
   DELETE: 'delete' as const,
@@ -136,6 +137,7 @@ export const useVersioning = ({
 
   const setupOperation = useCallback((operation: 'edit' | 'retry' | 'delete', messageId: string) => {
     if (!chatId) return;
+    chatHistoryCache.markDirty(chatId);
     setCurrentOperation(`${operation}:${messageId}`);
     setOperationInProgressMap(prev => ({ ...prev, [messageId]: true }));
     versionSwitchLoadingManager.startLoading(operation, chatId);
