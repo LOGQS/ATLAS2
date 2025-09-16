@@ -1,7 +1,7 @@
 /* TEMPORARY_DEBUG_TRIGGERLOG - REMOVE AFTER DEBUGGING */
 /* To remove all TriggerLog debugging code, search for: TEMPORARY_DEBUG_TRIGGERLOG */
 .trigger-log-container {
-  position: absolute;
+  position: fixed;
   bottom: 20px;
   right: 20px;
   z-index: 1000;

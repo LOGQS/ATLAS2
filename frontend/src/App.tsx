@@ -12,6 +12,7 @@ import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
+import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
 import { apiUrl } from './config/api';
@@ -750,11 +751,12 @@ function App() {
         onChatsReload={loadChatsFromDatabase}
         onChatReorder={handleChatReorder}
         onOpenModal={handleOpenModal}
-        // TEMPORARY_DEBUG_TRIGGERLOG - props for debugging MessageVersionSwitcher visibility
-        triggerLogProps={{
-          activeChatId
-        }}
+        activeChatId={activeChatId}
       />
+
+      {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
+      <TriggerLog activeChatId={activeChatId} />
+
       <div className="main-content">
         <div className="chat-container">
           <h1 className={`title ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>

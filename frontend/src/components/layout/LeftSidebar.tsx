@@ -5,7 +5,6 @@ import '../../styles/layout/LeftSidebar.css';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import logger from '../../utils/core/logger';
 import { DeleteModal } from '../ui/ModalWindow';
-import TriggerLog from '../visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import PerformanceMonitor from '../visualization/PerformanceMonitor';
 
 interface Chat {
@@ -28,10 +27,7 @@ interface LeftSidebarProps {
   onChatsReload?: () => void;
   onChatReorder?: (reorderedChats: Chat[]) => void;
   onOpenModal?: (modalType: string) => void;
-  // TEMPORARY_DEBUG_TRIGGERLOG - props for debugging MessageVersionSwitcher
-  triggerLogProps?: {
-    activeChatId: string;
-  };
+  activeChatId?: string;
 }
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({
@@ -46,7 +42,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onBulkImport,
   onChatReorder,
   onOpenModal,
-  triggerLogProps
+  activeChatId
 }) => {
   const [isToggled, setIsToggled] = useState(() => {
     const settings = BrowserStorage.getUISettings();
@@ -494,16 +490,9 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
             </div>
           </div>
         </div>
-        
-        {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
-        {triggerLogProps && (
-          <TriggerLog activeChatId={triggerLogProps.activeChatId} />
-        )}
 
         {/* Performance Monitor */}
-        {triggerLogProps && (
-          <PerformanceMonitor activeChatId={triggerLogProps.activeChatId} />
-        )}
+        <PerformanceMonitor activeChatId={activeChatId || "none"} />
 
         <DeleteModal
           isOpen={!!deletingChatId}
