@@ -266,6 +266,25 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     }
   }, [scrollControl]);
 
+  const releasePersistingAfterStream = useCallback((context: string) => {
+    if (!chatId) {
+      setPersistingAfterStream(false);
+      return;
+    }
+
+    const snap = liveStore.get(chatId);
+    const contentLength = snap?.contentBuf.length ?? 0;
+    const thoughtsLength = snap?.thoughtsBuf.length ?? 0;
+    const hasBufferedContent = contentLength > 0 || thoughtsLength > 0;
+
+    if (hasBufferedContent) {
+      logger.info(`[RECONCILE_AFTER_STREAM] ${context} - keeping overlay active (contentBuf=${contentLength}, thoughtsBuf=${thoughtsLength})`);
+      return;
+    }
+
+    logger.info(`[RECONCILE_AFTER_STREAM] ${context} - buffers empty, clearing persisting state`);
+    setPersistingAfterStream(false);
+  }, [chatId]);
 
   useEffect(() => {
     if (!chatId) return;
@@ -532,16 +551,16 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
             loadHistory({ forceReplace: true, silent: true })
               .then(() => {
                 logger.info(`[RECONCILE_AFTER_STREAM] Silent history reload completed for ${chatId}`);
-                setPersistingAfterStream(false);
+                releasePersistingAfterStream('Silent history reload completed');
               })
               .catch((e) => {
                 logger.warn(`[RECONCILE_AFTER_STREAM] Silent reload failed for ${chatId}:`, e);
-                setPersistingAfterStream(false);
+                releasePersistingAfterStream('Silent history reload failed');
               });
           }, RECONCILE_AFTER_STREAM_DELAY_MS);
         } catch (e) {
           logger.warn(`[RECONCILE_AFTER_STREAM] Error scheduling silent history reload for ${chatId}:`, e);
-          setPersistingAfterStream(false);
+          releasePersistingAfterStream('Silent history reload scheduling error');
         }
       }
       
@@ -554,8 +573,35 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       
       logger.info(`[STREAM_STATE] ===== FINAL STATE VERIFICATION COMPLETED =====`);
     }
-  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered]);
+  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered, releasePersistingAfterStream]);
 
+  useEffect(() => {
+    if (persistingAfterStream) return;
+
+    const hasBufferedContent = liveOverlay.contentBuf.length > 0 || liveOverlay.thoughtsBuf.length > 0;
+    if (liveOverlay.state === 'static' && hasBufferedContent && !lastAssistantFromMessages) {
+      logger.info(`[RECONCILE_AFTER_STREAM] Buffered overlay detected for ${chatId} - scheduling recovery history load`);
+      setPersistingAfterStream(true);
+
+      const timer = setTimeout(() => {
+        loadHistory({ forceReplace: true, silent: true })
+          .catch((error) => {
+            logger.warn(`[RECONCILE_AFTER_STREAM] Recovery history reload failed for ${chatId}:`, error);
+          });
+      }, RECONCILE_AFTER_STREAM_DELAY_MS);
+
+      return () => clearTimeout(timer);
+    }
+  }, [persistingAfterStream, liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, lastAssistantFromMessages, loadHistory, chatId]);
+
+  useEffect(() => {
+    if (!persistingAfterStream) return;
+
+    const hasBufferedContent = liveOverlay.contentBuf.length > 0 || liveOverlay.thoughtsBuf.length > 0;
+    if (!hasBufferedContent && liveOverlay.state === 'static') {
+      releasePersistingAfterStream('Live buffers drained after reconciliation');
+    }
+  }, [persistingAfterStream, liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, releasePersistingAfterStream]);
 
   useEffect(() => {
     if (onActiveStateChange && chatId) {

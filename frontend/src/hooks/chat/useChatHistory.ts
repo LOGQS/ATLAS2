@@ -27,13 +27,21 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
   const setMessagesRef = useRef(setMessages);
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
   const validationAbortControllerRef = useRef<AbortController | undefined>(undefined);
+  const activeChatIdRef = useRef<string | undefined>(chatId);
+  const loadRequestIdRef = useRef(0);
+  const validateRequestIdRef = useRef(0);
+
+
 
   useEffect(() => {
     setMessagesRef.current = setMessages;
+    activeChatIdRef.current = chatId;
     logger.info(`[RECONCILE] Updated setMessages ref for chatId: ${chatId}`);
   }, [setMessages, chatId]);
 
   const validateCache = useCallback(async (targetChatId: string) => {
+    const requestId = ++validateRequestIdRef.current;
+
     try {
       if (validationAbortControllerRef.current) {
         validationAbortControllerRef.current.abort();
@@ -50,14 +58,25 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         if (!chatHistoryCache.validateMetadata(targetChatId, freshMessages)) {
           logger.info(`[ChatCache] Cache invalidated for ${targetChatId}, updating with fresh data`);
 
-          setMessagesRef.current(prev => {
-            const result = reconcileMessages(prev, freshMessages, targetChatId, false);
+          if (validateRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          if (activeChatIdRef.current === targetChatId) {
+            setMessagesRef.current(prev => {
+              const result = reconcileMessages(prev, freshMessages, targetChatId, false);
+              const currentLiveState = liveStore.get(targetChatId);
+              if (currentLiveState?.state === 'static') {
+                chatHistoryCache.put(targetChatId, result, 'clean-static');
+              }
+              return result;
+            });
+          } else {
             const currentLiveState = liveStore.get(targetChatId);
             if (currentLiveState?.state === 'static') {
-              chatHistoryCache.put(targetChatId, result, 'clean-static');
+              chatHistoryCache.put(targetChatId, freshMessages, 'clean-static');
             }
-            return result;
-          });
+          }
         } else {
           logger.info(`[ChatCache] Cache validated successfully for ${targetChatId}`);
         }
@@ -67,7 +86,9 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.error(`[ChatCache] Validation failed for ${targetChatId}:`, error);
       }
     } finally {
-      setIsValidating(false);
+      if (validateRequestIdRef.current === requestId) {
+        setIsValidating(false);
+      }
     }
   }, []);
 
@@ -76,18 +97,23 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
     if (!targetChatId) return;
     const forceReplaceMessages = options.forceReplace ?? false;
     const silent = options.silent ?? false;
+    const requestId = ++loadRequestIdRef.current;
 
     if (!forceReplaceMessages && !silent) {
       const cached = chatHistoryCache.get(targetChatId);
       if (cached) {
         logger.info(`[ChatCache] Using cached messages for ${targetChatId} (${cached.messages.length} messages)`);
 
-        setMessagesRef.current(() => {
-          logger.info(`[ChatCache] Setting cached messages immediately`);
-          return cached.messages;
-        });
+        if (activeChatIdRef.current === targetChatId && loadRequestIdRef.current === requestId) {
+          setMessagesRef.current(() => {
+            logger.info(`[ChatCache] Setting cached messages immediately`);
+            return cached.messages;
+          });
+        }
 
-        setIsLoading(false);
+        if (!silent && loadRequestIdRef.current === requestId) {
+          setIsLoading(false);
+        }
 
         setIsValidating(true);
         validateCache(targetChatId);
@@ -116,6 +142,22 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
           const contentPreview = m.content ? m.content.substring(0, 50) : '';
           logger.info(`[ChatHistory] DB[${i}]: ${m.id}(${m.role}) content="${contentPreview}..."`);
         });
+        
+        if (loadRequestIdRef.current !== requestId) {
+          const currentLiveState = liveStore.get(targetChatId);
+          if (currentLiveState?.state === 'static') {
+            chatHistoryCache.put(targetChatId, hist, 'clean-static');
+          }
+          return;
+        }
+
+        if (activeChatIdRef.current !== targetChatId) {
+          const currentLiveState = liveStore.get(targetChatId);
+          if (currentLiveState?.state === 'static') {
+            chatHistoryCache.put(targetChatId, hist, 'clean-static');
+          }
+          return;
+        }
         
         const currentSetMessages = setMessagesRef.current;
         logger.info(`[RECONCILE] setMessages function available: ${typeof currentSetMessages}, chatId: ${chatId}, targetChatId: ${targetChatId}`);
@@ -184,7 +226,9 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         );
       } else if (res.status === 404) {
         logger.debug(`[ChatHistory] Chat not found (404), handling new chat scenario`);
-        setMessagesRef.current(prev => handleNewChatScenario(prev, targetChatId));
+        if (loadRequestIdRef.current === requestId && activeChatIdRef.current === targetChatId) {
+          setMessagesRef.current(prev => handleNewChatScenario(prev, targetChatId));
+        }
       } else {
         logger.error(`[ChatHistory] Failed to load history for ${targetChatId}:`, data.error);
       }
@@ -195,9 +239,8 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.error(`[ChatHistory] Error loading history for ${targetChatId}:`, e);
       }
     } finally {
-      if (!silent) setIsLoading(false);
+      if (!silent && loadRequestIdRef.current === requestId) setIsLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, validateCache]); 
 
   useEffect(() => {
@@ -227,3 +270,8 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
     loadHistory
   };
 };
+
+
+
+
+

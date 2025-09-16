@@ -93,35 +93,88 @@ function App() {
   }, [activeChatId]);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
-  const { 
-    attachedFiles, 
-    fileInputRef, 
-    hasUnreadyFiles, 
-    initializeAttachedFiles, 
-    handleAddFileClick, 
-    handleFileSelect, 
+  const {
+    attachedFiles,
+    fileInputRef,
+    hasUnreadyFiles,
+    initializeAttachedFiles,
+    handleAddFileClick,
+    handleFileSelect,
     handleFileSelectionImmediate,
-    handleRemoveFile, 
-    clearAttachedFiles, 
-    handleClearAllFiles 
+    handleRemoveFile,
+    clearAttachedFiles,
+    handleClearAllFiles
   } = useFileManagement(isAppInitialized);
+
+  const chatSwitchTokenRef = useRef(0);
+  const activeChatSyncAbortRef = useRef<AbortController | null>(null);
+
+  const loadChatsFromDatabase = useCallback(async (options?: { expectedToken?: number }) => {
+    try {
+      logger.info('[App.loadChatsFromDatabase] Loading chats from database');
+      const response = await fetch(apiUrl('/api/db/chats'));
+      const data = await response.json();
+
+      if (options?.expectedToken && options.expectedToken !== chatSwitchTokenRef.current) {
+        return;
+      }
+
+      if (response.ok) {
+        logger.info('[App.loadChatsFromDatabase] Successfully loaded chats:', data.chats.length);
+        const chatsFromDb = data.chats.map((chat: any) => ({
+          id: chat.id,
+          name: chat.name,
+          isActive: chat.isActive,
+          state: chat.state || 'static',
+          last_active: chat.last_active
+        }));
+
+        const settings = BrowserStorage.getUISettings();
+        if (settings.chatOrder && settings.chatOrder.length > 0) {
+          const orderedChats: ChatItem[] = [];
+          const chatMap = new Map<string, ChatItem>(chatsFromDb.map((chat: ChatItem) => [chat.id, chat]));
+
+          settings.chatOrder.forEach(chatId => {
+            if (chatMap.has(chatId)) {
+              const chat = chatMap.get(chatId);
+              if (chat) {
+                orderedChats.push(chat);
+                chatMap.delete(chatId);
+              }
+            }
+          });
+
+          chatMap.forEach((chat) => {
+            orderedChats.push(chat);
+          });
+
+          setChats(orderedChats);
+        } else {
+          setChats(chatsFromDb);
+        }
+      } else {
+        logger.error('[App.loadChatsFromDatabase] Failed to load chats:', data.error);
+      }
+    } catch (error) {
+      logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
+    }
+  }, []);
 
   useEffect(() => {
     if (isAppInitialized) return;
-    
+
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
       liveStore.start();
       await loadChatsFromDatabase();
       await loadActiveChat();
-      
+
       initializeAttachedFiles();
-      
+
       setIsAppInitialized(true);
     };
     initializeApp();
-  }, [isAppInitialized, initializeAttachedFiles]);
-  
+  }, [isAppInitialized, initializeAttachedFiles, loadChatsFromDatabase]);
 
   useEffect(() => {
     const unsubs = chats.map(chat =>
@@ -168,56 +221,10 @@ function App() {
     }
   };
 
-  const loadChatsFromDatabase = async () => {
-    try {
-      logger.info('[App.loadChatsFromDatabase] Loading chats from database');
-      const response = await fetch(apiUrl('/api/db/chats'));
-      const data = await response.json();
-      
-      if (response.ok) {
-        logger.info('[App.loadChatsFromDatabase] Successfully loaded chats:', data.chats.length);
-        const chatsFromDb = data.chats.map((chat: any) => ({
-          id: chat.id,
-          name: chat.name,
-          isActive: chat.isActive,
-          state: chat.state || 'static',
-          last_active: chat.last_active
-        }));
         
-        const settings = BrowserStorage.getUISettings();
-        if (settings.chatOrder && settings.chatOrder.length > 0) {
-          const orderedChats: ChatItem[] = [];
-          const chatMap = new Map<string, ChatItem>(chatsFromDb.map((chat: ChatItem) => [chat.id, chat]));
-          
-          settings.chatOrder.forEach(chatId => {
-            if (chatMap.has(chatId)) {
-              const chat = chatMap.get(chatId);
-              if (chat) {
-                orderedChats.push(chat);
-                chatMap.delete(chatId);
-              }
-            }
-          });
-          
-          chatMap.forEach((chat) => {
-            orderedChats.push(chat);
-          });
-          
-          setChats(orderedChats);
-        } else {
-          setChats(chatsFromDb);
-        }
-      } else {
-        logger.error('[App.loadChatsFromDatabase] Failed to load chats:', data.error);
-      }
-    } catch (error) {
-      logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
-    }
-  };
   const centerInputRef = useRef<HTMLTextAreaElement>(null);
   const bottomInputRef = useRef<HTMLTextAreaElement>(null);
   const chatRef = useRef<any>(null);
-
   const createNewChatInBackground = async (chatId: string, chatName: string, firstMessage: string) => {
     logger.info('Creating new chat in DB:', { chatId, chatName });
     
@@ -346,37 +353,71 @@ function App() {
     }
   };
 
-  const syncActiveChat = async (chatId: string) => {
+  const syncActiveChat = useCallback(async (chatId: string, token?: number) => {
+    if (token !== undefined && chatSwitchTokenRef.current !== token) {
+      return;
+    }
+
+    if (activeChatSyncAbortRef.current) {
+      activeChatSyncAbortRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    activeChatSyncAbortRef.current = controller;
+
     try {
       await fetch(apiUrl('/api/db/active-chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ chat_id: chatId })
+        body: JSON.stringify({ chat_id: chatId }),
+        signal: controller.signal
       });
-      
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      if (token !== undefined && chatSwitchTokenRef.current !== token) {
+        return;
+      }
+
       logger.info('[App.syncActiveChat] Backend sync completed for:', chatId);
     } catch (error) {
-      logger.error('[App.syncActiveChat] Failed to sync active chat:', error);
+      if (!controller.signal.aborted) {
+        logger.error('[App.syncActiveChat] Failed to sync active chat:', error);
+      }
+    } finally {
+      if (activeChatSyncAbortRef.current === controller) {
+        activeChatSyncAbortRef.current = null;
+      }
     }
-  };
+  }, []);
 
 
   const handleChatSelect = useCallback(async (chatId: string) => {
     if (activeChatId === chatId) return;
-    
+
+    const switchToken = chatSwitchTokenRef.current + 1;
+    chatSwitchTokenRef.current = switchToken;
+
     logger.info('[MANUAL_SWITCH] ===== STARTING MANUAL CHAT SWITCH =====');
     logger.info('[MANUAL_SWITCH] Switching to chat:', chatId);
-    
+
     const clickedChat = chats.find(chat => chat.id === chatId);
     let targetChatId = chatId;
-    
+
     if (clickedChat?.last_active && clickedChat.last_active !== chatId) {
       logger.info(`[VersionMemory] Main chat ${chatId} has remembered version: ${clickedChat.last_active}`);
-      
+
       try {
         const checkResponse = await fetch(apiUrl(`/api/db/chat/${clickedChat.last_active}`));
+
+        if (chatSwitchTokenRef.current !== switchToken) {
+          return;
+        }
+
         if (checkResponse.ok) {
           targetChatId = clickedChat.last_active;
           logger.info(`[VersionMemory] Switching to remembered version: ${targetChatId}`);
@@ -385,18 +426,25 @@ function App() {
           targetChatId = chatId;
         }
       } catch (error) {
+        if (chatSwitchTokenRef.current !== switchToken) {
+          return;
+        }
         logger.warn(`[VersionMemory] Error checking remembered version: ${error}, using main chat`);
         targetChatId = chatId;
       }
     }
-    
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     logger.info(`[MANUAL_SWITCH] Setting activeChatId to: ${targetChatId}`);
     setActiveChatId(targetChatId);
     logger.info(`[MANUAL_SWITCH] ActiveChatId changed to: ${targetChatId}`);
     logger.info(`[MANUAL_SWITCH] Updating sidebar highlighting`);
-    setChats(prev => prev.map(chat => ({ 
-      ...chat, 
-      isActive: chat.id === chatId 
+    setChats(prev => prev.map(chat => ({
+      ...chat,
+      isActive: chat.id === chatId
     })));
     logger.info(`[MANUAL_SWITCH] Sidebar highlighted: ${chatId}`);
     logger.info(`[MANUAL_SWITCH] Clearing input and message states`);
@@ -406,29 +454,42 @@ function App() {
       next.set(targetChatId, false);
       return next;
     });
-    
+
     if (!hasMessageBeenSent) {
       logger.info(`[MANUAL_SWITCH] Setting hasMessageBeenSent=true`);
       setHasMessageBeenSent(true);
       document.body.classList.add('chat-active');
     }
-    
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     logger.info(`[MANUAL_SWITCH] Syncing active chat with backend`);
-    await syncActiveChat(targetChatId);
-    logger.info(`[MANUAL_SWITCH] Backend sync completed`);
-    
+    await syncActiveChat(targetChatId, switchToken);
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     if (targetChatId !== chatId) {
       logger.info(`[MANUAL_SWITCH] Reloading chats for version highlighting update`);
-      await loadChatsFromDatabase();
+      await loadChatsFromDatabase({ expectedToken: switchToken });
+      if (chatSwitchTokenRef.current !== switchToken) {
+        return;
+      }
     }
-    
+
     logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
-  }, [activeChatId, hasMessageBeenSent, chats]);
+  }, [activeChatId, hasMessageBeenSent, chats, syncActiveChat, loadChatsFromDatabase]);
 
   const handleChatSwitch = useCallback(async (newChatId: string) => {
+    const switchToken = chatSwitchTokenRef.current + 1;
+    chatSwitchTokenRef.current = switchToken;
+
     logger.info('[VERSION_SWITCH] ===== STARTING VERSION CHAT SWITCH =====');
     logger.info('[VERSION_SWITCH] Switching to version chat:', newChatId);
-    
+
     if (activeChatId !== 'none') {
       setSendingByChat(prev => {
         const next = new Map(prev);
@@ -437,21 +498,36 @@ function App() {
         return next;
       });
     }
-    
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     logger.info(`[VERSION_SWITCH] Setting activeChatId to: ${newChatId}`);
     setActiveChatId(newChatId);
     logger.info(`[VERSION_SWITCH] ActiveChatId changed to version chat: ${newChatId}`);
-    
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     logger.info(`[VERSION_SWITCH] Syncing active chat with backend`);
-    await syncActiveChat(newChatId);
-    logger.info(`[VERSION_SWITCH] Backend sync completed`);
-    
+    await syncActiveChat(newChatId, switchToken);
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
     logger.info(`[VERSION_SWITCH] Reloading chats for parent highlighting update`);
-    await loadChatsFromDatabase();
-    logger.info(`[VERSION_SWITCH] Chats reloaded`);
-    
+    await loadChatsFromDatabase({ expectedToken: switchToken });
+
+    if (chatSwitchTokenRef.current !== switchToken) {
+      return;
+    }
+
+    logger.info('[VERSION_SWITCH] Chats reloaded');
     logger.info('[VERSION_SWITCH] ===== VERSION CHAT SWITCH COMPLETED =====');
-  }, [activeChatId]);
+  }, [activeChatId, syncActiveChat, loadChatsFromDatabase]);
 
   useEffect(() => {
     (window as any).handleChatSwitch = handleChatSwitch;
@@ -1050,3 +1126,6 @@ function App() {
 }
 
 export default App;
+
+
+
