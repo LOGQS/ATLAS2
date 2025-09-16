@@ -8,6 +8,7 @@ from flask import Flask, request
 from utils.db_utils import db
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
+from chat.chat import force_cleanup_chat_process
 from route.db_route_utils import (
     DBRouteConstants,
     ResponseBuilder,
@@ -186,14 +187,17 @@ class BulkRoute:
 
             for chat_id in optimized_chat_ids:
                 try:
-                    logger.info(f"[CANCEL] Bulk cancelling active processing for chat {chat_id} before deletion")
-                    cancellation_manager.cancel_chat(chat_id)
+                    logger.info(f"[CANCEL] Force terminating chat process for {chat_id} before deletion")
+                    force_cleanup_chat_process(chat_id)
 
                     hierarchy = chat_hierarchies.get(chat_id, [chat_id])
+                    for descendant_id in hierarchy:
+                        if descendant_id != chat_id:
+                            logger.info(f"[CANCEL] Force terminating descendant process {descendant_id}")
+                            force_cleanup_chat_process(descendant_id)
 
                     success = db.delete_chat(chat_id)
                     if success:
-                        cancellation_manager.cleanup_chat(chat_id)
                         deleted_count += len(hierarchy)
                         all_deleted_chats.extend(hierarchy)
                         logger.info(f"[BULK_CASCADE_DELETE] Successfully deleted {chat_id} and {len(hierarchy)-1} descendants")

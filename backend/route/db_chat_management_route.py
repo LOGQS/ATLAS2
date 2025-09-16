@@ -8,6 +8,7 @@ from utils.db_utils import db
 from utils.logger import get_logger
 from utils.config import Config
 from utils.cancellation_manager import cancellation_manager
+from chat.chat import force_cleanup_chat_process
 from route.db_route_utils import (
     DBRouteConstants,
     ResponseBuilder,
@@ -116,8 +117,8 @@ class ChatManagementRoute:
             if error_response:
                 return error_response
 
-            logger.info(f"[CANCEL] Cancelling active processing for chat {chat_id} before deletion")
-            cancellation_manager.cancel_chat(chat_id)
+            logger.info(f"[CANCEL] Force terminating chat process for {chat_id} before deletion")
+            force_cleanup_chat_process(chat_id)
 
             current_active_chat = db.get_user_setting('active_chat', DBRouteConstants.DEFAULT_ACTIVE_CHAT)
             will_delete_active_chat = False
@@ -131,6 +132,10 @@ class ChatManagementRoute:
                     will_delete_active_chat = True
                     logger.info(f"[CASCADE_DELETE] Current active chat {current_active_chat} will be deleted, clearing active chat")
 
+                for descendant_id in descendants:
+                    logger.info(f"[CANCEL] Force terminating descendant process {descendant_id}")
+                    force_cleanup_chat_process(descendant_id)
+
             success = db.delete_chat(chat_id)
 
             if success:
@@ -139,8 +144,6 @@ class ChatManagementRoute:
                 if will_delete_active_chat:
                     db.save_user_setting('active_chat', DBRouteConstants.DEFAULT_ACTIVE_CHAT)
                     logger.info(f"[CASCADE_DELETE] Cleared active chat setting")
-
-                cancellation_manager.cleanup_chat(chat_id)
                 return ResponseBuilder.success(
                     message='Chat deleted successfully',
                     chat_id=chat_id,
