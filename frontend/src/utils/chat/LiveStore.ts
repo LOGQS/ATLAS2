@@ -13,6 +13,7 @@ type ChatLive = {
 };
 
 type Listener = (chatId: string, snap: ChatLive) => void;
+type StateListener = (chatId: string, state: ChatLive['state']) => void;
 
 interface BaseSSEEvent {
   chat_id?: string;
@@ -52,6 +53,7 @@ class LiveStore {
   private es: EventSource | null = null;
   private byChat = new Map<string, ChatLive>();
   private listeners = new Map<string, Set<Listener>>();
+  private stateListeners = new Map<string, Set<StateListener>>();
   private processedMessageIds = new Map<string, number>(); 
   private readonly MESSAGE_ID_CLEANUP_INTERVAL = 5 * 60 * 1000; 
   private readonly MESSAGE_ID_MAX_AGE = 15 * 60 * 1000; 
@@ -125,8 +127,8 @@ class LiveStore {
     const addedContent = ev.content || '';
     next.thoughtsBuf = cur.thoughtsBuf + addedContent;
     next.version++;
-    logger.info(`[LIVESTORE_SSE] Thoughts chunk for ${chatId}: +${addedContent.length} chars (total: ${next.thoughtsBuf.length})`);
-    logger.info(`[LIVESTORE_SSE] Thoughts content: "${addedContent.substring(0, 50)}..."`);
+    logger.debug(`[LIVESTORE_SSE] Thoughts chunk for ${chatId}: +${addedContent.length} chars (total: ${next.thoughtsBuf.length})`);
+    logger.debug(`[LIVESTORE_SSE] Thoughts content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First thoughts content');
     return next;
   }
@@ -136,8 +138,8 @@ class LiveStore {
     const addedContent = ev.content || '';
     next.contentBuf = cur.contentBuf + addedContent;
     next.version++;
-    logger.info(`[LIVESTORE_SSE] Content chunk for ${chatId}: +${addedContent.length} chars (total: ${next.contentBuf.length})`);
-    logger.info(`[LIVESTORE_SSE] Content: "${addedContent.substring(0, 50)}..."`);
+    logger.debug(`[LIVESTORE_SSE] Content chunk for ${chatId}: +${addedContent.length} chars (total: ${next.contentBuf.length})`);
+    logger.debug(`[LIVESTORE_SSE] Content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First answer content');
     return next;
   }
@@ -147,8 +149,8 @@ class LiveStore {
     const oldState = next.state;
     next.state = 'static';
     next.version++;
-    logger.info(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
-    logger.info(`[LIVESTORE_SSE] Final buffers - content: ${next.contentBuf.length}chars, thoughts: ${next.thoughtsBuf.length}chars`);
+    logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
+    logger.debug(`[LIVESTORE_SSE] Final buffers - content: ${next.contentBuf.length}chars, thoughts: ${next.thoughtsBuf.length}chars`);
 
     performanceTracker.mark(performanceTracker.MARKS.STREAM_COMPLETE, chatId);
 
@@ -158,7 +160,7 @@ class LiveStore {
       sendButtonStateManager.clearSendButtonState(parentId);
       sendButtonStateManager.clearParentChild(chatId);
       this.pendingVersionStreamParents.delete(chatId);
-      logger.info(`[LIVESTORE_BRIDGE] Completed child ${chatId}; re-enabled both child and parent ${parentId}, cleared mapping`);
+      logger.debug(`[LIVESTORE_BRIDGE] Completed child ${chatId}; re-enabled both child and parent ${parentId}, cleared mapping`);
     }
     return next;
   }
@@ -252,8 +254,9 @@ class LiveStore {
         logger.info(`[LIVESTORE_SSE] - Thoughts buffer: ${next.thoughtsBuf.length}chars`);
         logger.info(`[LIVESTORE_SSE] - Version: ${next.version}`);
         
+        const stateChanged = cur.state !== next.state;
         this.byChat.set(chatId, next);
-        this.emit(chatId, next);
+        this.emit(chatId, next, { eventType: ev.type, stateChanged });
       } catch (err) {
         logger.error('[LiveStore] Failed to process SSE event', err);
       }
@@ -276,8 +279,9 @@ class LiveStore {
       return; 
     }
     const next: ChatLive = { ...cur, state: 'thinking', version: cur.version + 1 };
+    const stateChanged = cur.state !== next.state;
     this.byChat.set(chatId, next);
-    this.emit(chatId, next);
+    this.emit(chatId, next, { stateChanged });
   }
 
   revertLocalStream(chatId: string): void {
@@ -285,9 +289,32 @@ class LiveStore {
     if (!cur) return;
     if (cur.state === 'thinking' && cur.contentBuf.length === 0 && cur.thoughtsBuf.length === 0) {
       const next: ChatLive = { ...cur, state: 'static', version: cur.version + 1 };
+      const stateChanged = cur.state !== next.state;
       this.byChat.set(chatId, next);
-      this.emit(chatId, next);
+      this.emit(chatId, next, { stateChanged, eventType: 'chat_state' });
     }
+  }
+
+  subscribeState(chatId: string, fn: StateListener) {
+    if (!this.stateListeners.has(chatId)) {
+      this.stateListeners.set(chatId, new Set());
+    }
+    this.stateListeners.get(chatId)!.add(fn);
+
+    const snap = this.byChat.get(chatId);
+    if (snap) {
+      fn(chatId, snap.state);
+    }
+
+    return () => {
+      const set = this.stateListeners.get(chatId);
+      if (set) {
+        set.delete(fn);
+        if (set.size === 0) {
+          this.stateListeners.delete(chatId);
+        }
+      }
+    };
   }
 
   subscribe(chatId: string, fn: Listener) {
@@ -330,27 +357,32 @@ class LiveStore {
     logger.debug(`[LiveStore] Reset state for ${chatId}`);
   }
 
-  private emit(chatId: string, snap: ChatLive) {
+  private emit(chatId: string, snap: ChatLive, options: { eventType?: SSEEvent['type'] | 'chat_state'; stateChanged?: boolean } = {}) {
+    const stateListeners = this.stateListeners.get(chatId);
+    if (options.stateChanged && stateListeners) {
+      stateListeners.forEach(listener => {
+        try {
+          listener(chatId, snap.state);
+        } catch (err) {
+          logger.error(`[LIVESTORE_EMIT] Error in state listener for ${chatId}`, err);
+        }
+      });
+    }
+
     const ls = this.listeners.get(chatId);
     if (!ls) {
       logger.debug(`[LIVESTORE_EMIT] No listeners for chat ${chatId}, skipping emit`);
       return;
     }
     
-    logger.info(`[LIVESTORE_EMIT] Emitting state update for ${chatId} to ${ls.size} listeners:`);
-    logger.info(`[LIVESTORE_EMIT] - State: ${snap.state}`);
-    logger.info(`[LIVESTORE_EMIT] - Content buffer: ${snap.contentBuf.length}chars`);
-    logger.info(`[LIVESTORE_EMIT] - Thoughts buffer: ${snap.thoughtsBuf.length}chars`);
-    logger.info(`[LIVESTORE_EMIT] - Version: ${snap.version}`);
+    logger.debug(`[LIVESTORE_EMIT] Emitting update for ${chatId} to ${ls.size} listeners`);
     
-    let index = 0;
-    ls.forEach(fn => {
+    const listenerList = Array.from(ls);
+    listenerList.forEach((fn, index) => {
       try {
-        index++;
-        logger.info(`[LIVESTORE_EMIT] Calling listener ${index}/${ls.size} for ${chatId}`);
         fn(chatId, snap);
       } catch (err) {
-        logger.error(`[LIVESTORE_EMIT] Error in listener ${index} for ${chatId}`, err);
+        logger.error(`[LIVESTORE_EMIT] Error in listener ${index + 1}/${listenerList.length} for ${chatId}`, err);
       }
     });
   }
@@ -370,8 +402,9 @@ class LiveStore {
     
     next.version++;
     
+    const stateChanged = cur.state !== next.state;
     this.byChat.set(chatId, next);
-    this.emit(chatId, next);
+    this.emit(chatId, next, { stateChanged });
     
     logger.debug(`[LiveStore] Reconciled ${chatId} with DB - lastAid=${lastAssistantId}, cleared buffers`);
   }

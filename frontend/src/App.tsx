@@ -179,8 +179,21 @@ function App() {
 
   useEffect(() => {
     const unsubs = chats.map(chat =>
-      liveStore.subscribe(chat.id, (_id, snap) => {
-        setChats(prev => prev.map(c => c.id === _id ? { ...c, state: snap.state } : c));
+      liveStore.subscribeState(chat.id, (updatedChatId, nextState) => {
+        setChats(prev => {
+          let mutated = false;
+          const nextChats = prev.map(existingChat => {
+            if (existingChat.id !== updatedChatId) {
+              return existingChat;
+            }
+            if (existingChat.state === nextState) {
+              return existingChat;
+            }
+            mutated = true;
+            return { ...existingChat, state: nextState };
+          });
+          return mutated ? nextChats : prev;
+        });
       })
     );
     return () => unsubs.forEach(unsub => unsub && unsub());
