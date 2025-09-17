@@ -61,7 +61,8 @@ def create_app():
     """Create and configure the Flask application"""
     app = Flask(__name__)
     
-    CORS(app, origins=['http://localhost:3000'])
+    cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
+    CORS(app, origins=[origin.strip() for origin in cors_origins])
     
     setup_filespace()
     

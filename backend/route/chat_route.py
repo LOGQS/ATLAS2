@@ -20,7 +20,8 @@ _message_cache = {}
 _message_cache_lock = Lock()
 
 state_change_queue = queue.Queue()
-content_queues = {} 
+content_queues = {}
+_content_queues_lock = Lock()
 
 _subscribers = []
 _sub_lock = Lock()
@@ -143,9 +144,8 @@ def publish_state(chat_id: str, state: str):
 
 def publish_content(chat_id: str, chunk_type: str, content: str):
     """Publishes a content chunk to the chat's content queue."""
-    if chat_id not in content_queues:
-        content_queues[chat_id] = queue.Queue()
-    content_queues[chat_id].put({'type': chunk_type, 'content': content})
+    q = get_content_queue(chat_id)
+    q.put({'type': chunk_type, 'content': content})
     _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
 
 def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_id: str = None):
@@ -160,30 +160,33 @@ def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_
 
 def get_content_queue(chat_id: str):
     """Get or create content queue for a chat."""
-    if chat_id not in content_queues:
-        content_queues[chat_id] = queue.Queue()
-        logger.info(f"Created new content queue for chat {chat_id}")
-    return content_queues[chat_id]
+    with _content_queues_lock:
+        q = content_queues.get(chat_id)
+        if q is None:
+            q = queue.Queue()
+            content_queues[chat_id] = q
+            logger.info(f"Created new content queue for chat {chat_id}")
+    return q
 
 def cleanup_content_queue(chat_id: str):
     """Clean up content queue when chat processing is complete (not just when client disconnects)."""
-    if chat_id in content_queues:
-        if not is_chat_processing(chat_id):
-            queue_obj = content_queues[chat_id]
+    if not is_chat_processing(chat_id):
+        with _content_queues_lock:
+            q = content_queues.pop(chat_id, None)
+        if q:
             drained_count = 0
             try:
-                while not queue_obj.empty():
-                    queue_obj.get_nowait()
+                while not q.empty():
+                    q.get_nowait()
                     drained_count += 1
             except queue.Empty:
                 pass
             except Exception as e:
                 logger.warning(f"Error draining queue for chat {chat_id}: {e}")
-            
-            del content_queues[chat_id]
+
             logger.info(f"Cleaned up content queue for completed chat {chat_id} (drained {drained_count} items)")
-        else:
-            logger.info(f"Keeping content queue for still-processing chat {chat_id}")
+    else:
+        logger.info(f"Keeping content queue for still-processing chat {chat_id}")
 
 
 def register_chat_routes(app: Flask):
