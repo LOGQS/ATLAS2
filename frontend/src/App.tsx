@@ -22,6 +22,7 @@ import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
 import { useAppState } from './hooks/app/useAppState';
 import { useFileManagement } from './hooks/files/useFileManagement';
 import { useDragDrop } from './hooks/files/useDragDrop';
+import AudioRecorder from './utils/audio/audioRecorder';
 // TEST_FRAMEWORK_IMPORT - Remove this line and the next to remove test framework
 import TestUI from './tests/versioning/TestUI';
 
@@ -56,8 +57,12 @@ function App() {
   const toggleOutlineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const [isButtonHeld, setIsButtonHeld] = useState(false);
+  const [wasHoldCompleted, setWasHoldCompleted] = useState(false);
   const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const HOLD_DETECTION_MS = 700;
+  const audioRecorderRef = useRef<AudioRecorder | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSoundDetected, setIsSoundDetected] = useState(false);
 
   const resetToggleOutlineTimer = useCallback(() => {
     if (toggleOutlineTimeoutRef.current) {
@@ -84,6 +89,16 @@ function App() {
       }
     };
   }, [isBottomInputToggled]);
+
+  useEffect(() => {
+    return () => {
+      if (audioRecorderRef.current && audioRecorderRef.current.isCurrentlyRecording()) {
+        audioRecorderRef.current.stopRecording().catch(error => {
+          logger.error('[AUDIO_RECORDING] Error stopping recording on unmount:', error);
+        });
+      }
+    };
+  }, []);
 
   const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
     setSendingByChat(prev => {
@@ -301,13 +316,32 @@ function App() {
       clearTimeout(holdTimeoutRef.current);
     }
 
-    holdTimeoutRef.current = setTimeout(() => {
+    setWasHoldCompleted(false);
+
+    holdTimeoutRef.current = setTimeout(async () => {
       setIsButtonHeld(true);
-      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation');
+      setWasHoldCompleted(true); 
+      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation and recording');
+
+      try {
+        if (!audioRecorderRef.current) {
+          audioRecorderRef.current = new AudioRecorder({
+            onAudioLevelUpdate: (_level: number, soundDetected: boolean) => {
+              setIsSoundDetected(soundDetected);
+            }
+          });
+        }
+        await audioRecorderRef.current.startRecording();
+        setIsRecording(true);
+        setIsSoundDetected(false);
+        logger.info('[AUDIO_RECORDING] Recording session started successfully');
+      } catch (error) {
+        logger.error('[AUDIO_RECORDING] Failed to start recording:', error);
+      }
     }, HOLD_DETECTION_MS);
   }, []);
 
-  const handleButtonHoldEnd = useCallback(() => {
+  const handleButtonHoldEnd = useCallback(async () => {
     if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
@@ -316,8 +350,51 @@ function App() {
     if (isButtonHeld) {
       setIsButtonHeld(false);
       logger.debug('[HOLD_DETECTION] Send button hold released - stopping animation');
+
+      setTimeout(() => {
+        setWasHoldCompleted(false);
+      }, 100);
+
+      if (isRecording && audioRecorderRef.current) {
+        try {
+          logger.info('[AUDIO_RECORDING] Stopping recording...');
+          const audioBlob = await audioRecorderRef.current.stopRecording();
+          setIsRecording(false);
+          setIsSoundDetected(false);
+          logger.info('[AUDIO_RECORDING] Recording stopped, blob size:', audioBlob.size, 'type:', audioBlob.type);
+
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'recording.wav');
+          logger.info('[STT_TRANSCRIBE] Sending audio to backend for transcription...');
+
+          const response = await fetch(apiUrl('/api/stt/transcribe'), {
+            method: 'POST',
+            body: formData
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            logger.info('[STT_TRANSCRIBE] Transcription response:', result);
+
+            if (result.success && result.text) {
+              setMessage(prev => {
+                const newText = prev ? `${prev} ${result.text}` : result.text;
+                logger.info('[STT_TRANSCRIBE] Transcription successful, text added to input:', result.text);
+                return newText;
+              });
+            } else {
+              logger.warn('[STT_TRANSCRIBE] Transcription returned but no text:', result);
+            }
+          } else {
+            const errorText = await response.text();
+            logger.error('[STT_TRANSCRIBE] Failed to transcribe audio, status:', response.status, 'error:', errorText);
+          }
+        } catch (error) {
+          logger.error('[AUDIO_RECORDING] Error processing recording:', error);
+        }
+      }
     }
-  }, [isButtonHeld]);
+  }, [isButtonHeld, isRecording]);
 
   const handleSend = async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
@@ -929,13 +1006,20 @@ function App() {
                       isSendDisabled,
                       isActiveChatStreaming,
                       chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                      hasUnreadyFiles
+                      hasUnreadyFiles,
+                      wasHoldCompleted
                     });
+
+                    if (wasHoldCompleted) {
+                      logger.info('[SEND_DEBUG] Click prevented - hold was completed');
+                      return;
+                    }
+
                     if (!isSendDisabled) {
                       handleSend();
                     }
                   }}
-                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''}`}
+                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''}`}
                   title={
                     isActiveChatStreaming ? 'Chat is processing...' :
                     hasUnreadyFiles ? 'Waiting for files to finish processing...' :
@@ -945,7 +1029,12 @@ function App() {
                   }
                 >
                   {isButtonHeld ? (
-                    <div className="hold-animation-circle"></div>
+                    <div
+                      className={`hold-animation-circle ${isRecording ? 'recording' : ''} ${isSoundDetected ? 'sound-detected' : 'silent'}`}
+                      style={{
+                        animationPlayState: isSoundDetected ? 'running' : 'paused'
+                      }}
+                    ></div>
                   ) : isActiveChatStreaming ? (
                     <div className="loading-spinner"></div>
                   ) : hasUnreadyFiles ? (
@@ -1086,13 +1175,20 @@ function App() {
                         isSendDisabled,
                         isActiveChatStreaming,
                         chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                        hasUnreadyFiles
+                        hasUnreadyFiles,
+                        wasHoldCompleted
                       });
+
+                      if (wasHoldCompleted) {
+                        logger.info('[SEND_DEBUG] Click prevented - hold was completed');
+                        return;
+                      }
+
                       if (!isSendDisabled) {
                         handleSend();
                       }
                     }}
-                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''}`}
+                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''}`}
                     title={
                       isActiveChatStreaming ? 'Chat is processing...' :
                       hasUnreadyFiles ? 'Waiting for files to finish processing...' :
@@ -1102,7 +1198,12 @@ function App() {
                     }
                   >
                     {isButtonHeld ? (
-                      <div className="hold-animation-circle"></div>
+                      <div
+                        className={`hold-animation-circle ${isRecording ? 'recording' : ''} ${isSoundDetected ? 'sound-detected' : 'silent'}`}
+                        style={{
+                          animationPlayState: isSoundDetected ? 'running' : 'paused'
+                        }}
+                      ></div>
                     ) : isActiveChatStreaming ? (
                       <div className="loading-spinner"></div>
                     ) : hasUnreadyFiles ? (

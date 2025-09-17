@@ -3,7 +3,6 @@
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 import os
-from groq import Groq as GroqClient
 from utils.logger import get_logger
 
 load_dotenv()
@@ -27,11 +26,14 @@ class Groq:
 
         if self.api_key:
             try:
+                from groq import Groq as GroqClient
                 self.client = GroqClient(api_key=self.api_key)
-                logger.info("Groq STT client initialized successfully")
+                logger.info("[GROQ-PROVIDER] Groq STT client initialized successfully")
             except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {str(e)}")
+                logger.error(f"[GROQ-PROVIDER] Failed to initialize Groq client: {str(e)}")
                 self.status = "disabled"
+        else:
+            logger.warning("[GROQ-PROVIDER] No API key found, disabling provider")
 
     def is_available(self) -> bool:
         """Check if provider is available"""

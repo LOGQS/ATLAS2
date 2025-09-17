@@ -16,15 +16,19 @@ def get_provider_map() -> Dict[str, Any]:
 
 class Config:
     """Configuration class for ATLAS application settings."""
-    
+
     DEFAULT_PROVIDER = "gemini"
-    
+
     DEFAULT_MODEL = "gemini-2.5-flash"
 
     DEFAULT_STREAMING = True
-    
+
     RATE_LIMIT_REQUESTS_PER_MINUTE = 60
     RATE_LIMIT_BURST_SIZE = 10
+
+    STT_USE_CLOUD = True
+    STT_PROVIDER = "groq"
+    STT_MODEL = "whisper-large-v3-turbo"
     
     @classmethod
     def get_default_provider(cls) -> str:
@@ -53,7 +57,22 @@ class Config:
     def get_rate_limit_burst_size(cls) -> int:
         """Get rate limit burst size."""
         return cls.RATE_LIMIT_BURST_SIZE
-    
+
+    @classmethod
+    def get_stt_use_cloud(cls) -> bool:
+        """Get whether to use cloud STT."""
+        return cls.STT_USE_CLOUD
+
+    @classmethod
+    def get_stt_provider(cls) -> str:
+        """Get STT provider."""
+        return cls.STT_PROVIDER
+
+    @classmethod
+    def get_stt_model(cls) -> str:
+        """Get STT model."""
+        return cls.STT_MODEL
+
     @classmethod
     def get_defaults(cls) -> dict:
         """Get all default configurations."""
@@ -62,7 +81,10 @@ class Config:
             "model": cls.DEFAULT_MODEL,
             "streaming": cls.DEFAULT_STREAMING,
             "rate_limit_requests_per_minute": cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
-            "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE
+            "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE,
+            "stt_use_cloud": cls.STT_USE_CLOUD,
+            "stt_provider": cls.STT_PROVIDER,
+            "stt_model": cls.STT_MODEL
         }
     
     @classmethod
