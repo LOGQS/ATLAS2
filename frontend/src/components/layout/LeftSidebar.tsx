@@ -1,6 +1,6 @@
 // status: complete
 
-import React, { useState, useCallback} from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import '../../styles/layout/LeftSidebar.css';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import logger from '../../utils/core/logger';
@@ -49,6 +49,10 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
     return settings.leftSidebarToggled;
   });
   const [isHovering, setIsHovering] = useState(false);
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(() => {
+    const settings = BrowserStorage.getUISettings();
+    return settings.chatHistoryCollapsed;
+  });
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
@@ -64,6 +68,15 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
     logger.info('Toggling left sidebar:', newToggleState);
     setIsToggled(newToggleState);
     BrowserStorage.updateUISetting('leftSidebarToggled', newToggleState);
+  };
+
+  const handleChatHistoryToggle = () => {
+    setIsHistoryCollapsed(prev => {
+      const next = !prev;
+      logger.info('Toggling chat history collapse:', next);
+      BrowserStorage.updateUISetting('chatHistoryCollapsed', next);
+      return next;
+    });
   };
 
   const handleEditStart = (chatId: string, currentName: string) => {
@@ -115,6 +128,14 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
       setLastSelectedIndex(null);
     }
   };
+
+  useEffect(() => {
+    if (selectionMode && isHistoryCollapsed) {
+      logger.info('Auto-expanding chat history for selection mode');
+      setIsHistoryCollapsed(false);
+      BrowserStorage.updateUISetting('chatHistoryCollapsed', false);
+    }
+  }, [selectionMode, isHistoryCollapsed]);
 
   const handleChatSelection = (chatId: string, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -333,16 +354,43 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                 <div className="chat-history-header-top">
                   <div className="chat-history-title">
                     <div className="sidebar-icon chat-history-icon"></div>
-                    <h3>Chat History</h3>
+                    <h3 className="chat-history-label">Chat History</h3>
                   </div>
-                  <button 
-                    className={`selection-menu-btn ${selectionMode ? 'active' : ''}`}
-                    onClick={toggleSelectionMode}
-                    title="Selection Mode"
-                  >
-                    <div className="three-dots-icon"></div>
-                  </button>
+                  <div className="chat-history-actions">
+                    <button
+                      type="button"
+                      className={`chat-history-action chat-history-collapse-btn ${isHistoryCollapsed ? 'collapsed' : ''}`}
+                      onClick={handleChatHistoryToggle}
+                      aria-label={isHistoryCollapsed ? 'Expand chat history' : 'Collapse chat history'}
+                    >
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="collapse-icon"
+                      >
+                        <path
+                          d="M6 8l4 4 4-4"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button 
+                      className={`chat-history-action selection-menu-btn ${selectionMode ? 'active' : ''}`}
+                      onClick={toggleSelectionMode}
+                      title="Selection Mode"
+                    >
+                      <div className="three-dots-icon"></div>
+                    </button>
+                  </div>
                 </div>
+              </div>
+              <div className={`chat-history-body ${isHistoryCollapsed ? 'collapsed' : ''}`}>
                 {selectionMode && (
                   <div className="selection-controls">
                     <button 
@@ -388,7 +436,6 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                     </button>
                   </div>
                 )}
-              </div>
               <div className="chat-history-content">
                 {chats.length === 0 ? (
                   <p className="no-history">No chat history yet</p>
@@ -487,6 +534,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                 <span className="plus-icon">+</span>
                 New Chat
               </button>
+              </div>
             </div>
           </div>
         </div>
@@ -512,3 +560,4 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
 };
 
 export default LeftSidebar;
+

@@ -4,6 +4,7 @@ export interface UISettings {
   leftSidebarToggled: boolean;
   rightSidebarToggled: boolean;
   bottomInputToggled: boolean;
+  chatHistoryCollapsed: boolean;
   chatOrder?: string[];
   attachedFilesCollapsed?: boolean;
 }
@@ -21,6 +22,7 @@ const DEFAULT_SETTINGS: UISettings = {
   leftSidebarToggled: true,
   rightSidebarToggled: true,
   bottomInputToggled: true,
+  chatHistoryCollapsed: false,
   attachedFilesCollapsed: false,
 };
 
