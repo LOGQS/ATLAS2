@@ -518,7 +518,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                                 }}
                                 title="Delete chat"
                               >
-                                <div className="delete-icon"></div>
+                                <div className="chat-delete-icon"></div>
                               </button>
                             </div>
                           )}
