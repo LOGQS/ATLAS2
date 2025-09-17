@@ -904,15 +904,24 @@ function App() {
                   isActiveChatStreaming ? 'Chat is processing...' :
                   hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                   atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                  'Send message'
+                  message.trim() ? 'Send message' :
+                  '• Hold to record\n• Click for voice chat'
                 }
               >
                 {isActiveChatStreaming ? (
                   <div className="loading-spinner"></div>
                 ) : hasUnreadyFiles ? (
                   <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                ) : (
+                ) : message.trim() ? (
                   '→'
+                ) : (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                    <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
+                    <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
+                    <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
+                    <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
+                  </svg>
                 )}
               </button>
             </div>
@@ -1040,15 +1049,24 @@ function App() {
                     isActiveChatStreaming ? 'Chat is processing...' :
                     hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                     atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                    'Send message'
+                    message.trim() ? 'Send message' :
+                    '• Hold to record\n• Click for voice chat'
                   }
                 >
                   {isActiveChatStreaming ? (
                     <div className="loading-spinner"></div>
                   ) : hasUnreadyFiles ? (
                     <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                  ) : (
+                  ) : message.trim() ? (
                     '→'
+                  ) : (
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                      <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
+                      <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
+                      <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
+                      <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
+                    </svg>
                   )}
                 </button>
               </div>

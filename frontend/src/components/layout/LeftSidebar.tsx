@@ -327,9 +327,10 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
             <div className="sidebar-header-top">
               <h3>Quick Navigation</h3>
               <div className="sidebar-toggle-container">
-                <button 
+                <button
                   className={`sidebar-toggle ${isToggled ? 'active' : ''}`}
                   onClick={handleToggle}
+                  title={isToggled ? 'Auto-hide sidebar' : 'Pin sidebar open'}
                 >
                   <div className="toggle-slider"></div>
                 </button>
