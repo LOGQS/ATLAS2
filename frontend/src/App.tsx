@@ -16,7 +16,7 @@ import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEB
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
 import { apiUrl } from './config/api';
-import { MAX_CONCURRENT_STREAMS } from './config/chat';
+import { MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
 import { useAppState } from './hooks/app/useAppState';
@@ -951,7 +951,7 @@ function App() {
       />
 
       {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
-      <TriggerLog activeChatId={activeChatId} />
+      {DEBUG_TOOLS_CONFIG.showTriggerLog && <TriggerLog activeChatId={activeChatId} />}
 
       <div className="main-content">
         <div className="chat-container">

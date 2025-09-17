@@ -6,6 +6,7 @@ import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import logger from '../../utils/core/logger';
 import { DeleteModal } from '../ui/ModalWindow';
 import PerformanceMonitor from '../visualization/PerformanceMonitor';
+import { DEBUG_TOOLS_CONFIG } from '../../config/chat';
 
 interface Chat {
   id: string;
@@ -544,7 +545,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
         </div>
 
         {/* Performance Monitor */}
-        <PerformanceMonitor activeChatId={activeChatId || "none"} />
+        {DEBUG_TOOLS_CONFIG.showPerformanceMonitor && <PerformanceMonitor activeChatId={activeChatId || "none"} />}
 
         <DeleteModal
           isOpen={!!deletingChatId}
