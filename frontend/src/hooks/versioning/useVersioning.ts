@@ -242,13 +242,22 @@ export const useVersioning = ({
             payload.attached_file_ids = result.attached_file_ids;
           }
 
-          await fetch(apiUrl(API_ENDPOINTS.CHAT_STREAM), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
+          liveStore.beginLocalStream(result.version_chat_id);
+          const kickoffController = new AbortController();
+          try {
+            const res = await fetch(apiUrl(API_ENDPOINTS.CHAT_STREAM), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              signal: kickoffController.signal
+            });
+            try { await res.body?.cancel(); } catch {}
+          } finally {
+            try { kickoffController.abort(); } catch {}
+          }
         } catch (streamErr) {
           logger.error('[Versioning] Failed to initiate streaming for version chat:', streamErr);
+          liveStore.revertLocalStream(result.version_chat_id);
         }
       } else {
         sendButtonStateManager.setSendButtonDisabled(chatId, false);

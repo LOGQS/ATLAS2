@@ -268,6 +268,28 @@ class LiveStore {
     };
   }
 
+  beginLocalStream(chatId: string): void {
+    const cur = this.byChat.get(chatId) ?? {
+      state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', version: 0
+    };
+    if (cur.state !== 'static') {
+      return; 
+    }
+    const next: ChatLive = { ...cur, state: 'thinking', version: cur.version + 1 };
+    this.byChat.set(chatId, next);
+    this.emit(chatId, next);
+  }
+
+  revertLocalStream(chatId: string): void {
+    const cur = this.byChat.get(chatId);
+    if (!cur) return;
+    if (cur.state === 'thinking' && cur.contentBuf.length === 0 && cur.thoughtsBuf.length === 0) {
+      const next: ChatLive = { ...cur, state: 'static', version: cur.version + 1 };
+      this.byChat.set(chatId, next);
+      this.emit(chatId, next);
+    }
+  }
+
   subscribe(chatId: string, fn: Listener) {
     logger.info(`[LIVESTORE_SUB] Subscribing to LiveStore for chat: ${chatId}`);
     

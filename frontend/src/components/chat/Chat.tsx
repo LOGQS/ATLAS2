@@ -677,6 +677,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     }
 
     chatHistoryCache.markDirty(chatId);
+    chatHistoryCache.markStreaming(chatId);
+    liveStore.beginLocalStream(chatId);
 
     if (setIsMessageBeingSent) {
       setIsMessageBeingSent(true);
@@ -730,6 +732,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
       performanceTracker.mark(performanceTracker.MARKS.API_CALL_START, cid);
 
+      const controller = new AbortController();
       const fetchPromise = fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -739,7 +742,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           include_reasoning: true,
           client_id: cid,
           attached_file_ids: attachedFiles ? attachedFiles.map(f => f.id) : []
-        })
+        }),
+        signal: controller.signal
       });
 
       performanceTracker.mark(performanceTracker.MARKS.API_CALL_SENT, cid);
@@ -747,10 +751,18 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       const response = await fetchPromise;
 
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      logger.debug(`[Chat] Message sent successfully for ${chatId}`);
+      try { await response.body?.cancel(); } catch {}
+      try { controller.abort(); } catch {}
+      logger.debug(`[Chat] Message kickoff acknowledged for ${chatId}`);
       onMessageSent?.(content);
     } catch (error) {
-      logger.error(`[Chat] Failed to send message to ${chatId}:`, error);
+      const isAbortError = (error as any)?.name === 'AbortError';
+      if (!isAbortError) {
+        logger.error(`[Chat] Failed to send message to ${chatId}:`, error);
+        liveStore.revertLocalStream(chatId);
+      } else {
+        logger.debug(`[Chat] Kickoff connection aborted intentionally for ${chatId}`);
+      }
     }
   }, [chatId, isActive, liveOverlay, onMessageSent, isDuplicateMessage, setIsMessageBeingSent]);
 

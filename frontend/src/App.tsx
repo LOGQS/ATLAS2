@@ -1,6 +1,6 @@
 // status: complete
 
-import React, { useState, useRef, useEffect, useCallback} from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo} from 'react';
 import './styles/app/App.css';
 import LeftSidebar from './components/layout/LeftSidebar';
 import RightSidebar from './components/layout/RightSidebar';
@@ -16,6 +16,7 @@ import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEB
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
 import { apiUrl } from './config/api';
+import { MAX_CONCURRENT_STREAMS } from './config/chat';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
 import { useAppState } from './hooks/app/useAppState';
@@ -631,9 +632,11 @@ function App() {
 
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
+  const activeStreamCount = useMemo(() => chats.filter(c => c.state === 'thinking' || c.state === 'responding').length, [chats]);
+  const atConcurrencyLimit = activeStreamCount >= MAX_CONCURRENT_STREAMS;
   const isSendInProgressForActive = sendingByChat.get(activeChatId) === true;
   const isGlobalSendDisabled = sendDisabledFlag;
-  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled;
+  const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled || atConcurrencyLimit;
 
   const { isDragOver, dragHandlers } = useDragDrop({
     onFilesDropped: handleFileSelectionImmediate,
@@ -887,6 +890,7 @@ function App() {
                 title={
                   isActiveChatStreaming ? 'Chat is processing...' :
                   hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                  atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                   'Send message'
                 }
               >
@@ -1022,6 +1026,7 @@ function App() {
                   title={
                     isActiveChatStreaming ? 'Chat is processing...' :
                     hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                    atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                     'Send message'
                   }
                 >
