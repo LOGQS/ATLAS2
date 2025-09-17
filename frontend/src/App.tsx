@@ -63,6 +63,7 @@ function App() {
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isSoundDetected, setIsSoundDetected] = useState(false);
+  const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
 
   const resetToggleOutlineTimer = useCallback(() => {
     if (toggleOutlineTimeoutRef.current) {
@@ -99,6 +100,13 @@ function App() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (message.trim() && isVoiceChatMode) {
+      setIsVoiceChatMode(false);
+      logger.info('[VOICE_CHAT] Voice chat mode disabled - user started typing');
+    }
+  }, [message, isVoiceChatMode]);
 
   const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
     setSendingByChat(prev => {
@@ -964,8 +972,8 @@ function App() {
           </h1>
           <div className={`input-container center ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             <div className="input-row">
-              <div 
-                className={`input-wrapper ${isDragOver ? 'drag-over' : ''}`}
+              <div
+                className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
                 {...dragHandlers}
               >
                 <button 
@@ -1011,7 +1019,8 @@ function App() {
                       isActiveChatStreaming,
                       chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
                       hasUnreadyFiles,
-                      wasHoldCompleted
+                      wasHoldCompleted,
+                      isVoiceChatMode
                     });
 
                     if (wasHoldCompleted) {
@@ -1019,16 +1028,26 @@ function App() {
                       return;
                     }
 
-                    if (!isSendDisabled) {
-                      handleSend();
+                    if (message.trim()) {
+                      if (!isSendDisabled) {
+                        handleSend();
+                      }
+                      return;
                     }
+
+                    setIsVoiceChatMode(prev => {
+                      const newMode = !prev;
+                      logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
+                      return newMode;
+                    });
                   }}
-                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''}`}
+                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
                   title={
                     isActiveChatStreaming ? 'Chat is processing...' :
                     hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                     atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                     message.trim() ? 'Send message' :
+                    isVoiceChatMode ? '• Voice chat active\n• Click to disable' :
                     '• Hold to record\n• Click for voice chat'
                   }
                 >
@@ -1046,13 +1065,16 @@ function App() {
                   ) : message.trim() ? (
                     '→'
                   ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
-                      <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
-                      <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
-                      <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
-                      <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
-                    </svg>
+                    <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''}`}>
+                      <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
+                        <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>
+                        <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor" className="voice-bar bar-main"/>
+                        <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7" className="voice-bar bar-3"/>
+                        <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4" className="voice-bar bar-4"/>
+                      </svg>
+                      {isVoiceChatMode && <div className="voice-mode-ring" />}
+                    </div>
                   )}
                 </button>
               </div>
@@ -1133,8 +1155,8 @@ function App() {
               )}
 
               <div className="bottom-input-container">
-                <div 
-                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''}`}
+                <div
+                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
                   {...dragHandlers}
                 >
                   <button 
@@ -1180,7 +1202,8 @@ function App() {
                         isActiveChatStreaming,
                         chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
                         hasUnreadyFiles,
-                        wasHoldCompleted
+                        wasHoldCompleted,
+                        isVoiceChatMode
                       });
 
                       if (wasHoldCompleted) {
@@ -1188,16 +1211,25 @@ function App() {
                         return;
                       }
 
-                      if (!isSendDisabled) {
-                        handleSend();
+                      if (message.trim()) {
+                        if (!isSendDisabled) {
+                          handleSend();
+                        }
+                        return;
                       }
+                      setIsVoiceChatMode(prev => {
+                        const newMode = !prev;
+                        logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
+                        return newMode;
+                      });
                     }}
-                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''}`}
+                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
                     title={
                       isActiveChatStreaming ? 'Chat is processing...' :
                       hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                       atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                       message.trim() ? 'Send message' :
+                      isVoiceChatMode ? 'Voice chat active\n• Click to disable' :
                       '• Hold to record\n• Click for voice chat'
                     }
                   >
@@ -1215,13 +1247,16 @@ function App() {
                     ) : message.trim() ? (
                       '→'
                     ) : (
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
-                        <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
-                        <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
-                        <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
-                        <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
-                      </svg>
+                      <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''}`}>
+                        <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
+                          <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>
+                          <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor" className="voice-bar bar-main"/>
+                          <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7" className="voice-bar bar-3"/>
+                          <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4" className="voice-bar bar-4"/>
+                        </svg>
+                        {isVoiceChatMode && <div className="voice-mode-ring" />}
+                      </div>
                     )}
                   </button>
                 </div>
