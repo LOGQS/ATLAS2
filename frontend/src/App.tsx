@@ -55,6 +55,10 @@ function App() {
   const [showToggleOutline, setShowToggleOutline] = useState(false);
   const toggleOutlineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  const [isButtonHeld, setIsButtonHeld] = useState(false);
+  const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const HOLD_DETECTION_MS = 700;
+
   const resetToggleOutlineTimer = useCallback(() => {
     if (toggleOutlineTimeoutRef.current) {
       clearTimeout(toggleOutlineTimeoutRef.current);
@@ -292,6 +296,29 @@ function App() {
     BrowserStorage.updateUISetting('bottomInputToggled', newToggleState);
   };
 
+  const handleButtonHoldStart = useCallback(() => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+    }
+
+    holdTimeoutRef.current = setTimeout(() => {
+      setIsButtonHeld(true);
+      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation');
+    }, HOLD_DETECTION_MS);
+  }, []);
+
+  const handleButtonHoldEnd = useCallback(() => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+
+    if (isButtonHeld) {
+      setIsButtonHeld(false);
+      logger.debug('[HOLD_DETECTION] Send button hold released - stopping animation');
+    }
+  }, [isButtonHeld]);
+
   const handleSend = async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
       messageLength: message.length,
@@ -303,7 +330,7 @@ function App() {
       activeChatId
     });
 
-    if (message.trim() && !isSendDisabled) {
+    if (message.trim()) {
       setIsMessageBeingSent(true);
       if (!hasMessageBeenSent || activeChatId === 'none') {
         const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -886,44 +913,56 @@ function App() {
                   rows={1}
                 />
               </div>
-              <button 
-                onClick={() => {
-                  logger.info('[SEND_DEBUG] Center send button clicked:', {
-                    activeChatId,
-                    messageLength: message.length,
-                    isSendDisabled,
-                    isActiveChatStreaming,
-                    chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                    hasUnreadyFiles
-                  });
-                  handleSend();
-                }} 
-                className={`send-button ${isSendDisabled ? 'loading' : ''}`}
-                disabled={isSendDisabled}
-                title={
-                  isActiveChatStreaming ? 'Chat is processing...' :
-                  hasUnreadyFiles ? 'Waiting for files to finish processing...' :
-                  atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                  message.trim() ? 'Send message' :
-                  '• Hold to record\n• Click for voice chat'
-                }
+              <div
+                className="send-button-wrapper"
+                onMouseDown={handleButtonHoldStart}
+                onMouseUp={handleButtonHoldEnd}
+                onMouseLeave={handleButtonHoldEnd}
+                onTouchStart={handleButtonHoldStart}
+                onTouchEnd={handleButtonHoldEnd}
               >
-                {isActiveChatStreaming ? (
-                  <div className="loading-spinner"></div>
-                ) : hasUnreadyFiles ? (
-                  <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                ) : message.trim() ? (
-                  '→'
-                ) : (
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
-                    <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
-                    <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
-                    <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
-                    <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
-                  </svg>
-                )}
-              </button>
+                <button
+                  onClick={() => {
+                    logger.info('[SEND_DEBUG] Center send button clicked:', {
+                      activeChatId,
+                      messageLength: message.length,
+                      isSendDisabled,
+                      isActiveChatStreaming,
+                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+                      hasUnreadyFiles
+                    });
+                    if (!isSendDisabled) {
+                      handleSend();
+                    }
+                  }}
+                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''}`}
+                  title={
+                    isActiveChatStreaming ? 'Chat is processing...' :
+                    hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                    atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
+                    message.trim() ? 'Send message' :
+                    '• Hold to record\n• Click for voice chat'
+                  }
+                >
+                  {isButtonHeld ? (
+                    <div className="hold-animation-circle"></div>
+                  ) : isActiveChatStreaming ? (
+                    <div className="loading-spinner"></div>
+                  ) : hasUnreadyFiles ? (
+                    <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
+                  ) : message.trim() ? (
+                    '→'
+                  ) : (
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                      <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
+                      <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
+                      <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
+                      <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
             
             <AttachedFiles
@@ -1031,44 +1070,56 @@ function App() {
                     rows={1}
                   />
                 </div>
-                <button 
-                  onClick={() => {
-                    logger.info('[SEND_DEBUG] Bottom send button clicked:', {
-                      activeChatId,
-                      messageLength: message.length,
-                      isSendDisabled,
-                      isActiveChatStreaming,
-                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                      hasUnreadyFiles
-                    });
-                    handleSend();
-                  }} 
-                  className={`send-button ${isSendDisabled ? 'loading' : ''}`}
-                  disabled={isSendDisabled}
-                  title={
-                    isActiveChatStreaming ? 'Chat is processing...' :
-                    hasUnreadyFiles ? 'Waiting for files to finish processing...' :
-                    atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                    message.trim() ? 'Send message' :
-                    '• Hold to record\n• Click for voice chat'
-                  }
+                <div
+                  className="send-button-wrapper"
+                  onMouseDown={handleButtonHoldStart}
+                  onMouseUp={handleButtonHoldEnd}
+                  onMouseLeave={handleButtonHoldEnd}
+                  onTouchStart={handleButtonHoldStart}
+                  onTouchEnd={handleButtonHoldEnd}
                 >
-                  {isActiveChatStreaming ? (
-                    <div className="loading-spinner"></div>
-                  ) : hasUnreadyFiles ? (
-                    <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                  ) : message.trim() ? (
-                    '→'
-                  ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
-                      <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
-                      <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
-                      <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
-                      <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
-                    </svg>
-                  )}
-                </button>
+                  <button
+                    onClick={() => {
+                      logger.info('[SEND_DEBUG] Bottom send button clicked:', {
+                        activeChatId,
+                        messageLength: message.length,
+                        isSendDisabled,
+                        isActiveChatStreaming,
+                        chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+                        hasUnreadyFiles
+                      });
+                      if (!isSendDisabled) {
+                        handleSend();
+                      }
+                    }}
+                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''}`}
+                    title={
+                      isActiveChatStreaming ? 'Chat is processing...' :
+                      hasUnreadyFiles ? 'Waiting for files to finish processing...' :
+                      atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
+                      message.trim() ? 'Send message' :
+                      '• Hold to record\n• Click for voice chat'
+                    }
+                  >
+                    {isButtonHeld ? (
+                      <div className="hold-animation-circle"></div>
+                    ) : isActiveChatStreaming ? (
+                      <div className="loading-spinner"></div>
+                    ) : hasUnreadyFiles ? (
+                      <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
+                    ) : message.trim() ? (
+                      '→'
+                    ) : (
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5"/>
+                        <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9"/>
+                        <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor"/>
+                        <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7"/>
+                        <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
 
