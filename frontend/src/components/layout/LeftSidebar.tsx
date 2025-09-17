@@ -362,6 +362,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                       className={`chat-history-action chat-history-collapse-btn ${isHistoryCollapsed ? 'collapsed' : ''}`}
                       onClick={handleChatHistoryToggle}
                       aria-label={isHistoryCollapsed ? 'Expand chat history' : 'Collapse chat history'}
+                      title={isHistoryCollapsed ? 'Expand chat history' : 'Collapse chat history'}
                     >
                       <svg
                         width="18"
@@ -499,21 +500,23 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
                           )}
                           {!selectionMode && (
                             <div className="chat-actions">
-                              <button 
+                              <button
                                 className="chat-action-btn edit-btn"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleEditStart(chat.id, chat.name);
                                 }}
+                                title="Rename chat"
                               >
                                 <div className="edit-icon"></div>
                               </button>
-                              <button 
+                              <button
                                 className="chat-action-btn delete-btn"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteStart(chat.id);
                                 }}
+                                title="Delete chat"
                               >
                                 <div className="delete-icon"></div>
                               </button>
