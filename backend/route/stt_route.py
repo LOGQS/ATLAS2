@@ -121,6 +121,7 @@ def register_stt_routes(app: Flask):
         Transcribe audio from file upload
         Expected: multipart/form-data with 'audio' file field
         """
+        file_path = None
         try:
             if 'audio' not in request.files:
                 return jsonify({"success": False, "error": "No audio file provided"}), 400
@@ -198,6 +199,15 @@ def register_stt_routes(app: Flask):
                 "success": False,
                 "error": str(e)
             }), 500
+
+        finally:
+            if file_path:
+                try:
+                    os.unlink(file_path)
+                    logger.info(f"[STT_TRANSCRIBE] Deleted audio file: {file_path}")
+                except:
+                    logger.warning(f"[STT_TRANSCRIBE] Failed to delete audio file: {file_path}")
+                    pass
 
     @app.route('/api/stt/config', methods=['GET'])
     def get_stt_config_route():
