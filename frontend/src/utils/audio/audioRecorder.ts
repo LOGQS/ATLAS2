@@ -3,10 +3,12 @@
 import logger from '../core/logger';
 
 interface AudioRecorderConfig {
-  silenceThreshold: number; 
-  silenceDuration: number; 
+  silenceThreshold: number;
+  silenceDuration: number;
   sampleRate: number;
+  maxDurationMs: number;
   onAudioLevelUpdate?: (level: number, isSoundDetected: boolean) => void;
+  onMaxDurationReached?: () => void;
 }
 
 class AudioRecorder {
@@ -21,12 +23,15 @@ class AudioRecorder {
   private lastSoundTime: number = Date.now();
   private animationFrameId: number | null = null;
   private currentAudioLevel: number = 0;
+  private recordingStartTime: number = 0;
+  private maxDurationTimeoutId: number | null = null;
 
   constructor(config?: Partial<AudioRecorderConfig>) {
     this.config = {
       silenceThreshold: 10,
       silenceDuration: 1000,
       sampleRate: 16000,
+      maxDurationMs: 3600000,
       ...config
     };
   }
@@ -79,6 +84,7 @@ class AudioRecorder {
       this.audioChunks = [];
       this.isRecording = true;
       this.lastSoundTime = Date.now();
+      this.recordingStartTime = Date.now();
 
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -89,6 +95,16 @@ class AudioRecorder {
 
       this.mediaRecorder.start(100);
       logger.info('[AUDIO_RECORDING] Recording started');
+
+      this.maxDurationTimeoutId = window.setTimeout(() => {
+        logger.warn('[AUDIO_RECORDING] Maximum recording duration reached, stopping recording');
+        if (this.config.onMaxDurationReached) {
+          this.config.onMaxDurationReached();
+        }
+        this.stopRecording().catch(error => {
+          logger.error('[AUDIO_RECORDING] Error stopping recording after max duration:', error);
+        });
+      }, this.config.maxDurationMs);
 
       if (this.silenceDetectionActive) {
         this.monitorSilence();
@@ -149,6 +165,11 @@ class AudioRecorder {
       if (this.animationFrameId) {
         cancelAnimationFrame(this.animationFrameId);
         this.animationFrameId = null;
+      }
+
+      if (this.maxDurationTimeoutId) {
+        clearTimeout(this.maxDurationTimeoutId);
+        this.maxDurationTimeoutId = null;
       }
 
       this.mediaRecorder.onstop = async () => {
@@ -278,6 +299,21 @@ class AudioRecorder {
 
   getCurrentAudioLevel(): number {
     return this.currentAudioLevel;
+  }
+
+  getRecordingDuration(): number {
+    if (!this.isRecording) {
+      return 0;
+    }
+    return Date.now() - this.recordingStartTime;
+  }
+
+  getRemainingTime(): number {
+    if (!this.isRecording) {
+      return 0;
+    }
+    const elapsed = this.getRecordingDuration();
+    return Math.max(0, this.config.maxDurationMs - elapsed);
   }
 }
 

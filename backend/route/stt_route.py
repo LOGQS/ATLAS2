@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from features.stt import STT, LocalSTT
+from features.audio_processor import AudioProcessor
 from utils.logger import get_logger
 from utils.config import Config
 
@@ -13,6 +14,7 @@ logger = get_logger(__name__)
 
 cloud_stt = STT()
 local_stt = LocalSTT(model_size="base")
+audio_processor = AudioProcessor()
 
 def get_stt_config():
     """Get STT configuration from Config or environment overrides"""
@@ -42,6 +44,73 @@ def ensure_data_directory():
         logger.info(f"Created data directory at: {data_dir.absolute()}")
 
     return data_dir
+
+def process_audio_chunks(chunk_files, config, language=None):
+    """
+    Process multiple audio chunks and combine the results
+
+    Args:
+        chunk_files: List of paths to chunk files
+        config: STT configuration
+        language: Language for transcription
+
+    Returns:
+        Combined transcription result
+    """
+    combined_text = ""
+    all_segments = []
+    total_chunks = len(chunk_files)
+
+    logger.info(f"[STT_CHUNKED] Processing {total_chunks} audio chunks")
+
+    for i, chunk_file in enumerate(chunk_files):
+        try:
+            logger.info(f"[STT_CHUNKED] Processing chunk {i+1}/{total_chunks}: {chunk_file}")
+
+            if config["use_cloud"]:
+                result = cloud_stt.transcribe(
+                    file_path=chunk_file,
+                    model=config["model"],
+                    language=language
+                )
+            else:
+                result = local_stt.transcribe(
+                    file_path=chunk_file,
+                    language=language
+                )
+
+            if result.get("success"):
+                chunk_text = result.get("text", "").strip()
+                if chunk_text:
+                    if combined_text:
+                        combined_text += " " + chunk_text
+                    else:
+                        combined_text = chunk_text
+
+                    if "segments" in result:
+                        time_offset = i * 30  
+                        for segment in result["segments"]:
+                            adjusted_segment = segment.copy()
+                            adjusted_segment["start"] += time_offset
+                            adjusted_segment["end"] += time_offset
+                            all_segments.append(adjusted_segment)
+
+                logger.info(f"[STT_CHUNKED] Chunk {i+1} transcribed successfully: {len(chunk_text)} characters")
+            else:
+                logger.error(f"[STT_CHUNKED] Chunk {i+1} failed: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"[STT_CHUNKED] Error processing chunk {i+1}: {str(e)}")
+            continue
+
+    audio_processor.cleanup_temp_files()
+
+    return {
+        "success": True,
+        "text": combined_text,
+        "chunks_processed": total_chunks,
+        "segments": all_segments if all_segments else None
+    }
 
 def register_stt_routes(app: Flask):
     """Register STT routes directly"""
@@ -77,25 +146,45 @@ def register_stt_routes(app: Flask):
             audio_file.save(str(file_path))
 
             config = get_stt_config()
+            language = request.form.get('language', None)
 
-            if config["use_cloud"]:
-                result = cloud_stt.transcribe(
-                    file_path=str(file_path),
-                    model=config["model"],
-                    language=request.form.get('language', None)
-                )
+            if audio_processor.needs_chunking(str(file_path)):
+                logger.info(f"[STT_TRANSCRIBE] File exceeds size limit, chunking required for: {file_path}")
+                try:
+                    chunk_files = audio_processor.chunk_audio_file(str(file_path))
+                    result = process_audio_chunks(chunk_files, config, language)
+                except Exception as e:
+                    logger.error(f"[STT_TRANSCRIBE] Error in chunking process: {str(e)}")
+                    return jsonify({
+                        "success": False,
+                        "error": f"Audio chunking failed: {str(e)}"
+                    }), 500
             else:
-                result = local_stt.transcribe(
-                    file_path=str(file_path),
-                    language=request.form.get('language', None)
-                )
+                if config["use_cloud"]:
+                    result = cloud_stt.transcribe(
+                        file_path=str(file_path),
+                        model=config["model"],
+                        language=language
+                    )
+                else:
+                    result = local_stt.transcribe(
+                        file_path=str(file_path),
+                        language=language
+                    )
 
             if result.get("success"):
-                return jsonify({
+                response_data = {
                     "success": True,
                     "text": result.get("text", ""),
                     "file_id": file_id
-                })
+                }
+
+                if "chunks_processed" in result:
+                    response_data["chunked"] = True
+                    response_data["chunks_processed"] = result["chunks_processed"]
+                    logger.info(f"[STT_TRANSCRIBE] Chunked transcription completed: {result['chunks_processed']} chunks")
+
+                return jsonify(response_data)
             else:
                 logger.error(f"Transcription failed: {result.get('error')}")
                 return jsonify({

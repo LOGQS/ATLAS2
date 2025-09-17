@@ -311,36 +311,6 @@ function App() {
     BrowserStorage.updateUISetting('bottomInputToggled', newToggleState);
   };
 
-  const handleButtonHoldStart = useCallback(() => {
-    if (holdTimeoutRef.current) {
-      clearTimeout(holdTimeoutRef.current);
-    }
-
-    setWasHoldCompleted(false);
-
-    holdTimeoutRef.current = setTimeout(async () => {
-      setIsButtonHeld(true);
-      setWasHoldCompleted(true); 
-      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation and recording');
-
-      try {
-        if (!audioRecorderRef.current) {
-          audioRecorderRef.current = new AudioRecorder({
-            onAudioLevelUpdate: (_level: number, soundDetected: boolean) => {
-              setIsSoundDetected(soundDetected);
-            }
-          });
-        }
-        await audioRecorderRef.current.startRecording();
-        setIsRecording(true);
-        setIsSoundDetected(false);
-        logger.info('[AUDIO_RECORDING] Recording session started successfully');
-      } catch (error) {
-        logger.error('[AUDIO_RECORDING] Failed to start recording:', error);
-      }
-    }, HOLD_DETECTION_MS);
-  }, []);
-
   const handleButtonHoldEnd = useCallback(async () => {
     if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
@@ -395,6 +365,40 @@ function App() {
       }
     }
   }, [isButtonHeld, isRecording]);
+
+  const handleButtonHoldStart = useCallback(() => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+    }
+
+    setWasHoldCompleted(false);
+
+    holdTimeoutRef.current = setTimeout(async () => {
+      setIsButtonHeld(true);
+      setWasHoldCompleted(true);
+      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation and recording');
+
+      try {
+        if (!audioRecorderRef.current) {
+          audioRecorderRef.current = new AudioRecorder({
+            onAudioLevelUpdate: (_level: number, soundDetected: boolean) => {
+              setIsSoundDetected(soundDetected);
+            },
+            onMaxDurationReached: () => {
+              logger.warn('[AUDIO_RECORDING] Maximum recording duration (1 hour) reached');
+              handleButtonHoldEnd();
+            }
+          });
+        }
+        await audioRecorderRef.current.startRecording();
+        setIsRecording(true);
+        setIsSoundDetected(false);
+        logger.info('[AUDIO_RECORDING] Recording session started successfully');
+      } catch (error) {
+        logger.error('[AUDIO_RECORDING] Failed to start recording:', error);
+      }
+    }, HOLD_DETECTION_MS);
+  }, [handleButtonHoldEnd]);
 
   const handleSend = async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
