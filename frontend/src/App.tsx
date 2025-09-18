@@ -8,6 +8,8 @@ import Chat from './components/chat/Chat';
 import ModalWindow from './components/ui/ModalWindow';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
+import SendButton from './components/input/SendButton';
+import MessageInputArea from './components/input/MessageInputArea';
 import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
@@ -22,7 +24,9 @@ import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
 import { useAppState } from './hooks/app/useAppState';
 import { useFileManagement } from './hooks/files/useFileManagement';
 import { useDragDrop } from './hooks/files/useDragDrop';
-import AudioRecorder from './utils/audio/audioRecorder';
+import { useVoiceChat } from './hooks/audio/useVoiceChat';
+import { useBottomInputToggle } from './hooks/ui/useBottomInputToggle';
+import { useBulkOperations } from './hooks/chat/useBulkOperations';
 // TEST_FRAMEWORK_IMPORT - Remove this line and the next to remove test framework
 import TestUI from './tests/versioning/TestUI';
 
@@ -46,68 +50,44 @@ function App() {
   const [forceRender, setForceRender] = useState(0);
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
-  const [isBottomInputToggled, setIsBottomInputToggled] = useState(() => {
-    const settings = BrowserStorage.getUISettings();
-    return settings.bottomInputToggled;
-  });
-  const TOGGLE_OUTLINE_TIMEOUT_MS = 3000;
-
-  const [isBottomInputHovering, setIsBottomInputHovering] = useState(false);
-  const [showToggleOutline, setShowToggleOutline] = useState(false);
-  const toggleOutlineTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const [isButtonHeld, setIsButtonHeld] = useState(false);
-  const [wasHoldCompleted, setWasHoldCompleted] = useState(false);
-  const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const HOLD_DETECTION_MS = 700;
-  const audioRecorderRef = useRef<AudioRecorder | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isSoundDetected, setIsSoundDetected] = useState(false);
-  const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
 
-  const resetToggleOutlineTimer = useCallback(() => {
-    if (toggleOutlineTimeoutRef.current) {
-      clearTimeout(toggleOutlineTimeoutRef.current);
-    }
-    setShowToggleOutline(true);
-    if (isBottomInputToggled) {
-      toggleOutlineTimeoutRef.current = setTimeout(() => {
-        setShowToggleOutline(false);
-      }, TOGGLE_OUTLINE_TIMEOUT_MS);
-    }
-  }, [isBottomInputToggled]);
+  const {
+    isBottomInputToggled,
+    isBottomInputHovering,
+    showToggleOutline,
+    setIsBottomInputHovering,
+    handleBottomInputDoubleClick,
+    resetToggleOutlineTimer
+  } = useBottomInputToggle();
 
-  useEffect(() => {
-    if (!isBottomInputToggled) {
-      setShowToggleOutline(false);
-      if (toggleOutlineTimeoutRef.current) {
-        clearTimeout(toggleOutlineTimeoutRef.current);
-      }
+  const {
+    isButtonHeld,
+    wasHoldCompleted,
+    isRecording,
+    isSoundDetected,
+    isVoiceChatMode,
+    handleButtonHoldStart,
+    handleButtonHoldEnd,
+    toggleVoiceChatMode,
+    setVoiceChatMode
+  } = useVoiceChat({
+    onTranscriptionComplete: (text) => {
+      setMessage(prev => {
+        const newText = prev ? `${prev} ${text}` : text;
+        logger.info('[STT_TRANSCRIBE] Transcription successful, text added to input:', text);
+        return newText;
+      });
     }
-    return () => {
-      if (toggleOutlineTimeoutRef.current) {
-        clearTimeout(toggleOutlineTimeoutRef.current);
-      }
-    };
-  }, [isBottomInputToggled]);
+  });
 
-  useEffect(() => {
-    return () => {
-      if (audioRecorderRef.current && audioRecorderRef.current.isCurrentlyRecording()) {
-        audioRecorderRef.current.stopRecording().catch(error => {
-          logger.error('[AUDIO_RECORDING] Error stopping recording on unmount:', error);
-        });
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (message.trim() && isVoiceChatMode) {
-      setIsVoiceChatMode(false);
+      setVoiceChatMode(false);
       logger.info('[VOICE_CHAT] Voice chat mode disabled - user started typing');
     }
-  }, [message, isVoiceChatMode]);
+  }, [message, isVoiceChatMode, setVoiceChatMode]);
 
   const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
     setSendingByChat(prev => {
@@ -134,6 +114,7 @@ function App() {
     clearAttachedFiles,
     handleClearAllFiles
   } = useFileManagement(isAppInitialized);
+
 
   const chatSwitchTokenRef = useRef(0);
   const activeChatSyncAbortRef = useRef<AbortController | null>(null);
@@ -188,6 +169,13 @@ function App() {
       logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
     }
   }, []);
+
+  const { handleBulkDelete, handleBulkExport, handleBulkImport } = useBulkOperations({
+    setChats,
+    setPendingFirstMessages,
+    handleNewChat: () => handleNewChat(),
+    loadChatsFromDatabase
+  });
 
   useEffect(() => {
     if (isAppInitialized) return;
@@ -313,101 +301,6 @@ function App() {
     }
   };
 
-  const handleBottomInputDoubleClick = () => {
-    const newToggleState = !isBottomInputToggled;
-    logger.info('Double-click toggling bottom input bar:', newToggleState);
-    setIsBottomInputToggled(newToggleState);
-    BrowserStorage.updateUISetting('bottomInputToggled', newToggleState);
-  };
-
-  const handleButtonHoldEnd = useCallback(async () => {
-    if (holdTimeoutRef.current) {
-      clearTimeout(holdTimeoutRef.current);
-      holdTimeoutRef.current = null;
-    }
-
-    if (isButtonHeld) {
-      setIsButtonHeld(false);
-      logger.debug('[HOLD_DETECTION] Send button hold released - stopping animation');
-
-      setTimeout(() => {
-        setWasHoldCompleted(false);
-      }, 100);
-
-      if (isRecording && audioRecorderRef.current) {
-        try {
-          logger.info('[AUDIO_RECORDING] Stopping recording...');
-          const audioBlob = await audioRecorderRef.current.stopRecording();
-          setIsRecording(false);
-          setIsSoundDetected(false);
-          logger.info('[AUDIO_RECORDING] Recording stopped, blob size:', audioBlob.size, 'type:', audioBlob.type);
-
-          const formData = new FormData();
-          formData.append('audio', audioBlob, 'recording.wav');
-          logger.info('[STT_TRANSCRIBE] Sending audio to backend for transcription...');
-
-          const response = await fetch(apiUrl('/api/stt/transcribe'), {
-            method: 'POST',
-            body: formData
-          });
-
-          if (response.ok) {
-            const result = await response.json();
-            logger.info('[STT_TRANSCRIBE] Transcription response:', result);
-
-            if (result.success && result.text) {
-              setMessage(prev => {
-                const newText = prev ? `${prev} ${result.text}` : result.text;
-                logger.info('[STT_TRANSCRIBE] Transcription successful, text added to input:', result.text);
-                return newText;
-              });
-            } else {
-              logger.warn('[STT_TRANSCRIBE] Transcription returned but no text:', result);
-            }
-          } else {
-            const errorText = await response.text();
-            logger.error('[STT_TRANSCRIBE] Failed to transcribe audio, status:', response.status, 'error:', errorText);
-          }
-        } catch (error) {
-          logger.error('[AUDIO_RECORDING] Error processing recording:', error);
-        }
-      }
-    }
-  }, [isButtonHeld, isRecording]);
-
-  const handleButtonHoldStart = useCallback(() => {
-    if (holdTimeoutRef.current) {
-      clearTimeout(holdTimeoutRef.current);
-    }
-
-    setWasHoldCompleted(false);
-
-    holdTimeoutRef.current = setTimeout(async () => {
-      setIsButtonHeld(true);
-      setWasHoldCompleted(true);
-      logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation and recording');
-
-      try {
-        if (!audioRecorderRef.current) {
-          audioRecorderRef.current = new AudioRecorder({
-            onAudioLevelUpdate: (_level: number, soundDetected: boolean) => {
-              setIsSoundDetected(soundDetected);
-            },
-            onMaxDurationReached: () => {
-              logger.warn('[AUDIO_RECORDING] Maximum recording duration (1 hour) reached');
-              handleButtonHoldEnd();
-            }
-          });
-        }
-        await audioRecorderRef.current.startRecording();
-        setIsRecording(true);
-        setIsSoundDetected(false);
-        logger.info('[AUDIO_RECORDING] Recording session started successfully');
-      } catch (error) {
-        logger.error('[AUDIO_RECORDING] Failed to start recording:', error);
-      }
-    }, HOLD_DETECTION_MS);
-  }, [handleButtonHoldEnd]);
 
   const handleSend = useCallback(async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
@@ -828,7 +721,7 @@ function App() {
 
 
   const activeChat = chats.find(chat => chat.id === activeChatId);
-  const isActiveChatStreaming = activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding');
+  const isActiveChatStreaming = Boolean(activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding'));
   const activeStreamCount = useMemo(() => chats.filter(c => c.state === 'thinking' || c.state === 'responding').length, [chats]);
   const atConcurrencyLimit = activeStreamCount >= MAX_CONCURRENT_STREAMS;
   const isSendInProgressForActive = sendingByChat.get(activeChatId) === true;
@@ -872,23 +765,8 @@ function App() {
       return;
     }
 
-    setIsVoiceChatMode(prev => {
-      const newMode = !prev;
-      logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
-      return newMode;
-    });
-  }, [
-    activeChatId,
-    handleSend,
-    handleStopStreaming,
-    hasUnreadyFiles,
-    isActiveChatStreaming,
-    isSendDisabled,
-    isVoiceChatMode,
-    isStopRequestInFlight,
-    message,
-    wasHoldCompleted
-  ]);
+    toggleVoiceChatMode();
+  }, [activeChatId, message, isSendDisabled, isActiveChatStreaming, hasUnreadyFiles, wasHoldCompleted, isVoiceChatMode, isStopRequestInFlight, toggleVoiceChatMode, handleStopStreaming, handleSend]);
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -922,132 +800,6 @@ function App() {
   }, []);
 
 
-  const handleBulkDelete = async (chatIds: string[]) => {
-    try {
-      logger.info('Bulk deleting chats:', chatIds);
-      const response = await fetch(apiUrl('/api/db/chats/bulk-delete'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ chat_ids: chatIds })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        logger.info('Bulk delete completed:', data.message);
-        
-        const actuallyDeletedChats = data.deleted_chats || chatIds;
-        logger.info(`[BULK_DELETE] Removed ${actuallyDeletedChats.length} chats from UI (requested: ${chatIds.length}, cascade: ${data.cascade_deleted})`);
-        
-        setChats(prev => prev.filter(chat => !actuallyDeletedChats.includes(chat.id)));
-
-        setPendingFirstMessages(prev => {
-          const newMap = new Map(prev);
-          actuallyDeletedChats.forEach((id: string) => newMap.delete(id));
-          return newMap;
-        });
-        
-        if (data.active_chat_cleared) {
-          logger.info('[BULK_DELETE] Active chat was cleared by backend, creating new chat');
-          await handleNewChat();
-        }
-      } else {
-        const data = await response.json();
-        logger.error('Failed to bulk delete chats:', data.error);
-      }
-    } catch (error) {
-      logger.error('Failed to bulk delete chats:', error);
-    }
-  };
-
-  const handleBulkExport = async (chatIds: string[]) => {
-    try {
-      logger.info('Bulk exporting chats:', chatIds);
-      const response = await fetch(apiUrl('/api/db/chats/bulk-export'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ chat_ids: chatIds })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        logger.info('Bulk export completed:', data.export_count, 'chats');
-        
-        data.exported_chats.forEach((chat: any) => {
-          const jsonData = JSON.stringify(chat, null, 2);
-          const blob = new Blob([jsonData], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `chat_${chat.name?.replace(/[^a-zA-Z0-9]/g, '_') || chat.id}.json`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        });
-      } else {
-        const data = await response.json();
-        logger.error('Failed to bulk export chats:', data.error);
-      }
-    } catch (error) {
-      logger.error('Failed to bulk export chats:', error);
-    }
-  };
-
-  const handleBulkImport = async (files: FileList) => {
-    try {
-      logger.info('Bulk importing chats from', files.length, 'files');
-      const chatsToImport: any[] = [];
-      
-      const fileArray = Array.from(files);
-      logger.info('Processing files:', fileArray.map(f => f.name));
-      
-      for (const file of fileArray) {
-        if (file.type === 'application/json' || file.name.endsWith('.json')) {
-          try {
-            logger.info('Processing file:', file.name);
-            const text = await file.text();
-            const chatData = JSON.parse(text);
-            chatsToImport.push(chatData);
-            logger.info('Successfully processed file:', file.name);
-          } catch (error) {
-            logger.error('Failed to parse JSON file:', file.name, error);
-          }
-        } else {
-          logger.warn('Skipping non-JSON file:', file.name);
-        }
-      }
-      
-      if (chatsToImport.length === 0) {
-        logger.warn('No valid JSON files found for import');
-        return;
-      }
-      
-      const response = await fetch(apiUrl('/api/db/chats/bulk-import'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ chats: chatsToImport })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        logger.info('Bulk import completed:', data.message);
-        
-        await loadChatsFromDatabase();
-      } else {
-        const data = await response.json();
-        logger.error('Failed to bulk import chats:', data.error);
-      }
-    } catch (error) {
-      logger.error('Failed to bulk import chats:', error);
-    }
-  };
 
   const handleChatReorder = (reorderedChats: ChatItem[]) => {
     setChats(reorderedChats);
@@ -1088,85 +840,42 @@ function App() {
           </h1>
           <div className={`input-container center ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             <div className="input-row">
-              <div
-                className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
-                {...dragHandlers}
-              >
-                <button 
-                  className="add-file-button-inline"
-                  title="Add File"
-                  onClick={handleAddFileClick}
-                >
-                  +
-                </button>
-                <textarea
-                  ref={centerInputRef}
-                  value={message}
-                  onChange={(e) => {
-                    logger.info('[INPUT_DEBUG] Center input onChange:', {
-                      newValue: e.target.value,
-                      oldValue: message,
-                      isSendDisabled,
-                      isActiveChatStreaming,
-                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
-                    });
-                    setMessage(e.target.value);
-                  }}
-                  onKeyDown={handleKeyPress}
-                  className="message-input with-file-button"
-                  placeholder=""
-                  rows={1}
-                />
-              </div>
-              <div
-                className="send-button-wrapper"
-                onMouseDown={handleButtonHoldStart}
-                onMouseUp={handleButtonHoldEnd}
-                onMouseLeave={handleButtonHoldEnd}
-                onTouchStart={handleButtonHoldStart}
-                onTouchEnd={handleButtonHoldEnd}
-              >
-                <button
-                  onClick={() => handleActionButtonClick('center')}
-                  className={`send-button ${(isSendDisabled && !isActiveChatStreaming) ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
-                  title={
-                    isActiveChatStreaming ? (isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response') :
-                    hasUnreadyFiles ? 'Waiting for files to finish processing...' :
-                    atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                    message.trim() ? 'Send message' :
-                    isVoiceChatMode ? '• Voice chat active\n• Click to disable' :
-                    '• Hold to record\n• Click for voice chat'
-                  }
-                >
-                  {isButtonHeld ? (
-                    <div
-                      className={`hold-animation-circle ${isRecording ? 'recording' : ''} ${isSoundDetected ? 'sound-detected' : 'silent'}`}
-                      style={{
-                        animationPlayState: isSoundDetected ? 'running' : 'paused'
-                      }}
-                    ></div>
-                  ) : isActiveChatStreaming ? (
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <rect x="4" y="4" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" fill="none"/>
-                    </svg>
-                  ) : hasUnreadyFiles ? (
-                    <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                  ) : message.trim() ? (
-                    '→'
-                  ) : (
-                    <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''}`}>
-                      <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
-                        <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>
-                        <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor" className="voice-bar bar-main"/>
-                        <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7" className="voice-bar bar-3"/>
-                        <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4" className="voice-bar bar-4"/>
-                      </svg>
-                      {isVoiceChatMode && <div className="voice-mode-ring" />}
-                    </div>
-                  )}
-                </button>
-              </div>
+              <MessageInputArea
+                inputRef={centerInputRef}
+                message={message}
+                onMessageChange={(value) => {
+                  logger.info('[INPUT_DEBUG] Center input onChange:', {
+                    newValue: value,
+                    oldValue: message,
+                    isSendDisabled,
+                    isActiveChatStreaming,
+                    chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
+                  });
+                  setMessage(value);
+                }}
+                onKeyDown={handleKeyPress}
+                onAddFileClick={handleAddFileClick}
+                isDragOver={isDragOver}
+                isVoiceChatMode={isVoiceChatMode}
+                isActiveChatStreaming={isActiveChatStreaming}
+                dragHandlers={dragHandlers}
+              />
+              <SendButton
+                onClick={() => handleActionButtonClick('center')}
+                onHoldStart={handleButtonHoldStart}
+                onHoldEnd={handleButtonHoldEnd}
+                isButtonHeld={isButtonHeld}
+                isRecording={isRecording}
+                isSoundDetected={isSoundDetected}
+                isActiveChatStreaming={isActiveChatStreaming}
+                hasUnreadyFiles={hasUnreadyFiles}
+                message={message}
+                isVoiceChatMode={isVoiceChatMode}
+                isSendDisabled={isSendDisabled}
+                isStopRequestInFlight={isStopRequestInFlight}
+                activeStreamCount={activeStreamCount}
+                atConcurrencyLimit={atConcurrencyLimit}
+              />
             </div>
             
             <AttachedFiles
@@ -1244,85 +953,42 @@ function App() {
               )}
 
               <div className="bottom-input-container">
-                <div
-                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
-                  {...dragHandlers}
-                >
-                  <button 
-                    className="add-file-button-inline"
-                    title="Add File"
-                    onClick={handleAddFileClick}
-                  >
-                    +
-                  </button>
-                  <textarea
-                    ref={bottomInputRef}
-                    value={message}
-                    onChange={(e) => {
-                      logger.info('[INPUT_DEBUG] Bottom input onChange:', {
-                        newValue: e.target.value,
-                        oldValue: message,
-                        isSendDisabled,
-                        isActiveChatStreaming,
-                        chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
-                      });
-                      setMessage(e.target.value);
-                    }}
-                    onKeyDown={handleKeyPress}
-                    className="message-input with-file-button"
-                    placeholder=""
-                    rows={1}
-                  />
-                </div>
-                <div
-                  className="send-button-wrapper"
-                  onMouseDown={handleButtonHoldStart}
-                  onMouseUp={handleButtonHoldEnd}
-                  onMouseLeave={handleButtonHoldEnd}
-                  onTouchStart={handleButtonHoldStart}
-                  onTouchEnd={handleButtonHoldEnd}
-                >
-                  <button
-                    onClick={() => handleActionButtonClick('bottom')}
-                    className={`send-button ${(isSendDisabled && !isActiveChatStreaming) ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
-                    title={
-                      isActiveChatStreaming ? (isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response') :
-                      hasUnreadyFiles ? 'Waiting for files to finish processing...' :
-                      atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
-                      message.trim() ? 'Send message' :
-                      isVoiceChatMode ? '• Voice chat active\n• Click to disable' :
-                      '• Hold to record\n• Click for voice chat'
-                    }
-                  >
-                    {isButtonHeld ? (
-                      <div
-                        className={`hold-animation-circle ${isRecording ? 'recording' : ''} ${isSoundDetected ? 'sound-detected' : 'silent'}`}
-                        style={{
-                          animationPlayState: isSoundDetected ? 'running' : 'paused'
-                        }}
-                      ></div>
-                    ) : isActiveChatStreaming ? (
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <rect x="4" y="4" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" fill="none"/>
-                      </svg>
-                    ) : hasUnreadyFiles ? (
-                      <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-                    ) : message.trim() ? (
-                      '→'
-                    ) : (
-                      <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''}`}>
-                        <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
-                          <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>
-                          <rect x="12" y="3" width="2.5" height="18" rx="1" fill="currentColor" className="voice-bar bar-main"/>
-                          <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7" className="voice-bar bar-3"/>
-                          <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4" className="voice-bar bar-4"/>
-                        </svg>
-                        {isVoiceChatMode && <div className="voice-mode-ring" />}
-                      </div>
-                    )}
-                  </button>
-                </div>
+                <MessageInputArea
+                  inputRef={bottomInputRef}
+                  message={message}
+                  onMessageChange={(value) => {
+                    logger.info('[INPUT_DEBUG] Bottom input onChange:', {
+                      newValue: value,
+                      oldValue: message,
+                      isSendDisabled,
+                      isActiveChatStreaming,
+                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
+                    });
+                    setMessage(value);
+                  }}
+                  onKeyDown={handleKeyPress}
+                  onAddFileClick={handleAddFileClick}
+                  isDragOver={isDragOver}
+                  isVoiceChatMode={isVoiceChatMode}
+                  isActiveChatStreaming={isActiveChatStreaming}
+                  dragHandlers={dragHandlers}
+                />
+                <SendButton
+                  onClick={() => handleActionButtonClick('bottom')}
+                  onHoldStart={handleButtonHoldStart}
+                  onHoldEnd={handleButtonHoldEnd}
+                  isButtonHeld={isButtonHeld}
+                  isRecording={isRecording}
+                  isSoundDetected={isSoundDetected}
+                  isActiveChatStreaming={isActiveChatStreaming}
+                  hasUnreadyFiles={hasUnreadyFiles}
+                  message={message}
+                  isVoiceChatMode={isVoiceChatMode}
+                  isSendDisabled={isSendDisabled}
+                  isStopRequestInFlight={isStopRequestInFlight}
+                  activeStreamCount={activeStreamCount}
+                  atConcurrencyLimit={atConcurrencyLimit}
+                />
               </div>
             </div>
 
@@ -1341,61 +1007,25 @@ function App() {
         chatId={activeChatId !== 'none' ? activeChatId : undefined}
       />
       
-      <ModalWindow 
-        isOpen={activeModal === 'gallery'} 
-        onClose={handleCloseModal}
-        className="gallery-modal"
-      >
-        <GalleryWindow />
-      </ModalWindow>
-      
-      <ModalWindow 
-        isOpen={activeModal === 'search'} 
-        onClose={handleCloseModal}
-        className="search-modal"
-      >
-        <SearchWindow />
-      </ModalWindow>
-      
-      <ModalWindow 
-        isOpen={activeModal === 'settings'} 
-        onClose={handleCloseModal}
-        className="settings-modal"
-      >
-        <SettingsWindow />
-      </ModalWindow>
-
-      <ModalWindow 
-        isOpen={activeModal === 'profiles'} 
-        onClose={handleCloseModal}
-        className="profiles-modal"
-      >
-        <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} />
-      </ModalWindow>
-
-      <ModalWindow 
-        isOpen={activeModal === 'files'} 
-        onClose={handleCloseModal}
-        className="files-modal"
-      >
-        <KnowledgeSection activeSubsection="files" onSubsectionChange={() => {}} />
-      </ModalWindow>
-
-      <ModalWindow 
-        isOpen={activeModal === 'folders'} 
-        onClose={handleCloseModal}
-        className="folders-modal"
-      >
-        <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} />
-      </ModalWindow>
-
-      <ModalWindow 
-        isOpen={activeModal === 'web'} 
-        onClose={handleCloseModal}
-        className="web-modal"
-      >
-        <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} />
-      </ModalWindow>
+      {/* Modals - consolidated rendering */}
+      {[
+        { id: 'gallery', className: 'gallery-modal', content: <GalleryWindow /> },
+        { id: 'search', className: 'search-modal', content: <SearchWindow /> },
+        { id: 'settings', className: 'settings-modal', content: <SettingsWindow /> },
+        { id: 'profiles', className: 'profiles-modal', content: <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
+        { id: 'files', className: 'files-modal', content: <KnowledgeSection activeSubsection="files" onSubsectionChange={() => {}} /> },
+        { id: 'folders', className: 'folders-modal', content: <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} /> },
+        { id: 'web', className: 'web-modal', content: <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} /> },
+      ].map(modal => (
+        <ModalWindow
+          key={modal.id}
+          isOpen={activeModal === modal.id}
+          onClose={handleCloseModal}
+          className={modal.className}
+        >
+          {modal.content}
+        </ModalWindow>
+      ))}
 
       <ChatVersionsWindow
         isOpen={activeModal === 'chat-versions'}
