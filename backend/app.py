@@ -19,6 +19,7 @@ from route.db_bulk_route import register_db_bulk_routes
 from route.db_versioning_route import register_db_versioning_routes
 from route.file_route import register_file_routes
 from route.stt_route import register_stt_routes
+from route.image_route import image_bp
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
@@ -85,6 +86,7 @@ def create_app():
     register_db_versioning_routes(app)
     register_file_routes(app)
     register_stt_routes(app)
+    app.register_blueprint(image_bp)
     
     @app.route('/health')
     def health_check():
@@ -119,6 +121,12 @@ def create_app():
                     'delete': '/api/files/<file_id>',
                     'rename': '/api/files/<file_id>/rename',
                     'download': '/api/files/<file_id>/download'
+                },
+                'image': {
+                    'generate': '/api/image/generate',
+                    'models': '/api/image/models',
+                    'status': '/api/image/status',
+                    'get': '/api/image/<filename>'
                 }
             }
         })
