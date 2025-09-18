@@ -27,6 +27,7 @@ import { useDragDrop } from './hooks/files/useDragDrop';
 import { useVoiceChat } from './hooks/audio/useVoiceChat';
 import { useBottomInputToggle } from './hooks/ui/useBottomInputToggle';
 import { useBulkOperations } from './hooks/chat/useBulkOperations';
+import type { AttachedFile } from './types/messages';
 // TEST_FRAMEWORK_IMPORT - Remove this line and the next to remove test framework
 import TestUI from './tests/versioning/TestUI';
 
@@ -37,6 +38,15 @@ interface ChatItem {
   state?: 'thinking' | 'responding' | 'static';
   last_active?: string;
 }
+
+
+type SendMessageOptions = {
+  message: string;
+  attachments?: AttachedFile[];
+  clearInput?: boolean;
+  clearAttachments?: boolean;
+  source?: 'manual' | 'voice';
+};
 
 
 function App() {
@@ -51,6 +61,39 @@ function App() {
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
+
+  const centerInputRef = useRef<HTMLTextAreaElement>(null);
+  const bottomInputRef = useRef<HTMLTextAreaElement>(null);
+  const chatRef = useRef<any>(null);
+
+  const voiceTranscriptQueueRef = useRef<string[]>([]);
+  const isProcessingVoiceQueueRef = useRef(false);
+  const flushVoiceQueueRef = useRef<(() => void) | null>(null);
+
+  const enqueueVoiceTranscript = useCallback((text: string) => {
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    if (!trimmed) {
+      logger.warn('[VOICE_CHAT] Ignoring empty transcription result');
+      return;
+    }
+
+    voiceTranscriptQueueRef.current.push(trimmed);
+    logger.info('[VOICE_CHAT] Queued transcribed voice message', { queueLength: voiceTranscriptQueueRef.current.length });
+    flushVoiceQueueRef.current?.();
+  }, []);
+
+  const handleTranscriptionComplete = useCallback((text: string, context: { source: 'manual' | 'auto' }) => {
+    if (context.source === 'auto') {
+      enqueueVoiceTranscript(text);
+      return;
+    }
+
+    setMessage(prev => {
+      const newText = prev ? `${prev} ${text}` : text;
+      logger.info('[STT_TRANSCRIBE] Transcription successful, text added to input:', text);
+      return newText;
+    });
+  }, [enqueueVoiceTranscript]);
 
   const {
     isBottomInputToggled,
@@ -72,12 +115,12 @@ function App() {
     toggleVoiceChatMode,
     setVoiceChatMode
   } = useVoiceChat({
-    onTranscriptionComplete: (text) => {
-      setMessage(prev => {
-        const newText = prev ? `${prev} ${text}` : text;
-        logger.info('[STT_TRANSCRIBE] Transcription successful, text added to input:', text);
-        return newText;
-      });
+    onTranscriptionComplete: handleTranscriptionComplete,
+    onSpeechStart: () => {
+      if (chatRef.current?.stopAllTTS) {
+        logger.info('[VOICE_CHAT] User speech detected - stopping TTS playback');
+        chatRef.current.stopAllTTS();
+      }
     }
   });
 
@@ -252,119 +295,169 @@ function App() {
   };
 
         
-  const centerInputRef = useRef<HTMLTextAreaElement>(null);
-  const bottomInputRef = useRef<HTMLTextAreaElement>(null);
-  const chatRef = useRef<any>(null);
-  const createNewChatInBackground = async (chatId: string, chatName: string, firstMessage: string) => {
-    logger.info('Creating new chat in DB:', { chatId, chatName });
-    
+  const syncActiveChat = useCallback(async (chatId: string, token?: number) => {
+    if (token !== undefined && chatSwitchTokenRef.current !== token) {
+      return;
+    }
+
+    if (activeChatSyncAbortRef.current) {
+      activeChatSyncAbortRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    activeChatSyncAbortRef.current = controller;
+
     try {
-      const response = await fetch(apiUrl('/api/db/chat'), {
+      await fetch(apiUrl('/api/db/active-chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          chat_id: chatId,
-          system_prompt: null
-        })
+        body: JSON.stringify({ chat_id: chatId }),
+        signal: controller.signal
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        logger.error('Failed to create chat in database:', data.error);
+      if (controller.signal.aborted) {
         return;
-      } else {
-        const data = await response.json();
-        if (data.message === 'Chat already exists') {
-          logger.info('Chat already exists in database (auto-created), proceeding');
-        } else {
-          logger.info('Chat created successfully in DB');
-        }
-      }
-      
-      try {
-        await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ name: chatName })
-        });
-      } catch (error) {
-        logger.warn('Failed to set chat name:', error);
       }
 
-      await syncActiveChat(chatId);
+      if (token !== undefined && chatSwitchTokenRef.current !== token) {
+        return;
+      }
+
+      logger.info('[App.syncActiveChat] Backend sync completed for:', chatId);
     } catch (error) {
-      logger.error('Failed to create chat:', error);
-    }
-  };
-
-
-  const handleSend = useCallback(async () => {
-    logger.info('[SEND_DEBUG] handleSend called:', {
-      messageLength: message.length,
-      messageTrimmed: message.trim().length,
-      isSendDisabled,
-      isActiveChatStreaming,
-      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-      hasUnreadyFiles,
-      activeChatId
-    });
-
-    if (message.trim()) {
-      setIsMessageBeingSent(true);
-      if (!hasMessageBeenSent || activeChatId === 'none') {
-        const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        const chatName = message.split(' ').slice(0, 4).join(' ');
-
-        performanceTracker.startTracking(chatId, chatId);
-        performanceTracker.mark(performanceTracker.MARKS.CHAT_CREATED, chatId);
-        const messageToSend = message;
-        const filesToSend = [...attachedFiles];
-        
-        setCenterFading(true);
-        setHasMessageBeenSent(true);
-        document.body.classList.add('chat-active');
-        setMessage('');
-        clearAttachedFiles(); 
-        
-        const newChat: ChatItem = {
-          id: chatId,
-          name: chatName,
-          isActive: true,
-          state: 'static'
-        };
-        setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
-        setActiveChatId(chatId);
-        logger.info(`[ActiveChatId] Changed to new chat: ${chatId}`);
-        logger.info(`[SidebarHighlight] Set to highlight new chat: ${chatId} (${chatName})`);
-        setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({message: messageToSend, files: filesToSend})));
-        
-        setTimeout(() => bottomInputRef.current?.focus(), 100);
-        
-        createNewChatInBackground(chatId, chatName, messageToSend);
-      } else {
-        if (activeChatId !== 'none' && chatRef.current) {
-          logger.info('Sending message to active chat:', activeChatId);
-          const filesToSend = [...attachedFiles]; 
-          chatRef.current.handleNewMessage(message, filesToSend);
-          setMessage('');
-          clearAttachedFiles();
-          
-          setTimeout(() => bottomInputRef.current?.focus(), 0);
-        } else {
-          logger.warn('Attempted to send message but no active chat or invalid ref:', { activeChatId, hasRef: !!chatRef.current });
-        }
+      if (!controller.signal.aborted) {
+        logger.error('[App.syncActiveChat] Failed to sync active chat:', error);
+      }
+    } finally {
+      if (activeChatSyncAbortRef.current === controller) {
+        activeChatSyncAbortRef.current = null;
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
+  const sendMessage = useCallback(async ({
+    message: rawMessage,
+    attachments = [],
+    clearInput = true,
+    clearAttachments = true,
+    source = 'manual'
+  }: SendMessageOptions): Promise<boolean> => {
+    const trimmedMessage = rawMessage.trim();
+    if (!trimmedMessage) {
+      logger.info('[SEND_DEBUG] Aborting send - empty message', { source });
+      return false;
+    }
+
+    const filesToSend = [...attachments];
+
+    if (!hasMessageBeenSent || activeChatId === 'none') {
+      setIsMessageBeingSent(true);
+
+      const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const chatName = trimmedMessage.split(' ').slice(0, 4).join(' ');
+
+      performanceTracker.startTracking(chatId, chatId);
+      performanceTracker.mark(performanceTracker.MARKS.CHAT_CREATED, chatId);
+
+      setCenterFading(true);
+      setHasMessageBeenSent(true);
+      document.body.classList.add('chat-active');
+
+      if (clearInput) {
+        setMessage('');
+      }
+      if (clearAttachments) {
+        clearAttachedFiles();
+      }
+
+      const newChat: ChatItem = {
+        id: chatId,
+        name: chatName,
+        isActive: true,
+        state: 'static'
+      };
+
+      setChats(prev => prev.map(chat => ({ ...chat, isActive: false })).concat([newChat]));
+      setActiveChatId(chatId);
+      logger.info(`[ActiveChatId] Changed to new chat: ${chatId}`);
+      logger.info(`[SidebarHighlight] Set to highlight new chat: ${chatId} (${chatName})`);
+
+      setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({ message: trimmedMessage, files: filesToSend })));
+
+      setTimeout(() => bottomInputRef.current?.focus(), 100);
+
+      void (async () => {
+        logger.info('Creating new chat in DB:', { chatId, chatName });
+        try {
+          const response = await fetch(apiUrl('/api/db/chat'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              system_prompt: null
+            })
+          });
+
+          if (!response.ok) {
+            const data = await response.json();
+            logger.error('Failed to create chat in database:', data.error);
+            return;
+          } else {
+            const data = await response.json();
+            if (data.message === 'Chat already exists') {
+              logger.info('Chat already exists in database (auto-created), proceeding');
+            } else {
+              logger.info('Chat created successfully in DB');
+            }
+          }
+
+          try {
+            await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ name: chatName })
+            });
+          } catch (error) {
+            logger.warn('Failed to set chat name:', error);
+          }
+
+          await syncActiveChat(chatId);
+        } catch (error) {
+          logger.error('Failed to create chat:', error);
+        }
+      })();
+      return true;
+    }
+
+    if (activeChatId === 'none' || !chatRef.current) {
+      logger.warn('Attempted to send message but no active chat or invalid ref:', { activeChatId, hasRef: !!chatRef.current, source });
+      return false;
+    }
+
+    setIsMessageBeingSent(true);
+    logger.info('Sending message to active chat:', activeChatId, { source, length: trimmedMessage.length });
+
+    chatRef.current.handleNewMessage(trimmedMessage, filesToSend);
+
+    if (clearInput) {
+      setMessage('');
+    }
+    if (clearAttachments) {
+      clearAttachedFiles();
+    }
+
+    setTimeout(() => bottomInputRef.current?.focus(), 0);
+    return true;
   }, [
-    message,
-    activeChatId,
     hasMessageBeenSent,
-    attachedFiles,
+    activeChatId,
     setIsMessageBeingSent,
     setCenterFading,
     setHasMessageBeenSent,
@@ -373,7 +466,38 @@ function App() {
     setChats,
     setActiveChatId,
     setPendingFirstMessages,
-    createNewChatInBackground
+    syncActiveChat,
+    bottomInputRef
+  ]);
+
+
+  const handleSend = useCallback(async () => {
+    logger.info('[SEND_DEBUG] handleSend called:', {
+      messageLength: message.length,
+      messageTrimmed: message.trim().length,
+  
+      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+      hasUnreadyFiles,
+      activeChatId
+    });
+
+    if (!message.trim()) {
+      return;
+    }
+
+    await sendMessage({
+      message,
+      attachments: [...attachedFiles],
+      clearInput: true,
+      clearAttachments: true,
+      source: 'manual'
+    });
+  }, [
+    message,
+    attachedFiles,
+    hasUnreadyFiles,
+    activeChatId,
+    sendMessage
   ]);
 
   const handleStopStreaming = useCallback(async (source: 'center' | 'bottom' = 'center') => {
@@ -433,7 +557,6 @@ function App() {
       e.preventDefault();
       if (isSendDisabled) {
         logger.info('Enter key pressed but send is disabled:', {
-          isActiveChatStreaming,
           hasUnreadyFiles,
           activeChatId
         });
@@ -443,49 +566,6 @@ function App() {
       handleSend();
     }
   };
-
-  const syncActiveChat = useCallback(async (chatId: string, token?: number) => {
-    if (token !== undefined && chatSwitchTokenRef.current !== token) {
-      return;
-    }
-
-    if (activeChatSyncAbortRef.current) {
-      activeChatSyncAbortRef.current.abort();
-    }
-
-    const controller = new AbortController();
-    activeChatSyncAbortRef.current = controller;
-
-    try {
-      await fetch(apiUrl('/api/db/active-chat'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ chat_id: chatId }),
-        signal: controller.signal
-      });
-
-      if (controller.signal.aborted) {
-        return;
-      }
-
-      if (token !== undefined && chatSwitchTokenRef.current !== token) {
-        return;
-      }
-
-      logger.info('[App.syncActiveChat] Backend sync completed for:', chatId);
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        logger.error('[App.syncActiveChat] Failed to sync active chat:', error);
-      }
-    } finally {
-      if (activeChatSyncAbortRef.current === controller) {
-        activeChatSyncAbortRef.current = null;
-      }
-    }
-  }, []);
-
 
   const handleChatSelect = useCallback(async (chatId: string) => {
     if (activeChatId === chatId) return;
@@ -728,6 +808,72 @@ function App() {
   const isGlobalSendDisabled = sendDisabledFlag;
   const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled || atConcurrencyLimit;
 
+  const flushVoiceQueue = useCallback(() => {
+    if (isProcessingVoiceQueueRef.current) {
+      return;
+    }
+    if (voiceTranscriptQueueRef.current.length === 0) {
+      return;
+    }
+    if (isSendDisabled) {
+      logger.debug('[VOICE_CHAT] Send disabled - deferring voice message dispatch');
+      return;
+    }
+    if (message.trim()) {
+      logger.debug('[VOICE_CHAT] Message input occupied - deferring voice message dispatch');
+      return;
+    }
+
+    const nextMessage = voiceTranscriptQueueRef.current.shift();
+    if (!nextMessage) {
+      return;
+    }
+
+    isProcessingVoiceQueueRef.current = true;
+    logger.info('[VOICE_CHAT] Dispatching queued voice message', { length: nextMessage.length });
+
+    sendMessage({
+      message: nextMessage,
+      attachments: [],
+      clearInput: false,
+      clearAttachments: false,
+      source: 'voice'
+    }).then((sent) => {
+      if (!sent) {
+        voiceTranscriptQueueRef.current.unshift(nextMessage);
+      }
+    }).catch((error) => {
+      logger.error('[VOICE_CHAT] Failed to send queued voice message:', error);
+      voiceTranscriptQueueRef.current.unshift(nextMessage);
+    }).finally(() => {
+      isProcessingVoiceQueueRef.current = false;
+      if (!isSendDisabled && voiceTranscriptQueueRef.current.length > 0) {
+        flushVoiceQueueRef.current?.();
+      }
+    });
+  }, [isSendDisabled, message, sendMessage]);
+
+  useEffect(() => {
+    flushVoiceQueueRef.current = flushVoiceQueue;
+    return () => {
+      flushVoiceQueueRef.current = null;
+    };
+  }, [flushVoiceQueue]);
+
+  useEffect(() => {
+    if (!isSendDisabled) {
+      flushVoiceQueueRef.current?.();
+    }
+  }, [isSendDisabled]);
+
+  useEffect(() => {
+    if (!isVoiceChatMode && voiceTranscriptQueueRef.current.length > 0) {
+      logger.info('[VOICE_CHAT] Clearing voice transcription queue', { discarded: voiceTranscriptQueueRef.current.length });
+      voiceTranscriptQueueRef.current = [];
+      isProcessingVoiceQueueRef.current = false;
+    }
+  }, [isVoiceChatMode]);
+
   const { isDragOver, dragHandlers } = useDragDrop({
     onFilesDropped: handleFileSelectionImmediate,
     disabled: isSendDisabled
@@ -739,8 +885,6 @@ function App() {
     logger.info(`[SEND_DEBUG] ${source === 'center' ? 'Center' : 'Bottom'} send button clicked:`, {
       activeChatId,
       messageLength: message.length,
-      isSendDisabled,
-      isActiveChatStreaming,
       chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
       hasUnreadyFiles,
       wasHoldCompleted,
@@ -847,8 +991,6 @@ function App() {
                   logger.info('[INPUT_DEBUG] Center input onChange:', {
                     newValue: value,
                     oldValue: message,
-                    isSendDisabled,
-                    isActiveChatStreaming,
                     chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
                   });
                   setMessage(value);
@@ -910,6 +1052,7 @@ function App() {
               ref={chatRef}
               chatId={activeChatId}
               isActive={true}
+              autoTTSActive={isVoiceChatMode}
               firstMessage={pendingFirstMessages.get(activeChatId) || ''}
               onChatStateChange={handleChatStateChange}
               onFirstMessageSent={handleFirstMessageSent}
@@ -960,8 +1103,6 @@ function App() {
                     logger.info('[INPUT_DEBUG] Bottom input onChange:', {
                       newValue: value,
                       oldValue: message,
-                      isSendDisabled,
-                      isActiveChatStreaming,
                       chatRefIsBusy: chatRef.current?.isBusy?.() ?? null
                     });
                     setMessage(value);

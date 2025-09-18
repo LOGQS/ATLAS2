@@ -41,6 +41,7 @@ interface ChatProps {
   isActive?: boolean;
   defaultProvider?: string;
   defaultModel?: string;
+  autoTTSActive?: boolean;
   firstMessage?: string;
 }
 
@@ -54,6 +55,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   setIsMessageBeingSent,
   onChatSwitch,
   isActive = true, 
+  autoTTSActive = false, 
   firstMessage
 }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -97,11 +99,17 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     logger.info(`[MESSAGE_STATE] Chat ${chatId} messages changed - count: ${messages.length}, IDs: ${messages.map(m => `${m.id}(${m.role})`).join(', ')}`);
   }, [messages, chatId]);
 
+  useEffect(() => {
+    autoTtsPlayedRef.current.clear();
+  }, [chatId]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLElement>(null);
   const mountedRef = useRef(true);
   const duplicateCheckerRef = useRef<MessageDuplicateChecker>(new MessageDuplicateChecker(DUPLICATE_WINDOW_MS));
   const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
+
+  const autoTtsPlayedRef = useRef<Set<string>>(new Set());
 
   const isDuplicateMessage = useCallback((content: string): boolean => {
     const isDuplicate = duplicateCheckerRef.current.isDuplicate(chatId, content);
@@ -242,7 +250,13 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     editAttachmentTracker.current.delete(messageId);
   }});
 
-  const { ttsState, handleTTSToggle, isSupported: isTTSSupported } = useTTS({ messages, chatId });
+  const { ttsState, handleTTSToggle, stopAllTTS, isSupported: isTTSSupported } = useTTS({ messages, chatId });
+
+  useEffect(() => {
+    if (!autoTTSActive) {
+      stopAllTTS();
+    }
+  }, [autoTTSActive, stopAllTTS]);
 
   useMessageIdSync({ chatId, setMessages });
 
@@ -563,6 +577,15 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           releasePersistingAfterStream('Silent history reload scheduling error');
         }
       }
+      if (autoTTSActive && isTTSSupported && lastAssistantMessage) {
+        if (!autoTtsPlayedRef.current.has(lastAssistantMessage.id)) {
+          autoTtsPlayedRef.current.add(lastAssistantMessage.id);
+          logger.info(`[VOICE_CHAT] Auto TTS starting for assistant message ${lastAssistantMessage.id}`);
+          handleTTSToggle(lastAssistantMessage.id, true);
+        } else {
+          logger.debug(`[VOICE_CHAT] Skipping auto TTS for message ${lastAssistantMessage.id} (already played)`);
+        }
+      }
       
       if (setIsMessageBeingSent && !messageOperations.isDeleting && !messageOperations.isRetrying && !messageOperations.isEditing) {
         logger.info(`[FINAL_STATE] Re-enabling send button for ${chatId}`);
@@ -573,7 +596,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       
       logger.info(`[STREAM_STATE] ===== FINAL STATE VERIFICATION COMPLETED =====`);
     }
-  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered, releasePersistingAfterStream]);
+  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered, releasePersistingAfterStream, autoTTSActive, isTTSSupported, handleTTSToggle]);
 
   useEffect(() => {
     if (persistingAfterStream) return;
@@ -772,7 +795,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   useImperativeHandle(ref, () => ({
     handleNewMessage,
-    isBusy: () => liveOverlay.state !== 'static'
+    isBusy: () => liveOverlay.state !== 'static',
+    stopAllTTS
   }));
 
   const unlinkFileFromMessage = useCallback(async (messageId: string, fileId: string): Promise<void> => {

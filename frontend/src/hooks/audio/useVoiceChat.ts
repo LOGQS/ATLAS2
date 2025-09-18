@@ -3,9 +3,15 @@ import AudioRecorder from '../../utils/audio/audioRecorder';
 import logger from '../../utils/core/logger';
 import { apiUrl } from '../../config/api';
 
+const AUTO_SILENCE_TIMEOUT_MS = 2500;
+const AUTO_MIN_SEGMENT_SIZE_BYTES = 1024;
+const AUTO_SILENCE_THRESHOLD = 15;
+
 interface UseVoiceChatProps {
-  onTranscriptionComplete?: (text: string) => void;
+  onTranscriptionComplete?: (text: string, context: { source: 'manual' | 'auto' }) => void;
   holdDetectionMs?: number;
+  onSpeechStart?: () => void;
+  silenceDurationMs?: number;
 }
 
 interface UseVoiceChatReturn {
@@ -23,7 +29,9 @@ interface UseVoiceChatReturn {
 
 export const useVoiceChat = ({
   onTranscriptionComplete,
-  holdDetectionMs = 700
+  onSpeechStart,
+  holdDetectionMs = 700,
+  silenceDurationMs = AUTO_SILENCE_TIMEOUT_MS
 }: UseVoiceChatProps = {}): UseVoiceChatReturn => {
   const [isButtonHeld, setIsButtonHeld] = useState(false);
   const [wasHoldCompleted, setWasHoldCompleted] = useState(false);
@@ -32,19 +40,282 @@ export const useVoiceChat = ({
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
 
   const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const audioRecorderRef = useRef<AudioRecorder | null>(null);
+  const manualRecorderRef = useRef<AudioRecorder | null>(null);
+
+  const autoRecorderRef = useRef<AudioRecorder | null>(null);
+  const autoRecorderBusyRef = useRef(false);
+  const autoSessionActiveRef = useRef(false);
+  const autoSegmentActiveRef = useRef(false);
+  const silenceTimeoutRef = useRef<number | null>(null);
+  const silenceDurationRef = useRef(silenceDurationMs);
+  const isVoiceChatModeRef = useRef(isVoiceChatMode);
+
+  const finalizeAutoSegmentRef = useRef<((reason: 'silence' | 'max_duration' | 'manual') => void) | undefined>(undefined);
+  const startAutoRecorderRef = useRef<(() => void) | undefined>(undefined);
+
+  useEffect(() => {
+    silenceDurationRef.current = silenceDurationMs;
+  }, [silenceDurationMs]);
+
+  useEffect(() => {
+    isVoiceChatModeRef.current = isVoiceChatMode;
+  }, [isVoiceChatMode]);
 
   useEffect(() => {
     return () => {
-      if (audioRecorderRef.current && audioRecorderRef.current.isCurrentlyRecording()) {
-        audioRecorderRef.current.stopRecording().catch(error => {
+      if (manualRecorderRef.current && manualRecorderRef.current.isCurrentlyRecording()) {
+        manualRecorderRef.current.stopRecording().catch(error => {
           logger.error('[AUDIO_RECORDING] Error stopping recording on unmount:', error);
         });
       }
     };
   }, []);
 
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+  }, []);
+
+  const sendAudioForTranscription = useCallback(async (audioBlob: Blob) => {
+    try {
+      if (!audioBlob.type || !audioBlob.type.toLowerCase().includes('wav')) {
+        logger.warn('[STT_TRANSCRIBE] Dropping segment with unsupported MIME type', { mimeType: audioBlob.type, size: audioBlob.size });
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.wav');
+      logger.info('[STT_TRANSCRIBE] Sending auto voice audio to backend...');
+      const response = await fetch(apiUrl('/api/stt/transcribe'), {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error('[STT_TRANSCRIBE] Auto voice transcription failed:', {
+          status: response.status,
+          error: errorText
+        });
+        return;
+      }
+
+      const result = await response.json();
+      logger.info('[STT_TRANSCRIBE] Auto voice transcription response:', result);
+
+      if (result.success && result.text) {
+        onTranscriptionComplete?.(result.text as string, { source: 'auto' });
+      } else {
+        logger.warn('[STT_TRANSCRIBE] Auto voice transcription returned no text');
+      }
+    } catch (error) {
+      logger.error('[STT_TRANSCRIBE] Auto voice transcription error:', error);
+    }
+  }, [onTranscriptionComplete]);
+
+  const finalizeAutoSegment = useCallback(async (reason: 'silence' | 'max_duration' | 'manual') => {
+    if (autoRecorderBusyRef.current) {
+      logger.debug('[VOICE_CHAT] finalizeAutoSegment skipped - recorder busy');
+      return;
+    }
+
+    const recorder = autoRecorderRef.current;
+    if (!recorder) {
+      return;
+    }
+
+    if (!recorder.isCurrentlyRecording()) {
+      autoRecorderRef.current = null;
+      return;
+    }
+
+    autoRecorderBusyRef.current = true;
+    autoRecorderRef.current = null;
+
+    clearSilenceTimer();
+
+    const hadActiveSegment = autoSegmentActiveRef.current;
+    autoSegmentActiveRef.current = false;
+    setIsRecording(false);
+    setIsSoundDetected(false);
+
+    try {
+      const audioBlob = await recorder.stopRecording();
+
+      const shouldSend = reason !== 'manual'
+        && audioBlob.size >= AUTO_MIN_SEGMENT_SIZE_BYTES
+        && (hadActiveSegment || reason === 'max_duration');
+
+      if (shouldSend) {
+        await sendAudioForTranscription(audioBlob);
+      } else {
+        logger.debug('[VOICE_CHAT] Dropped auto segment', {
+          reason,
+          size: audioBlob.size,
+          hadActiveSegment
+        });
+      }
+    } catch (error) {
+      logger.error('[VOICE_CHAT] Failed to finalize auto voice segment:', error);
+    } finally {
+      autoRecorderBusyRef.current = false;
+
+      if (isVoiceChatModeRef.current && autoSessionActiveRef.current) {
+        startAutoRecorderRef.current?.();
+      }
+    }
+  }, [clearSilenceTimer, sendAudioForTranscription]);
+
+  useEffect(() => {
+    finalizeAutoSegmentRef.current = (reason) => {
+      void finalizeAutoSegment(reason);
+    };
+    return () => {
+      finalizeAutoSegmentRef.current = undefined;
+    };
+  }, [finalizeAutoSegment]);
+
+  const handleAutoAudioLevel = useCallback((_level: number, soundDetected: boolean) => {
+    if (!autoSessionActiveRef.current || !isVoiceChatModeRef.current || autoRecorderBusyRef.current) {
+      return;
+    }
+
+    setIsSoundDetected(soundDetected);
+
+    if (soundDetected) {
+      if (!autoSegmentActiveRef.current) {
+        autoSegmentActiveRef.current = true;
+        autoRecorderRef.current?.clearAudioBuffer();
+        onSpeechStart?.();
+      }
+      clearSilenceTimer();
+    } else if (autoSegmentActiveRef.current && !silenceTimeoutRef.current) {
+      silenceTimeoutRef.current = window.setTimeout(() => {
+        finalizeAutoSegmentRef.current?.('silence');
+      }, silenceDurationRef.current);
+    }
+
+    setIsRecording(autoSegmentActiveRef.current);
+  }, [clearSilenceTimer, onSpeechStart]);
+
+  const startAutoRecorder = useCallback(async () => {
+    if (!autoSessionActiveRef.current || !isVoiceChatModeRef.current) {
+      return;
+    }
+
+    if (autoRecorderBusyRef.current) {
+      return;
+    }
+
+    if (autoRecorderRef.current && autoRecorderRef.current.isCurrentlyRecording()) {
+      return;
+    }
+
+    autoRecorderBusyRef.current = true;
+    autoSegmentActiveRef.current = false;
+    setIsRecording(false);
+    setIsSoundDetected(false);
+
+    const recorder = new AudioRecorder({
+      silenceThreshold: AUTO_SILENCE_THRESHOLD,
+      onAudioLevelUpdate: handleAutoAudioLevel,
+      onMaxDurationReached: () => {
+        finalizeAutoSegmentRef.current?.('max_duration');
+      }
+    });
+
+    autoRecorderRef.current = recorder;
+
+    try {
+      await recorder.startRecording();
+      logger.info('[VOICE_CHAT] Auto voice recorder started');
+    } catch (error) {
+      logger.error('[VOICE_CHAT] Failed to start auto voice recorder:', error);
+      autoRecorderRef.current = null;
+    } finally {
+      autoRecorderBusyRef.current = false;
+
+      if (!autoSessionActiveRef.current || !isVoiceChatModeRef.current) {
+        const activeRecorder = autoRecorderRef.current;
+        autoRecorderRef.current = null;
+        if (activeRecorder && activeRecorder.isCurrentlyRecording()) {
+          activeRecorder.stopRecording().catch(err => {
+            logger.error('[VOICE_CHAT] Error stopping auto recorder during shutdown:', err);
+          });
+        }
+      }
+    }
+  }, [handleAutoAudioLevel]);
+
+  useEffect(() => {
+    startAutoRecorderRef.current = () => {
+      void startAutoRecorder();
+    };
+    return () => {
+      startAutoRecorderRef.current = undefined;
+    };
+  }, [startAutoRecorder]);
+
+  const startVoiceChatSession = useCallback(() => {
+    if (autoSessionActiveRef.current) {
+      return;
+    }
+
+    autoSessionActiveRef.current = true;
+    autoSegmentActiveRef.current = false;
+    setIsRecording(false);
+    setIsSoundDetected(false);
+    startAutoRecorderRef.current?.();
+    logger.info('[VOICE_CHAT] Live voice chat session started');
+  }, []);
+
+  const stopVoiceChatSession = useCallback(async () => {
+    if (!autoSessionActiveRef.current && !autoRecorderRef.current) {
+      return;
+    }
+
+    autoSessionActiveRef.current = false;
+    clearSilenceTimer();
+    autoSegmentActiveRef.current = false;
+    setIsRecording(false);
+    setIsSoundDetected(false);
+
+    const recorder = autoRecorderRef.current;
+    autoRecorderRef.current = null;
+
+    if (recorder && recorder.isCurrentlyRecording()) {
+      try {
+        await recorder.stopRecording();
+      } catch (error) {
+        logger.error('[VOICE_CHAT] Error stopping auto voice recorder:', error);
+      }
+    }
+
+    logger.info('[VOICE_CHAT] Live voice chat session stopped');
+  }, [clearSilenceTimer]);
+
+  useEffect(() => {
+    if (isVoiceChatMode) {
+      startVoiceChatSession();
+    } else {
+      void stopVoiceChatSession();
+    }
+  }, [isVoiceChatMode, startVoiceChatSession, stopVoiceChatSession]);
+
+  useEffect(() => {
+    return () => {
+      void stopVoiceChatSession();
+    };
+  }, [stopVoiceChatSession]);
+
   const handleButtonHoldEnd = useCallback(async () => {
+    if (isVoiceChatModeRef.current) {
+      logger.info('[VOICE_CHAT] Ignoring hold end while live voice chat mode active');
+      return;
+    }
+
     if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
@@ -58,13 +329,18 @@ export const useVoiceChat = ({
         setWasHoldCompleted(false);
       }, 100);
 
-      if (isRecording && audioRecorderRef.current) {
+      if (isRecording && manualRecorderRef.current) {
         try {
           logger.info('[AUDIO_RECORDING] Stopping recording...');
-          const audioBlob = await audioRecorderRef.current.stopRecording();
+          const audioBlob = await manualRecorderRef.current.stopRecording();
           setIsRecording(false);
           setIsSoundDetected(false);
           logger.info('[AUDIO_RECORDING] Recording stopped, blob size:', audioBlob.size, 'type:', audioBlob.type);
+
+          if (!audioBlob.type || !audioBlob.type.toLowerCase().includes('wav')) {
+            logger.warn('[STT_TRANSCRIBE] Discarding manual recording due to unsupported MIME type', { mimeType: audioBlob.type, size: audioBlob.size });
+            return;
+          }
 
           const formData = new FormData();
           formData.append('audio', audioBlob, 'recording.wav');
@@ -80,9 +356,7 @@ export const useVoiceChat = ({
             logger.info('[STT_TRANSCRIBE] Transcription response:', result);
 
             if (result.success && result.text) {
-              if (onTranscriptionComplete) {
-                onTranscriptionComplete(result.text);
-              }
+              onTranscriptionComplete?.(result.text, { source: 'manual' });
               logger.info('[STT_TRANSCRIBE] Transcription successful, text:', result.text);
             } else {
               logger.warn('[STT_TRANSCRIBE] Transcription returned but no text:', result);
@@ -99,6 +373,11 @@ export const useVoiceChat = ({
   }, [isButtonHeld, isRecording, onTranscriptionComplete]);
 
   const handleButtonHoldStart = useCallback(() => {
+    if (isVoiceChatModeRef.current) {
+      logger.info('[VOICE_CHAT] Ignoring hold start while live voice chat mode active');
+      return;
+    }
+
     if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
     }
@@ -111,18 +390,18 @@ export const useVoiceChat = ({
       logger.debug('[HOLD_DETECTION] Send button hold detected - starting animation and recording');
 
       try {
-        if (!audioRecorderRef.current) {
-          audioRecorderRef.current = new AudioRecorder({
+        if (!manualRecorderRef.current) {
+          manualRecorderRef.current = new AudioRecorder({
             onAudioLevelUpdate: (_level: number, soundDetected: boolean) => {
               setIsSoundDetected(soundDetected);
             },
             onMaxDurationReached: () => {
               logger.warn('[AUDIO_RECORDING] Maximum recording duration (1 hour) reached');
-              handleButtonHoldEnd();
+              void handleButtonHoldEnd();
             }
           });
         }
-        await audioRecorderRef.current.startRecording();
+        await manualRecorderRef.current.startRecording();
         setIsRecording(true);
         setIsSoundDetected(false);
         logger.info('[AUDIO_RECORDING] Recording session started successfully');

@@ -15,6 +15,7 @@ class AudioRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private audioChunks: Blob[] = [];
   private stream: MediaStream | null = null;
+  private initialChunk: Blob | null = null;
   private analyser: AnalyserNode | null = null;
   private audioContext: AudioContext | null = null;
   private isRecording: boolean = false;
@@ -82,12 +83,17 @@ class AudioRecorder {
       }
 
       this.audioChunks = [];
+      this.initialChunk = null;
       this.isRecording = true;
       this.lastSoundTime = Date.now();
       this.recordingStartTime = Date.now();
 
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
+          if (!this.initialChunk) {
+            this.initialChunk = event.data;
+            logger.debug('[AUDIO_RECORDING] Captured initial header chunk, size:', event.data.size);
+          }
           this.audioChunks.push(event.data);
           logger.info('[AUDIO_RECORDING] Audio chunk received, size:', event.data.size);
         }
@@ -189,6 +195,7 @@ class AudioRecorder {
           }
 
           const audioBlob = await this.processAudioChunks();
+          this.initialChunk = null;
           logger.info('[AUDIO_RECORDING] Audio processing complete, blob size:', audioBlob.size);
           resolve(audioBlob);
         } catch (error) {
@@ -236,6 +243,23 @@ class AudioRecorder {
       logger.warn('[AUDIO_CONVERT] Returning original blob due to conversion error');
       return blob;
     }
+  }
+
+
+  clearAudioBuffer(): void {
+    if (!this.isRecording) {
+      logger.debug('[AUDIO_RECORDING] clearAudioBuffer skipped - not recording');
+      return;
+    }
+
+    if (this.initialChunk) {
+      this.audioChunks = [this.initialChunk];
+      logger.debug('[AUDIO_RECORDING] Cleared audio buffer but preserved header chunk');
+    } else {
+      this.audioChunks = [];
+      logger.debug('[AUDIO_RECORDING] Cleared audio buffer without header (not yet captured)');
+    }
+    this.recordingStartTime = Date.now();
   }
 
   private audioBufferToWav(buffer: AudioBuffer): Blob {

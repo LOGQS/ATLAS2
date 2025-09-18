@@ -266,6 +266,7 @@ export const useTTS = ({ messages, chatId }: UseTTSProps) => {
   return {
     ttsState,
     handleTTSToggle,
+    stopAllTTS,
     isSupported
   };
 };
