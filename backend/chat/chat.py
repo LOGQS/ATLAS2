@@ -1,4 +1,4 @@
-# status: complete
+﻿# status: complete
 
 import uuid
 import multiprocessing
@@ -120,6 +120,68 @@ def cancel_chat_process(chat_id: str) -> bool:
                     _terminate_process_safely(process, chat_id)
                 return True
         return False
+
+
+def stop_chat_process(chat_id: str) -> bool:
+    """Stop a running background process for a chat and finalize the stream."""
+    with _chat_processes_lock:
+        process = _chat_processes.get(chat_id)
+        conn = _chat_process_connections.get(chat_id)
+        if not process or not conn:
+            logger.info(f"Stop requested for chat {chat_id} but no active process found")
+            return False
+        _chat_process_status[chat_id] = 'stopping'
+
+    logger.info(f"Stopping background process for chat {chat_id}")
+    stop_ack_received = False
+
+    try:
+        conn.send({'command': 'stop'})
+        if conn.poll(CANCEL_RESPONSE_TIMEOUT):
+            response = conn.recv()
+            stop_ack_received = True
+            logger.info(f"Stop response for {chat_id}: {response}")
+        else:
+            logger.debug(f"No stop acknowledgement received for chat {chat_id} within timeout")
+    except (OSError, BrokenPipeError) as e:
+        logger.warning(f"Connection error sending stop command to {chat_id}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error sending stop command to {chat_id}: {e}")
+
+    try:
+        process.join(PROCESS_TERMINATE_TIMEOUT)
+    except Exception as join_error:
+        logger.warning(f"Error waiting for chat process {chat_id} to stop: {join_error}")
+
+    if process.is_alive():
+        logger.info(f"Process still alive after stop request for chat {chat_id}, forcing termination")
+        _terminate_process_safely(process, chat_id)
+
+    with _chat_processes_lock:
+        _chat_process_status[chat_id] = 'completed'
+
+    try:
+        db.update_chat_state(chat_id, "static")
+    except Exception as state_error:
+        logger.warning(f"Failed to update chat state to static for {chat_id}: {state_error}")
+
+    try:
+        from route.chat_route import publish_state, publish_content
+        publish_state(chat_id, "static")
+        publish_content(chat_id, 'complete', '')
+    except Exception as publish_error:
+        logger.warning(f"Failed to publish stop completion events for {chat_id}: {publish_error}")
+
+    with _chat_processes_lock:
+        _chat_processes.pop(chat_id, None)
+        _chat_process_connections.pop(chat_id, None)
+        _chat_process_status.pop(chat_id, None)
+
+    _close_connection_safely(conn, chat_id)
+    cancellation_manager.cleanup_chat(chat_id)
+
+    logger.info(f"Stopped chat process for {chat_id} (ack_received={stop_ack_received})")
+    return True
 
 def is_chat_cancelled(chat_id: str) -> bool:
     """Check if a chat's processing has been cancelled"""
@@ -598,3 +660,4 @@ class Chat:
             self.chat_id, message, provider, model, include_reasoning, 
             attached_file_ids, user_message_id, config_params.get('is_retry', False)
         )
+

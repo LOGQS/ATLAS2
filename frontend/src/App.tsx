@@ -64,6 +64,7 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSoundDetected, setIsSoundDetected] = useState(false);
   const [isVoiceChatMode, setIsVoiceChatMode] = useState(false);
+  const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
 
   const resetToggleOutlineTimer = useCallback(() => {
     if (toggleOutlineTimeoutRef.current) {
@@ -408,7 +409,7 @@ function App() {
     }, HOLD_DETECTION_MS);
   }, [handleButtonHoldEnd]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     logger.info('[SEND_DEBUG] handleSend called:', {
       messageLength: message.length,
       messageTrimmed: message.trim().length,
@@ -465,7 +466,74 @@ function App() {
         }
       }
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    message,
+    activeChatId,
+    hasMessageBeenSent,
+    attachedFiles,
+    setIsMessageBeingSent,
+    setCenterFading,
+    setHasMessageBeenSent,
+    setMessage,
+    clearAttachedFiles,
+    setChats,
+    setActiveChatId,
+    setPendingFirstMessages,
+    createNewChatInBackground
+  ]);
+
+  const handleStopStreaming = useCallback(async (source: 'center' | 'bottom' = 'center') => {
+    if (activeChatId === 'none') {
+      logger.warn(`[STOP_STREAM] ${source} stop requested but no active chat`);
+      return;
+    }
+
+    if (isStopRequestInFlight) {
+      logger.info(`[STOP_STREAM] ${source} stop already in progress for chat ${activeChatId}`);
+      return;
+    }
+
+    setIsStopRequestInFlight(true);
+
+    try {
+      const response = await fetch(apiUrl(`/api/chat/${activeChatId}/stop`), {
+        method: 'POST'
+      });
+
+      let payload: any = null;
+      try {
+        payload = await response.json();
+      } catch (parseError) {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        logger.error('[STOP_STREAM] Failed to stop streaming:', {
+          chatId: activeChatId,
+          status: response.status,
+          payload
+        });
+        return;
+      }
+
+      if (payload && payload.success === false) {
+        logger.info('[STOP_STREAM] Stop request acknowledged but no active stream:', payload);
+      } else {
+        logger.info('[STOP_STREAM] Stop request sent successfully:', {
+          chatId: activeChatId,
+          payload
+        });
+      }
+    } catch (error) {
+      logger.error('[STOP_STREAM] Error issuing stop request:', {
+        chatId: activeChatId,
+        error
+      });
+    } finally {
+      setIsStopRequestInFlight(false);
+    }
+  }, [activeChatId, isStopRequestInFlight]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -772,7 +840,55 @@ function App() {
     disabled: isSendDisabled
   });
 
-  void forceRender; 
+  void forceRender;
+
+  const handleActionButtonClick = useCallback((source: 'center' | 'bottom') => {
+    logger.info(`[SEND_DEBUG] ${source === 'center' ? 'Center' : 'Bottom'} send button clicked:`, {
+      activeChatId,
+      messageLength: message.length,
+      isSendDisabled,
+      isActiveChatStreaming,
+      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
+      hasUnreadyFiles,
+      wasHoldCompleted,
+      isVoiceChatMode,
+      isStopRequestInFlight
+    });
+
+    if (wasHoldCompleted) {
+      logger.info('[SEND_DEBUG] Click prevented - hold was completed');
+      return;
+    }
+
+    if (isActiveChatStreaming) {
+      handleStopStreaming(source);
+      return;
+    }
+
+    if (message.trim()) {
+      if (!isSendDisabled) {
+        handleSend();
+      }
+      return;
+    }
+
+    setIsVoiceChatMode(prev => {
+      const newMode = !prev;
+      logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
+      return newMode;
+    });
+  }, [
+    activeChatId,
+    handleSend,
+    handleStopStreaming,
+    hasUnreadyFiles,
+    isActiveChatStreaming,
+    isSendDisabled,
+    isVoiceChatMode,
+    isStopRequestInFlight,
+    message,
+    wasHoldCompleted
+  ]);
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -973,7 +1089,7 @@ function App() {
           <div className={`input-container center ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             <div className="input-row">
               <div
-                className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
+                className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
                 {...dragHandlers}
               >
                 <button 
@@ -1011,39 +1127,10 @@ function App() {
                 onTouchEnd={handleButtonHoldEnd}
               >
                 <button
-                  onClick={() => {
-                    logger.info('[SEND_DEBUG] Center send button clicked:', {
-                      activeChatId,
-                      messageLength: message.length,
-                      isSendDisabled,
-                      isActiveChatStreaming,
-                      chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                      hasUnreadyFiles,
-                      wasHoldCompleted,
-                      isVoiceChatMode
-                    });
-
-                    if (wasHoldCompleted) {
-                      logger.info('[SEND_DEBUG] Click prevented - hold was completed');
-                      return;
-                    }
-
-                    if (message.trim()) {
-                      if (!isSendDisabled) {
-                        handleSend();
-                      }
-                      return;
-                    }
-
-                    setIsVoiceChatMode(prev => {
-                      const newMode = !prev;
-                      logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
-                      return newMode;
-                    });
-                  }}
-                  className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
+                  onClick={() => handleActionButtonClick('center')}
+                  className={`send-button ${(isSendDisabled && !isActiveChatStreaming) ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
                   title={
-                    isActiveChatStreaming ? 'Chat is processing...' :
+                    isActiveChatStreaming ? (isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response') :
                     hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                     atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                     message.trim() ? 'Send message' :
@@ -1059,7 +1146,9 @@ function App() {
                       }}
                     ></div>
                   ) : isActiveChatStreaming ? (
-                    <div className="loading-spinner"></div>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="4" y="4" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" fill="none"/>
+                    </svg>
                   ) : hasUnreadyFiles ? (
                     <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
                   ) : message.trim() ? (
@@ -1156,7 +1245,7 @@ function App() {
 
               <div className="bottom-input-container">
                 <div
-                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
+                  className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
                   {...dragHandlers}
                 >
                   <button 
@@ -1194,42 +1283,14 @@ function App() {
                   onTouchEnd={handleButtonHoldEnd}
                 >
                   <button
-                    onClick={() => {
-                      logger.info('[SEND_DEBUG] Bottom send button clicked:', {
-                        activeChatId,
-                        messageLength: message.length,
-                        isSendDisabled,
-                        isActiveChatStreaming,
-                        chatRefIsBusy: chatRef.current?.isBusy?.() ?? null,
-                        hasUnreadyFiles,
-                        wasHoldCompleted,
-                        isVoiceChatMode
-                      });
-
-                      if (wasHoldCompleted) {
-                        logger.info('[SEND_DEBUG] Click prevented - hold was completed');
-                        return;
-                      }
-
-                      if (message.trim()) {
-                        if (!isSendDisabled) {
-                          handleSend();
-                        }
-                        return;
-                      }
-                      setIsVoiceChatMode(prev => {
-                        const newMode = !prev;
-                        logger.info(`[VOICE_CHAT] Voice chat mode toggled: ${newMode}`);
-                        return newMode;
-                      });
-                    }}
-                    className={`send-button ${isSendDisabled ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''}`}
+                    onClick={() => handleActionButtonClick('bottom')}
+                    className={`send-button ${(isSendDisabled && !isActiveChatStreaming) ? 'loading' : ''} ${isButtonHeld ? 'held' : ''} ${isRecording ? 'recording' : ''} ${isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''}`}
                     title={
-                      isActiveChatStreaming ? 'Chat is processing...' :
+                      isActiveChatStreaming ? (isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response') :
                       hasUnreadyFiles ? 'Waiting for files to finish processing...' :
                       atConcurrencyLimit ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})` :
                       message.trim() ? 'Send message' :
-                      isVoiceChatMode ? 'Voice chat active\n• Click to disable' :
+                      isVoiceChatMode ? '• Voice chat active\n• Click to disable' :
                       '• Hold to record\n• Click for voice chat'
                     }
                   >
@@ -1241,7 +1302,9 @@ function App() {
                         }}
                       ></div>
                     ) : isActiveChatStreaming ? (
-                      <div className="loading-spinner"></div>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="4" y="4" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" fill="none"/>
+                      </svg>
                     ) : hasUnreadyFiles ? (
                       <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
                     ) : message.trim() ? (

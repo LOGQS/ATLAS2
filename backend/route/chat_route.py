@@ -1,11 +1,11 @@
-# status: complete
+﻿# status: complete
 
 from flask import Flask, request, jsonify, Response
 import json
 import queue
 import time
 from threading import Lock
-from chat.chat import Chat, is_chat_processing
+from chat.chat import Chat, is_chat_processing, stop_chat_process
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
@@ -368,6 +368,30 @@ def register_chat_routes(app: Flask):
             
             return create_sse_response(error_stream, include_cors=True)
     
+
+    @app.route('/api/chat/<chat_id>/stop', methods=['POST'])
+    def stop_chat(chat_id: str):
+        """Stop active streaming for a chat."""
+        try:
+            if not db.chat_exists(chat_id):
+                return jsonify({'error': 'Chat not found'}), 404
+
+            stopped = stop_chat_process(chat_id)
+            if not stopped:
+                return jsonify({
+                    'success': False,
+                    'chat_id': chat_id,
+                    'message': 'No active stream to stop'
+                })
+
+            return jsonify({
+                'success': True,
+                'chat_id': chat_id
+            })
+        except Exception as e:
+            logger.error(f"Error stopping chat {chat_id}: {e}")
+            return jsonify({'error': str(e)}), 500
+        
     @app.route('/api/chat/history/<chat_id>', methods=['GET'])
     def get_chat_history(chat_id: str):
         """Get chat history for a specific chat"""

@@ -33,22 +33,23 @@ def chat_worker(chat_id: str, child_conn) -> None:
     Chat worker function that runs in a separate process.
     When the process is terminated, all operations stop immediately.
     """
-    
+
     try:
         backend_dir = Path(__file__).parent.parent
         if str(backend_dir) not in sys.path:
             sys.path.insert(0, str(backend_dir))
-        
+
         from utils.logger import get_logger
         from utils.db_utils import DatabaseManager
         from utils.config import get_provider_map, Config
-        
+
         worker_logger = get_logger(__name__)
         worker_logger.info(f"[CHAT-WORKER] Starting chat worker process for {chat_id}")
-        
+
         db = None
         providers = None
         processing_active = False
+        current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None}
         
         try:
             db = DatabaseManager()
@@ -77,6 +78,19 @@ def chat_worker(chat_id: str, child_conn) -> None:
                         worker_logger.info(f"[CHAT-WORKER] Received command {command_type} for {chat_id}")
                         
                         if command_type == 'stop':
+                            if processing_active and current_content['assistant_message_id']:
+                                try:
+                                    worker_logger.info(f"[CHAT-WORKER] Saving partial content before stop for {chat_id}")
+                                    db.update_message(
+                                        current_content['assistant_message_id'],
+                                        current_content['full_text'],
+                                        thoughts=current_content['full_thoughts'] if current_content['full_thoughts'] else None
+                                    )
+                                    db.update_chat_state(chat_id, "static")
+                                    child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+                                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                                except Exception as save_error:
+                                    worker_logger.error(f"[CHAT-WORKER] Error saving partial content on stop: {save_error}")
                             child_conn.send({'success': True, 'chat_id': chat_id})
                             break
                         
@@ -108,9 +122,9 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 user_message_id = command.get('user_message_id')
                                 
                                 _process_message_in_worker(
-                                    chat_id, db, providers, message, provider, model, 
-                                    include_reasoning, attached_file_ids, user_message_id, 
-                                    child_conn, worker_logger
+                                    chat_id, db, providers, message, provider, model,
+                                    include_reasoning, attached_file_ids, user_message_id,
+                                    child_conn, worker_logger, current_content
                                 )
                                 
                                 processing_active = False
@@ -151,7 +165,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
 
 def _process_message_in_worker(chat_id: str, db, providers, message: str, provider: str, model: str,
                               include_reasoning: bool, attached_file_ids: list, user_message_id: Optional[int],
-                              child_conn, worker_logger):
+                              child_conn, worker_logger, current_content):
     """Process a message within the worker process"""
     
     worker_logger.info(f"[CHAT-WORKER] Processing message with {provider}:{model} for {chat_id}")
@@ -174,12 +188,16 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     
     assistant_message_id = db.save_message(
         chat_id,
-        "assistant", 
+        "assistant",
         "",
         thoughts=None,
         provider=provider,
         model=model
     )
+
+    current_content['assistant_message_id'] = assistant_message_id
+    current_content['full_text'] = ''
+    current_content['full_thoughts'] = ''
     try:
         if assistant_message_id and chat_id.startswith('version_'):
             all_chats = db.get_all_chats()
@@ -214,8 +232,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         worker_logger.debug(f"[CHAT-WORKER] Sending message IDs for {chat_id}: user={user_message_id}, assistant={assistant_message_id}")
         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'message_ids', 'content': json.dumps(message_ids_data)})
     
-    full_text = ""
-    full_thoughts = ""
+    full_text = current_content['full_text']
+    full_thoughts = current_content['full_thoughts']
     
     try:
         if use_reasoning:
@@ -237,11 +255,25 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     if cmd_data.get('command') == 'cancel':
                         worker_logger.info(f"[CHAT-WORKER] Processing cancelled for {chat_id}")
                         return
+                    elif cmd_data.get('command') == 'stop':
+                        worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
+                        if assistant_message_id and (full_text or full_thoughts):
+                            db.update_message(
+                                assistant_message_id,
+                                full_text,
+                                thoughts=full_thoughts if full_thoughts else None
+                            )
+                        db.update_chat_state(chat_id, "static")
+                        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True})
+                        return
                 except:
                     pass  
             
             if chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
+                current_content['full_thoughts'] = full_thoughts
                 try:
                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts', 'content': chunk.get("content", "")})
                 except Exception as pub_error:
@@ -249,6 +281,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                 
             elif chunk.get("type") == "answer":
                 full_text += chunk.get("content", "")
+                current_content['full_text'] = full_text
                 try:
                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
                 except Exception as pub_error:
@@ -273,10 +306,14 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     worker_logger.error(f"[CHAT-WORKER] Error updating message in DB: {db_error}")
         
         db.update_chat_state(chat_id, "static")
-        
+
         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
-        
+
+        current_content['full_text'] = ''
+        current_content['full_thoughts'] = ''
+        current_content['assistant_message_id'] = None
+
         worker_logger.info(f"[CHAT-WORKER] Processing completed successfully for {chat_id}")
         
     except Exception as stream_error:
