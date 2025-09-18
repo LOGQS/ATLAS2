@@ -1,0 +1,267 @@
+.embedded-file-viewer {
+  background: linear-gradient(135deg, rgba(30, 30, 35, 0.95) 0%, rgba(25, 25, 30, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 12px 0;
+  transition: all 0.3s ease;
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.2),
+    inset 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.embedded-file-viewer:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.3),
+    0 0 40px rgba(100, 150, 255, 0.02),
+    inset 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.embedded-file-viewer.collapsed {
+  background: linear-gradient(135deg, rgba(25, 25, 30, 0.9) 0%, rgba(20, 20, 25, 0.9) 100%);
+}
+
+.embedded-file-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: default;
+  min-height: 48px;
+}
+
+.embedded-file-viewer.collapsed .embedded-file-viewer-header {
+  border-bottom: none;
+}
+
+.embedded-file-viewer-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.embedded-file-viewer-info .file-icon {
+  font-size: 18px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+  flex-shrink: 0;
+}
+
+.embedded-file-viewer-info .file-name {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.embedded-file-viewer-info .file-size {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  font-weight: 400;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.embedded-file-viewer-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.viewer-control-btn {
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+}
+
+.viewer-control-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.9);
+  transform: translateY(-1px);
+}
+
+.viewer-control-btn:active {
+  transform: translateY(0);
+}
+
+.collapse-icon {
+  transition: transform 0.3s ease;
+  display: inline-block;
+}
+
+.collapse-icon.collapsed {
+  transform: rotate(-90deg);
+}
+
+.expand-icon {
+  font-size: 16px;
+}
+
+.embedded-file-viewer-content {
+  overflow: auto;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.embedded-file-viewer-content::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.embedded-file-viewer-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 3px;
+}
+
+.embedded-file-viewer-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+.embedded-file-viewer-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.embedded-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: rgba(255, 255, 255, 0.5);
+  gap: 12px;
+}
+
+.embedded-loading-state .loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: rgba(100, 150, 255, 0.6);
+  border-radius: 50%;
+  animation: embeddedSpinner 0.8s linear infinite;
+}
+
+@keyframes embeddedSpinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.embedded-subrenderer-container {
+  padding: 16px;
+  min-height: 100px;
+}
+
+.embedded-file-viewer-placeholder {
+  padding: 32px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
+  transition: all 0.2s ease;
+}
+
+.embedded-file-viewer-placeholder:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.02) 100%);
+}
+
+.embedded-file-viewer-placeholder .placeholder-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.embedded-file-viewer-placeholder .placeholder-icon {
+  font-size: 48px;
+  opacity: 0.6;
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.2));
+}
+
+.embedded-file-viewer-placeholder .placeholder-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.embedded-file-viewer-placeholder .file-name-display {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.embedded-file-viewer-placeholder .file-size-display {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  margin: 0;
+}
+
+.embedded-file-viewer-placeholder .click-to-open {
+  color: rgba(100, 150, 255, 0.8);
+  font-size: 12px;
+  margin: 8px 0 0 0;
+  padding: 4px 12px;
+  background: rgba(100, 150, 255, 0.1);
+  border-radius: 4px;
+  border: 1px solid rgba(100, 150, 255, 0.2);
+  transition: all 0.2s ease;
+}
+
+.embedded-file-viewer-placeholder:hover .click-to-open {
+  background: rgba(100, 150, 255, 0.15);
+  border-color: rgba(100, 150, 255, 0.3);
+  color: rgba(100, 150, 255, 1);
+}
+
+@media (max-width: 768px) {
+  .embedded-file-viewer-header {
+    padding: 10px 12px;
+    min-height: 42px;
+  }
+
+  .embedded-file-viewer-info .file-icon {
+    font-size: 16px;
+  }
+
+  .embedded-file-viewer-info .file-name {
+    font-size: 13px;
+  }
+
+  .viewer-control-btn {
+    width: 26px;
+    height: 26px;
+  }
+
+  .embedded-file-viewer-placeholder {
+    padding: 24px 16px;
+  }
+
+  .embedded-file-viewer-placeholder .placeholder-icon {
+    font-size: 40px;
+  }
+}

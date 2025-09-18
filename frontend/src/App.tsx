@@ -6,6 +6,7 @@ import LeftSidebar from './components/layout/LeftSidebar';
 import RightSidebar from './components/layout/RightSidebar';
 import Chat from './components/chat/Chat';
 import ModalWindow from './components/ui/ModalWindow';
+import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import SendButton from './components/input/SendButton';
@@ -61,6 +62,10 @@ function App() {
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
+
+  const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
+  const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
+  const [globalViewerSubrenderer, setGlobalViewerSubrenderer] = useState<React.ComponentType<any> | undefined>(undefined);
 
   const centerInputRef = useRef<HTMLTextAreaElement>(null);
   const bottomInputRef = useRef<HTMLTextAreaElement>(null);
@@ -702,11 +707,37 @@ function App() {
 
   useEffect(() => {
     (window as any).handleChatSwitch = handleChatSwitch;
-    
+
     return () => {
       delete (window as any).handleChatSwitch;
     };
   }, [handleChatSwitch]);
+
+  
+  const handleOpenGlobalViewer = useCallback((file: any, subrenderer?: React.ComponentType<any>) => {
+    setGlobalViewerFile(file);
+    setGlobalViewerSubrenderer(() => subrenderer);
+    setGlobalViewerOpen(true);
+  }, []);
+
+  const handleCloseGlobalViewer = useCallback(() => {
+    setGlobalViewerOpen(false);
+    setTimeout(() => {
+      setGlobalViewerFile(null);
+      setGlobalViewerSubrenderer(undefined);
+    }, 300);
+  }, []);
+
+
+  useEffect(() => {
+    (window as any).openGlobalFileViewer = handleOpenGlobalViewer;
+    (window as any).closeGlobalFileViewer = handleCloseGlobalViewer;
+
+    return () => {
+      delete (window as any).openGlobalFileViewer;
+      delete (window as any).closeGlobalFileViewer;
+    };
+  }, [handleOpenGlobalViewer, handleCloseGlobalViewer]);
 
   const handleNewChat = () => {
     logger.info('Starting new chat');
@@ -1181,6 +1212,14 @@ function App() {
         style={{ display: 'none' }}
         onChange={handleFileSelect}
         accept="*"
+      />
+
+      {/* Global File Viewer */}
+      <GlobalFileViewer
+        isOpen={globalViewerOpen}
+        file={globalViewerFile}
+        subrenderer={globalViewerSubrenderer}
+        onClose={handleCloseGlobalViewer}
       />
     </div>
   );
