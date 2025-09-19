@@ -30,7 +30,7 @@ const MessageInputArea: React.FC<MessageInputAreaProps> = ({
   return (
     <div
       className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${
-        isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''
+        isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''
       }`}
       {...dragHandlers}
     >

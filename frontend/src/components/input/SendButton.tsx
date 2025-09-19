@@ -12,6 +12,7 @@ interface SendButtonProps {
   hasUnreadyFiles: boolean;
   message: string;
   isVoiceChatMode: boolean;
+  isMicMuted: boolean;
   isSendDisabled: boolean;
   isStopRequestInFlight: boolean;
   activeStreamCount: number;
@@ -29,30 +30,39 @@ const SendButton: React.FC<SendButtonProps> = ({
   hasUnreadyFiles,
   message,
   isVoiceChatMode,
+  isMicMuted,
   isSendDisabled,
   isStopRequestInFlight,
   activeStreamCount,
   atConcurrencyLimit
 }) => {
-  const buttonClassName = `send-button ${
-    (isSendDisabled && !isActiveChatStreaming) ? 'loading' : ''
-  } ${isButtonHeld ? 'held' : ''} ${
-    isRecording ? 'recording' : ''
-  } ${
-    isVoiceChatMode && !message.trim() && !isActiveChatStreaming ? 'voice-chat-mode' : ''
-  }`;
+  const buttonClassName = [
+    'send-button',
+    (isSendDisabled && !isActiveChatStreaming) ? 'loading' : '',
+    isButtonHeld ? 'held' : '',
+    isRecording ? 'recording' : '',
+    isVoiceChatMode ? 'voice-chat-mode' : '',
+    isVoiceChatMode && isMicMuted ? 'mic-muted' : ''
+  ].filter(Boolean).join(' ');
 
-  const buttonTitle = isActiveChatStreaming
-    ? (isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response')
-    : hasUnreadyFiles
-      ? 'Waiting for files to finish processing...'
-      : atConcurrencyLimit
-        ? `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})`
-        : message.trim()
-          ? 'Send message'
-          : isVoiceChatMode
-            ? '• Voice chat active\n• Click to disable'
-            : '• Hold to record\n• Click for voice chat';
+  const hasMessage = message.trim().length > 0;
+
+  let buttonTitle: string;
+  if (isVoiceChatMode) {
+    buttonTitle = isMicMuted
+      ? 'Voice chat active (mic muted)\nClick to disable'
+      : 'Voice chat active\nClick to disable';
+  } else if (isActiveChatStreaming) {
+    buttonTitle = isStopRequestInFlight ? 'Stop request in progress...' : 'Click to stop current response';
+  } else if (hasUnreadyFiles) {
+    buttonTitle = 'Waiting for files to finish processing...';
+  } else if (atConcurrencyLimit) {
+    buttonTitle = `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})`;
+  } else if (hasMessage) {
+    buttonTitle = 'Send message';
+  } else {
+    buttonTitle = 'Hold to record\nClick for voice chat';
+  }
 
   return (
     <div
@@ -75,16 +85,16 @@ const SendButton: React.FC<SendButtonProps> = ({
               animationPlayState: isSoundDetected ? 'running' : 'paused'
             }}
           />
-        ) : isActiveChatStreaming ? (
+        ) : (isActiveChatStreaming && !isVoiceChatMode) ? (
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
             <rect x="4" y="4" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" fill="none"/>
           </svg>
         ) : hasUnreadyFiles ? (
           <span style={{ fontSize: '12px', opacity: 0.7 }}>📎</span>
-        ) : message.trim() ? (
+        ) : hasMessage ? (
           '→'
         ) : (
-          <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''}`}>
+          <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''} ${isMicMuted ? 'muted' : ''}`}>
             <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
               <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>

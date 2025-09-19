@@ -10,6 +10,7 @@ import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import SendButton from './components/input/SendButton';
+import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
 import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
@@ -74,11 +75,17 @@ function App() {
   const voiceTranscriptQueueRef = useRef<string[]>([]);
   const isProcessingVoiceQueueRef = useRef(false);
   const flushVoiceQueueRef = useRef<(() => void) | null>(null);
+  const voiceChatActivationChatIdRef = useRef<string | null>(null);
 
   const enqueueVoiceTranscript = useCallback((text: string) => {
     const trimmed = typeof text === 'string' ? text.trim() : '';
     if (!trimmed) {
       logger.warn('[VOICE_CHAT] Ignoring empty transcription result');
+      return;
+    }
+
+    if (!/[A-Za-z0-9]/.test(trimmed)) {
+      logger.warn('[VOICE_CHAT] Ignoring punctuation-only transcription result', { text: trimmed });
       return;
     }
 
@@ -115,9 +122,11 @@ function App() {
     isRecording,
     isSoundDetected,
     isVoiceChatMode,
+    isMicMuted,
     handleButtonHoldStart,
     handleButtonHoldEnd,
-    toggleVoiceChatMode,
+    toggleMicMute,
+    setMicMuted,
     setVoiceChatMode
   } = useVoiceChat({
     onTranscriptionComplete: handleTranscriptionComplete,
@@ -130,12 +139,96 @@ function App() {
   });
 
 
+  const enableVoiceChatMode = useCallback((source: 'center' | 'bottom' | 'system', reason?: string) => {
+    const targetChatId = activeChatId === 'none' ? null : activeChatId;
+
+    voiceChatActivationChatIdRef.current = targetChatId;
+
+    setVoiceChatMode(prev => {
+      if (prev) {
+        return prev;
+      }
+      const logChatId = targetChatId ?? 'pending-assignment';
+      logger.info(`[VOICE_CHAT] Live voice chat enabled for chat ${logChatId} via ${source}${reason ? ` (${reason})` : ''}`);
+      return true;
+    });
+  }, [activeChatId, setVoiceChatMode]);
+
+  const disableVoiceChatMode = useCallback((source: 'center' | 'bottom' | 'system', reason?: string) => {
+    const assignedChatId = voiceChatActivationChatIdRef.current;
+    voiceChatActivationChatIdRef.current = null;
+
+    if (isMicMuted) {
+      setMicMuted(false);
+    }
+
+    setVoiceChatMode(prev => {
+      if (!prev) {
+        return prev;
+      }
+      const logChatId = assignedChatId ?? (activeChatId === 'none' ? 'pending-assignment' : activeChatId);
+      logger.info(`[VOICE_CHAT] Live voice chat disabled for chat ${logChatId} via ${source}${reason ? ` (${reason})` : ''}`);
+      return false;
+    });
+  }, [activeChatId, isMicMuted, setMicMuted, setVoiceChatMode]);
+
+  const handleMicMuteToggle = useCallback(() => {
+    toggleMicMute();
+  }, [toggleMicMute]);
+
+  const handleVoiceChatToggle = useCallback((source: 'center' | 'bottom' | 'system', reason: string = 'click') => {
+    if (isVoiceChatMode) {
+      disableVoiceChatMode(source, reason);
+    } else {
+      enableVoiceChatMode(source, reason);
+    }
+  }, [disableVoiceChatMode, enableVoiceChatMode, isVoiceChatMode]);
+
+  const handleVoiceChatClick = useCallback((source: 'center' | 'bottom') => {
+    handleVoiceChatToggle(source, 'click');
+  }, [handleVoiceChatToggle]);
+
   useEffect(() => {
     if (message.trim() && isVoiceChatMode) {
-      setVoiceChatMode(false);
-      logger.info('[VOICE_CHAT] Voice chat mode disabled - user started typing');
+      disableVoiceChatMode('system', 'user-typing');
     }
-  }, [message, isVoiceChatMode, setVoiceChatMode]);
+  }, [message, isVoiceChatMode, disableVoiceChatMode]);
+
+  useEffect(() => {
+    if (!isVoiceChatMode) {
+      return;
+    }
+
+    const assignedChatId = voiceChatActivationChatIdRef.current;
+
+    if (!assignedChatId) {
+      if (activeChatId !== 'none') {
+        voiceChatActivationChatIdRef.current = activeChatId;
+        logger.info(`[VOICE_CHAT] Pending live voice chat bound to chat ${activeChatId}`);
+      }
+      return;
+    }
+
+    if (activeChatId === 'none') {
+      disableVoiceChatMode('system', 'active-chat-cleared');
+      return;
+    }
+
+    if (activeChatId !== assignedChatId) {
+      disableVoiceChatMode('system', 'chat-changed');
+    }
+  }, [activeChatId, isVoiceChatMode, disableVoiceChatMode]);
+
+  useEffect(() => {
+    if (activeChatId === 'none') {
+      return;
+    }
+
+    const assignedChatId = voiceChatActivationChatIdRef.current;
+    if (assignedChatId && assignedChatId !== activeChatId) {
+      setMicMuted(false);
+    }
+  }, [activeChatId, setMicMuted]);
 
   const setIsMessageBeingSent = useCallback<React.Dispatch<React.SetStateAction<boolean>>>((value) => {
     setSendingByChat(prev => {
@@ -846,6 +939,10 @@ function App() {
     if (voiceTranscriptQueueRef.current.length === 0) {
       return;
     }
+    if (isVoiceChatMode && isMicMuted) {
+      logger.debug('[VOICE_CHAT] Mic muted - deferring voice message dispatch');
+      return;
+    }
     if (isSendDisabled) {
       logger.debug('[VOICE_CHAT] Send disabled - deferring voice message dispatch');
       return;
@@ -882,8 +979,7 @@ function App() {
         flushVoiceQueueRef.current?.();
       }
     });
-  }, [isSendDisabled, message, sendMessage]);
-
+  }, [isSendDisabled, message, isVoiceChatMode, isMicMuted, sendMessage]);
   useEffect(() => {
     flushVoiceQueueRef.current = flushVoiceQueue;
     return () => {
@@ -905,6 +1001,12 @@ function App() {
     }
   }, [isVoiceChatMode]);
 
+  useEffect(() => {
+    if (isVoiceChatMode && !isMicMuted) {
+      flushVoiceQueueRef.current?.();
+    }
+  }, [isVoiceChatMode, isMicMuted]);
+
   const { isDragOver, dragHandlers } = useDragDrop({
     onFilesDropped: handleFileSelectionImmediate,
     disabled: isSendDisabled
@@ -920,11 +1022,27 @@ function App() {
       hasUnreadyFiles,
       wasHoldCompleted,
       isVoiceChatMode,
+      isMicMuted,
       isStopRequestInFlight
     });
 
     if (wasHoldCompleted) {
       logger.info('[SEND_DEBUG] Click prevented - hold was completed');
+
+      return;
+    }
+
+    const trimmedMessage = message.trim();
+
+    if (trimmedMessage) {
+      if (!isSendDisabled) {
+        handleSend();
+      }
+      return;
+    }
+
+    if (isVoiceChatMode) {
+      handleVoiceChatClick(source);
       return;
     }
 
@@ -933,15 +1051,8 @@ function App() {
       return;
     }
 
-    if (message.trim()) {
-      if (!isSendDisabled) {
-        handleSend();
-      }
-      return;
-    }
-
-    toggleVoiceChatMode();
-  }, [activeChatId, message, isSendDisabled, isActiveChatStreaming, hasUnreadyFiles, wasHoldCompleted, isVoiceChatMode, isStopRequestInFlight, toggleVoiceChatMode, handleStopStreaming, handleSend]);
+    handleVoiceChatClick(source);
+  }, [activeChatId, message, isSendDisabled, isActiveChatStreaming, hasUnreadyFiles, wasHoldCompleted, isVoiceChatMode, isMicMuted, isStopRequestInFlight, handleVoiceChatClick, handleStopStreaming, handleSend]);
 
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
@@ -1033,22 +1144,31 @@ function App() {
                 isActiveChatStreaming={isActiveChatStreaming}
                 dragHandlers={dragHandlers}
               />
-              <SendButton
-                onClick={() => handleActionButtonClick('center')}
-                onHoldStart={handleButtonHoldStart}
-                onHoldEnd={handleButtonHoldEnd}
-                isButtonHeld={isButtonHeld}
-                isRecording={isRecording}
-                isSoundDetected={isSoundDetected}
-                isActiveChatStreaming={isActiveChatStreaming}
-                hasUnreadyFiles={hasUnreadyFiles}
-                message={message}
-                isVoiceChatMode={isVoiceChatMode}
-                isSendDisabled={isSendDisabled}
-                isStopRequestInFlight={isStopRequestInFlight}
-                activeStreamCount={activeStreamCount}
-                atConcurrencyLimit={atConcurrencyLimit}
-              />
+              <div className="input-actions">
+                {isVoiceChatMode && (
+                  <VoiceChatMuteButton
+                    isMicMuted={isMicMuted}
+                    onToggle={handleMicMuteToggle}
+                  />
+                )}
+                <SendButton
+                  onClick={() => handleActionButtonClick('center')}
+                  onHoldStart={handleButtonHoldStart}
+                  onHoldEnd={handleButtonHoldEnd}
+                  isButtonHeld={isButtonHeld}
+                  isRecording={isRecording}
+                  isSoundDetected={isSoundDetected}
+                  isActiveChatStreaming={isActiveChatStreaming}
+                  hasUnreadyFiles={hasUnreadyFiles}
+                  message={message}
+                  isVoiceChatMode={isVoiceChatMode}
+                  isMicMuted={isMicMuted}
+                  isSendDisabled={isSendDisabled}
+                  isStopRequestInFlight={isStopRequestInFlight}
+                  activeStreamCount={activeStreamCount}
+                  atConcurrencyLimit={atConcurrencyLimit}
+                />
+              </div>
             </div>
             
             <AttachedFiles
@@ -1145,22 +1265,31 @@ function App() {
                   isActiveChatStreaming={isActiveChatStreaming}
                   dragHandlers={dragHandlers}
                 />
-                <SendButton
-                  onClick={() => handleActionButtonClick('bottom')}
-                  onHoldStart={handleButtonHoldStart}
-                  onHoldEnd={handleButtonHoldEnd}
-                  isButtonHeld={isButtonHeld}
-                  isRecording={isRecording}
-                  isSoundDetected={isSoundDetected}
-                  isActiveChatStreaming={isActiveChatStreaming}
-                  hasUnreadyFiles={hasUnreadyFiles}
-                  message={message}
-                  isVoiceChatMode={isVoiceChatMode}
-                  isSendDisabled={isSendDisabled}
-                  isStopRequestInFlight={isStopRequestInFlight}
-                  activeStreamCount={activeStreamCount}
-                  atConcurrencyLimit={atConcurrencyLimit}
-                />
+                <div className="input-actions">
+                  {isVoiceChatMode && (
+                    <VoiceChatMuteButton
+                      isMicMuted={isMicMuted}
+                      onToggle={handleMicMuteToggle}
+                    />
+                  )}
+                  <SendButton
+                    onClick={() => handleActionButtonClick('bottom')}
+                    onHoldStart={handleButtonHoldStart}
+                    onHoldEnd={handleButtonHoldEnd}
+                    isButtonHeld={isButtonHeld}
+                    isRecording={isRecording}
+                    isSoundDetected={isSoundDetected}
+                    isActiveChatStreaming={isActiveChatStreaming}
+                    hasUnreadyFiles={hasUnreadyFiles}
+                    message={message}
+                    isVoiceChatMode={isVoiceChatMode}
+                    isMicMuted={isMicMuted}
+                    isSendDisabled={isSendDisabled}
+                    isStopRequestInFlight={isStopRequestInFlight}
+                    activeStreamCount={activeStreamCount}
+                    atConcurrencyLimit={atConcurrencyLimit}
+                  />
+                </div>
               </div>
             </div>
 

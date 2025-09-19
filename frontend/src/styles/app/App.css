@@ -89,6 +89,12 @@ body.chat-active .main-content {
   justify-content: center;
 }
 
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 /* Container for the whole bottom input area including attached files */
 .bottom-input-area {
   position: fixed;
@@ -452,6 +458,47 @@ body.chat-active .main-content {
   position: relative;
 }
 
+.voice-chat-mute-button {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid rgba(100, 200, 255, 0.35);
+  background: rgba(100, 200, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #bfe5ff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.voice-chat-mute-button.listening:hover {
+  background: rgba(100, 200, 255, 0.16);
+  border-color: rgba(140, 220, 255, 0.6);
+  color: #e5f3ff;
+}
+
+.voice-chat-mute-button.muted {
+  border-color: rgba(255, 120, 120, 0.6);
+  background: rgba(255, 120, 120, 0.15);
+  color: #ffd1d1;
+}
+
+.voice-chat-mute-button.muted:hover {
+  background: rgba(255, 120, 120, 0.22);
+  color: #ffe5e5;
+}
+
+.voice-chat-mute-button:focus-visible {
+  outline: 2px solid rgba(120, 210, 255, 0.9);
+  outline-offset: 2px;
+}
+
+.voice-chat-mute-button svg {
+  width: 24px;
+  height: 24px;
+}
+
 /* Hold animation for send button */
 .send-button.held {
   background: rgba(30, 30, 30, 0.95) !important; /* Dark greyish/black background */
@@ -519,6 +566,28 @@ body.chat-active .main-content {
   border: 1px solid rgba(100, 200, 255, 0.4);
   box-shadow: 0 0 20px rgba(100, 200, 255, 0.1);
   transition: all 0.3s ease;
+}
+
+.send-button.mic-muted {
+  border: 1px solid rgba(255, 120, 120, 0.55);
+  box-shadow: 0 0 18px rgba(255, 120, 120, 0.18);
+}
+
+.voice-icon-container.muted::after {
+  content: '';
+  position: absolute;
+  width: 28px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 120, 120, 0.85);
+  transform: rotate(42deg);
+  z-index: 3;
+}
+
+.voice-icon-container.muted .voice-mode-ring {
+  border-color: rgba(255, 120, 120, 0.6);
+  animation: none;
+  opacity: 0.85;
 }
 
 .send-button.voice-chat-mode:hover {
