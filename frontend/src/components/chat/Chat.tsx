@@ -108,6 +108,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const mountedRef = useRef(true);
   const duplicateCheckerRef = useRef<MessageDuplicateChecker>(new MessageDuplicateChecker(DUPLICATE_WINDOW_MS));
   const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
+  const needsScrollRestoreRef = useRef<boolean>(true);
+  const scrollRestoreBaselineRef = useRef<Message[]>(messages);
 
   const autoTtsPlayedRef = useRef<Set<string>>(new Set());
 
@@ -125,7 +127,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     containerRef: messagesContainerRef,
     scrollType: 'chat'
   });
-
+  const resetToAutoScroll = scrollControl.resetToAutoScroll;
   const { isLoading, loadHistory } = useChatHistory({ chatId, setMessages, messages });
 
   const sendMessageRef = useRef<((content: string, attachedFiles?: AttachedFile[]) => Promise<void>) | undefined>(undefined);
@@ -432,6 +434,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     }
   }, []);
 
+  useEffect(() => {
+    scrollRestoreBaselineRef.current = messages;
+    needsScrollRestoreRef.current = true;
+  }, [chatId, messages]);
+
   useLayoutEffect(() => {
     const container = messagesEndRef.current?.parentElement as HTMLElement | null;
     if (!container) return;
@@ -439,10 +446,19 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     const isScrollable = computeIsScrollable(container);
     setNeedsBottomAnchor(isScrollable);
 
-    if (isScrollable && messages.length > 0) {
-      container.scrollTop = container.scrollHeight;
+    if (!needsScrollRestoreRef.current) {
+      return;
     }
-  }, [messages.length]);
+
+    if (messages === scrollRestoreBaselineRef.current) {
+      return;
+    }
+
+    needsScrollRestoreRef.current = false;
+    scrollRestoreBaselineRef.current = messages;
+    container.scrollTop = container.scrollHeight;
+    resetToAutoScroll();
+  }, [chatId, messages, resetToAutoScroll]);
 
   useEffect(() => {
     const container = messagesEndRef.current?.parentElement as HTMLElement | null;
