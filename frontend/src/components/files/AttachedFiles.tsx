@@ -57,6 +57,8 @@ const getFileStateIcon = (apiState?: string): string => {
       return '✅';
     case 'error':
       return '❌';
+    case 'size_error':
+      return '⚠️';
     case 'local':
     default:
       return '📎';
@@ -69,10 +71,12 @@ const getFileStateColor = (apiState?: string): string => {
     case 'processing':
       return 'var(--loading-color, #3498db)';
     case 'uploaded':
-      return '#ffa500'; 
+      return '#ffa500';
     case 'ready':
-      return 'var(--success-color, #27ae60)'; 
+      return 'var(--success-color, #27ae60)';
     case 'error':
+      return 'var(--error-color, #e74c3c)';
+    case 'size_error':
       return 'var(--error-color, #e74c3c)';
     case 'processing_md':
       return '#ff9234';
@@ -85,7 +89,7 @@ const getFileStateColor = (apiState?: string): string => {
 const getDisplayStateText = (apiState?: string): string => {
   switch (apiState) {
     case 'local':
-      return 'uploading to API'; 
+      return 'uploading to API';
     case 'processing_md':
       return 'processing';
     case 'uploading':
@@ -98,6 +102,8 @@ const getDisplayStateText = (apiState?: string): string => {
       return 'ready';
     case 'error':
       return 'error';
+    case 'size_error':
+      return 'file too large';
     default:
       return '';
   }
@@ -119,10 +125,10 @@ const AttachedFiles: React.FC<AttachedFilesProps> = ({
       logger.info(`[AttachedFiles] No files attached`);
       return;
     }
-    
+
     const readyCount = files.filter(f => f.api_state === 'ready').length;
     const processingCount = files.filter(f => ['local', 'processing_md', 'uploading', 'uploaded', 'processing'].includes(f.api_state || '')).length;
-    const errorCount = files.filter(f => f.api_state === 'error').length;
+    const errorCount = files.filter(f => f.api_state === 'error' || f.api_state === 'size_error').length;
     
     if (processingCount > 0) {
       logger.info(`[COLLECTIVE-UI] ${readyCount}/${files.length} ready, ${processingCount} processing:`, 
@@ -138,10 +144,10 @@ const AttachedFiles: React.FC<AttachedFilesProps> = ({
 
   const statusInfo = useMemo(() => {
     if (files.length === 0) return null;
-    
+
     const readyCount = files.filter(f => f.api_state === 'ready').length;
     const processingCount = files.filter(f => ['local', 'processing_md', 'uploading', 'uploaded', 'processing'].includes(f.api_state || '')).length;
-    const errorCount = files.filter(f => f.api_state === 'error').length;
+    const errorCount = files.filter(f => f.api_state === 'error' || f.api_state === 'size_error').length;
     
     if (processingCount > 0) {
       return <span className="file-status processing"> • {readyCount}/{files.length} ready ({processingCount} processing)</span>;
@@ -154,10 +160,10 @@ const AttachedFiles: React.FC<AttachedFilesProps> = ({
   }, [files]);
 
   const fileList = useMemo(() => files.map((file, index) => {
-    const localProcessingStates = ['processing_md']; 
+    const localProcessingStates = ['processing_md'];
     const serverProcessingStates = ['local', 'uploading', 'uploaded', 'processing'];
     const readyStates = ['ready'];
-    const errorStates = ['error'];
+    const errorStates = ['error', 'size_error'];
     
     const showBlueSpinner = file.api_state ? serverProcessingStates.includes(file.api_state) : false;
     const showOrangeSpinner = !showBlueSpinner && (file.api_state ? localProcessingStates.includes(file.api_state) : true);

@@ -15,6 +15,7 @@ import {
   updateFileAtIndex
 } from './FileStateUtils';
 import { performTempFileCleanup, handleFileUpload, handleRemoveFile as removeFile, handleClearAllFiles as clearAllFiles } from './FileOperations';
+import { providerConfig, isFileSizeValid, formatFileLimit, getDefaultProvider } from '../../config/providers';
 
 export const useFileManagement = (isAppInitialized: boolean) => {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -37,6 +38,10 @@ export const useFileManagement = (isAppInitialized: boolean) => {
 
   useEffect(() => {
     if (!isAppInitialized) return;
+
+    providerConfig.initialize().catch(error => {
+      logger.warn('[FILE_MANAGEMENT] Failed to initialize provider config:', error);
+    });
 
     const handleFileStateUpdate = (event: CustomEvent) => {
       const { file_id, api_state, provider, temp_id } = event.detail;
@@ -150,21 +155,53 @@ export const useFileManagement = (isAppInitialized: boolean) => {
   const handleFileSelectionImmediate = async (files: FileList) => {
     try {
       logger.info('[MULTI-FILE] Selected', files.length, 'files for parallel processing:', Array.from(files).map(f => f.name));
-      
-      const optimisticFiles = Array.from(files).map(file => ({
-        id: `${TEMP_FILE_PREFIX}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        api_state: FILE_STATES.LOCAL,
-        provider: undefined
-      }));
-      
-      logger.info('[MULTI-FILE] Adding optimistic files to UI:', optimisticFiles.length, optimisticFiles.map(f => ({ name: f.name, api_state: f.api_state })));
+
+      const filesArray = Array.from(files);
+      const validFiles: File[] = [];
+      const optimisticFiles: AttachedFile[] = [];
+
+      for (const file of filesArray) {
+        const isValid = isFileSizeValid(file.size);
+        const fileId = `${TEMP_FILE_PREFIX}${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+        if (isValid) {
+          validFiles.push(file);
+          optimisticFiles.push({
+            id: fileId,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            api_state: FILE_STATES.LOCAL,
+            provider: undefined
+          });
+          logger.info(`[FILE_VALIDATION] File ${file.name} (${file.size} bytes) is valid for upload`);
+        } else {
+          const defaultProvider = getDefaultProvider();
+          const limitText = formatFileLimit(defaultProvider);
+          optimisticFiles.push({
+            id: fileId,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            api_state: FILE_STATES.SIZE_ERROR,
+            provider: undefined
+          });
+          logger.warn(`[FILE_VALIDATION] File ${file.name} (${file.size} bytes) exceeds ${limitText} limit for ${defaultProvider} provider`);
+        }
+      }
+
+      logger.info('[MULTI-FILE] Adding optimistic files to UI:', optimisticFiles.length,
+        optimisticFiles.map(f => ({ name: f.name, api_state: f.api_state })));
       setAttachedFiles(prev => [...prev, ...optimisticFiles]);
-      
-      handleFileUploadLocal(files, optimisticFiles);
-      
+
+      if (validFiles.length > 0) {
+        const validOptimisticFiles = optimisticFiles.filter(f => f.api_state === FILE_STATES.LOCAL);
+        handleFileUploadLocal(validFiles as any as FileList, validOptimisticFiles);
+        logger.info(`[FILE_VALIDATION] Uploading ${validFiles.length} valid files, ${optimisticFiles.length - validFiles.length} rejected for size`);
+      } else {
+        logger.info('[FILE_VALIDATION] No valid files to upload - all files exceed size limits');
+      }
+
     } catch (error) {
       logger.error('Error handling immediate file selection:', error);
     }

@@ -420,16 +420,33 @@ def register_chat_routes(app: Flask):
     
     @app.route('/api/chat/providers', methods=['GET'])
     def get_providers():
-        """Get available providers"""
+        """Get available providers with their file size limits"""
         try:
             chat = Chat()
-            providers = chat.get_available_providers()
-            
+            providers_availability = chat.get_available_providers()
+
+            providers_info = {}
+            for provider_name, is_available in providers_availability.items():
+                provider_info = {
+                    'available': is_available,
+                    'fileSizeLimit': None
+                }
+
+                if is_available and provider_name in chat.providers:
+                    provider_instance = chat.providers[provider_name]
+                    if hasattr(provider_instance, 'get_file_size_limit'):
+                        try:
+                            provider_info['fileSizeLimit'] = provider_instance.get_file_size_limit()
+                        except Exception as e:
+                            logger.warning(f"Could not get file size limit for {provider_name}: {e}")
+
+                providers_info[provider_name] = provider_info
+
             return jsonify({
-                'providers': providers,
+                'providers': providers_info,
                 'default_provider': 'gemini'
             })
-            
+
         except Exception as e:
             logger.error(f"Error getting providers: {str(e)}")
             return jsonify({'error': str(e)}), 500

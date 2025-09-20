@@ -10,11 +10,13 @@ export const FILE_STATES = {
   UPLOADING: 'uploading',
   UPLOADED: 'uploaded',
   PROCESSING: 'processing',
-  READY: 'ready'
+  READY: 'ready',
+  SIZE_ERROR: 'size_error'
 } as const;
 
 export const PROCESSING_STATES = [FILE_STATES.LOCAL, FILE_STATES.PROCESSING_MD, FILE_STATES.UPLOADING, FILE_STATES.UPLOADED, FILE_STATES.PROCESSING];
 export const CHAT_READY_STATES = [FILE_STATES.READY];
+export const ERROR_STATES = ['error', FILE_STATES.SIZE_ERROR];
 
 export const isTemporaryFile = (file: AttachedFile): boolean => {
   return file.id.startsWith(TEMP_FILE_PREFIX);
@@ -26,6 +28,14 @@ export const isProcessingFile = (file: AttachedFile): boolean => {
 
 export const isReadyFile = (file: AttachedFile): boolean => {
   return file.api_state === FILE_STATES.READY;
+};
+
+export const isErrorFile = (file: AttachedFile): boolean => {
+  return file.api_state ? ERROR_STATES.includes(file.api_state as any) : false;
+};
+
+export const isSizeErrorFile = (file: AttachedFile): boolean => {
+  return file.api_state === FILE_STATES.SIZE_ERROR;
 };
 
 export const getProcessingFiles = (files: AttachedFile[]): AttachedFile[] => {
