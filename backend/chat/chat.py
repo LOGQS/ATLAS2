@@ -360,9 +360,10 @@ class Chat:
         
         self.providers = get_provider_map()
         
-        if not db.chat_exists(self.chat_id):
-            logger.info(f"Creating new chat: {self.chat_id}")
-            db.create_chat(self.chat_id, self.system_prompt)
+        if not self.chat_id.startswith("router_temp_"):
+            if not db.chat_exists(self.chat_id):
+                logger.info(f"Creating new chat: {self.chat_id}")
+                db.create_chat(self.chat_id, self.system_prompt)
     
     def _generate_unique_id(self) -> str:
         """Generate unique chat ID"""
@@ -377,6 +378,8 @@ class Chat:
     
     def get_chat_history(self) -> List[Dict[str, Any]]:
         """Get full chat history for current session"""
+        if self.chat_id.startswith("router_temp_"):
+            return []
         return db.get_chat_history(self.chat_id)
     
     def supports_reasoning(self, provider: str, model: str) -> bool:
@@ -461,24 +464,35 @@ class Chat:
         logger.info(f"[FILE-RESOLVE] Resolved {len(resolved_names)}/{len(file_ids)} files for {provider}")
         return resolved_names
 
-    def generate_text(self, message: str, provider: str = "", 
+    def generate_text(self, message: str, provider: str = "",
                      model: Optional[str] = None, include_reasoning: bool = True,
-                     attached_file_ids: List[str] = None, **config_params) -> Dict[str, Any]:
+                     attached_file_ids: List[str] = None, use_router: bool = True, **config_params) -> Dict[str, Any]:
         """
         Generate text response using specified provider
-        
+
         Args:
             message: User message
             provider: Provider to use
             model: Model to use
             include_reasoning: Whether to include reasoning/thoughts
             attached_file_ids: List of file IDs to attach to the user message
+            use_router: Whether to use the router for model selection
             **config_params: Additional configuration parameters
-            
+
         Returns:
             Dict with response, reasoning, and metadata
         """
-        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
+        is_router_call = self.chat_id.startswith("router_temp_")
+
+        if not is_router_call:
+            if use_router and Config.get_default_router_state():
+                from agents.roles.router import router
+                chat_history = self.get_chat_history()
+                selected_model = router.route_request(message, chat_history)
+                model = selected_model
+                logger.info(f"Router selected model: {model}")
+
+            db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
         if provider not in self.providers or not self.providers[provider].is_available():
             available = self.get_available_providers()
@@ -507,11 +521,11 @@ class Chat:
         )
         
 
-        if response.get("text"):
+        if response.get("text") and not is_router_call:
             db.save_message(
                 self.chat_id,
-                "assistant", 
-                response["text"], 
+                "assistant",
+                response["text"],
                 thoughts=response.get("thoughts"),
                 provider=provider,
                 model=model

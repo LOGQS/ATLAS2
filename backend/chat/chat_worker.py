@@ -120,7 +120,14 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 include_reasoning = command.get('include_reasoning', True)
                                 attached_file_ids = command.get('attached_file_ids', [])
                                 user_message_id = command.get('user_message_id')
-                                
+
+                                if Config.get_default_router_state():
+                                    from agents.roles.router import router
+                                    chat_history = db.get_chat_history(chat_id)
+                                    selected_model = router.route_request(message, chat_history)
+                                    model = selected_model
+                                    worker_logger.info(f"[CHAT-WORKER] Router selected model: {model}")
+
                                 _process_message_in_worker(
                                     chat_id, db, providers, message, provider, model,
                                     include_reasoning, attached_file_ids, user_message_id,

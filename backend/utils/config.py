@@ -13,6 +13,28 @@ def get_provider_map() -> Dict[str, Any]:
         "openrouter": OpenRouter()
     }
 
+available_routes = [
+    {
+        "route_name": "simple",
+        "route_description": "Simple queries and basic conversations",
+        "route_context": "Use for greetings, simple Q&A, basic information requests, casual conversation"
+    },
+    {
+        "route_name": "complex",
+        "route_description": "Complex reasoning and analysis tasks",
+        "route_context": "Use for code generation, detailed analysis, multi-step problems, technical questions"
+    }
+]
+
+ROUTE_MODEL_MAP = {
+    "simple": "gemini-2.5-flash",
+    "complex": "gemini-2.5-pro"
+}
+
+def get_router_map():
+    """Get map of all available routes and their descriptions."""
+    return ROUTE_MODEL_MAP
+
 
 class Config:
     """Configuration class for ATLAS application settings."""
@@ -20,6 +42,9 @@ class Config:
     DEFAULT_PROVIDER = "gemini"
 
     DEFAULT_MODEL = "gemini-2.5-flash"
+
+    DEFAULT_ROUTER_ENABLED = True
+    DEFAULT_ROUTER_MODEL = "gemini-2.5-flash-lite"
 
     DEFAULT_STREAMING = True
 
@@ -42,6 +67,16 @@ class Config:
     def get_default_model(cls) -> str:
         """Get the default model name."""
         return cls.DEFAULT_MODEL
+    
+    @classmethod
+    def get_default_router_state(cls) -> bool:
+        """Get the default router state."""
+        return cls.DEFAULT_ROUTER_ENABLED
+
+    @classmethod
+    def get_router_model(cls) -> str:
+        """Get the router model to use."""
+        return cls.DEFAULT_ROUTER_MODEL
     
     @classmethod
     def get_default_streaming(cls) -> bool:
