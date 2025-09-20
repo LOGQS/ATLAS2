@@ -151,11 +151,21 @@ def publish_content(chat_id: str, chunk_type: str, content: str):
 def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_id: str = None):
     """Publishes a file state change via SSE."""
     _broadcast({
-        "type": "file_state", 
-        "file_id": file_id, 
+        "type": "file_state",
+        "file_id": file_id,
         "api_state": api_state,
         "provider": provider,
-        "temp_id": temp_id 
+        "temp_id": temp_id
+    })
+
+def publish_router_decision(chat_id: str, selected_route: str, available_routes: list, selected_model: str):
+    """Publishes a router decision event via SSE."""
+    _broadcast({
+        "type": "router_decision",
+        "chat_id": chat_id,
+        "selected_route": selected_route,
+        "available_routes": available_routes,
+        "selected_model": selected_model
     })
 
 def get_content_queue(chat_id: str):

@@ -9,6 +9,11 @@ type ChatLive = {
   lastAssistantId: string | null;
   contentBuf: string;
   thoughtsBuf: string;
+  routerDecision: {
+    selectedRoute: string | null;
+    availableRoutes: any[];
+    selectedModel: string | null;
+  } | null;
   version: number;
 };
 
@@ -47,7 +52,14 @@ interface FileStateEvent extends BaseSSEEvent {
   provider?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent;
+interface RouterDecisionEvent extends BaseSSEEvent {
+  type: 'router_decision';
+  selected_route?: string;
+  available_routes?: any[];
+  selected_model?: string;
+}
+
+type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | RouterDecisionEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -101,6 +113,19 @@ class LiveStore {
     window.dispatchEvent(new CustomEvent('fileStateUpdate', {
       detail: { file_id: ev.file_id, api_state: ev.api_state, provider: ev.provider, temp_id: ev.temp_id }
     }));
+  }
+
+  private handleRouterDecisionEvent(chatId: string, ev: RouterDecisionEvent, cur: ChatLive): ChatLive {
+    const next = { ...cur };
+    next.routerDecision = {
+      selectedRoute: ev.selected_route || null,
+      availableRoutes: ev.available_routes || [],
+      selectedModel: ev.selected_model || null
+    };
+    next.version++;
+    logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, available=${ev.available_routes?.length || 0}`);
+    this.enableParentFromBridge(chatId, 'Router decision');
+    return next;
   }
 
   private handleChatStateEvent(chatId: string, ev: ChatStateEvent, cur: ChatLive): ChatLive {
@@ -213,11 +238,22 @@ class LiveStore {
           return;
         }
 
-        logger.info(`[LIVESTORE_SSE] Processing ${ev.type} event for chat: ${chatId}`);
-
         const cur = this.byChat.get(chatId) ?? {
-          state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', version: 0
+          state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, version: 0
         };
+
+        if (ev.type === 'router_decision') {
+          const next = this.handleRouterDecisionEvent(chatId, ev as RouterDecisionEvent, cur);
+          logger.info(`[LIVESTORE_SSE] Storing router decision for ${chatId}:`);
+          logger.info(`[LIVESTORE_SSE] - Selected route: ${next.routerDecision?.selectedRoute}`);
+          logger.info(`[LIVESTORE_SSE] - Available routes: ${next.routerDecision?.availableRoutes.length}`);
+
+          this.byChat.set(chatId, next);
+          this.emit(chatId, next, { eventType: ev.type });
+          return;
+        }
+
+        logger.info(`[LIVESTORE_SSE] Processing ${ev.type} event for chat: ${chatId}`);
 
         if (!this.byChat.has(chatId) && (ev.type === 'chat_state' || ev.type === 'thoughts' || ev.type === 'answer')) {
           performanceTracker.mark(performanceTracker.MARKS.FIRST_STREAM_EVENT, chatId);
@@ -273,7 +309,7 @@ class LiveStore {
 
   beginLocalStream(chatId: string): void {
     const cur = this.byChat.get(chatId) ?? {
-      state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', version: 0
+      state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, version: 0
     };
     if (cur.state !== 'static') {
       return; 

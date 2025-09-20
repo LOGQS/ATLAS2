@@ -294,25 +294,34 @@ def _start_background_processing(chat_id: str, message: str, provider: str, mode
 def _relay_worker_messages(chat_id: str, conn):
     """Relay messages from worker process to SSE system"""
     try:
-        from route.chat_route import publish_state, publish_content
-        
+        from route.chat_route import publish_state, publish_content, publish_router_decision
+
         logger.info(f"Started message relay for chat {chat_id}")
-        
+
         while True:
             try:
-                if conn.poll(POLL_INTERVAL): 
+                if conn.poll(POLL_INTERVAL):
                     message = conn.recv()
                     message_type = message.get('type')
-                    
+
                     if not message_type:
                         continue
-                    
+
                     if message_type == 'state_update':
                         state = message.get('state')
                         if state:
                             publish_state(chat_id, state)
                             logger.debug(f"[RELAY] Published state update for {chat_id}: {state}")
-                    
+
+                    elif message_type == 'router_decision':
+                        publish_router_decision(
+                            chat_id,
+                            message.get('selected_route'),
+                            message.get('available_routes', []),
+                            message.get('selected_model')
+                        )
+                        logger.debug(f"[RELAY] Published router decision for {chat_id}: {message.get('selected_route')}")
+
                     elif message_type == 'content':
                         content_type = message.get('content_type')
                         content = message.get('content', '')

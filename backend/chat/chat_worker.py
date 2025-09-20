@@ -121,17 +121,28 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 attached_file_ids = command.get('attached_file_ids', [])
                                 user_message_id = command.get('user_message_id')
 
+                                router_result = None
                                 if Config.get_default_router_state():
                                     from agents.roles.router import router
                                     chat_history = db.get_chat_history(chat_id)
-                                    selected_model = router.route_request(message, chat_history)
-                                    model = selected_model
-                                    worker_logger.info(f"[CHAT-WORKER] Router selected model: {model}")
+                                    router_result = router.route_request(message, chat_history)
+                                    model = router_result['model']
+
+                                    child_conn.send({
+                                        'type': 'router_decision',
+                                        'chat_id': chat_id,
+                                        'selected_route': router_result['route'],
+                                        'available_routes': router_result['available_routes'],
+                                        'selected_model': model
+                                    })
+
+                                    worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model}")
 
                                 _process_message_in_worker(
                                     chat_id, db, providers, message, provider, model,
                                     include_reasoning, attached_file_ids, user_message_id,
-                                    child_conn, worker_logger, current_content
+                                    child_conn, worker_logger, current_content,
+                                    router_result=router_result
                                 )
                                 
                                 processing_active = False
@@ -172,9 +183,9 @@ def chat_worker(chat_id: str, child_conn) -> None:
 
 def _process_message_in_worker(chat_id: str, db, providers, message: str, provider: str, model: str,
                               include_reasoning: bool, attached_file_ids: list, user_message_id: Optional[int],
-                              child_conn, worker_logger, current_content):
+                              child_conn, worker_logger, current_content, router_result=None):
     """Process a message within the worker process"""
-    
+
     worker_logger.info(f"[CHAT-WORKER] Processing message with {provider}:{model} for {chat_id}")
     
     if provider not in providers or not providers[provider].is_available():
@@ -192,14 +203,26 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     file_attachments = []
     if attached_file_ids:
         file_attachments = _resolve_api_file_names(attached_file_ids, provider, db, worker_logger)
-    
+
+    router_enabled = router_result is not None
+    router_decision = None
+    if router_result:
+        import json
+        router_decision = json.dumps({
+            'route': router_result['route'],
+            'available_routes': router_result['available_routes'],
+            'selected_model': router_result['model']
+        })
+
     assistant_message_id = db.save_message(
         chat_id,
         "assistant",
         "",
         thoughts=None,
         provider=provider,
-        model=model
+        model=model,
+        router_enabled=router_enabled,
+        router_decision=router_decision
     )
 
     current_content['assistant_message_id'] = assistant_message_id

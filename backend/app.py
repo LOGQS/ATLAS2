@@ -13,6 +13,7 @@ backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
 
 from route.chat_route import register_chat_routes
+from route.agent_routes import register_agent_routes
 from route.db_chat_management_route import register_db_chat_management_routes
 from route.db_message_route import register_db_message_routes
 from route.db_bulk_route import register_db_bulk_routes
@@ -80,6 +81,7 @@ def create_app():
         logger.debug("Startup: No active chats to reset")
 
     register_chat_routes(app)
+    register_agent_routes(app)
     register_db_chat_management_routes(app)
     register_db_message_routes(app)
     register_db_bulk_routes(app)

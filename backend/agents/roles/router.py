@@ -16,7 +16,7 @@ class Router:
         self.router_enabled = Config.get_default_router_state()
         logger.info(f"Router initialized - enabled: {self.router_enabled}, model: {self.router_model}")
 
-    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None) -> str:
+    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None) -> Dict[str, str]:
         """Route a request to the appropriate model.
 
         Args:
@@ -24,11 +24,15 @@ class Router:
             chat_history: Previous chat history
 
         Returns:
-            The model to use for processing
+            Dict containing the model to use and the selected route
         """
         if not self.router_enabled:
             logger.debug("Router disabled, using default model")
-            return Config.get_default_model()
+            return {
+                'model': Config.get_default_model(),
+                'route': None,
+                'available_routes': available_routes
+            }
 
         try:
             router_context = get_router_context(chat_history, message)
@@ -57,11 +61,19 @@ class Router:
             selected_model = ROUTE_MODEL_MAP.get(route_choice, Config.get_default_model())
 
             logger.info(f"Router decision: {route_choice} -> {selected_model}")
-            return selected_model
+            return {
+                'model': selected_model,
+                'route': route_choice,
+                'available_routes': available_routes
+            }
 
         except Exception as e:
             logger.error(f"Router error, falling back to default model: {str(e)}")
-            return Config.get_default_model()
+            return {
+                'model': Config.get_default_model(),
+                'route': None,
+                'available_routes': available_routes
+            }
 
     def _build_router_prompt(self, context: str) -> str:
         """Build the complete router prompt.

@@ -158,6 +158,8 @@ class DatabaseManager:
                     thoughts TEXT,
                     provider TEXT,
                     model TEXT,
+                    router_enabled INTEGER DEFAULT 0 CHECK(router_enabled IN (0,1)),
+                    router_decision TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
                 )
@@ -345,9 +347,10 @@ class DatabaseManager:
     
     def save_message(self, chat_id: str, role: str, content: str,
                     thoughts: Optional[str] = None, provider: Optional[str] = None,
-                    model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None) -> Optional[str]:
+                    model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None,
+                    router_enabled: bool = False, router_decision: Optional[str] = None) -> Optional[str]:
         """
-        Save message to chat history with optional file attachments.
+        Save message to chat history with optional file attachments and router metadata.
 
         Args:
             chat_id: ID of the chat to add message to
@@ -357,6 +360,8 @@ class DatabaseManager:
             provider: Optional AI provider used
             model: Optional AI model used
             attached_file_ids: Optional list of file IDs to attach
+            router_enabled: Whether router was enabled for this message
+            router_decision: JSON string of router decision (route and available routes)
 
         Returns:
             Optional[str]: Generated message ID if successful, None if failed
@@ -364,13 +369,14 @@ class DatabaseManager:
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
-                
+
                 message_id = self._generate_message_id(chat_id)
-                
+
                 cursor.execute("""
-                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (message_id, chat_id, role, content, thoughts, provider, model))
+                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (message_id, chat_id, role, content, thoughts, provider, model,
+                      1 if router_enabled else 0, router_decision))
                 
                 if attached_file_ids:
                     for file_id in attached_file_ids:
@@ -590,6 +596,7 @@ class DatabaseManager:
                 SELECT
                     m.id as message_id, m.role, m.content, m.thoughts,
                     m.provider as message_provider, m.model, m.timestamp,
+                    m.router_enabled, m.router_decision,
                     f.id as file_id, f.original_name, f.file_size, f.file_type,
                     f.api_state, f.provider as file_provider, f.api_file_name,
                     mf.created_at as file_attached_at
@@ -608,6 +615,8 @@ class DatabaseManager:
                 "provider": None,
                 "model": None,
                 "timestamp": None,
+                "routerEnabled": False,
+                "routerDecision": None,
                 "attachedFiles": []
             })
 
@@ -622,7 +631,9 @@ class DatabaseManager:
                         "thoughts": row["thoughts"],
                         "provider": row["message_provider"],
                         "model": row["model"],
-                        "timestamp": row["timestamp"]
+                        "timestamp": row["timestamp"],
+                        "routerEnabled": bool(row["router_enabled"]),
+                        "routerDecision": self._safe_json_parse(row["router_decision"]) if row["router_decision"] else None
                     })
 
                 if row["file_id"]:

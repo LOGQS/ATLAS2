@@ -1,0 +1,554 @@
+/* RouterBox Component - Icy/Frozen Theme */
+.router-box {
+  width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid rgba(147, 197, 253, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(135deg,
+    rgba(219, 234, 254, 0.03) 0%,
+    rgba(147, 197, 253, 0.05) 50%,
+    rgba(59, 130, 246, 0.03) 100%);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 4px 24px rgba(147, 197, 253, 0.1),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1),
+    inset 0 -1px 1px rgba(147, 197, 253, 0.05);
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  position: relative;
+}
+
+.router-box::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(
+    circle at 20% 80%,
+    rgba(147, 197, 253, 0.1) 0%,
+    transparent 60%
+  );
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.router-box:hover {
+  border-color: rgba(147, 197, 253, 0.3);
+  background: linear-gradient(135deg,
+    rgba(219, 234, 254, 0.05) 0%,
+    rgba(147, 197, 253, 0.08) 50%,
+    rgba(59, 130, 246, 0.05) 100%);
+  box-shadow:
+    0 8px 32px rgba(147, 197, 253, 0.15),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+
+/* Header */
+.router-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s ease;
+  position: relative;
+  z-index: 1;
+  min-height: 44px;
+}
+
+.router-box-header:hover {
+  background: rgba(147, 197, 253, 0.05);
+}
+
+.router-box-header:active {
+  background: rgba(147, 197, 253, 0.08);
+}
+
+.router-box-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+/* Ice Crystal Icon */
+.router-icon {
+  width: 18px;
+  height: 18px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.router-icon::before,
+.router-icon::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg,
+    rgba(147, 197, 253, 0.4) 0%,
+    rgba(147, 197, 253, 0.8) 50%,
+    rgba(147, 197, 253, 0.4) 100%);
+  border-radius: 1px;
+}
+
+.router-icon::before {
+  transform: translate(-50%, -50%) rotate(60deg);
+}
+
+.router-icon::after {
+  transform: translate(-50%, -50%) rotate(-60deg);
+}
+
+.router-icon::before,
+.router-icon::after {
+  box-shadow: 0 0 4px rgba(147, 197, 253, 0.4);
+}
+
+/* Add third line for snowflake effect */
+.router-icon {
+  &::before {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg,
+      rgba(147, 197, 253, 0.4) 0%,
+      rgba(147, 197, 253, 0.8) 50%,
+      rgba(147, 197, 253, 0.4) 100%);
+    transform: translate(-50%, -50%) rotate(60deg);
+  }
+}
+
+.router-icon::after {
+  animation: ice-sparkle 3s ease-in-out infinite;
+}
+
+@keyframes ice-sparkle {
+  0%, 100% {
+    opacity: 0.8;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.2);
+  }
+}
+
+.router-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(219, 234, 254, 0.9);
+  letter-spacing: 0.3px;
+}
+
+/* Selected Route Badge */
+.selected-route-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: linear-gradient(135deg,
+    rgba(147, 197, 253, 0.15) 0%,
+    rgba(96, 165, 250, 0.15) 100%);
+  border: 1px solid rgba(147, 197, 253, 0.3);
+  position: relative;
+  overflow: hidden;
+  animation: badge-slide-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes badge-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.route-badge-glow {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(147, 197, 253, 0.2) 0%,
+    transparent 70%
+  );
+  animation: badge-glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes badge-glow-pulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.route-badge-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(147, 197, 253, 1);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 0 8px rgba(147, 197, 253, 0.4);
+}
+
+.selected-route-badge::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 12px;
+  padding: 1px;
+  background: linear-gradient(90deg,
+    rgba(147, 197, 253, 0.4),
+    rgba(96, 165, 250, 0.4),
+    rgba(147, 197, 253, 0.4));
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 0.6;
+  animation: border-shimmer 3s linear infinite;
+}
+
+@keyframes border-shimmer {
+  to {
+    background-position: 200% center;
+  }
+}
+
+/* Routing Indicator - Ice Crystals */
+.routing-indicator {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.ice-crystal {
+  width: 6px;
+  height: 6px;
+  background: linear-gradient(135deg,
+    rgba(147, 197, 253, 0.8) 0%,
+    rgba(219, 234, 254, 0.8) 100%);
+  transform: rotate(45deg);
+  animation: ice-pulse 1.4s ease-in-out infinite both;
+  box-shadow:
+    0 0 4px rgba(147, 197, 253, 0.6),
+    inset 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+.ice-crystal:nth-child(1) { animation-delay: -0.32s; }
+.ice-crystal:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes ice-pulse {
+  0%, 80%, 100% {
+    transform: scale(0.6) rotate(45deg);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1) rotate(45deg);
+    opacity: 1;
+  }
+}
+
+/* Collapse Arrow */
+.collapse-arrow {
+  transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  transform-origin: center;
+}
+
+.collapse-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.arrow-icon {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 6px solid rgba(147, 197, 253, 0.6);
+  transition: border-color 0.2s ease;
+}
+
+.router-box-header:hover .arrow-icon {
+  border-top-color: rgba(147, 197, 253, 0.8);
+}
+
+/* Content */
+.router-box-content {
+  max-height: 240px;
+  overflow-y: auto;
+  transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  border-top: 1px solid rgba(147, 197, 253, 0.1);
+  background: rgba(147, 197, 253, 0.02);
+  position: relative;
+}
+
+.router-box-content.collapsed {
+  max-height: 0;
+  padding: 0;
+  border-top: none;
+  overflow: hidden;
+}
+
+.router-box-content.expanding {
+  animation: expand-content 0.2s ease-out forwards;
+}
+
+.router-box-content.collapsing {
+  animation: collapse-content 0.2s ease-out forwards;
+}
+
+@keyframes expand-content {
+  from {
+    max-height: 0;
+    opacity: 0;
+  }
+  to {
+    max-height: 240px;
+    opacity: 1;
+  }
+}
+
+@keyframes collapse-content {
+  from {
+    max-height: 240px;
+    opacity: 1;
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+  }
+}
+
+.router-box-routes {
+  padding: 8px;
+  transition: transform 0.35s linear;
+}
+
+/* Route Items */
+.route-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  height: 48px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.route-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(147, 197, 253, 0.05) 50%,
+    transparent 100%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.route-item.selected::before {
+  opacity: 1;
+}
+
+.route-item.selected {
+  background: linear-gradient(135deg,
+    rgba(147, 197, 253, 0.1) 0%,
+    rgba(96, 165, 250, 0.1) 100%);
+  box-shadow:
+    0 2px 8px rgba(147, 197, 253, 0.2),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+.route-item.not-selected {
+  opacity: 0.5;
+}
+
+/* Route Indicator */
+.route-indicator {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid rgba(147, 197, 253, 0.3);
+  background: rgba(147, 197, 253, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.route-indicator.pending {
+  border-color: rgba(147, 197, 253, 0.2);
+  background: rgba(147, 197, 253, 0.03);
+}
+
+.route-indicator.not-selected {
+  border-color: rgba(156, 163, 175, 0.3);
+  background: rgba(156, 163, 175, 0.05);
+}
+
+.route-indicator.selected {
+  border-color: rgba(96, 165, 250, 0.8);
+  background: linear-gradient(135deg,
+    rgba(147, 197, 253, 0.3) 0%,
+    rgba(96, 165, 250, 0.3) 100%);
+  box-shadow:
+    0 0 12px rgba(147, 197, 253, 0.6),
+    inset 0 0 4px rgba(255, 255, 255, 0.5);
+}
+
+.indicator-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: transparent;
+  transition: all 0.3s ease;
+}
+
+.route-indicator.selected .indicator-inner {
+  background: radial-gradient(circle,
+    rgba(219, 234, 254, 0.9) 0%,
+    rgba(147, 197, 253, 0.8) 100%);
+  box-shadow: 0 0 4px rgba(147, 197, 253, 0.8);
+  animation: ice-glow 1s ease-in-out;
+}
+
+@keyframes ice-glow {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Route Info */
+.route-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.route-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(219, 234, 254, 0.9);
+  text-transform: lowercase;
+}
+
+.route-item.selected .route-name {
+  color: rgba(147, 197, 253, 1);
+  font-weight: 600;
+}
+
+.route-model {
+  font-size: 11px;
+  color: rgba(147, 197, 253, 0.6);
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+}
+
+/* Custom scrollbar */
+.router-box-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.router-box-content::-webkit-scrollbar-track {
+  background: rgba(147, 197, 253, 0.05);
+}
+
+.router-box-content::-webkit-scrollbar-thumb {
+  background: rgba(147, 197, 253, 0.3);
+  border-radius: 2px;
+}
+
+.router-box-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(147, 197, 253, 0.5);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .router-box-header {
+    padding: 8px 10px;
+    min-height: 40px;
+  }
+
+  .router-label {
+    font-size: 12px;
+  }
+
+  .route-item {
+    padding: 10px;
+    height: 44px;
+  }
+
+  .router-box-content {
+    max-height: 200px;
+  }
+}
+
+/* Focus styles */
+.router-box-header:focus {
+  outline: 2px solid rgba(147, 197, 253, 0.4);
+  outline-offset: -2px;
+}
+
+.router-box-header:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Initial animation */
+.router-box {
+  animation: fadeInIce 0.3s ease-out;
+}
+
+@keyframes fadeInIce {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

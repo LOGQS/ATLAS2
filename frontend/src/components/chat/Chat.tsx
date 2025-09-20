@@ -4,6 +4,7 @@ import React, { useState, useEffect, useLayoutEffect, useRef, forwardRef, useImp
 import UserMessage from '../message/UserMessage';
 import UserMessageFiles from '../files/UserMessageFiles';
 import ThinkBox from './ThinkBox';
+import RouterBox from './RouterBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
 import { liveStore } from '../../utils/chat/LiveStore';
@@ -21,6 +22,7 @@ import { useEditModal } from '../../hooks/ui/useEditModal';
 import { useChatHistory } from '../../hooks/chat/useChatHistory';
 import '../../styles/chat/Chat.css';
 import '../../styles/chat/ThinkBox.css';
+import '../../styles/chat/RouterBox.css';
 import '../../styles/message/MessageRenderer.css';
 import type { AttachedFile, Message } from '../../types/messages';
 
@@ -64,6 +66,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const [liveOverlay, setLiveOverlay] = useState({
     contentBuf: '',
     thoughtsBuf: '',
+    routerDecision: null as {
+      selectedRoute: string | null;
+      availableRoutes: any[];
+      selectedModel: string | null;
+    } | null,
     state: 'static' as 'thinking' | 'responding' | 'static'
   });
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
@@ -75,6 +82,14 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const [versionSwitchLoading, setVersionSwitchLoading] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
+
+  const [routerEnabled, setRouterEnabled] = useState(() => {
+    const cached = sessionStorage.getItem('routerEnabled');
+    if (cached !== null) {
+      return JSON.parse(cached);
+    }
+    return false;
+  });
 
   const mountCountRef = useRef(0);
   useEffect(() => {
@@ -216,8 +231,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [isLoading]);
 
   const canRenderOverlay = useMemo(() => {
-    return (liveOverlay.state !== 'static' || persistingAfterStream) && !lastAssistantFromMessages && notLoadingSettled;
-  }, [liveOverlay.state, persistingAfterStream, lastAssistantFromMessages, notLoadingSettled]);
+    const result = (liveOverlay.state !== 'static' || persistingAfterStream) && !lastAssistantFromMessages && notLoadingSettled;
+    logger.info(`[ROUTER_DEBUG] canRenderOverlay for ${chatId}: ${result} (state=${liveOverlay.state}, persistingAfterStream=${persistingAfterStream}, hasLastAssistant=${!!lastAssistantFromMessages}, notLoadingSettled=${notLoadingSettled})`);
+    return result;
+  }, [liveOverlay.state, persistingAfterStream, lastAssistantFromMessages, notLoadingSettled, chatId]);
 
   useEffect(() => {
     if (isLoading || isOperationLoading) {
@@ -259,6 +276,37 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       stopAllTTS();
     }
   }, [autoTTSActive, stopAllTTS]);
+
+  useEffect(() => {
+    const fetchRouterStatus = async () => {
+      const cached = sessionStorage.getItem('routerEnabled');
+      if (cached !== null) {
+        logger.info(`[ROUTER_DEBUG] Using cached router status for ${chatId}: enabled=${JSON.parse(cached)}`);
+        return;
+      }
+
+      try {
+        const response = await fetch(apiUrl('/api/router/status'));
+        const data = await response.json();
+        if (data.success) {
+          setRouterEnabled(data.enabled);
+          sessionStorage.setItem('routerEnabled', JSON.stringify(data.enabled));
+          logger.info(`[ROUTER_DEBUG] Router status fetched and cached for ${chatId}: enabled=${data.enabled}`);
+        }
+      } catch (error) {
+        logger.error('[Chat] Failed to fetch router status:', error);
+      }
+    };
+    fetchRouterStatus();
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!routerEnabled && messages.some(msg => msg.routerDecision?.route)) {
+      setRouterEnabled(true);
+      sessionStorage.setItem('routerEnabled', 'true');
+      logger.info(`[ROUTER_DEBUG] Router enabled based on message router decisions for ${chatId}`);
+    }
+  }, [messages, routerEnabled, chatId]);
 
   useMessageIdSync({ chatId, setMessages });
 
@@ -311,18 +359,42 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       } else if (snap.state === 'static') {
       }
 
+      logger.info(`[ROUTER_DEBUG] LiveStore update for ${chatId}: state=${snap.state}, hasRouterDecision=${!!snap.routerDecision}, routerDecision=${JSON.stringify(snap.routerDecision)}`);
+
       setLiveOverlay({
         contentBuf: snap.contentBuf,
         thoughtsBuf: snap.thoughtsBuf,
+        routerDecision: snap.routerDecision,
         state: snap.state
       });
+
+      if (snap.routerDecision && snap.routerDecision.selectedRoute) {
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+        if (lastAssistant && !lastAssistant.routerDecision) {
+          logger.info(`[ROUTER_DEBUG] Applying router decision to message ${lastAssistant.id}`);
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === lastAssistant.id) {
+              return {
+                ...msg,
+                routerEnabled: true,
+                routerDecision: {
+                  route: snap.routerDecision!.selectedRoute!,
+                  available_routes: snap.routerDecision!.availableRoutes || [],
+                  selected_model: snap.routerDecision!.selectedModel
+                }
+              };
+            }
+            return msg;
+          }));
+        }
+      }
 
 
       if (onChatStateChange) {
         onChatStateChange(_id, snap.state);
       }
     });
-  }, [chatId, onChatStateChange, loadHistory]);
+  }, [chatId, onChatStateChange, loadHistory, messages]);
 
   const loadHistoryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const previousChatIdRef = useRef<string | undefined>(undefined);
@@ -361,7 +433,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         if (shouldClearState) {
           setMessages([]);
         }
-        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', state: 'static' });
+        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static' });
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
         setWasStreaming(false);
@@ -741,7 +813,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ contentBuf: '', thoughtsBuf: '', state: 'static' });
+    setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static' });
     liveStore.reset(chatId);
 
     const cid = crypto.randomUUID();
@@ -963,8 +1035,28 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         isTTSSupported={isTTSSupported}
         className="assistant-message"
       >
+        {(() => {
+          const hasRouterDecision = message.routerDecision && message.routerDecision.route;
+          logger.info(`[ROUTER_DEBUG] Message RouterBox check for ${chatId} msg ${message.id}: routerEnabled=${routerEnabled}, hasRouterDecision=${hasRouterDecision}, routerDecision=${JSON.stringify(message.routerDecision)}`);
+
+          return routerEnabled && hasRouterDecision && message.routerDecision && (
+            <RouterBox
+              key={`routerbox-${message.clientId ?? String(message.id)}`}
+              routerDecision={{
+                selectedRoute: message.routerDecision.route || null,
+                availableRoutes: message.routerDecision.available_routes || [],
+                selectedModel: message.routerDecision.selected_model || null
+              }}
+              isProcessing={liveOverlay.state === 'thinking' && isLastAssistantMessage}
+              isVisible={true}
+              chatId={chatId}
+              messageId={message.id}
+              chatScrollControl={scrollControl}
+            />
+          );
+        })()}
         {message.thoughts && (
-          <ThinkBox 
+          <ThinkBox
             key={`thinkbox-${message.clientId ?? String(message.id)}`}
             thoughts={message.thoughts}
             isStreaming={isLastAssistantMessage && liveOverlay.state === 'thinking'}
@@ -983,7 +1075,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleMessageEdit, handleEditSave, handleEditCancel, handleMessageDelete, isTTSSupported, chatId, scrollControl, unlinkFileFromMessage, handleAddFilesToMessage, messageOperations]);
+  }, [liveOverlay.state, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
@@ -1023,8 +1115,24 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
           {canRenderOverlay && (
             <div className="assistant-message">
+              {(() => {
+                const shouldShowRouter = routerEnabled && (liveOverlay.routerDecision || liveOverlay.state === 'thinking');
+                logger.info(`[ROUTER_DEBUG] Live RouterBox render check for ${chatId}: routerEnabled=${routerEnabled}, hasRouterDecision=${!!liveOverlay.routerDecision}, state=${liveOverlay.state}, shouldShow=${shouldShowRouter}`);
+
+                return shouldShowRouter && (
+                  <RouterBox
+                    key={`routerbox-live-${chatId}`}
+                    routerDecision={liveOverlay.routerDecision}
+                    isProcessing={liveOverlay.state === 'thinking'}
+                    isVisible={true}
+                    chatId={chatId}
+                    messageId={`live_router_${chatId}`}
+                    chatScrollControl={scrollControl}
+                  />
+                );
+              })()}
               {liveOverlay.thoughtsBuf.length > 0 && (
-                <ThinkBox 
+                <ThinkBox
                   key={`thinkbox-live-${chatId}`}
                   thoughts={liveOverlay.thoughtsBuf}
                   isStreaming={liveOverlay.state === 'thinking'}

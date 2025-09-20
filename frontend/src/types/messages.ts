@@ -17,5 +17,11 @@ export interface Message {
   model?: string;
   timestamp: string;
   attachedFiles?: AttachedFile[];
+  routerEnabled?: boolean;
+  routerDecision?: {
+    route: string;
+    available_routes: any[];
+    selected_model: string | null;
+  };
 }
 
