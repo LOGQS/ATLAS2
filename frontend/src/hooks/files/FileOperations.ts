@@ -104,11 +104,22 @@ export const handleFileUpload = async (
     const abortController = new AbortController();
     setUploadAbortController(abortController);
 
-    const response = await fetch(apiUrl('/api/files/upload'), {
+    const timeoutMs = 15 * 60 * 1000;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        abortController.abort();
+        reject(new Error('Upload timeout after 15 minutes'));
+      }, timeoutMs);
+    });
+
+    const fetchPromise = fetch(apiUrl('/api/files/upload'), {
       method: 'POST',
       body: formData,
       signal: abortController.signal
     });
+
+    const response = await Promise.race([fetchPromise, timeoutPromise]);
 
     if (response.ok) {
       const data = await response.json();
