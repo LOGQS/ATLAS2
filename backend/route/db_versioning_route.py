@@ -3,6 +3,7 @@
 
 import random
 import time
+import json
 from typing import Dict, List, Optional, Tuple
 from flask import Flask, request
 from utils.db_utils import db
@@ -162,6 +163,37 @@ class VersioningRoute:
             'target_message': target_message
         }
 
+    def _extract_router_metadata(self, message: Dict) -> Tuple[bool, Optional[str]]:
+        """Extract router metadata from a message dict in a normalized form."""
+        raw_enabled = message.get('routerEnabled')
+        if raw_enabled is None:
+            raw_enabled = message.get('router_enabled')
+
+        if isinstance(raw_enabled, str):
+            router_enabled = raw_enabled.strip().lower() in ('true', '1', 'yes')
+        else:
+            router_enabled = bool(raw_enabled)
+
+        router_decision = message.get('routerDecision')
+        if router_decision is None:
+            router_decision = message.get('router_decision')
+
+        router_decision_str: Optional[str] = None
+        if router_decision is not None:
+            if isinstance(router_decision, str):
+                router_decision_str = router_decision
+            else:
+                try:
+                    router_decision_str = json.dumps(router_decision)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to serialize router decision for message %s: %s",
+                        message.get('id'), exc
+                    )
+                    router_decision_str = None
+
+        return router_enabled, router_decision_str
+
     def _copy_messages_to_version(self, version_chat_id: str, messages: List) -> Tuple[List[str], List[str]]:
         """Copy messages to the new version chat"""
         new_message_ids = []
@@ -175,6 +207,8 @@ class VersioningRoute:
             except Exception:
                 attached_file_ids = []
 
+            router_enabled, router_decision = self._extract_router_metadata(message)
+
             new_message_id = db.save_message(
                 chat_id=version_chat_id,
                 role=message['role'],
@@ -182,7 +216,9 @@ class VersioningRoute:
                 thoughts=message.get('thoughts'),
                 provider=message.get('provider'),
                 model=message.get('model'),
-                attached_file_ids=attached_file_ids if attached_file_ids else None
+                attached_file_ids=attached_file_ids if attached_file_ids else None,
+                router_enabled=router_enabled,
+                router_decision=router_decision
             )
 
             logger.debug(f"Copied message to version: {new_message_id}")
