@@ -3,12 +3,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import '../../styles/chat/RouterBox.css';
 import logger from '../../utils/core/logger';
 
-interface Route {
-  route_name: string;
-  route_description: string;
-  route_context: string;
-  model?: string;
-}
 
 interface RouterDecision {
   selectedRoute: string | null;
@@ -47,14 +41,7 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   const selectedRoute = routerDecision?.selectedRoute || null;
   const availableRoutes = routerDecision?.availableRoutes || [];
 
-  // Add mock routes for testing scrolling animation
-  const mockRoutes: Route[] = [
-    { route_name: 'instant', route_description: 'Instant responses', route_context: 'Quick facts and definitions', model: 'gemini-instant' },
-    { route_name: 'fast', route_description: 'Fast responses', route_context: 'Simple queries', model: 'gemini-fast' },
-    { route_name: 'balanced', route_description: 'Balanced processing', route_context: 'General questions', model: 'gemini-balanced' }
-  ];
-
-  const allRoutes = [...mockRoutes, ...availableRoutes];
+  const allRoutes = availableRoutes;
 
   useEffect(() => {
     if (selectedRoute && !hasAnimated && isProcessing) {
