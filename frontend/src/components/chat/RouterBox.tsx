@@ -44,13 +44,18 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   const allRoutes = availableRoutes;
 
   useEffect(() => {
-    if (selectedRoute && !hasAnimated && isProcessing) {
+    const isLiveOverlay = messageId?.startsWith('live_router_');
+    const isPlaceholder = messageId?.startsWith('temp_');
+    const shouldAnimate = isLiveOverlay || isPlaceholder;
+    logger.info(`[ROUTERBOX] Animation trigger check: selectedRoute=${selectedRoute}, hasAnimated=${hasAnimated}, isLiveOverlay=${isLiveOverlay}, isPlaceholder=${isPlaceholder}, shouldAnimate=${shouldAnimate}, messageId=${messageId}`);
+
+    if (selectedRoute && !hasAnimated && shouldAnimate) {
       const playRoutingAnimation = async () => {
         setHasAnimated(true);
         setIsCollapsed(false);
         setAnimationPhase('expanding');
 
-        logger.debug(`[ROUTERBOX] Starting routing animation for ${chatId}`);
+        logger.info(`[ROUTERBOX] Starting routing animation for ${chatId}`);
 
         await new Promise(resolve => setTimeout(resolve, 200));
 
@@ -99,7 +104,7 @@ const RouterBox: React.FC<RouterBoxProps> = ({
         setTimeout(() => {
           setIsCollapsed(true);
           setAnimationPhase('idle');
-          logger.debug(`[ROUTERBOX] Routing animation completed for ${chatId}`);
+          logger.info(`[ROUTERBOX] Routing animation completed for ${chatId}`);
 
           try {
             window.dispatchEvent(new CustomEvent('chatContentResized', {
@@ -112,12 +117,12 @@ const RouterBox: React.FC<RouterBoxProps> = ({
       playRoutingAnimation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRoute, hasAnimated, isProcessing, chatId, messageId]);
+  }, [selectedRoute, hasAnimated, chatId, messageId]);
 
   const toggleCollapse = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    logger.debug(`[ROUTERBOX] Manual toggle collapse for ${chatId}: ${next}`);
+    logger.info(`[ROUTERBOX] Manual toggle collapse for ${chatId}: ${next}`);
     try {
       window.dispatchEvent(new CustomEvent('chatContentResized', {
         detail: { chatId, messageId, source: 'routerbox', collapsed: next }

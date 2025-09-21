@@ -311,12 +311,15 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId]);
 
   useEffect(() => {
-    if (!routerEnabled && messages.some(msg => msg.routerDecision?.route)) {
+    if (!routerEnabled && (
+      messages.some(msg => msg.routerDecision?.route) ||
+      liveOverlay.routerDecision?.selectedRoute
+    )) {
       setRouterEnabled(true);
       sessionStorage.setItem('routerEnabled', 'true');
-      logger.info(`[ROUTER_DEBUG] Router enabled based on message router decisions for ${chatId}`);
+      logger.info(`[ROUTER_DEBUG] Router enabled based on router decisions for ${chatId}`);
     }
-  }, [messages, routerEnabled, chatId]);
+  }, [messages, routerEnabled, chatId, liveOverlay.routerDecision]);
 
   useMessageIdSync({ chatId, setMessages });
 
