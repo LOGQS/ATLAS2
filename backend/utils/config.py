@@ -5,12 +5,13 @@ from typing import Dict, Any
 
 def get_provider_map() -> Dict[str, Any]:
     """Get map of all available provider instances."""
-    from chat.providers import Gemini, HuggingFace, OpenRouter
-    
+    from chat.providers import Gemini, HuggingFace, OpenRouter, Groq
+
     return {
         "gemini": Gemini(),
-        "huggingface": HuggingFace(), 
-        "openrouter": OpenRouter()
+        "huggingface": HuggingFace(),
+        "openrouter": OpenRouter(),
+        "groq": Groq()
     }
 
 available_routes = [
