@@ -15,6 +15,10 @@ logger = get_logger(__name__)
 DUPLICATE_WINDOW_SECONDS = 1.0
 SSE_TIMEOUT_SECONDS = 30
 SSE_RETRY_MS = 1500
+TERMINAL_EVENT_POLL_SECONDS = 0.1
+QUEUE_DRAIN_TIMEOUT_SECONDS = 2.0
+QUEUE_IDLE_GRACE_SECONDS = 0.05
+QUEUE_DRAIN_POLL_SECONDS = 0.01
 
 _message_cache = {}
 _message_cache_lock = Lock()
@@ -68,24 +72,33 @@ def _is_duplicate_message(chat_id: str, message: str) -> bool:
 def stream_from_content_queue(chat_id: str, initial_state=None):
     """Unified generator for streaming from content queue"""
     content_queue = get_content_queue(chat_id)
-    
+
     if initial_state:
         yield format_sse_data({'type': 'chat_state', 'chat_id': chat_id, 'state': initial_state})
-    
+
+    terminal_chunk = None
+
     try:
         while True:
             try:
-                chunk = content_queue.get(timeout=SSE_TIMEOUT_SECONDS)
-                
-                if chunk['type'] in ['complete', 'error']:
-                    yield format_sse_data(chunk)
-                    break
-                
+                timeout = TERMINAL_EVENT_POLL_SECONDS if terminal_chunk else SSE_TIMEOUT_SECONDS
+                chunk = content_queue.get(timeout=timeout)
+
+                chunk_type = chunk.get('type')
+                if chunk_type in ['complete', 'error']:
+                    terminal_chunk = chunk
+                    continue
+
                 yield format_sse_data(chunk)
-                
+
             except queue.Empty:
+                if terminal_chunk:
+                    yield format_sse_data(terminal_chunk)
+                    wait_for_queue_drain(chat_id)
+                    break
+
                 yield ": keep-alive\n\n"
-                
+
                 if not is_chat_processing(chat_id):
                     logger.info(f"Background processing completed for chat {chat_id} while client was connected")
                     break
@@ -147,6 +160,31 @@ def publish_content(chat_id: str, chunk_type: str, content: str):
     q = get_content_queue(chat_id)
     q.put({'type': chunk_type, 'content': content})
     _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
+
+def wait_for_queue_drain(chat_id: str,
+                         timeout: float = QUEUE_DRAIN_TIMEOUT_SECONDS,
+                         idle_grace: float = QUEUE_IDLE_GRACE_SECONDS) -> bool:
+    """Wait for a chat's content queue to drain to avoid race conditions."""
+    with _content_queues_lock:
+        q = content_queues.get(chat_id)
+
+    if not q:
+        return True
+
+    deadline = time.time() + timeout
+    last_non_empty = time.time()
+
+    while time.time() < deadline:
+        if q.empty():
+            if time.time() - last_non_empty >= idle_grace:
+                return True
+        else:
+            last_non_empty = time.time()
+
+        time.sleep(QUEUE_DRAIN_POLL_SECONDS)
+
+    logger.debug(f"Queue drain timeout for chat {chat_id} (queue may still contain pending items)")
+    return False
 
 def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_id: str = None):
     """Publishes a file state change via SSE."""

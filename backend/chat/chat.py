@@ -166,9 +166,11 @@ def stop_chat_process(chat_id: str) -> bool:
         logger.warning(f"Failed to update chat state to static for {chat_id}: {state_error}")
 
     try:
-        from route.chat_route import publish_state, publish_content
+        from route.chat_route import publish_state, publish_content, wait_for_queue_drain
         publish_state(chat_id, "static")
         publish_content(chat_id, 'complete', '')
+        if not wait_for_queue_drain(chat_id):
+            logger.debug(f"Queue drain timeout while stopping chat {chat_id}")
     except Exception as publish_error:
         logger.warning(f"Failed to publish stop completion events for {chat_id}: {publish_error}")
 
@@ -294,10 +296,16 @@ def _start_background_processing(chat_id: str, message: str, provider: str, mode
 def _relay_worker_messages(chat_id: str, conn):
     """Relay messages from worker process to SSE system"""
     try:
-        from route.chat_route import publish_state, publish_content, publish_router_decision
+        from route.chat_route import (
+            publish_state,
+            publish_content,
+            publish_router_decision,
+            wait_for_queue_drain,
+        )
 
         logger.info(f"Started message relay for chat {chat_id}")
 
+        queue_drained = False
         while True:
             try:
                 if conn.poll(POLL_INTERVAL):
@@ -328,11 +336,15 @@ def _relay_worker_messages(chat_id: str, conn):
                         if content_type:
                             publish_content(chat_id, content_type, content)
                             logger.debug(f"[RELAY] Published content for {chat_id}: {content_type}")
-                    
+ 
                     if message_type == 'content' and message.get('content_type') == 'complete':
                         logger.info(f"[RELAY] Processing completed for chat {chat_id}")
                         with _chat_processes_lock:
                             _chat_process_status[chat_id] = 'completed'
+                        drained = wait_for_queue_drain(chat_id)
+                        if not drained:
+                            logger.debug(f"[RELAY] Queue drain timeout after completion for chat {chat_id}")
+                        queue_drained = drained
                         break
                 
                 with _chat_processes_lock:
@@ -351,7 +363,9 @@ def _relay_worker_messages(chat_id: str, conn):
     except Exception as e:
         logger.error(f"[RELAY] Fatal error in message relay for {chat_id}: {str(e)}")
     finally:
-        logger.info(f"[RELAY] Message relay stopped for chat {chat_id}")
+        logger.info(f"[RELAY] Message relay stopped for {chat_id}")
+        if not queue_drained:
+            wait_for_queue_drain(chat_id)
         with _chat_processes_lock:
             if chat_id in _chat_process_status:
                 _chat_process_status[chat_id] = 'completed'
