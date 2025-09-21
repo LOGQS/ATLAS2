@@ -717,7 +717,8 @@ class OpenRouter:
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
                 "effort": "medium",
-                "exclude": False
+                "exclude": False,
+                "enabled": True
             }
 
         try:
@@ -803,7 +804,8 @@ class OpenRouter:
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
                 "effort": "medium",
-                "exclude": False
+                "exclude": False,
+                "enabled": True
             }
 
         try:

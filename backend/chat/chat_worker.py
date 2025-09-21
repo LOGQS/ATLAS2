@@ -187,7 +187,12 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     """Process a message within the worker process"""
 
     worker_logger.info(f"[CHAT-WORKER] Processing message with {provider}:{model} for {chat_id}")
-    
+    worker_logger.debug(f"[CHAT-WORKER] Available providers: {list(providers.keys())}")
+    worker_logger.debug(f"[CHAT-WORKER] Provider '{provider}' in providers: {provider in providers}")
+
+    if provider in providers:
+        worker_logger.debug(f"[CHAT-WORKER] Provider '{provider}' is_available: {providers[provider].is_available()}")
+
     if provider not in providers or not providers[provider].is_available():
         available = {name: prov.is_available() for name, prov in providers.items()}
         raise ValueError(f"Provider '{provider}' not available. Available: {available}")
@@ -207,7 +212,6 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     router_enabled = router_result is not None
     router_decision = None
     if router_result:
-        import json
         router_decision = json.dumps({
             'route': router_result['route'],
             'available_routes': router_result['available_routes'],
