@@ -249,7 +249,7 @@ def register_chat_routes(app: Flask):
             data = request.get_json()
             message = data.get('message')
             chat_id = data.get('chat_id')
-            provider = data.get('provider', 'gemini')
+            provider = data.get('provider', Config.get_default_provider())
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
             attached_file_ids = data.get('attached_file_ids', [])
@@ -284,7 +284,7 @@ def register_chat_routes(app: Flask):
             data = request.get_json()
             message = data.get('message')
             chat_id = data.get('chat_id')
-            provider = data.get('provider', 'gemini')
+            provider = data.get('provider', Config.get_default_provider())
             model = data.get('model', Config.get_default_model())
             include_reasoning = data.get('include_reasoning', True)
             attached_file_ids = data.get('attached_file_ids', [])
@@ -444,7 +444,7 @@ def register_chat_routes(app: Flask):
 
             return jsonify({
                 'providers': providers_info,
-                'default_provider': 'gemini'
+                'default_provider': Config.get_default_provider()
             })
 
         except Exception as e:
