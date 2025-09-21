@@ -1024,8 +1024,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     }
 
     const isLastAssistantMessage = message.id === lastAssistantMessage?.id;
-    const showCursor = isLastAssistantMessage && liveOverlay.state === 'responding';
-    const assistantMessageIsStatic = (isStatic || !isLastAssistantMessage) && !(isLastAssistantMessage && !message.content.trim());
+    const hasLiveOverlayContent = liveOverlay.contentBuf.length > 0 || liveOverlay.thoughtsBuf.length > 0;
+    const isLiveStreamingMessage = isLastAssistantMessage && hasLiveOverlayContent;
+    const showCursor = isLiveStreamingMessage && liveOverlay.state === 'responding';
+    const assistantMessageIsStatic = (isStatic || !isLiveStreamingMessage) && !(isLiveStreamingMessage && !message.content.trim());
 
     const canAttachToThisMessage = !String(message.id).startsWith('temp_');
     return (
@@ -1070,7 +1072,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
                 availableRoutes: message.routerDecision.available_routes || [],
                 selectedModel: message.routerDecision.selected_model || null
               }}
-              isProcessing={liveOverlay.state === 'thinking' && isLastAssistantMessage}
+              isProcessing={isLiveStreamingMessage && liveOverlay.state === 'thinking'}
               isVisible={true}
               chatId={chatId}
               messageId={message.id}
@@ -1082,7 +1084,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           <ThinkBox
             key={`thinkbox-${message.clientId ?? String(message.id)}`}
             thoughts={message.thoughts}
-            isStreaming={isLastAssistantMessage && liveOverlay.state === 'thinking'}
+            isStreaming={isLiveStreamingMessage && liveOverlay.state === 'thinking'}
             isVisible={true}
             chatId={chatId}
             messageId={message.id}
@@ -1098,7 +1100,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
+  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));

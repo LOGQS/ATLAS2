@@ -143,9 +143,18 @@ class LiveStore {
   private handleChatStateEvent(chatId: string, ev: ChatStateEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     const oldState = next.state;
-    next.state = ev.state || 'static';
+    const requestedState = ev.state || 'static';
+    next.state = requestedState;
     if (next.state !== 'static') {
       next.error = null;
+    }
+
+    if (oldState === 'static' && (requestedState === 'thinking' || requestedState === 'responding')) {
+      if (next.contentBuf.length > 0 || next.thoughtsBuf.length > 0) {
+        logger.debug(`[LIVESTORE_SSE] Clearing stale buffers for ${chatId} on new stream start`);
+      }
+      next.contentBuf = '';
+      next.thoughtsBuf = '';
     }
     next.version++;
     logger.info(`[LIVESTORE_SSE] State change for ${chatId}: ${oldState} -> ${next.state}`);
@@ -364,7 +373,14 @@ class LiveStore {
     if (cur.state !== 'static') {
       return; 
     }
-    const next: ChatLive = { ...cur, state: 'thinking', error: null, version: cur.version + 1 };
+    const next: ChatLive = {
+      ...cur,
+      state: 'thinking',
+      error: null,
+      contentBuf: '',
+      thoughtsBuf: '',
+      version: cur.version + 1
+    };
     const stateChanged = cur.state !== next.state;
     this.byChat.set(chatId, next);
     this.emit(chatId, next, { stateChanged });
