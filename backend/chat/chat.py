@@ -334,7 +334,11 @@ def _relay_worker_messages(chat_id: str, conn):
                         content_type = message.get('content_type')
                         content = message.get('content', '')
                         if content_type:
-                            publish_content(chat_id, content_type, content)
+                            extras = {
+                                key: value for key, value in message.items()
+                                if key not in {'type', 'content_type', 'content', 'chat_id'}
+                            }
+                            publish_content(chat_id, content_type, content, **extras)
                             logger.debug(f"[RELAY] Published content for {chat_id}: {content_type}")
  
                     if message_type == 'content' and message.get('content_type') == 'complete':

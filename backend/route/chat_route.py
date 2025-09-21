@@ -155,11 +155,20 @@ def publish_state(chat_id: str, state: str):
     state_change_queue.put({'chat_id': chat_id, 'state': state})
     _broadcast({"chat_id": chat_id, "type": "chat_state", "state": state})
 
-def publish_content(chat_id: str, chunk_type: str, content: str):
+def publish_content(chat_id: str, chunk_type: str, content: str, **metadata):
     """Publishes a content chunk to the chat's content queue."""
+    payload = {"type": chunk_type, "content": content}
+    if metadata:
+        payload.update({k: v for k, v in metadata.items() if v is not None})
+
     q = get_content_queue(chat_id)
-    q.put({'type': chunk_type, 'content': content})
-    _broadcast({"chat_id": chat_id, "type": chunk_type, "content": content})
+    q.put(payload)
+
+    broadcast_payload = {"chat_id": chat_id, "type": chunk_type, "content": content}
+    if metadata:
+        broadcast_payload.update({k: v for k, v in metadata.items() if v is not None})
+
+    _broadcast(broadcast_payload)
 
 def wait_for_queue_drain(chat_id: str,
                          timeout: float = QUEUE_DRAIN_TIMEOUT_SECONDS,

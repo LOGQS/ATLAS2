@@ -181,9 +181,30 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 try:
                                     db.update_chat_state(chat_id, "static")
                                     child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
-                                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'error', 'content': str(proc_error)})
+                                    error_payload = {
+                                        'type': 'content',
+                                        'chat_id': chat_id,
+                                        'content_type': 'error',
+                                        'content': str(proc_error)
+                                    }
+                                    assistant_message_id = current_content.get('assistant_message_id')
+                                    if assistant_message_id:
+                                        error_payload['message_id'] = assistant_message_id
+                                    child_conn.send(error_payload)
                                 except Exception as cleanup_error:
                                     worker_logger.warning(f"[CHAT-WORKER] Failed to cleanup after error: {cleanup_error}")
+
+                                assistant_message_id = current_content.get('assistant_message_id')
+                                if assistant_message_id:
+                                    try:
+                                        deleted = db.cascade_delete_message(assistant_message_id, chat_id)
+                                        worker_logger.info(f"[CHAT-WORKER] Removed {deleted} messages after error for {chat_id} starting at {assistant_message_id}")
+                                    except Exception as delete_error:
+                                        worker_logger.warning(f"[CHAT-WORKER] Failed to remove incomplete assistant message {assistant_message_id}: {delete_error}")
+                                    current_content['assistant_message_id'] = None
+                                    current_content['full_text'] = ''
+                                    current_content['full_thoughts'] = ''
+                                    current_content['last_db_update'] = 0.0
                                 
                                 child_conn.send({'success': False, 'error': error_msg, 'chat_id': chat_id})
                             

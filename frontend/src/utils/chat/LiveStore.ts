@@ -14,6 +14,11 @@ type ChatLive = {
     availableRoutes: any[];
     selectedModel: string | null;
   } | null;
+  error: {
+    message: string;
+    receivedAt: number;
+    messageId?: string | null;
+  } | null;
   version: number;
 };
 
@@ -59,7 +64,13 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   selected_model?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | RouterDecisionEvent;
+interface ErrorEvent extends BaseSSEEvent {
+  type: 'error';
+  content?: string;
+  message_id?: string;
+}
+
+type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | RouterDecisionEvent | ErrorEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -122,6 +133,7 @@ class LiveStore {
       availableRoutes: ev.available_routes || [],
       selectedModel: ev.selected_model || null
     };
+    next.error = null;
     next.version++;
     logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, available=${ev.available_routes?.length || 0}`);
     this.enableParentFromBridge(chatId, 'Router decision');
@@ -132,6 +144,9 @@ class LiveStore {
     const next = { ...cur };
     const oldState = next.state;
     next.state = ev.state || 'static';
+    if (next.state !== 'static') {
+      next.error = null;
+    }
     next.version++;
     logger.info(`[LIVESTORE_SSE] State change for ${chatId}: ${oldState} -> ${next.state}`);
 
@@ -151,6 +166,7 @@ class LiveStore {
     const next = { ...cur };
     const addedContent = ev.content || '';
     next.thoughtsBuf = cur.thoughtsBuf + addedContent;
+    next.error = null;
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Thoughts chunk for ${chatId}: +${addedContent.length} chars (total: ${next.thoughtsBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Thoughts content: "${addedContent.substring(0, 50)}..."`);
@@ -162,6 +178,7 @@ class LiveStore {
     const next = { ...cur };
     const addedContent = ev.content || '';
     next.contentBuf = cur.contentBuf + addedContent;
+    next.error = null;
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Content chunk for ${chatId}: +${addedContent.length} chars (total: ${next.contentBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Content: "${addedContent.substring(0, 50)}..."`);
@@ -173,6 +190,7 @@ class LiveStore {
     const next = { ...cur };
     const oldState = next.state;
     next.state = 'static';
+    next.error = null;
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
     logger.debug(`[LIVESTORE_SSE] Final buffers - content: ${next.contentBuf.length}chars, thoughts: ${next.thoughtsBuf.length}chars`);
@@ -187,6 +205,23 @@ class LiveStore {
       this.pendingVersionStreamParents.delete(chatId);
       logger.debug(`[LIVESTORE_BRIDGE] Completed child ${chatId}; re-enabled both child and parent ${parentId}, cleared mapping`);
     }
+    return next;
+  }
+
+  private handleErrorEvent(chatId: string, ev: ErrorEvent, cur: ChatLive): ChatLive {
+    const next = { ...cur };
+    const message = ev.content || 'Gemini returned an empty response. Please retry your request.';
+    next.state = 'static';
+    next.contentBuf = '';
+    next.thoughtsBuf = '';
+    next.error = {
+      message,
+      receivedAt: Date.now(),
+      messageId: ev.message_id || null
+    };
+    next.version++;
+    this.enableParentFromBridge(chatId, 'Error event');
+    logger.warn(`[LIVESTORE_SSE] Error event for ${chatId}: ${message}`);
     return next;
   }
 
@@ -239,7 +274,13 @@ class LiveStore {
         }
 
         const cur = this.byChat.get(chatId) ?? {
-          state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, version: 0
+          state: 'static',
+          lastAssistantId: null,
+          contentBuf: '',
+          thoughtsBuf: '',
+          routerDecision: null,
+          error: null,
+          version: 0
         };
 
         if (ev.type === 'router_decision') {
@@ -276,6 +317,9 @@ class LiveStore {
           case 'complete':
             next = this.handleCompleteEvent(chatId, cur);
             break;
+          case 'error':
+            next = this.handleErrorEvent(chatId, ev as ErrorEvent, cur);
+            break;
           case 'message_ids':
             this.handleMessageIdsEvent(chatId, ev as MessageIdsEvent);
             return;
@@ -309,12 +353,18 @@ class LiveStore {
 
   beginLocalStream(chatId: string): void {
     const cur = this.byChat.get(chatId) ?? {
-      state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, version: 0
+      state: 'static',
+      lastAssistantId: null,
+      contentBuf: '',
+      thoughtsBuf: '',
+      routerDecision: null,
+      error: null,
+      version: 0
     };
     if (cur.state !== 'static') {
       return; 
     }
-    const next: ChatLive = { ...cur, state: 'thinking', version: cur.version + 1 };
+    const next: ChatLive = { ...cur, state: 'thinking', error: null, version: cur.version + 1 };
     const stateChanged = cur.state !== next.state;
     this.byChat.set(chatId, next);
     this.emit(chatId, next, { stateChanged });
@@ -324,7 +374,7 @@ class LiveStore {
     const cur = this.byChat.get(chatId);
     if (!cur) return;
     if (cur.state === 'thinking' && cur.contentBuf.length === 0 && cur.thoughtsBuf.length === 0) {
-      const next: ChatLive = { ...cur, state: 'static', version: cur.version + 1 };
+      const next: ChatLive = { ...cur, state: 'static', error: null, version: cur.version + 1 };
       const stateChanged = cur.state !== next.state;
       this.byChat.set(chatId, next);
       this.emit(chatId, next, { stateChanged, eventType: 'chat_state' });
@@ -427,7 +477,7 @@ class LiveStore {
     const cur = this.byChat.get(chatId);
     if (!cur) return;
     
-    const next = { ...cur, lastAssistantId };
+    const next = { ...cur, lastAssistantId, error: null };
     
     if (dbContent.length >= cur.contentBuf.length) {
       next.contentBuf = '';

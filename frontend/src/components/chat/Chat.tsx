@@ -47,6 +47,18 @@ interface ChatProps {
   firstMessage?: string;
 }
 
+interface ChatLive {
+  contentBuf: string;
+  thoughtsBuf: string;
+  routerDecision: {
+    selectedRoute: string | null;
+    availableRoutes: any[];
+    selectedModel: string | null;
+  } | null;
+  state: 'thinking' | 'responding' | 'static';
+  error: { message: string; receivedAt: number; messageId?: string | null } | null;
+}
+
 const Chat = React.memo(forwardRef<any, ChatProps>(({ 
   chatId, 
   onMessageSent, 
@@ -63,16 +75,14 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const [messages, setMessages] = useState<Message[]>([]);
   const [firstMessageSent, setFirstMessageSent] = useState(false);
 
-  const [liveOverlay, setLiveOverlay] = useState({
+  const [liveOverlay, setLiveOverlay] = useState<ChatLive>({
     contentBuf: '',
     thoughtsBuf: '',
-    routerDecision: null as {
-      selectedRoute: string | null;
-      availableRoutes: any[];
-      selectedModel: string | null;
-    } | null,
-    state: 'static' as 'thinking' | 'responding' | 'static'
+    routerDecision: null,
+    state: 'static',
+    error: null
   });
+  const [dismissedErrorAt, setDismissedErrorAt] = useState<number | null>(null);
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
   const [wasStreaming, setWasStreaming] = useState(false);
 
@@ -365,7 +375,18 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         contentBuf: snap.contentBuf,
         thoughtsBuf: snap.thoughtsBuf,
         routerDecision: snap.routerDecision,
-        state: snap.state
+        state: snap.state,
+        error: (snap as any).error ?? null
+      });
+
+      setDismissedErrorAt((prev: number | null) => {
+        if (!('error' in snap) || !snap.error) {
+          return null;
+        }
+        if (prev && snap.error && prev === snap.error.receivedAt) {
+          return prev;
+        }
+        return null;
       });
 
       if (snap.routerDecision && snap.routerDecision.selectedRoute) {
@@ -433,7 +454,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         if (shouldClearState) {
           setMessages([]);
         }
-        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static' });
+        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static', error: null });
+        setDismissedErrorAt(null);
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
         setWasStreaming(false);
@@ -745,7 +767,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     try {
       logger.debug(`[Chat] Retrying message ${messageId}`);
       const success = await messageOperations.retryMessage(messageId);
-      
+
       if (success) {
         logger.debug(`[Chat] Successfully initiated retry for message ${messageId}`);
       } else {
@@ -760,7 +782,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     try {
       logger.info(`[Chat] Deleting message ${messageId} and all messages after it`);
       const success = await messageOperations.deleteMessage(messageId);
-      
+
       if (success) {
         logger.debug(`[Chat] Successfully deleted message ${messageId} and subsequent messages`);
       } else {
@@ -813,7 +835,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static' });
+    setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static', error: null });
+    setDismissedErrorAt(null);
     liveStore.reset(chatId);
 
     const cid = crypto.randomUUID();
@@ -1081,6 +1104,55 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
   }, [messages]);
 
+  const showErrorNotice = Boolean(liveOverlay.error && liveOverlay.error.receivedAt !== dismissedErrorAt);
+  const activeError = liveOverlay.error;
+
+  const messageListContent = useMemo(() => {
+    if (shouldShowSkeleton) {
+      logger.info(`[CHAT_RENDER] Rendering skeleton for ${chatId} - isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
+      return (
+        <div className="messages-skeleton">
+          <div className="msg-skel" />
+          <div className="msg-skel" />
+        </div>
+      );
+    }
+
+    logger.info(`[CHAT_RENDER] Rendering ${rendered.length} messages for ${chatId}`);
+    logger.info(`[CHAT_RENDER] About to render message IDs: ${rendered.map(m => m.id).join(', ')}`);
+    logger.info(`[CHAT_RENDER] Message preview: ${rendered.map(m => `${m.id}: "${m.content.substring(0, 30)}..."`).join(' | ')}`);
+
+    const renderedComponents = rendered.map((message) => {
+      const originalIndex = messageIndexMap.get(message.id) ?? -1;
+      logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
+      return renderMessage(message, originalIndex);
+    });
+
+    if (showErrorNotice && activeError) {
+      renderedComponents.push(
+        <div key={`stream-error-${activeError.receivedAt}`} className="stream-error-notice" role="alert">
+          <div className="stream-error-icon" aria-hidden="true">!</div>
+          <div className="stream-error-body">
+            <div className="stream-error-message">{activeError.message}</div>
+            <div className="stream-error-hint">You can retry sending your message when you're ready.</div>
+            <div className="stream-error-actions">
+              <button
+                type="button"
+                className="stream-error-dismiss"
+                onClick={() => setDismissedErrorAt(activeError.receivedAt)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
+    return renderedComponents;
+  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
+
   return (
     <>
       <div className="chat-messages">
@@ -1088,30 +1160,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           {(needsBottomAnchor || (forceBottomDuringStreaming && canRenderOverlay)) && (
             <div className="spacer" style={{flex: '1 0 auto'}}></div>
           )}
-          {useMemo(() => {
-            if (shouldShowSkeleton) {
-              logger.info(`[CHAT_RENDER] Rendering skeleton for ${chatId} - isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
-              return (
-                <div className="messages-skeleton">
-                  <div className="msg-skel" />
-                  <div className="msg-skel" />
-                </div>
-              );
-            }
-            
-            logger.info(`[CHAT_RENDER] Rendering ${rendered.length} messages for ${chatId}`);
-            logger.info(`[CHAT_RENDER] About to render message IDs: ${rendered.map(m => m.id).join(', ')}`);
-            logger.info(`[CHAT_RENDER] Message preview: ${rendered.map(m => `${m.id}: "${m.content.substring(0, 30)}..."`).join(' | ')}`);
-
-            const renderedComponents = rendered.map((message) => {
-              const originalIndex = messageIndexMap.get(message.id) ?? -1;
-              logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
-              return renderMessage(message, originalIndex);
-            });
-            
-            logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
-            return renderedComponents;
-          }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage])}
+          {messageListContent}
 
           {canRenderOverlay && (
             <div className="assistant-message">

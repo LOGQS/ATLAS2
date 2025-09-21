@@ -255,18 +255,28 @@ class Gemini:
 
         contents.append({"role": "user", "parts": user_parts})
             
-        response = self._execute_with_rate_limit(
-            f"gemini:{model}",
-            self.client.models.generate_content,
-            model=model,
-            contents=contents,
-            config=config
-        )
+        try:
+            response = self._execute_with_rate_limit(
+                f"gemini:{model}",
+                self.client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            error_message = self._extract_error_message(e)
+            logger.error(f"Gemini generate_text request failed: {error_message}")
+            return {
+                "text": None,
+                "thoughts": None,
+                "model": model,
+                "error": error_message
+            }
         
         thoughts = ""
         answer = ""
         
-        if (response and response.candidates and len(response.candidates) > 0 
+        if (response and response.candidates and len(response.candidates) > 0
             and response.candidates[0].content and response.candidates[0].content.parts):
             for part in response.candidates[0].content.parts:
                 if not part.text:
@@ -278,6 +288,16 @@ class Gemini:
         else:
             logger.warning("Received empty or invalid response from Gemini API")
         
+        if not answer.strip() and not thoughts.strip():
+            error_message = "Gemini returned an empty response. Please retry your request."
+            logger.error("Gemini generate_text completed with no content")
+            return {
+                "text": None,
+                "thoughts": None,
+                "model": model,
+                "error": error_message
+            }
+
         return {
             "text": answer,
             "thoughts": thoughts if thoughts else None,
@@ -312,34 +332,61 @@ class Gemini:
         
         thoughts = ""
         answer = ""
-        
-        stream = self._execute_with_rate_limit(
-            f"gemini:{model}",
-            self.client.models.generate_content_stream,
-            model=model,
-            contents=contents,
-            config=config
-        )
-        
-        for chunk in stream:
-            if (not chunk or not chunk.candidates or len(chunk.candidates) == 0 
-                or not chunk.candidates[0].content or not chunk.candidates[0].content.parts):
-                logger.warning(f"Received empty or invalid chunk from Gemini streaming API: {chunk}")
-                continue
-                
-            for part in chunk.candidates[0].content.parts:
-                if not part.text:
+
+        try:
+            stream = self._execute_with_rate_limit(
+                f"gemini:{model}",
+                self.client.models.generate_content_stream,
+                model=model,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            error_message = self._extract_error_message(e)
+            logger.error(f"Failed to start Gemini streaming request: {error_message}")
+            raise RuntimeError(error_message) from e
+
+        if not stream:
+            error_message = "Gemini did not return any streaming data. Please try again."
+            logger.error(error_message)
+            raise RuntimeError(error_message)
+
+        has_content = False
+        saw_invalid_chunk = False
+
+        try:
+            for chunk in stream:
+                if (not chunk or not chunk.candidates or len(chunk.candidates) == 0
+                    or not chunk.candidates[0].content or not chunk.candidates[0].content.parts):
+                    saw_invalid_chunk = True
+                    logger.warning(f"Received empty or invalid chunk from Gemini streaming API: {chunk}")
                     continue
-                elif part.thought:
-                    if not thoughts:
-                        yield {"type": "thoughts_start"}
-                    yield {"type": "thoughts", "content": part.text}
-                    thoughts += part.text
-                else:
-                    if not answer:
-                        yield {"type": "answer_start"}
-                    yield {"type": "answer", "content": part.text}
-                    answer += part.text
+
+                for part in chunk.candidates[0].content.parts:
+                    if not part.text:
+                        continue
+                    has_content = True
+                    if part.thought:
+                        if not thoughts:
+                            yield {"type": "thoughts_start"}
+                        yield {"type": "thoughts", "content": part.text}
+                        thoughts += part.text
+                    else:
+                        if not answer:
+                            yield {"type": "answer_start"}
+                        yield {"type": "answer", "content": part.text}
+                        answer += part.text
+        except Exception as e:
+            error_message = self._extract_error_message(e)
+            logger.error(f"Gemini streaming request failed: {error_message}")
+            raise RuntimeError(error_message) from e
+
+        if not has_content:
+            if saw_invalid_chunk:
+                logger.error("Gemini streaming returned only empty or invalid chunks")
+            else:
+                logger.error("Gemini streaming completed without delivering any content")
+            raise RuntimeError("Gemini returned an empty response. Please retry your request.")
     
     def get_file_size_limit(self) -> int:
         """Get the maximum file size limit for this provider"""
@@ -590,6 +637,44 @@ class Gemini:
                 'state': 'error'
             }
 
+    def _extract_error_message(self, error: Exception, default: str = "Gemini request failed. Please try again.") -> str:
+        """Extract a user-friendly error message from Gemini exceptions"""
+        for arg in getattr(error, "args", []):
+            if isinstance(arg, dict):
+                err_info = arg.get("error")
+                if isinstance(err_info, dict):
+                    message = err_info.get("message")
+                    if message:
+                        return message
+            elif isinstance(arg, str) and arg:
+                if "The model is overloaded" in arg:
+                    return "Gemini is temporarily overloaded. Please try again shortly."
+                if "UNAVAILABLE" in arg.upper() or " 503" in arg:
+                    return "Gemini is temporarily unavailable. Please try again shortly."
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    err_info = data.get("error")
+                    if isinstance(err_info, dict):
+                        message = err_info.get("message")
+                        if message:
+                            return message
+            except Exception:
+                pass
+
+        message = str(error).strip()
+        if message:
+            if "The model is overloaded" in message:
+                return "Gemini is temporarily overloaded. Please try again shortly."
+            if "UNAVAILABLE" in message.upper() or " 503" in message:
+                return "Gemini is temporarily unavailable. Please try again shortly."
+            return message
+
+        return default
+
 class DisabledProvider:
     """Base class for disabled/placeholder providers"""
     
@@ -788,7 +873,7 @@ class Groq:
             request_params["include_reasoning"] = True
 
         try:
-            stream = self._execute_with_rate_limit(
+            response = self._execute_with_rate_limit(
                 f"groq:{model}",
                 self.client.chat.completions.create,
                 **request_params
@@ -797,7 +882,7 @@ class Groq:
             answer_started = False
             thoughts_started = False
 
-            for chunk in stream:
+            for chunk in response:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
 
