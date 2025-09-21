@@ -9,6 +9,7 @@ from chat.chat import Chat, is_chat_processing, stop_chat_process
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
+from typing import Optional
 
 logger = get_logger(__name__)
 
@@ -19,6 +20,7 @@ TERMINAL_EVENT_POLL_SECONDS = 0.1
 QUEUE_DRAIN_TIMEOUT_SECONDS = 2.0
 QUEUE_IDLE_GRACE_SECONDS = 0.05
 QUEUE_DRAIN_POLL_SECONDS = 0.01
+QUEUE_DRAIN_STATUS_LOG_SECONDS = 1.0
 
 _message_cache = {}
 _message_cache_lock = Lock()
@@ -93,8 +95,8 @@ def stream_from_content_queue(chat_id: str, initial_state=None):
 
             except queue.Empty:
                 if terminal_chunk:
+                    wait_for_queue_drain(chat_id, timeout=1.0)
                     yield format_sse_data(terminal_chunk)
-                    wait_for_queue_drain(chat_id)
                     break
 
                 yield ": keep-alive\n\n"
@@ -171,8 +173,9 @@ def publish_content(chat_id: str, chunk_type: str, content: str, **metadata):
     _broadcast(broadcast_payload)
 
 def wait_for_queue_drain(chat_id: str,
-                         timeout: float = QUEUE_DRAIN_TIMEOUT_SECONDS,
-                         idle_grace: float = QUEUE_IDLE_GRACE_SECONDS) -> bool:
+                         timeout: Optional[float] = QUEUE_DRAIN_TIMEOUT_SECONDS,
+                         idle_grace: float = QUEUE_IDLE_GRACE_SECONDS,
+                         status_log_interval: Optional[float] = QUEUE_DRAIN_STATUS_LOG_SECONDS) -> bool:
     """Wait for a chat's content queue to drain to avoid race conditions."""
     with _content_queues_lock:
         q = content_queues.get(chat_id)
@@ -180,20 +183,38 @@ def wait_for_queue_drain(chat_id: str,
     if not q:
         return True
 
-    deadline = time.time() + timeout
-    last_non_empty = time.time()
+    start_time = time.time()
+    last_non_empty = start_time
+    last_status_log = start_time
+    status_logged = False
 
-    while time.time() < deadline:
+    while True:
+        current_time = time.time()
+
         if q.empty():
-            if time.time() - last_non_empty >= idle_grace:
+            if current_time - last_non_empty >= idle_grace:
+                if timeout is None and status_logged:
+                    logger.debug(
+                        f"Queue drain completed for chat {chat_id} after {current_time - start_time:.3f}s"
+                    )
                 return True
         else:
-            last_non_empty = time.time()
+            last_non_empty = current_time
+
+        if timeout is not None and current_time - start_time >= timeout:
+            logger.debug(f"Queue drain timeout for chat {chat_id} (queue may still contain pending items)")
+            return False
+
+        if (timeout is None and status_log_interval is not None and
+                current_time - last_status_log >= status_log_interval):
+            logger.debug(
+                f"Waiting for content queue to drain for chat {chat_id} "
+                f"({current_time - start_time:.3f}s elapsed)"
+            )
+            last_status_log = current_time
+            status_logged = True
 
         time.sleep(QUEUE_DRAIN_POLL_SECONDS)
-
-    logger.debug(f"Queue drain timeout for chat {chat_id} (queue may still contain pending items)")
-    return False
 
 def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_id: str = None):
     """Publishes a file state change via SSE."""

@@ -340,14 +340,29 @@ def _relay_worker_messages(chat_id: str, conn):
                             }
                             publish_content(chat_id, content_type, content, **extras)
                             logger.debug(f"[RELAY] Published content for {chat_id}: {content_type}")
- 
+
                     if message_type == 'content' and message.get('content_type') == 'complete':
                         logger.info(f"[RELAY] Processing completed for chat {chat_id}")
                         with _chat_processes_lock:
                             _chat_process_status[chat_id] = 'completed'
-                        drained = wait_for_queue_drain(chat_id)
+
+                        drained = wait_for_queue_drain(chat_id, timeout=0.5)
                         if not drained:
-                            logger.debug(f"[RELAY] Queue drain timeout after completion for chat {chat_id}")
+                            logger.info(f"[RELAY] No active client for {chat_id}, force clearing queue and cleaning up process")
+                            from route.chat_route import content_queues, _content_queues_lock
+                            with _content_queues_lock:
+                                q = content_queues.get(chat_id)
+                                if q:
+                                    drained_count = 0
+                                    try:
+                                        while not q.empty():
+                                            q.get_nowait()
+                                            drained_count += 1
+                                    except:
+                                        pass
+                                    logger.info(f"[RELAY] Force drained {drained_count} items from queue for {chat_id}")
+                            threading.Thread(target=cleanup_completed_processes, daemon=True).start()
+
                         queue_drained = drained
                         break
                 
