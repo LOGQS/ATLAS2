@@ -13,6 +13,30 @@ from pathlib import Path
 from typing import Optional
 
 
+DB_UPDATE_THROTTLE_SECONDS = 0.25
+
+
+def _update_message_with_throttle(db, current_content, assistant_message_id, worker_logger, *, force: bool = False):
+    """Persist assistant message content while avoiding excessive writes."""
+    if not assistant_message_id:
+        return
+
+    now = time.time()
+    last_update = current_content.get('last_db_update', 0.0)
+    if not force and (now - last_update) < DB_UPDATE_THROTTLE_SECONDS:
+        return
+
+    try:
+        db.update_message(
+            assistant_message_id,
+            current_content.get('full_text', ''),
+            thoughts=current_content.get('full_thoughts') or None
+        )
+        current_content['last_db_update'] = now
+    except Exception as db_error:
+        worker_logger.error(f"[CHAT-WORKER] Error updating message in DB: {db_error}")
+
+
 def start_chat_process(chat_id: str) -> tuple:
     """Start a chat worker process and return process and connection objects"""
     
@@ -49,7 +73,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
         db = None
         providers = None
         processing_active = False
-        current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None}
+        current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None, 'last_db_update': 0.0}
         
         try:
             db = DatabaseManager()
@@ -81,10 +105,12 @@ def chat_worker(chat_id: str, child_conn) -> None:
                             if processing_active and current_content['assistant_message_id']:
                                 try:
                                     worker_logger.info(f"[CHAT-WORKER] Saving partial content before stop for {chat_id}")
-                                    db.update_message(
+                                    _update_message_with_throttle(
+                                        db,
+                                        current_content,
                                         current_content['assistant_message_id'],
-                                        current_content['full_text'],
-                                        thoughts=current_content['full_thoughts'] if current_content['full_thoughts'] else None
+                                        worker_logger,
+                                        force=True
                                     )
                                     db.update_chat_state(chat_id, "static")
                                     child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
@@ -232,6 +258,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     current_content['assistant_message_id'] = assistant_message_id
     current_content['full_text'] = ''
     current_content['full_thoughts'] = ''
+    current_content['last_db_update'] = 0.0
     try:
         if assistant_message_id and chat_id.startswith('version_'):
             all_chats = db.get_all_chats()
@@ -292,10 +319,14 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     elif cmd_data.get('command') == 'stop':
                         worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
                         if assistant_message_id and (full_text or full_thoughts):
-                            db.update_message(
+                            current_content['full_text'] = full_text
+                            current_content['full_thoughts'] = full_thoughts
+                            _update_message_with_throttle(
+                                db,
+                                current_content,
                                 assistant_message_id,
-                                full_text,
-                                thoughts=full_thoughts if full_thoughts else None
+                                worker_logger,
+                                force=True
                             )
                         db.update_chat_state(chat_id, "static")
                         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
@@ -305,6 +336,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                 except:
                     pass  
             
+            content_changed = False
+
             if chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
                 current_content['full_thoughts'] = full_thoughts
@@ -312,7 +345,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts', 'content': chunk.get("content", "")})
                 except Exception as pub_error:
                     worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts chunk: {pub_error}")
-                
+                content_changed = True
+
             elif chunk.get("type") == "answer":
                 full_text += chunk.get("content", "")
                 current_content['full_text'] = full_text
@@ -328,25 +362,34 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                         current_state = "responding"
                     except Exception as state_error:
                         worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
-            
-            if assistant_message_id and (full_text or full_thoughts):
-                try:
-                    db.update_message(
-                        assistant_message_id,
-                        full_text,
-                        thoughts=full_thoughts if full_thoughts else None
-                    )
-                except Exception as db_error:
-                    worker_logger.error(f"[CHAT-WORKER] Error updating message in DB: {db_error}")
-        
+                content_changed = True
+
+            if content_changed and assistant_message_id and (full_text or full_thoughts):
+                _update_message_with_throttle(
+                    db,
+                    current_content,
+                    assistant_message_id,
+                    worker_logger
+                )
+
         db.update_chat_state(chat_id, "static")
 
         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
 
+        if assistant_message_id and (full_text or full_thoughts):
+            _update_message_with_throttle(
+                db,
+                current_content,
+                assistant_message_id,
+                worker_logger,
+                force=True
+            )
+
         current_content['full_text'] = ''
         current_content['full_thoughts'] = ''
         current_content['assistant_message_id'] = None
+        current_content['last_db_update'] = 0.0
 
         worker_logger.info(f"[CHAT-WORKER] Processing completed successfully for {chat_id}")
         
