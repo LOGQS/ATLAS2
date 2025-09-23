@@ -541,7 +541,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     if (!container) return;
 
     const isScrollable = computeIsScrollable(container);
-    setNeedsBottomAnchor(isScrollable);
+    setNeedsBottomAnchor(!isScrollable);
 
     if (!needsScrollRestoreRef.current) {
       return;
@@ -561,7 +561,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     const container = messagesEndRef.current?.parentElement as HTMLElement | null;
     if (!container) return;
     const ro = new ResizeObserver(() => {
-      setNeedsBottomAnchor(computeIsScrollable(container));
+      setNeedsBottomAnchor(!computeIsScrollable(container));
     });
     ro.observe(container);
     return () => ro.disconnect();
@@ -570,16 +570,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useEffect(() => {
     const handler = () => {
       const container = messagesEndRef.current?.parentElement as HTMLElement | null;
-      setNeedsBottomAnchor(computeIsScrollable(container || null));
+      setNeedsBottomAnchor(!computeIsScrollable(container || null));
     };
     window.addEventListener('chatContentResized', handler as any);
     return () => {
       window.removeEventListener('chatContentResized', handler as any);
     };
-  }, [chatId]);
-
-  useEffect(() => {
-    setNeedsBottomAnchor(false);
   }, [chatId]);
 
   useEffect(() => {
