@@ -12,7 +12,12 @@ from utils.rate_limiter import get_rate_limiter
 from utils.config import Config
 from pathlib import Path
 import time
-from file_utils.upload_worker import start_upload_process
+from file_utils.upload_worker import (
+    start_upload_process,
+    UploadWorkerTimeout,
+    UploadWorkerCancelled,
+    UploadWorkerTerminated,
+)
 from utils.cancellation_manager import cancellation_manager
 
 load_dotenv()
@@ -416,74 +421,64 @@ class Gemini:
             
             logger.info(f"Starting multiprocess upload for Gemini: {file_path}")
             
-            process, conn = start_upload_process(file_path, display_name, file_id)
-            
-            if file_id:
-                cancellation_manager.register_process(file_id, process)
-            
+            task = start_upload_process(file_path, display_name, file_id)
+
+            if file_id and task.process:
+                cancellation_manager.register_process(file_id, task.process)
+
             try:
                 if timeout_seconds is None:
                     timeout_seconds = self.UPLOAD_DEFAULT_TIMEOUT
-                    
-                start_time = time.time()
-                result = None
-                
-                while process.is_alive() and (time.time() - start_time) < timeout_seconds:
-                    if conn.poll(self.POLLING_INTERVAL):
-                        try:
-                            result = conn.recv()
-                            logger.info(f"Upload process completed for file {file_id}: {result.get('success', False)}")
-                            return result
-                        except EOFError:
-                            break
-                    
-                    if file_id and cancellation_manager.is_cancelled(file_id):
-                        logger.info(f"Upload cancelled during execution for file {file_id}")
-                        return {
-                            'success': False,
-                            'error': 'Upload cancelled',
-                            'state': 'error'
-                        }
-                
-                if process.is_alive():
-                    logger.warning(f"Upload process still running after {timeout_seconds}s, terminating")
-                    process.terminate()
-                    process.join(timeout=self.PROCESS_TERMINATE_TIMEOUT)
-                    if process.is_alive():
-                        try:
-                            process.kill()
-                        except AttributeError:
-                            pass
-                    
-                    return {
-                        'success': False,
-                        'error': f'Upload operation timed out after {timeout_seconds} seconds',
-                        'state': 'error'
-                    }
-                
-                try:
-                    if conn.poll(self.POLLING_INTERVAL): 
-                        result = conn.recv()
-                        return result
-                except (EOFError, OSError):
-                    pass  
-                
+
+                result = task.result(
+                    timeout=timeout_seconds,
+                    poll_interval=self.POLLING_INTERVAL,
+                    cancel_check=(
+                        (lambda: cancellation_manager.is_cancelled(file_id))
+                        if file_id else None
+                    )
+                )
+                logger.info(f"Upload process completed for file {file_id}: {result.get('success', False)}")
+                return result
+
+            except UploadWorkerCancelled:
+                logger.info(f"Upload cancelled during execution for {file_id}")
+                task.terminate()
                 return {
                     'success': False,
-                    'error': 'Upload cancelled' if file_id and cancellation_manager.is_cancelled(file_id) else 'Upload process finished unexpectedly',
+                    'error': 'Upload cancelled',
                     'state': 'error'
                 }
-                
+
+            except UploadWorkerTimeout:
+                logger.warning(f"Upload process still running after {timeout_seconds}s, terminating")
+                task.terminate()
+                return {
+                    'success': False,
+                    'error': f'Upload operation timed out after {timeout_seconds} seconds',
+                    'state': 'error'
+                }
+
+            except UploadWorkerTerminated:
+                logger.error(f"Upload worker exited unexpectedly for {file_id}")
+                return {
+                    'success': False,
+                    'error': 'Upload process finished unexpectedly',
+                    'state': 'error'
+                }
+
+            except Exception as exc:
+                logger.error(f"Error while waiting for upload result for {file_id}: {exc}")
+                task.terminate()
+                return {
+                    'success': False,
+                    'error': str(exc),
+                    'state': 'error'
+                }
+
             finally:
                 if file_id:
                     cancellation_manager.unregister_task(file_id, 'process')
-                try:
-                    conn.close()
-                except:
-                    pass  
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=self.PROCESS_JOIN_TIMEOUT)
             
         except Exception as e:
             logger.error(f"Error in multiprocess upload to Gemini: {str(e)}")

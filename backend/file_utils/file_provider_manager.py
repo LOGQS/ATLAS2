@@ -6,7 +6,13 @@ from typing import Dict, List, Any
 from utils.logger import get_logger
 from utils.db_utils import db
 from utils.cancellation_manager import cancellation_manager
-from file_utils.upload_worker import start_upload_process
+from file_utils.upload_worker import (
+    start_upload_process,
+    UploadWorkerTimeout,
+    UploadWorkerCancelled,
+    UploadWorkerTerminated,
+    UploadTaskHandle,
+)
 from utils.config import get_provider_map
 from file_utils.markdown_processor import setup_filespace, process_file_to_markdown
 import concurrent.futures
@@ -248,81 +254,73 @@ class FileProviderManager:
                     'error': str(e)
                 }
         
-        max_processes = min(len(upload_infos), 8) 
+        max_processes = min(len(upload_infos), 8)
         logger.info(f"[API-UPLOAD] Uploading {len(upload_infos)} files to {provider_name} API with {max_processes} parallel processes")
-        
-        
-        
-        active_processes = {}
-        
+
+        active_tasks: Dict[str, UploadTaskHandle] = {}
+
         try:
             for info in upload_infos:
                 file_id = info['file_id']
                 upload_path = info['upload_path']
                 display_name = info['display_name']
-                
+
                 logger.info(f"[MULTIPROCESS] Starting upload process for file {file_id}")
-                
-                process, conn = start_upload_process(upload_path, display_name, file_id)
-                active_processes[file_id] = {'process': process, 'conn': conn, 'info': info}
-                
-                cancellation_manager.register_process(file_id, process)
-            
-            for file_id, proc_info in active_processes.items():
-                process = proc_info['process']
-                conn = proc_info['conn']
-                info = proc_info['info']
+
+                task = start_upload_process(upload_path, display_name, file_id)
+                active_tasks[file_id] = task
+
+                process = task.process
+                if process:
+                    cancellation_manager.register_process(file_id, process)
+
+            for file_id, task in active_tasks.items():
                 
                 try:
                     if cancellation_manager.is_cancelled(file_id):
-                        logger.info(f"[CANCEL] File {file_id} cancelled, terminating process")
-                        if process.is_alive():
-                            process.terminate()
-                            process.join(timeout=2)
-                            if process.is_alive():
-                                process.kill()
+                        logger.info(f"[CANCEL] File {file_id} cancelled before completion")
+                        task.terminate()
                         results.append({
                             'file_id': file_id,
                             'success': False,
                             'error': 'Upload process cancelled'
                         })
                         continue
-                    
-                    process.join(timeout=300)
-                    
-                    if process.is_alive():
-                        logger.error(f"[MULTIPROCESS] Upload process for {file_id} timed out, terminating")
-                        process.terminate()
-                        process.join(timeout=2)
-                        if process.is_alive():
-                            process.kill()
-                        results.append({
-                            'file_id': file_id,
-                            'success': False,
-                            'error': 'Upload process timed out'
-                        })
-                        continue
-                    
-                    if conn.poll():
-                        try:
-                            result = conn.recv()
-                            logger.info(f"[MULTIPROCESS] Upload process completed for file {file_id}: {result.get('success')}")
-                            results.append(result)
-                        except (EOFError, OSError, ConnectionResetError) as e:
-                            logger.warning(f"[MULTIPROCESS] Process communication failed for {file_id}: {str(e)}")
-                            results.append({
-                                'file_id': file_id,
-                                'success': False,
-                                'error': f'Process communication failed: {str(e)}'
-                            })
-                    else:
-                        logger.error(f"[MULTIPROCESS] No result received from upload process for {file_id}")
-                        results.append({
-                            'file_id': file_id,
-                            'success': False,
-                            'error': 'Upload process finished but no result received'
-                        })
-                
+
+                    result = task.result(
+                        timeout=300,
+                        poll_interval=0.1,
+                        cancel_check=lambda fid=file_id: cancellation_manager.is_cancelled(fid)
+                    )
+                    logger.info(f"[MULTIPROCESS] Upload process completed for file {file_id}: {result.get('success')}")
+                    results.append(result)
+
+                except UploadWorkerCancelled:
+                    logger.info(f"[CANCEL] Upload cancelled during execution for file {file_id}")
+                    task.terminate()
+                    results.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': 'Upload process cancelled'
+                    })
+
+                except UploadWorkerTimeout:
+                    logger.error(f"[MULTIPROCESS] Upload process for {file_id} timed out")
+                    task.terminate()
+                    results.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': 'Upload process timed out'
+                    })
+
+                except UploadWorkerTerminated as worker_error:
+                    logger.error(f"[MULTIPROCESS] Upload worker terminated for {file_id}: {worker_error}")
+                    results.append({
+                        'file_id': file_id,
+                        'success': False,
+                        'error': 'Upload worker exited unexpectedly'
+                    })
+
                 except Exception as e:
                     logger.error(f"[MULTIPROCESS] Exception handling upload process for {file_id}: {str(e)}")
                     results.append({
@@ -330,22 +328,17 @@ class FileProviderManager:
                         'success': False,
                         'error': str(e)
                     })
+
                 finally:
                     cancellation_manager.unregister_task(file_id, 'process')
-                    try:
-                        conn.close()
-                    except:
-                        pass
-        
+
         except Exception as e:
             logger.error(f"[MULTIPROCESS] Critical error in multiprocessing upload: {str(e)}")
-            for file_id, proc_info in active_processes.items():
-                process = proc_info['process']
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=1)
-                    if process.is_alive():
-                        process.kill()
+            for file_id, task in active_tasks.items():
+                try:
+                    task.terminate()
+                except Exception:
+                    pass
                 cancellation_manager.unregister_task(file_id, 'process')
             raise
         
