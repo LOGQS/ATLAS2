@@ -14,6 +14,7 @@ package-lock.json
 # Data and Logs
 logs/
 data/
+*.log
 
 # IDE / OS specific
 .vscode/
@@ -24,4 +25,5 @@ CLAUDE.md
 
 # Notes/Guides
 *_guide.md
+notes.md
 # *.md
