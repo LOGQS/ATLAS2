@@ -57,6 +57,16 @@ interface FileStateEvent extends BaseSSEEvent {
   provider?: string;
 }
 
+type FilesystemEventType = 'created' | 'deleted' | 'modified' | 'moved';
+
+interface FileSystemEvent extends BaseSSEEvent {
+  type: 'filesystem';
+  event?: FilesystemEventType;
+  path?: string;
+  previous_path?: string;
+  is_directory?: boolean;
+}
+
 interface RouterDecisionEvent extends BaseSSEEvent {
   type: 'router_decision';
   selected_route?: string;
@@ -70,7 +80,7 @@ interface ErrorEvent extends BaseSSEEvent {
   message_id?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | RouterDecisionEvent | ErrorEvent;
+type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | ErrorEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -123,6 +133,19 @@ class LiveStore {
     logger.info(`[LiveStore] File state event: ${ev.file_id} (temp:${ev.temp_id}) -> ${ev.api_state}`);
     window.dispatchEvent(new CustomEvent('fileStateUpdate', {
       detail: { file_id: ev.file_id, api_state: ev.api_state, provider: ev.provider, temp_id: ev.temp_id }
+    }));
+  }
+
+  private handleFilesystemEvent(ev: FileSystemEvent): void {
+    const action = ev.event || 'modified';
+    logger.info(`[LiveStore] Filesystem event: ${action} -> ${ev.path}`);
+    window.dispatchEvent(new CustomEvent('filesystemChange', {
+      detail: {
+        action,
+        path: ev.path || '',
+        previousPath: ev.previous_path || null,
+        isDirectory: Boolean(ev.is_directory)
+      }
     }));
   }
 
@@ -273,6 +296,11 @@ class LiveStore {
         
         if (ev.type === 'file_state') {
           this.handleFileStateEvent(ev as FileStateEvent);
+          return;
+        }
+
+        if (ev.type === 'filesystem') {
+          this.handleFilesystemEvent(ev as FileSystemEvent);
           return;
         }
 
