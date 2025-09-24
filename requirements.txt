@@ -5,3 +5,4 @@ google-genai
 markitdown[all]
 groq
 faster-whisper
+watchdog

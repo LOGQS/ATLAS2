@@ -14,18 +14,20 @@ import atexit
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
 
-from route.chat_route import register_chat_routes
+from route.chat_route import register_chat_routes, broadcast_global_event
 from route.agent_routes import register_agent_routes
 from route.db_chat_management_route import register_db_chat_management_routes
 from route.db_message_route import register_db_message_routes
 from route.db_bulk_route import register_db_bulk_routes
 from route.db_versioning_route import register_db_versioning_routes
 from route.file_route import register_file_routes
+from route.file_browser_route import register_file_browser_routes
 from route.stt_route import register_stt_routes
 from route.image_route import image_bp
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
+from file_utils.filesystem_watcher import start_filesystem_monitor, stop_filesystem_monitor
 from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 
@@ -59,6 +61,11 @@ def handle_shutdown(signum=None, frame=None):
             logger.info("[POOL-SHUTDOWN] No worker pool to shutdown")
     except Exception as e:
         logger.error(f"[POOL-SHUTDOWN] Error shutting down worker pool: {e}")
+
+    try:
+        stop_filesystem_monitor()
+    except Exception as exc:
+        logger.error(f"[FILE_WATCHER] Error stopping filesystem monitor: {exc}")
 
     try:
         updated_count = db.set_all_chats_static()
@@ -102,8 +109,14 @@ def create_app():
     register_db_bulk_routes(app)
     register_db_versioning_routes(app)
     register_file_routes(app)
+    register_file_browser_routes(app)
     register_stt_routes(app)
     app.register_blueprint(image_bp)
+
+    try:
+        start_filesystem_monitor(broadcast_global_event)
+    except Exception as exc:
+        logger.error(f"[FILE_WATCHER] Failed to start filesystem monitor: {exc}")
     
     @app.route('/health')
     def health_check():

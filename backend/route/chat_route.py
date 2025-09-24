@@ -136,6 +136,11 @@ def _broadcast(event: dict):
             except queue.Full:
                 _subscribers.remove(q)
 
+
+def broadcast_global_event(event: dict) -> None:
+    """Expose broadcasting for subsystems that share the SSE stream."""
+    _broadcast(event)
+
 def get_active_streaming_chats():
     """Get all chats currently in thinking or responding state"""
     try:

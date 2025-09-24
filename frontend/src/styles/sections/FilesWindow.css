@@ -1,0 +1,475 @@
+.files-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: #f5f5f7;
+  position: relative;
+}
+
+.files-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.files-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.files-header p {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.files-highlight {
+  color: #6cc6ff;
+  font-weight: 500;
+}
+
+.files-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.files-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: linear-gradient(140deg, rgba(126, 207, 255, 0.35), rgba(255, 255, 255, 0.08));
+  color: #ffffff;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(10px);
+}
+
+.files-action-btn.subtle {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.files-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.files-action-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(108, 198, 255, 0.3);
+}
+
+.files-action-btn .icon {
+  font-size: 14px;
+}
+
+.files-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+
+.files-banner.error {
+  background: rgba(255, 76, 97, 0.15);
+  border: 1px solid rgba(255, 76, 97, 0.3);
+  color: #ffb3bd;
+}
+
+.files-banner button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.files-body {
+  display: flex;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+.files-tree {
+  width: 220px;
+  padding: 16px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  overflow-y: auto;
+}
+
+.files-empty-tree {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.files-tree-node + .files-tree-node {
+  margin-top: 4px;
+}
+
+.files-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-tree-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.files-tree-row.active {
+  background: rgba(108, 198, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(108, 198, 255, 0.35);
+}
+
+.files-tree-toggle {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.07);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-tree-toggle.empty {
+  opacity: 0.35;
+}
+
+.files-tree-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.files-tree-toggle::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid rgba(255, 255, 255, 0.65);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.65);
+  transform: rotate(-45deg);
+  transition: transform 0.2s ease;
+}
+
+.files-tree-toggle.open::after {
+  transform: rotate(45deg);
+}
+
+.files-tree-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.3px;
+}
+
+.files-tree-children {
+  margin-top: 4px;
+}
+
+.files-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 18px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  min-width: 0;
+}
+
+.files-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.files-breadcrumbs .crumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 4px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-breadcrumbs .crumb.current {
+  color: #ffffff;
+  border-color: rgba(108, 198, 255, 0.5);
+  background: rgba(108, 198, 255, 0.2);
+}
+
+.files-breadcrumbs .crumb:not(.current):hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.files-breadcrumbs .separator {
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 12px;
+}
+
+.files-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.files-table-header,
+.files-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 2.4fr) minmax(80px, 0.8fr) minmax(90px, 0.8fr) minmax(120px, 1.1fr) minmax(140px, 1fr);
+  align-items: center;
+  padding: 10px 16px;
+  gap: 12px;
+}
+
+.files-table-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.files-table-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.files-row {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.files-row:last-child {
+  border-bottom: none;
+}
+
+.files-row:hover:not(.creating):not(.editing) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.files-row.editing {
+  background: rgba(108, 198, 255, 0.15);
+}
+
+.files-row.creating {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.cell-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.cell-content.file,
+.cell-content.directory {
+  cursor: pointer;
+}
+
+.cell-content .icon {
+  font-size: 16px;
+}
+
+.files-row input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.files-row input:focus {
+  outline: none;
+  border-color: rgba(108, 198, 255, 0.6);
+  background: rgba(108, 198, 255, 0.1);
+}
+
+.files-row .col.actions {
+  display: inline-flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.files-row .col.actions button {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-row .col.actions button.primary {
+  background: linear-gradient(135deg, rgba(108, 198, 255, 0.85), rgba(120, 75, 209, 0.8));
+  border-color: transparent;
+}
+
+.files-row .col.actions button.destructive {
+  background: rgba(255, 84, 112, 0.25);
+  border-color: rgba(255, 84, 112, 0.45);
+  color: #ffb3bd;
+}
+
+.files-row .col.actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.files-row .col.actions button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 14px rgba(108, 198, 255, 0.25);
+}
+
+.files-row .col.actions button.destructive:not(:disabled):hover {
+  box-shadow: 0 5px 14px rgba(255, 84, 112, 0.3);
+}
+
+.files-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.files-empty h4 {
+  margin: 0 0 6px 0;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.files-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+}
+
+.files-loading .spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(108, 198, 255, 0.8);
+  animation: files-spin 0.9s linear infinite;
+}
+
+@keyframes files-spin {
+  to { transform: rotate(360deg); }
+}
+
+.files-delete-confirmation {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  z-index: 10;
+}
+
+.files-delete-confirmation .card {
+  background: rgba(20, 20, 20, 0.95);
+  border-radius: 16px;
+  padding: 20px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  width: 320px;
+  text-align: center;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+
+.files-delete-confirmation h4 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  color: #ffffff;
+}
+
+.files-delete-confirmation p {
+  margin: 0 0 18px 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.files-delete-confirmation .actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.files-delete-confirmation button {
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-delete-confirmation button.destructive {
+  background: rgba(255, 84, 112, 0.9);
+  color: #ffffff;
+}
+
+.files-delete-confirmation button.destructive:hover {
+  background: rgba(255, 84, 112, 1);
+}
+
+.files-delete-confirmation button:not(.destructive) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.files-delete-confirmation button:not(.destructive):hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@media (max-width: 960px) {
+  .files-body {
+    flex-direction: column;
+  }
+
+  .files-tree {
+    width: 100%;
+    max-height: 160px;
+  }
+}

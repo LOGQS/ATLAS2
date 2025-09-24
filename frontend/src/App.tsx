@@ -16,6 +16,7 @@ import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
+import FilesWindow from './sections/FilesWindow';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
@@ -1310,13 +1311,13 @@ function App() {
       
       {/* Modals - consolidated rendering */}
       {[
-        { id: 'gallery', className: 'gallery-modal', content: <GalleryWindow /> },
-        { id: 'search', className: 'search-modal', content: <SearchWindow /> },
-        { id: 'settings', className: 'settings-modal', content: <SettingsWindow /> },
-        { id: 'profiles', className: 'profiles-modal', content: <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
-        { id: 'files', className: 'files-modal', content: <KnowledgeSection activeSubsection="files" onSubsectionChange={() => {}} /> },
-        { id: 'folders', className: 'folders-modal', content: <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} /> },
-        { id: 'web', className: 'web-modal', content: <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} /> },
+        { id: 'gallery', className: 'gallery-modal', render: () => <GalleryWindow /> },
+        { id: 'search', className: 'search-modal', render: () => <SearchWindow /> },
+        { id: 'settings', className: 'settings-modal', render: () => <SettingsWindow /> },
+        { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
+        { id: 'files', className: 'files-modal', render: (isOpen: boolean) => <FilesWindow isOpen={isOpen} /> },
+        { id: 'folders', className: 'folders-modal', render: () => <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} /> },
+        { id: 'web', className: 'web-modal', render: () => <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}
@@ -1324,7 +1325,7 @@ function App() {
           onClose={handleCloseModal}
           className={modal.className}
         >
-          {modal.content}
+          {modal.render(activeModal === modal.id)}
         </ModalWindow>
       ))}
 
