@@ -12,6 +12,7 @@ import multiprocessing
 import threading
 import queue
 import time
+import uuid
 from typing import Optional, Tuple, Any
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,13 +23,9 @@ if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
 from utils.logger import get_logger
+from utils.config import Config
 
-logger = get_logger(__name__)
-
-DEFAULT_POOL_SIZE = 4  # MAX_CONCURRENT_STREAMS + 1
-MAX_PARALLEL_SPAWN = 5  
-WORKER_INIT_TIMEOUT = 20.0
-EMERGENCY_SPAWN_THRESHOLD = 0  
+logger = get_logger(__name__)  
 
 
 @dataclass
@@ -48,8 +45,8 @@ class WorkerPool:
     immediately when consumed to maintain zero-latency availability.
     """
 
-    def __init__(self, pool_size: int = DEFAULT_POOL_SIZE,
-                 max_parallel_spawn: int = MAX_PARALLEL_SPAWN):
+    def __init__(self, pool_size: Optional[int] = None,
+                 max_parallel_spawn: Optional[int] = None):
         """
         Initialize the worker pool.
 
@@ -57,8 +54,8 @@ class WorkerPool:
             pool_size: Target number of ready workers to maintain
             max_parallel_spawn: Maximum workers to spawn simultaneously
         """
-        self.pool_size = pool_size
-        self.max_parallel_spawn = max_parallel_spawn
+        self.pool_size = pool_size or Config.get_worker_pool_size()
+        self.max_parallel_spawn = max_parallel_spawn or Config.get_worker_max_parallel_spawn()
 
         self._ready_workers = queue.Queue()
 
@@ -72,12 +69,6 @@ class WorkerPool:
         self._worker_counter = 0
 
         self._populate_pool()
-
-        self._monitor_thread = threading.Thread(
-            target=self._monitor_pool,
-            daemon=True
-        )
-        self._monitor_thread.start()
 
         logger.info(f"WorkerPool initialized with target size {pool_size}")
 
@@ -96,12 +87,12 @@ class WorkerPool:
         try:
             from chat.chat_worker import start_chat_process
 
-            placeholder_chat_id = f"pool_placeholder_{worker_id}"
+            placeholder_chat_id = f"__pool_internal_{uuid.uuid4().hex[:8]}"
 
             logger.debug(f"Spawning worker {worker_id}")
             process, conn = start_chat_process(placeholder_chat_id)
 
-            if conn.poll(WORKER_INIT_TIMEOUT):
+            if conn.poll(Config.get_worker_init_timeout()):
                 response = conn.recv()
                 if response.get('success'):
                     worker = PooledWorker(
@@ -171,18 +162,13 @@ class WorkerPool:
             logger.info(f"Populating pool: need {needed} workers (ready={current_ready}, spawning={current_spawning})")
             self._spawn_workers_parallel(needed)
 
-    def _monitor_pool(self) -> None:
-        """Monitor thread that maintains pool size"""
-        while not self._shutdown:
-            try:
-                time.sleep(1.0)
-
-                self._cleanup_dead_workers()
-
-                self._populate_pool()
-
-            except Exception as e:
-                logger.error(f"Pool monitor error: {e}")
+    def _lazy_maintenance(self) -> None:
+        """Perform lazy maintenance when needed (no polling)"""
+        try:
+            self._cleanup_dead_workers()
+            self._populate_pool()
+        except Exception as e:
+            logger.error(f"Pool maintenance error: {e}")
 
     def _cleanup_dead_workers(self) -> None:
         """Remove dead workers from ready queue"""
@@ -218,6 +204,8 @@ class WorkerPool:
         Returns:
             Tuple of (process, connection) or None if unavailable
         """
+        self._lazy_maintenance()
+
         stats_before = self.get_stats()
         logger.info(f"[POOL-GET] Request for chat {chat_id} - Pool state: ready={stats_before['ready_workers']}, spawning={stats_before['spawning_workers']}, total={stats_before['total_workers']}")
 
@@ -307,10 +295,7 @@ def initialize_pool(pool_size: Optional[int] = None) -> WorkerPool:
     with _pool_lock:
         if _worker_pool is None:
             if pool_size is None:
-                try:
-                    pool_size = 4
-                except:
-                    pool_size = DEFAULT_POOL_SIZE
+                pool_size = Config.get_worker_pool_size()
 
             _worker_pool = WorkerPool(pool_size=pool_size)
             logger.info(f"Initialized global worker pool with size {pool_size}")

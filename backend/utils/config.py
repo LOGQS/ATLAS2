@@ -71,6 +71,10 @@ class Config:
     STT_USE_CLOUD = True
     STT_PROVIDER = "groq"
     STT_MODEL = "whisper-large-v3-turbo"
+
+    WORKER_POOL_SIZE = 4
+    WORKER_MAX_PARALLEL_SPAWN = 5
+    WORKER_INIT_TIMEOUT = 20.0
     
     @classmethod
     def get_default_provider(cls) -> str:
@@ -143,3 +147,18 @@ class Config:
     def get_available_providers(cls) -> list:
         """Get list of available provider names."""
         return list(get_provider_map().keys())
+
+    @classmethod
+    def get_worker_pool_size(cls) -> int:
+        """Get worker pool size."""
+        return cls.WORKER_POOL_SIZE
+
+    @classmethod
+    def get_worker_max_parallel_spawn(cls) -> int:
+        """Get max parallel worker spawn count."""
+        return cls.WORKER_MAX_PARALLEL_SPAWN
+
+    @classmethod
+    def get_worker_init_timeout(cls) -> float:
+        """Get worker initialization timeout."""
+        return cls.WORKER_INIT_TIMEOUT

@@ -169,7 +169,8 @@ if __name__ == '__main__':
 
         def init_pool_background():
             try:
-                pool_size = 4
+                from utils.config import Config
+                pool_size = Config.get_worker_pool_size()
                 logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
                 pool = initialize_pool(pool_size=pool_size)
 
