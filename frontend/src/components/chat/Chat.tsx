@@ -331,6 +331,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     const container = messagesEndRef.current?.parentElement;
     if (container) {
+      scrollControl.notifyProgrammaticScroll();
       container.scrollTop = container.scrollHeight;
     }
   }, [scrollControl]);
@@ -339,6 +340,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     scrollControl.resetToAutoScroll();
     const container = messagesEndRef.current?.parentElement;
     if (container) {
+      scrollControl.notifyProgrammaticScroll();
       container.scrollTop = container.scrollHeight;
     }
   }, [scrollControl]);
@@ -553,9 +555,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     needsScrollRestoreRef.current = false;
     scrollRestoreBaselineRef.current = messages;
+    scrollControl.notifyProgrammaticScroll();
     container.scrollTop = container.scrollHeight;
     resetToAutoScroll();
-  }, [chatId, messages, resetToAutoScroll]);
+  }, [chatId, messages, resetToAutoScroll, scrollControl]);
 
   useEffect(() => {
     const container = messagesEndRef.current?.parentElement as HTMLElement | null;

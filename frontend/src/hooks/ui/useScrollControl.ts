@@ -19,10 +19,13 @@ const SCROLL_CONFIG = {
   THRESHOLDS: {
     AT_BOTTOM_MIN: 15,
     AT_BOTTOM_MAX: 100,
+    REJOIN_TOLERANCE: 300, 
+    REJOIN_MIN_VELOCITY: 0.5, 
     LARGE_CONTENT: 50000,
     SCROLL_DELTA_BASE: { thinkbox: 1, chat: 2 } as const,
     ADAPTIVE_MAX: { normal: 35, large: 50 },
-    SCROLLBAR_WIDTH: 20
+    SCROLLBAR_WIDTH: 20,
+    MIN_SCROLL_DOWN_DELTA: 10 
   }
 } as const;
 
@@ -30,6 +33,7 @@ interface ScrollControlActions {
   shouldAutoScroll: () => boolean;
   onStreamStart: () => void;
   resetToAutoScroll: () => void;
+  notifyProgrammaticScroll: () => void;
 }
 
 interface UseScrollControlOptions {
@@ -53,7 +57,11 @@ export function useScrollControl({
   const isScrollbarDragging = useRef<boolean>(false);
   const lastScrollTime = useRef<number>(0);
   const programmaticScrolling = useRef<boolean>(false);
-  const contentChangeTimeout = useRef<NodeJS.Timeout | undefined>(undefined);
+  const programmaticScrollEndTime = useRef<number>(0);
+  const lastUserInputTime = useRef<number>(0);
+  const scrollVelocity = useRef<number>(0);
+  const isActivelyScrollingDown = useRef<boolean>(false);
+  const consecutiveDownScrolls = useRef<number>(0);
 
   const handleUserScroll = useCallback(() => {
     setIsUserScrolling(true);
@@ -71,28 +79,36 @@ export function useScrollControl({
     if (!container || !isUserInitiated) return;
 
     const { scrollTop, scrollHeight, clientHeight } = container;
-    
-    const viewportFactor = Math.max(clientHeight / SCROLL_CONFIG.SCROLL_FACTORS.VIEWPORT_BASE, SCROLL_CONFIG.SCROLL_FACTORS.VIEWPORT_MIN); 
-    
-    const now = Date.now();
-    const timeDelta = Math.max(now - lastScrollTime.current, 16);
+
+    const now = performance.now();
+    const timeDelta = Math.max(now - lastScrollTime.current, 1);
     const scrollSpeed = Math.abs(scrollTop - lastScrollTop.current) / timeDelta;
-    const velocityFactor = Math.min(1 + scrollSpeed * SCROLL_CONFIG.SCROLL_FACTORS.VELOCITY_MULTIPLIER, SCROLL_CONFIG.SCROLL_FACTORS.VELOCITY_MAX); 
-    
-    const baseAtBottomThreshold = scrollHeight * SCROLL_CONFIG.SCROLL_FACTORS.HEIGHT_FACTOR * viewportFactor * velocityFactor;
-    const atBottomThreshold = Math.min(Math.max(baseAtBottomThreshold, SCROLL_CONFIG.THRESHOLDS.AT_BOTTOM_MIN), SCROLL_CONFIG.THRESHOLDS.AT_BOTTOM_MAX);
-    const isAtBottom = Math.abs(scrollTop + clientHeight - scrollHeight) < atBottomThreshold;
-    
+
     const scrolledUp = scrollTop < lastScrollTop.current;
-    const scrollDelta = Math.abs(scrollTop - lastScrollTop.current);
+    const scrolledDown = scrollTop > lastScrollTop.current;
+    const scrollDelta = scrollTop - lastScrollTop.current;
+    const scrollDeltaAbs = Math.abs(scrollDelta);
+
+    scrollVelocity.current = scrollDelta / timeDelta;
+
+    if (scrolledDown && scrollDelta >= SCROLL_CONFIG.THRESHOLDS.MIN_SCROLL_DOWN_DELTA) {
+      consecutiveDownScrolls.current++;
+      isActivelyScrollingDown.current = consecutiveDownScrolls.current >= 2;
+    } else if (scrolledUp) {
+      consecutiveDownScrolls.current = 0;
+      isActivelyScrollingDown.current = false;
+    }
+
+    const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+    const isWithinRejoinTolerance = distanceFromBottom < SCROLL_CONFIG.THRESHOLDS.REJOIN_TOLERANCE;
 
     const baseMinDelta = scrollType === 'thinkbox' ? 1 : 2;
     const adaptiveMaxDelta = scrollHeight > 50000 ? 50 : 35;
     const minScrollDelta = Math.min(Math.max(scrollHeight * 0.0005, baseMinDelta), adaptiveMaxDelta);
-    
-    logger.debug(`[SCROLL-RELATIVE] ${scrollType}-${chatId || 'unknown'}: scrollHeight=${scrollHeight}px, viewport=${clientHeight}px, speed=${scrollSpeed.toFixed(3)}px/ms, velocity×${velocityFactor.toFixed(1)}, atBottom=${atBottomThreshold.toFixed(1)}px, minDelta=${minScrollDelta.toFixed(1)}px`);
-    
-    if (scrollDelta < minScrollDelta) {
+
+    logger.debug(`[SCROLL-RELATIVE] ${scrollType}-${chatId || 'unknown'}: scrollHeight=${scrollHeight}px, viewport=${clientHeight}px, speed=${scrollSpeed.toFixed(3)}px/ms, velocity=${scrollVelocity.current.toFixed(3)}px/ms, distFromBottom=${distanceFromBottom.toFixed(0)}px, rejoinZone=${isWithinRejoinTolerance}, activeDown=${isActivelyScrollingDown.current}`);
+
+    if (scrollDeltaAbs < minScrollDelta) {
       return;
     }
 
@@ -101,10 +117,18 @@ export function useScrollControl({
       setScrollDown(false);
       userDisabledAutoScroll.current = true;
     }
-    else if (isAtBottom && !scrollDown && isUserScrolling && isUserInitiated) {
-      logger.info(`[SCROLL] User manually scrolled to bottom (${scrollType}-${chatId || 'unknown'}), enabling auto-scroll`);
-      setScrollDown(true);
-      userDisabledAutoScroll.current = false;
+    else if (!scrollDown && isUserScrolling && isUserInitiated) {
+      const shouldRejoin = isWithinRejoinTolerance &&
+                           isActivelyScrollingDown.current &&
+                           scrollVelocity.current > SCROLL_CONFIG.THRESHOLDS.REJOIN_MIN_VELOCITY;
+
+      if (shouldRejoin) {
+        logger.info(`[SCROLL] User actively scrolling down within rejoin zone (${scrollType}-${chatId || 'unknown'}), velocity=${scrollVelocity.current.toFixed(3)}px/ms, distance=${distanceFromBottom.toFixed(0)}px, enabling auto-scroll`);
+        setScrollDown(true);
+        userDisabledAutoScroll.current = false;
+        consecutiveDownScrolls.current = 0;
+        isActivelyScrollingDown.current = false;
+      }
     }
 
     lastScrollTop.current = scrollTop;
@@ -157,28 +181,50 @@ export function useScrollControl({
     if (!container) return;
 
     const handleScroll = createScrollHandler('User scroll', (event, container) => {
-      if (programmaticScrolling.current) return false;
-      
-      const now = Date.now();
-      if (now - lastScrollTime.current > 16) {
-        lastScrollTime.current = now;
-        return true; 
+      const now = performance.now();
+
+      if (programmaticScrolling.current && (now - programmaticScrollEndTime.current < 100)) {
+        consecutiveDownScrolls.current = 0;
+        isActivelyScrollingDown.current = false;
+        return false;
       }
-      return false; 
+
+      const isNearUserInput = (now - lastUserInputTime.current) < 50;
+      if (isNearUserInput) {
+        programmaticScrolling.current = false;
+      }
+
+      lastScrollTime.current = now;
+      return true;
     });
 
-    const handleWheel = createScrollHandler('Mouse wheel');
+    const handleWheel = createScrollHandler('Mouse wheel', (event) => {
+      lastUserInputTime.current = performance.now();
+      programmaticScrolling.current = false;
+
+      if (event.deltaY > 0) {
+        consecutiveDownScrolls.current = Math.min(consecutiveDownScrolls.current + 1, 3);
+        isActivelyScrollingDown.current = true;
+      } else if (event.deltaY < 0) {
+        consecutiveDownScrolls.current = 0;
+        isActivelyScrollingDown.current = false;
+      }
+
+      return true;
+    });
 
     const handleMouseDown = createScrollHandler('Scrollbar drag started', (event, container) => {
       const rect = container.getBoundingClientRect();
       const clickX = event.clientX - rect.left;
       const isScrollbarClick = clickX > container.clientWidth - SCROLL_CONFIG.THRESHOLDS.SCROLLBAR_WIDTH;
-      
+
       if (isScrollbarClick) {
+        lastUserInputTime.current = performance.now();
+        programmaticScrolling.current = false;
         isScrollbarDragging.current = true;
-        return true; 
+        return true;
       }
-      return false; 
+      return false;
     });
 
     const handleMouseUp = () => {
@@ -192,12 +238,21 @@ export function useScrollControl({
     const handleKeyDown = createScrollHandler('keyboard scroll', (event, container) => {
       const isValidTarget = container.contains(event.target as Node) || event.target === container;
       if (!isValidTarget) return false;
-      
+
       const scrollKeys = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
-      return scrollKeys.includes(event.key);
+      if (scrollKeys.includes(event.key)) {
+        lastUserInputTime.current = performance.now();
+        programmaticScrolling.current = false;
+        return true;
+      }
+      return false;
     });
 
-    const handleTouchStart = createScrollHandler('touch scroll started');
+    const handleTouchStart = createScrollHandler('touch scroll started', () => {
+      lastUserInputTime.current = performance.now();
+      programmaticScrolling.current = false;
+      return true;
+    });
 
     container.addEventListener('scroll', handleScroll, { passive: true });
     container.addEventListener('wheel', handleWheel, { passive: true });
@@ -257,30 +312,36 @@ export function useScrollControl({
     if (streamingState !== 'static') {
       onStreamStart();
     }
-    
-    if (scrollType === 'thinkbox') {
-      programmaticScrolling.current = true;
-      if (contentChangeTimeout.current) {
-        clearTimeout(contentChangeTimeout.current);
-      }
-      contentChangeTimeout.current = setTimeout(() => {
+  }, [streamingState, onStreamStart]);
+
+  const notifyProgrammaticScroll = useCallback(() => {
+    logger.debug(`[SCROLL] Programmatic scroll notification for ${scrollType}-${chatId || 'unknown'}`);
+    programmaticScrolling.current = true;
+    programmaticScrollEndTime.current = performance.now();
+
+    consecutiveDownScrolls.current = 0;
+    isActivelyScrollingDown.current = false;
+    scrollVelocity.current = 0;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
         programmaticScrolling.current = false;
-      }, streamingState === 'static' ? SCROLL_CONFIG.PROGRAMMATIC_SCROLL_TIMEOUT.STATIC : SCROLL_CONFIG.PROGRAMMATIC_SCROLL_TIMEOUT.STREAMING); 
-    }
-  }, [streamingState, onStreamStart, scrollType]);
+      });
+    });
+  }, [chatId, scrollType]);
 
   useEffect(() => {
     logger.info(`[SCROLL] Initializing scroll control for ${scrollType}-${chatId || 'unknown'} with scrollDown = true`);
     setScrollDown(true);
     setIsUserScrolling(false);
     userDisabledAutoScroll.current = false;
-    
+    consecutiveDownScrolls.current = 0;
+    isActivelyScrollingDown.current = false;
+    scrollVelocity.current = 0;
+
     return () => {
       if (userScrollTimeout.current) {
         clearTimeout(userScrollTimeout.current);
-      }
-      if (contentChangeTimeout.current) {
-        clearTimeout(contentChangeTimeout.current);
       }
     };
   }, [chatId, scrollType]);
@@ -288,7 +349,8 @@ export function useScrollControl({
   return {
     shouldAutoScroll,
     onStreamStart,
-    resetToAutoScroll
+    resetToAutoScroll,
+    notifyProgrammaticScroll
   };
 }
 

@@ -15,6 +15,7 @@ interface ThinkBoxProps {
     shouldAutoScroll: () => boolean;
     onStreamStart: () => void;
     resetToAutoScroll: () => void;
+    notifyProgrammaticScroll: () => void;
   };
 }
 
@@ -44,13 +45,14 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
     if (!thinkBoxScrollControl.shouldAutoScroll()) {
       return;
     }
-    
+
     if (chatScrollControl && !chatScrollControl.shouldAutoScroll()) {
       return;
     }
-    
+
     requestAnimationFrame(() => {
       if (thoughtsEndRef.current) {
+        thinkBoxScrollControl.notifyProgrammaticScroll();
         thoughtsEndRef.current.scrollIntoView({ behavior: 'smooth' });
       }
     });
@@ -81,6 +83,7 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
           const thinkBoxElement = thoughtsEndRef.current;
           const chatContainer = thinkBoxElement?.closest('.chat-messages')?.querySelector('.messages-container');
           if (chatContainer) {
+            chatScrollControl.notifyProgrammaticScroll();
             chatContainer.scrollTop = chatContainer.scrollHeight;
             logger.info(`[SCROLL] ThinkBox triggered scroll to bottom for chat: ${chatId || 'unknown'}`);
           }
