@@ -2,7 +2,7 @@
 
 from typing import Dict, Optional, List
 from utils.logger import get_logger
-from utils.config import Config, ROUTE_MODEL_MAP, available_routes
+from utils.config import Config, ROUTE_MODEL_MAP, available_routes, infer_provider_from_model
 from utils.format_validator import extract_route_choice
 from context.context_manager import get_router_context
 
@@ -28,8 +28,11 @@ class Router:
         """
         if not self.router_enabled:
             logger.debug("Router disabled, using default model")
+            default_model = Config.get_default_model()
+            default_provider = infer_provider_from_model(default_model)
             return {
-                'model': Config.get_default_model(),
+                'model': default_model,
+                'provider': default_provider,
                 'route': None,
                 'available_routes': available_routes
             }
@@ -59,18 +62,23 @@ class Router:
 
             route_choice = extract_route_choice(router_response)
             selected_model = ROUTE_MODEL_MAP.get(route_choice, Config.get_default_model())
+            selected_provider = infer_provider_from_model(selected_model)
 
-            logger.info(f"Router decision: {route_choice} -> {selected_model}")
+            logger.info(f"Router decision: {route_choice} -> {selected_model} ({selected_provider} provider)")
             return {
                 'model': selected_model,
+                'provider': selected_provider,
                 'route': route_choice,
                 'available_routes': available_routes
             }
 
         except Exception as e:
             logger.error(f"Router error, falling back to default model: {str(e)}")
+            default_model = Config.get_default_model()
+            default_provider = infer_provider_from_model(default_model)
             return {
-                'model': Config.get_default_model(),
+                'model': default_model,
+                'provider': default_provider,
                 'route': None,
                 'available_routes': available_routes
             }

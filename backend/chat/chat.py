@@ -502,9 +502,9 @@ class Chat:
     
     def _prepare_streaming_context(self, provider: str, model: str, **config_params):
         """Common setup logic for streaming methods"""
-        if provider is None:
+        if not provider:
             provider = Config.get_default_provider()
-        if model is None:
+        if not model:
             model = Config.get_default_model()
         
         if provider not in self.providers or not self.providers[provider].is_available():
@@ -584,9 +584,15 @@ class Chat:
             if use_router and Config.get_default_router_state():
                 from agents.roles.router import router
                 chat_history = self.get_chat_history()
-                selected_model = router.route_request(message, chat_history)
-                model = selected_model
-                logger.info(f"Router selected model: {model}")
+                router_response = router.route_request(message, chat_history)
+                model = router_response['model']
+                provider = router_response['provider']
+                logger.info(f"Router selected: {model} with provider {provider}")
+            else:
+                if not provider:
+                    provider = Config.get_default_provider()
+                if not model:
+                    model = Config.get_default_model()
 
             db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
@@ -631,7 +637,7 @@ class Chat:
     
     def generate_text_stream(self, message: str, provider: Optional[str] = None,
                            model: Optional[str] = None, include_reasoning: bool = True,
-                           attached_file_ids: List[str] = None, **config_params) -> Generator[Dict[str, Any], None, None]:
+                           attached_file_ids: List[str] = None, use_router: bool = True, **config_params) -> Generator[Dict[str, Any], None, None]:
         """
         Generate streaming text response
         
@@ -647,6 +653,16 @@ class Chat:
             Streaming response chunks
         """
         from route.chat_route import publish_state
+
+        is_router_call = self.chat_id.startswith("router_temp_")
+        if not is_router_call and use_router and Config.get_default_router_state():
+            from agents.roles.router import router
+            chat_history = self.get_chat_history()
+            router_response = router.route_request(message, chat_history)
+            model = router_response['model']
+            provider = router_response['provider']
+            logger.info(f"Router selected for streaming: {model} with provider {provider}")
+
         db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
         
         config_params['include_reasoning'] = include_reasoning
@@ -718,15 +734,23 @@ class Chat:
     
     def start_background_processing(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
-                                  attached_file_ids: List[str] = None, **config_params) -> bool:
+                                  attached_file_ids: List[str] = None, use_router: bool = True, **config_params) -> bool:
         """
         Start background processing of a message (non-blocking)
         Returns True if started successfully, False if already running
         """
-        if provider is None:
-            provider = Config.get_default_provider()
-        if model is None:
-            model = Config.get_default_model()
+        if use_router and Config.get_default_router_state():
+            from agents.roles.router import router
+            chat_history = self.get_chat_history()
+            router_response = router.route_request(message, chat_history)
+            model = router_response['model']
+            provider = router_response['provider']
+            logger.info(f"Router selected for background processing: {model} with provider {provider}")
+        else:
+            if not provider:
+                provider = Config.get_default_provider()
+            if not model:
+                model = Config.get_default_model()
             
         is_edit_regeneration = config_params.get('is_edit_regeneration', False)
         existing_message_id = config_params.get('existing_message_id')

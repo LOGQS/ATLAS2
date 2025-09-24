@@ -40,17 +40,35 @@ available_routes = [
         "route_name": "complex",
         "route_description": "Complex reasoning and analysis tasks",
         "route_context": "Use for code generation, detailed analysis, multi-step problems, technical questions"
+    },
+    {
+        "route_name": "fast",
+        "route_description": "Fast responses",
+        "route_context": "Use when the user requests a fast response, prioritizing speed over depth."
     }
 ]
 
 ROUTE_MODEL_MAP = {
     "simple": "gemini-2.5-flash",
-    "complex": "gemini-2.5-pro"
+    "complex": "gemini-2.5-pro",
+    "fast": "openai/gpt-oss-120b"
 }
 
 def get_router_map():
     """Get map of all available routes and their descriptions."""
     return ROUTE_MODEL_MAP
+
+def infer_provider_from_model(model: str) -> str:
+    """Automatically infer the provider from the model name by checking available models in each provider."""
+    provider_map = get_provider_map()
+
+    for provider_name, provider_instance in provider_map.items():
+        if provider_instance.is_available():
+            available_models = provider_instance.get_available_models()
+            if model in available_models:
+                return provider_name
+
+    return Config.get_default_provider()
 
 
 class Config:
