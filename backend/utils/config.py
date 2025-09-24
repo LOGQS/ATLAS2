@@ -1,18 +1,34 @@
 # status: complete
 
 from typing import Dict, Any
+import threading
+
+
+_provider_cache = None
+_provider_lock = threading.Lock()
 
 
 def get_provider_map() -> Dict[str, Any]:
-    """Get map of all available provider instances."""
-    from chat.providers import Gemini, HuggingFace, OpenRouter, Groq
+    """Get map of all available provider instances (cached as singletons)."""
+    global _provider_cache
 
-    return {
-        "gemini": Gemini(),
-        "huggingface": HuggingFace(),
-        "openrouter": OpenRouter(),
-        "groq": Groq()
-    }
+    if _provider_cache is not None:
+        return _provider_cache
+
+    with _provider_lock:
+        if _provider_cache is not None:
+            return _provider_cache
+
+        from chat.providers import Gemini, HuggingFace, OpenRouter, Groq
+
+        _provider_cache = {
+            "gemini": Gemini(),
+            "huggingface": HuggingFace(),
+            "openrouter": OpenRouter(),
+            "groq": Groq()
+        }
+
+        return _provider_cache
 
 available_routes = [
     {

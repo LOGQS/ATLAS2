@@ -3,6 +3,8 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 import os
+import threading
+import time
 import sys
 import multiprocessing
 from pathlib import Path
@@ -25,6 +27,7 @@ from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
 from utils.db_utils import db
+from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 
 logger = get_logger(__name__)
 
@@ -44,6 +47,18 @@ def handle_shutdown(signum=None, frame=None):
 
     if signum:
         logger.info(f"Received signal: {signum}")
+
+    try:
+        pool = get_pool()
+        if pool:
+            stats = pool.get_stats()
+            logger.info(f"[POOL-SHUTDOWN] Shutting down worker pool - Stats: ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
+            shutdown_pool()
+            logger.info("[POOL-SHUTDOWN] Worker pool shut down successfully")
+        else:
+            logger.info("[POOL-SHUTDOWN] No worker pool to shutdown")
+    except Exception as e:
+        logger.error(f"[POOL-SHUTDOWN] Error shutting down worker pool: {e}")
 
     try:
         updated_count = db.set_all_chats_static()
@@ -148,6 +163,34 @@ if __name__ == '__main__':
         pass
 
     app = create_app()
+
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        logger.info("[POOL-INIT] Starting worker pool initialization in background...")
+
+        def init_pool_background():
+            try:
+                pool_size = 4
+                logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
+                pool = initialize_pool(pool_size=pool_size)
+
+                stats = pool.get_stats()
+                logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
+
+                for i in range(6):
+                    time.sleep(5)
+                    stats = pool.get_stats()
+                    logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
+                    if stats['ready_workers'] >= stats['target_size']:
+                        logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
+                        break
+            except Exception as e:
+                logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
+                logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
+
+        pool_thread = threading.Thread(target=init_pool_background, daemon=True)
+        pool_thread.start()
+    else:
+        logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
 
     logger.info("Registering shutdown handlers...")
 

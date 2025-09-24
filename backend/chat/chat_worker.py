@@ -136,10 +136,12 @@ def chat_worker(chat_id: str, child_conn) -> None:
                             if processing_active:
                                 child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id})
                                 continue
-                            
+
                             try:
                                 processing_active = True
-                                
+
+                                actual_chat_id = command.get('chat_id', chat_id)
+
                                 message = command.get('message')
                                 provider = command.get('provider', Config.get_default_provider())
                                 model = command.get('model', Config.get_default_model())
@@ -150,13 +152,13 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 router_result = None
                                 if Config.get_default_router_state():
                                     from agents.roles.router import router
-                                    chat_history = db.get_chat_history(chat_id)
-                                    router_result = router.route_request(message, chat_history)
+                                    chat_history = db.get_chat_history(actual_chat_id)
+                                    router_result = router.route_request(message, chat_history, providers)  # type: ignore
                                     model = router_result['model']
 
                                     child_conn.send({
                                         'type': 'router_decision',
-                                        'chat_id': chat_id,
+                                        'chat_id': actual_chat_id,
                                         'selected_route': router_result['route'],
                                         'available_routes': router_result['available_routes'],
                                         'selected_model': model
@@ -165,7 +167,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model}")
 
                                 _process_message_in_worker(
-                                    chat_id, db, providers, message, provider, model,
+                                    actual_chat_id, db, providers, message, provider, model,
                                     include_reasoning, attached_file_ids, user_message_id,
                                     child_conn, worker_logger, current_content,
                                     router_result=router_result

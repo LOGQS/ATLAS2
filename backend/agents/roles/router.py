@@ -16,7 +16,7 @@ class Router:
         self.router_enabled = Config.get_default_router_state()
         logger.info(f"Router initialized - enabled: {self.router_enabled}, model: {self.router_model}")
 
-    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None) -> Dict[str, str]:
+    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None, providers=None) -> Dict[str, str]:
         """Route a request to the appropriate model.
 
         Args:
@@ -37,7 +37,7 @@ class Router:
         try:
             router_context = get_router_context(chat_history, message)
             router_prompt = self._build_router_prompt(router_context)
-            router_response = self._call_router_model(router_prompt)
+            router_response = self._call_router_model(router_prompt, providers)
 
             logger.info("=" * 60)
             logger.info("ROUTER REQUEST DUMP:")
@@ -95,28 +95,38 @@ class Router:
 
         return prompt
 
-    def _call_router_model(self, prompt: str) -> str:
+    def _call_router_model(self, prompt: str, providers=None) -> str:
         """Call the router model with the prompt.
 
         Args:
             prompt: The complete router prompt
+            providers: Optional provider instances to use (avoids Chat creation)
 
         Returns:
             The router model's response
         """
-        from chat.chat import Chat
-        import uuid
+        if providers and "gemini" in providers and providers["gemini"].is_available():
+            response = providers["gemini"].generate_text(
+                prompt=prompt,
+                model=self.router_model,
+                include_thoughts=False,
+                chat_history=[],
+                file_attachments=[]
+            )
+        else:
+            from chat.chat import Chat
+            import uuid
 
-        temp_chat_id = f"router_temp_{uuid.uuid4()}"
-        chat = Chat(chat_id=temp_chat_id)
+            temp_chat_id = f"router_temp_{uuid.uuid4()}"
+            chat = Chat(chat_id=temp_chat_id)
 
-        response = chat.generate_text(
-            message=prompt,
-            provider="gemini",
-            model=self.router_model,
-            include_reasoning=False, 
-            use_router=False 
-        )
+            response = chat.generate_text(
+                message=prompt,
+                provider="gemini",
+                model=self.router_model,
+                include_reasoning=False,
+                use_router=False
+            )
 
         if response.get("error"):
             raise ValueError(f"Router model error: {response['error']}")

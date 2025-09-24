@@ -221,54 +221,85 @@ def _prepare_background_process(chat_id: str) -> bool:
     return True
 
 def _initialize_chat_process(chat_id: str):
-    """Initialize a new chat process"""
-    from chat.chat_worker import start_chat_process
-    
-    process, conn = start_chat_process(chat_id)
+    """Initialize a new chat process - try pool first, then spawn if needed"""
+    from chat.worker_pool import get_pooled_worker, get_pool
+    import time
+
+    pool = get_pool()
+    if pool:
+        stats = pool.get_stats()
+        logger.info(f"[CHAT-INIT] Pool available for {chat_id} - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}")
+    else:
+        logger.info(f"[CHAT-INIT] No pool available for {chat_id}, will spawn directly")
+
+    start_time = time.time()
+    pooled = get_pooled_worker(chat_id)
+
+    is_pooled = False
+    if pooled:
+        process, conn = pooled
+        is_pooled = True
+        elapsed = time.time() - start_time
+        logger.info(f"[CHAT-INIT] ✓ POOLED worker acquired for {chat_id} in {elapsed:.3f}s (ZERO SPAWN TIME!)")
+    else:
+        logger.warning(f"[CHAT-INIT] ✗ Pool miss for {chat_id}, falling back to direct spawn")
+        from chat.chat_worker import start_chat_process
+        spawn_start = time.time()
+        process, conn = start_chat_process(chat_id)
+        spawn_elapsed = time.time() - spawn_start
+        logger.info(f"[CHAT-INIT] Direct spawn completed for {chat_id} in {spawn_elapsed:.3f}s")
+
     _chat_processes[chat_id] = process
     _chat_process_connections[chat_id] = conn
     _chat_process_status[chat_id] = 'starting'
     cancellation_manager.register_process(chat_id, process)
-    return process, conn
+    return process, conn, is_pooled
 
-def _configure_chat_process(conn, chat_id: str, message: str, provider: str, model: str, 
-                          include_reasoning: bool, attached_file_ids: List[str], 
-                          user_message_id: int, is_retry: bool) -> bool:
+def _configure_chat_process(conn, chat_id: str, message: str, provider: str, model: str,
+                          include_reasoning: bool, attached_file_ids: List[str],
+                          user_message_id: int, is_retry: bool, is_pooled: bool = False) -> bool:
     """Configure and start the chat process"""
-    if conn.poll(INIT_RESPONSE_TIMEOUT):
-        response = conn.recv()
-        if response.get('success'):
-            _chat_process_status[chat_id] = 'running'
-            
-            conn.send({
-                'command': 'process',
-                'message': message,
-                'provider': provider,
-                'model': model,
-                'include_reasoning': include_reasoning,
-                'attached_file_ids': attached_file_ids,
-                'user_message_id': user_message_id,
-                'is_retry': is_retry
-            })
-            
-            relay_thread = threading.Thread(
-                target=_relay_worker_messages,
-                args=(chat_id, conn),
-                daemon=True
-            )
-            relay_thread.start()
-            
-            logger.info(f"Started background processing for chat {chat_id}")
-            return True
+    if is_pooled:
+        logger.debug(f"[CHAT-CONFIG] Using pre-initialized pooled worker for {chat_id}")
+        _chat_process_status[chat_id] = 'running'
+        logger.info(f"[CHAT-CONFIG] Pooled worker ready for {chat_id}")
+    else:
+        if conn.poll(INIT_RESPONSE_TIMEOUT):
+            init_response = conn.recv()
+            if init_response and init_response.get('success'):
+                _chat_process_status[chat_id] = 'running'
+                logger.info(f"[CHAT-CONFIG] New worker initialized for {chat_id}")
+            else:
+                error = init_response.get('error', 'Unknown initialization error') if init_response else 'No response'
+                logger.error(f"[CHAT-CONFIG] Failed to initialize chat process {chat_id}: {error}")
+                cleanup_completed_processes()
+                return False
         else:
-            error = response.get('error', 'Unknown initialization error')
-            logger.error(f"Failed to initialize chat process {chat_id}: {error}")
+            logger.error(f"[CHAT-CONFIG] Chat process initialization timeout for {chat_id}")
             cleanup_completed_processes()
             return False
-    else:
-        logger.error(f"Chat process initialization timeout for {chat_id}")
-        cleanup_completed_processes()
-        return False
+
+    conn.send({
+        'command': 'process',
+        'chat_id': chat_id,
+        'message': message,
+        'provider': provider,
+        'model': model,
+        'include_reasoning': include_reasoning,
+        'attached_file_ids': attached_file_ids,
+        'user_message_id': user_message_id,
+        'is_retry': is_retry
+    })
+
+    relay_thread = threading.Thread(
+        target=_relay_worker_messages,
+        args=(chat_id, conn),
+        daemon=True
+    )
+    relay_thread.start()
+
+    logger.info(f"Started background processing for chat {chat_id}")
+    return True
 
 def _start_background_processing(chat_id: str, message: str, provider: str, model: str, include_reasoning: bool, attached_file_ids: List[str], user_message_id: int, is_retry: bool = False):
     """Start background processing using multiprocessing"""
@@ -278,10 +309,10 @@ def _start_background_processing(chat_id: str, message: str, provider: str, mode
             return False
         
         try:
-            process, conn = _initialize_chat_process(chat_id)
+            process, conn, is_pooled = _initialize_chat_process(chat_id)
             return _configure_chat_process(conn, chat_id, message, provider, model,
-                                         include_reasoning, attached_file_ids, 
-                                         user_message_id, is_retry)
+                                         include_reasoning, attached_file_ids,
+                                         user_message_id, is_retry, is_pooled)
                 
         except (OSError, IOError) as e:
             logger.error(f"System error starting chat process for {chat_id}: {str(e)}")
