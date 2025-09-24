@@ -337,6 +337,7 @@ def _relay_worker_messages(chat_id: str, conn):
         logger.info(f"Started message relay for chat {chat_id}")
 
         queue_drained = False
+        pending_terminal_chunk = None
         while True:
             try:
                 if conn.poll(POLL_INTERVAL):
@@ -364,38 +365,50 @@ def _relay_worker_messages(chat_id: str, conn):
                     elif message_type == 'content':
                         content_type = message.get('content_type')
                         content = message.get('content', '')
+
                         if content_type:
                             extras = {
                                 key: value for key, value in message.items()
                                 if key not in {'type', 'content_type', 'content', 'chat_id'}
                             }
+
+                            if content_type in {'complete', 'error'}:
+                                pending_terminal_chunk = (content_type, content, extras)
+
+                                if content_type == 'complete':
+                                    logger.info(f"[RELAY] Processing completed for chat {chat_id}")
+                                    with _chat_processes_lock:
+                                        _chat_process_status[chat_id] = 'completed'
+                                else:
+                                    logger.info(f"[RELAY] Error received for chat {chat_id}")
+                                    with _chat_processes_lock:
+                                        _chat_process_status[chat_id] = 'completed'
+
+                                drained = wait_for_queue_drain(chat_id, timeout=0.5)
+                                if not drained:
+                                    logger.info(
+                                        f"[RELAY] No active client for {chat_id}, force clearing queue before finalizing"
+                                    )
+                                    from route.chat_route import content_queues, _content_queues_lock
+                                    with _content_queues_lock:
+                                        q = content_queues.get(chat_id)
+                                        if q:
+                                            drained_count = 0
+                                            try:
+                                                while not q.empty():
+                                                    q.get_nowait()
+                                                    drained_count += 1
+                                            except Exception:
+                                                pass
+                                            logger.info(
+                                                f"[RELAY] Force drained {drained_count} items from queue for {chat_id}"
+                                            )
+
+                                queue_drained = drained
+                                break
+
                             publish_content(chat_id, content_type, content, **extras)
                             logger.debug(f"[RELAY] Published content for {chat_id}: {content_type}")
-
-                    if message_type == 'content' and message.get('content_type') == 'complete':
-                        logger.info(f"[RELAY] Processing completed for chat {chat_id}")
-                        with _chat_processes_lock:
-                            _chat_process_status[chat_id] = 'completed'
-
-                        drained = wait_for_queue_drain(chat_id, timeout=0.5)
-                        if not drained:
-                            logger.info(f"[RELAY] No active client for {chat_id}, force clearing queue and cleaning up process")
-                            from route.chat_route import content_queues, _content_queues_lock
-                            with _content_queues_lock:
-                                q = content_queues.get(chat_id)
-                                if q:
-                                    drained_count = 0
-                                    try:
-                                        while not q.empty():
-                                            q.get_nowait()
-                                            drained_count += 1
-                                    except:
-                                        pass
-                                    logger.info(f"[RELAY] Force drained {drained_count} items from queue for {chat_id}")
-                            threading.Thread(target=cleanup_completed_processes, daemon=True).start()
-
-                        queue_drained = drained
-                        break
                 
                 with _chat_processes_lock:
                     process = _chat_processes.get(chat_id)
@@ -416,11 +429,21 @@ def _relay_worker_messages(chat_id: str, conn):
         logger.info(f"[RELAY] Message relay stopped for {chat_id}")
         if not queue_drained:
             wait_for_queue_drain(chat_id)
+
         with _chat_processes_lock:
-            if chat_id in _chat_process_status:
+            if chat_id in _chat_process_status and _chat_process_status[chat_id] != 'completed':
                 _chat_process_status[chat_id] = 'completed'
-        
-        threading.Thread(target=cleanup_completed_processes, daemon=True).start()
+
+        if pending_terminal_chunk:
+            cleanup_completed_processes()
+            try:
+                terminal_type, terminal_content, terminal_extras = pending_terminal_chunk
+                publish_content(chat_id, terminal_type, terminal_content, **terminal_extras)
+                logger.debug(f"[RELAY] Published deferred terminal chunk for {chat_id}: {terminal_type}")
+            except Exception as publish_error:
+                logger.warning(f"[RELAY] Failed to publish deferred terminal chunk for {chat_id}: {publish_error}")
+        else:
+            threading.Thread(target=cleanup_completed_processes, daemon=True).start()
 
 class Chat:
     """
