@@ -312,19 +312,21 @@ class DatabaseManager:
         if not self._validate_string(chat_id, "chat_id"):
             return False
 
-        def create_operation(conn, cursor):
-            cursor.execute(
-                "INSERT INTO chats (id, name, system_prompt, isversion, belongsto, last_active) VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, name, system_prompt, 1 if isversion else 0, belongsto, last_active)
-            )
-            conn.commit()
-            logger.info(f"Created new chat: {chat_id}")
-            return True
-
         try:
-            return self._execute_with_connection("creating chat", create_operation, False)
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO chats (id, name, system_prompt, isversion, belongsto, last_active) VALUES (?, ?, ?, ?, ?, ?)",
+                    (chat_id, name, system_prompt, 1 if isversion else 0, belongsto, last_active)
+                )
+                conn.commit()
+                logger.info(f"Created new chat: {chat_id}")
+                return True
         except sqlite3.IntegrityError:
-            logger.warning(f"Chat already exists: {chat_id}")
+            logger.debug(f"Chat already exists: {chat_id}")
+            return False
+        except Exception as e:
+            logger.error(f"Error creating chat: {str(e)}")
             return False
 
     def _generate_message_id(self, chat_id: str) -> str:

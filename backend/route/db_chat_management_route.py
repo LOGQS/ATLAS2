@@ -85,8 +85,11 @@ class ChatManagementRoute:
         """Get specific chat with full history and verify file availability"""
         try:
             if not db.chat_exists(chat_id):
-                logger.info(f"Chat {chat_id} doesn't exist, creating it")
-                db.create_chat(chat_id, None)
+                logger.info(f"Chat {chat_id} doesn't exist yet, returning empty history")
+                return ResponseBuilder.success(data={
+                    'chat_id': chat_id,
+                    'history': []
+                })
 
             verification_result = db.verify_files_availability(chat_id)
             logger.info(f"File verification for chat {chat_id}: {verification_result}")
