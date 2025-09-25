@@ -1019,6 +1019,8 @@ function App() {
     disabled: isSendDisabled
   });
 
+  void forceRender;
+
   const handleActionButtonClick = useCallback((source: 'center' | 'bottom') => {
     logger.info(`[SEND_DEBUG] ${source === 'center' ? 'Center' : 'Bottom'} send button clicked:`, {
       activeChatId,
