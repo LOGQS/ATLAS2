@@ -155,16 +155,18 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     chat_history = db.get_chat_history(actual_chat_id)
                                     router_result = router.route_request(message, chat_history, providers)  # type: ignore
                                     model = router_result['model']
+                                    provider = router_result['provider']
 
                                     child_conn.send({
                                         'type': 'router_decision',
                                         'chat_id': actual_chat_id,
                                         'selected_route': router_result['route'],
                                         'available_routes': router_result['available_routes'],
-                                        'selected_model': model
+                                        'selected_model': model,
+                                        'selected_provider': provider
                                     })
 
-                                    worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model}")
+                                    worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
 
                                 _process_message_in_worker(
                                     actual_chat_id, db, providers, message, provider, model,
@@ -264,7 +266,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         router_decision = json.dumps({
             'route': router_result['route'],
             'available_routes': router_result['available_routes'],
-            'selected_model': router_result['model']
+            'selected_model': router_result['model'],
+            'selected_provider': router_result['provider']
         })
 
     assistant_message_id = db.save_message(
