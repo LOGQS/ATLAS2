@@ -93,6 +93,11 @@ function App() {
       return;
     }
 
+    if (awaitingAIResponseRef.current) {
+      logger.info('[VOICE_CHAT] Discarding transcription while awaiting AI response', { text: trimmed });
+      return;
+    }
+
     voiceTranscriptQueueRef.current.push(trimmed);
     logger.info('[VOICE_CHAT] Queued transcribed voice message', { queueLength: voiceTranscriptQueueRef.current.length });
     flushVoiceQueueRef.current?.();
@@ -971,10 +976,24 @@ function App() {
       return;
     }
 
-    const nextMessage = voiceTranscriptQueueRef.current.shift();
-    if (!nextMessage) {
+    if (awaitingAIResponseRef.current) {
+      logger.debug('[VOICE_CHAT] Awaiting AI response - skipping queued transcription dispatch');
       return;
     }
+
+    const nextMessage = voiceTranscriptQueueRef.current.shift();
+    const residualTranscripts = voiceTranscriptQueueRef.current.splice(0);
+    if (residualTranscripts.length > 0) {
+      logger.info('[VOICE_CHAT] Clearing residual voice transcriptions queued during the pending response', { discarded: residualTranscripts.length });
+    }
+    if (!nextMessage) {
+      voiceTranscriptQueueRef.current.push(...residualTranscripts);
+      return;
+    }
+
+    const restoreQueue = () => {
+      voiceTranscriptQueueRef.current = [nextMessage, ...residualTranscripts, ...voiceTranscriptQueueRef.current];
+    };
 
     isProcessingVoiceQueueRef.current = true;
     setIsSendingVoiceMessage(true);
@@ -989,13 +1008,13 @@ function App() {
       source: 'voice'
     }).then((sent) => {
       if (!sent) {
-        voiceTranscriptQueueRef.current.unshift(nextMessage);
+        restoreQueue();
         awaitingAIResponseRef.current = false;
       }
       setIsSendingVoiceMessage(false);
     }).catch((error) => {
       logger.error('[VOICE_CHAT] Failed to send queued voice message:', error);
-      voiceTranscriptQueueRef.current.unshift(nextMessage);
+      restoreQueue();
       awaitingAIResponseRef.current = false;
       setIsSendingVoiceMessage(false);
     }).finally(() => {
