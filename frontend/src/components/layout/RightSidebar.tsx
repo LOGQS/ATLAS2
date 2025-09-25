@@ -1,6 +1,6 @@
 // status: complete
 
-import React, { useState} from 'react';
+import { useState } from 'react';
 import '../../styles/layout/RightSidebar.css';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import logger from '../../utils/core/logger';
@@ -95,15 +95,8 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal, chatId }) => {
                   className="sidebar-item"
                   onClick={() => handleSubsectionClick('files')}
                 >
-                  <div className="sidebar-icon document-icon"></div>
-                  Files
-                </div>
-                <div 
-                  className="sidebar-item"
-                  onClick={() => handleSubsectionClick('folders')}
-                >
                   <div className="sidebar-icon folder-icon"></div>
-                  Folders
+                  Workspace
                 </div>
                 <div 
                   className="sidebar-item"

@@ -463,6 +463,54 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* Pending operation indicator */
+.files-row.pending-operation {
+  position: relative;
+  opacity: 0.7;
+}
+
+.files-row.pending-operation::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  background: linear-gradient(45deg, #4a90e2, #6cc6ff);
+  border-radius: 2px;
+  transform: translateY(-50%);
+  animation: pendingPulse 1.5s infinite ease-in-out;
+}
+
+@keyframes pendingPulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: translateY(-50%) scaleY(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-50%) scaleY(1);
+  }
+}
+
+.files-row.pending-operation .cell-content {
+  position: relative;
+}
+
+.files-row.pending-operation .icon {
+  opacity: 0.6;
+  animation: iconSpin 2s linear infinite;
+}
+
+@keyframes iconSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 960px) {
   .files-body {
     flex-direction: column;

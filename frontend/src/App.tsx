@@ -900,8 +900,15 @@ function App() {
   };
 
   const handleEditChat = async (chatId: string, newName: string) => {
+    logger.info('Updating chat name:', chatId, newName);
+
+    const originalChats = chats;
+
+    setChats(prev => prev.map(chat =>
+      chat.id === chatId ? { ...chat, name: newName } : chat
+    ));
+
     try {
-      logger.info('Updating chat name:', chatId, newName);
       const response = await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
         method: 'PUT',
         headers: {
@@ -909,18 +916,17 @@ function App() {
         },
         body: JSON.stringify({ name: newName })
       });
-      
+
       if (response.ok) {
         logger.info('Chat name updated successfully');
-        setChats(prev => prev.map(chat => 
-          chat.id === chatId ? { ...chat, name: newName } : chat
-        ));
       } else {
         const data = await response.json();
         logger.error('Failed to update chat name:', data.error);
+        setChats(originalChats);
       }
     } catch (error) {
       logger.error('Failed to update chat name:', error);
+      setChats(originalChats);
     }
   };
 
@@ -1012,8 +1018,6 @@ function App() {
     onFilesDropped: handleFileSelectionImmediate,
     disabled: isSendDisabled
   });
-
-  void forceRender;
 
   const handleActionButtonClick = useCallback((source: 'center' | 'bottom') => {
     logger.info(`[SEND_DEBUG] ${source === 'center' ? 'Center' : 'Bottom'} send button clicked:`, {
@@ -1316,7 +1320,6 @@ function App() {
         { id: 'settings', className: 'settings-modal', render: () => <SettingsWindow /> },
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
         { id: 'files', className: 'files-modal', render: (isOpen: boolean) => <FilesWindow isOpen={isOpen} /> },
-        { id: 'folders', className: 'folders-modal', render: () => <KnowledgeSection activeSubsection="folders" onSubsectionChange={() => {}} /> },
         { id: 'web', className: 'web-modal', render: () => <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} /> },
       ].map(modal => (
         <ModalWindow

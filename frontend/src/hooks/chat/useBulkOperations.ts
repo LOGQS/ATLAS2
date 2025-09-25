@@ -31,8 +31,29 @@ export const useBulkOperations = ({
 }: UseBulkOperationsProps): UseBulkOperationsReturn => {
 
   const handleBulkDelete = useCallback(async (chatIds: string[]) => {
+    logger.info('Bulk deleting chats:', chatIds);
+
+    const originalChats = await new Promise<ChatItem[]>(resolve => {
+      setChats(prev => {
+        resolve([...prev]);
+        return prev;
+      });
+    });
+    const originalPendingMessages = await new Promise<Map<string, string>>(resolve => {
+      setPendingFirstMessages(prev => {
+        resolve(new Map(prev));
+        return prev;
+      });
+    });
+
+    setChats(prev => prev.filter(chat => !chatIds.includes(chat.id)));
+    setPendingFirstMessages(prev => {
+      const newMap = new Map(prev);
+      chatIds.forEach(id => newMap.delete(id));
+      return newMap;
+    });
+
     try {
-      logger.info('Bulk deleting chats:', chatIds);
       const response = await fetch(apiUrl('/api/db/chats/bulk-delete'), {
         method: 'POST',
         headers: {
@@ -44,17 +65,7 @@ export const useBulkOperations = ({
       if (response.ok) {
         const data = await response.json();
         logger.info('Bulk delete completed:', data.message);
-
-        const actuallyDeletedChats = data.deleted_chats || chatIds;
-        logger.info(`[BULK_DELETE] Removed ${actuallyDeletedChats.length} chats from UI (requested: ${chatIds.length}, cascade: ${data.cascade_deleted})`);
-
-        setChats(prev => prev.filter(chat => !actuallyDeletedChats.includes(chat.id)));
-
-        setPendingFirstMessages(prev => {
-          const newMap = new Map(prev);
-          actuallyDeletedChats.forEach((id: string) => newMap.delete(id));
-          return newMap;
-        });
+        logger.info(`[BULK_DELETE] Successfully deleted ${data.deleted_chats?.length || chatIds.length} chats (cascade: ${data.cascade_deleted})`);
 
         if (data.active_chat_cleared) {
           logger.info('[BULK_DELETE] Active chat was cleared by backend, creating new chat');
@@ -63,9 +74,13 @@ export const useBulkOperations = ({
       } else {
         const data = await response.json();
         logger.error('Failed to bulk delete chats:', data.error);
+        setChats(originalChats);
+        setPendingFirstMessages(originalPendingMessages);
       }
     } catch (error) {
       logger.error('Failed to bulk delete chats:', error);
+      setChats(originalChats);
+      setPendingFirstMessages(originalPendingMessages);
     }
   }, [setChats, setPendingFirstMessages, handleNewChat]);
 

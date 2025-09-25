@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import '../styles/sections/FilesWindow.css';
-import { FileBrowserNode, FileBrowserNodeType, useFileBrowser } from '../hooks/files/useFileBrowser';
+import { FileBrowserNode, FileBrowserNodeType, useLiveFileBrowser } from '../hooks/files/useLiveFileBrowser';
 
 interface FilesWindowProps {
   isOpen: boolean;
@@ -53,15 +53,15 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
     refresh,
     createNode,
     renameNode,
-    deleteNode
-  } = useFileBrowser(isOpen);
+    deleteNode,
+    pendingOperations
+  } = useLiveFileBrowser(isOpen);
 
   const [pendingCreation, setPendingCreation] = useState<FileBrowserNodeType | null>(null);
   const [creationName, setCreationName] = useState('');
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<FileBrowserNode | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -92,15 +92,17 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
     if (!pendingCreation) return;
     const trimmed = creationName.trim();
     if (!trimmed) return;
-    setActionLoading(true);
-    try {
-      await createNode(directoryPath, trimmed, pendingCreation);
-      setPendingCreation(null);
-      setCreationName('');
-    } catch (err) {
-      // error state handled within hook
-    } finally {
-      setActionLoading(false);
+
+    const previousCreationType = pendingCreation;
+    const previousCreationName = creationName;
+
+    setPendingCreation(null);
+    setCreationName('');
+
+    const result = await createNode(directoryPath, trimmed, previousCreationType);
+    if (!result.success) {
+      setPendingCreation(previousCreationType);
+      setCreationName(previousCreationName);
     }
   };
 
@@ -108,28 +110,30 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
     if (!renamingPath) return;
     const trimmed = renameValue.trim();
     if (!trimmed) return;
-    setActionLoading(true);
-    try {
-      await renameNode(renamingPath, trimmed);
-      setRenamingPath(null);
-      setRenameValue('');
-    } catch (err) {
-      // handled in hook
-    } finally {
-      setActionLoading(false);
+
+    const previousRenamingPath = renamingPath;
+    const previousRenameValue = renameValue;
+
+    setRenamingPath(null);
+    setRenameValue('');
+
+    const result = await renameNode(previousRenamingPath, trimmed);
+    if (!result.success) {
+      setRenamingPath(previousRenamingPath);
+      setRenameValue(previousRenameValue);
     }
   };
 
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
-    setActionLoading(true);
-    try {
-      await deleteNode(deleteTarget.path);
-      setDeleteTarget(null);
-    } catch (err) {
-      // handled in hook
-    } finally {
-      setActionLoading(false);
+
+    const previousDeleteTarget = deleteTarget;
+
+    setDeleteTarget(null);
+
+    const result = await deleteNode(previousDeleteTarget.path);
+    if (!result.success) {
+      setDeleteTarget(previousDeleteTarget);
     }
   };
 
@@ -182,7 +186,6 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
           <button
             className="files-action-btn"
             onClick={() => handleStartCreate('directory')}
-            disabled={actionLoading}
           >
             <span className="icon">📁</span>
             New Folder
@@ -190,7 +193,6 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
           <button
             className="files-action-btn"
             onClick={() => handleStartCreate('file')}
-            disabled={actionLoading}
           >
             <span className="icon">📄</span>
             New File
@@ -198,7 +200,7 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
           <button
             className="files-action-btn subtle"
             onClick={refresh}
-            disabled={loading || actionLoading}
+            disabled={loading}
           >
             <span className="icon">↻</span>
             Refresh
@@ -266,7 +268,7 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
                   <div className="col size">—</div>
                   <div className="col modified">—</div>
                   <div className="col actions">
-                    <button className="primary" onClick={handleCreateSubmit} disabled={actionLoading}>Create</button>
+                    <button className="primary" onClick={handleCreateSubmit}>Create</button>
                     <button onClick={() => { setPendingCreation(null); setCreationName(''); }}>Cancel</button>
                   </div>
                 </div>
@@ -290,8 +292,12 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
 
               {items.map((item) => {
                 const isRenaming = renamingPath === item.path;
+                const hasPendingOperation = pendingOperations.some(op =>
+                  op.data.path === item.path ||
+                  (op.type === 'create' && op.data.parentPath === directoryPath && op.data.name === item.name)
+                );
                 return (
-                  <div key={item.path} className={`files-row ${isRenaming ? 'editing' : ''}`}>
+                  <div key={item.path} className={`files-row ${isRenaming ? 'editing' : ''} ${hasPendingOperation ? 'pending-operation' : ''}`}>
                     <div className="col name" onClick={() => item.type === 'directory' && selectPath(item.path)}>
                       <div className={`cell-content ${item.type}`}>
                         {isRenaming ? (
@@ -321,13 +327,13 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
                     <div className="col actions">
                       {isRenaming ? (
                         <>
-                          <button className="primary" onClick={handleRenameSubmit} disabled={actionLoading}>Save</button>
+                          <button className="primary" onClick={handleRenameSubmit}>Save</button>
                           <button onClick={() => setRenamingPath(null)}>Cancel</button>
                         </>
                       ) : (
                         <>
-                          <button onClick={() => { setRenamingPath(item.path); setRenameValue(item.name); setPendingCreation(null); }} disabled={actionLoading}>Rename</button>
-                          <button className="destructive" onClick={() => setDeleteTarget(item)} disabled={actionLoading}>Delete</button>
+                          <button onClick={() => { setRenamingPath(item.path); setRenameValue(item.name); setPendingCreation(null); }}>Rename</button>
+                          <button className="destructive" onClick={() => setDeleteTarget(item)}>Delete</button>
                         </>
                       )}
                     </div>
@@ -345,8 +351,8 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
             <h4>Delete “{deleteTarget.name}”?</h4>
             <p>This will permanently remove the {deleteTarget.type === 'directory' ? 'folder and its contents' : 'file'}.</p>
             <div className="actions">
-              <button className="destructive" onClick={handleDeleteConfirm} disabled={actionLoading}>Delete</button>
-              <button onClick={() => setDeleteTarget(null)} disabled={actionLoading}>Cancel</button>
+              <button className="destructive" onClick={handleDeleteConfirm}>Delete</button>
+              <button onClick={() => setDeleteTarget(null)}>Cancel</button>
             </div>
           </div>
         </div>
