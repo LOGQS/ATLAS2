@@ -677,6 +677,412 @@ body.chat-active .main-content {
   color: rgba(100, 200, 255, 0.9);
 }
 
+/* Voice State Background Animation Layer */
+.voice-state-bg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+/* Idle State - Gentle breathing */
+.send-button.voice-state-idle {
+  border-color: rgba(100, 200, 255, 0.3);
+  animation: voiceIdleBreathe 4s ease-in-out infinite;
+}
+
+@keyframes voiceIdleBreathe {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(100, 200, 255, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(100, 200, 255, 0.15);
+  }
+}
+
+.voice-icon-container.state-idle .voice-bar {
+  animation: voiceBarIdle 3s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.voice-icon-container.state-idle .voice-bar.bar-main {
+  animation: voiceBarIdleMain 3s ease-in-out infinite;
+}
+
+@keyframes voiceBarIdle {
+  0%, 100% {
+    transform: scaleY(0.8);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 0.7;
+  }
+}
+
+@keyframes voiceBarIdleMain {
+  0%, 100% {
+    transform: scaleY(0.7);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(0.85);
+    opacity: 0.7;
+  }
+}
+
+/* Listening State - Active blue glow and dancing bars */
+.send-button.voice-state-listening {
+  border-color: rgba(100, 200, 255, 0.6);
+  box-shadow: 0 0 30px rgba(100, 200, 255, 0.3);
+  animation: voiceListeningGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes voiceListeningGlow {
+  0%, 100% {
+    box-shadow: 0 0 25px rgba(100, 200, 255, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 35px rgba(100, 200, 255, 0.4);
+  }
+}
+
+.voice-state-bg.listening {
+  opacity: 1;
+  background: radial-gradient(circle at center,
+    rgba(100, 200, 255, 0.1) 0%,
+    rgba(100, 200, 255, 0.05) 40%,
+    transparent 70%);
+  animation: voiceListeningPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes voiceListeningPulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.2);
+  }
+}
+
+.voice-icon-container.state-listening .voice-bar {
+  color: rgba(100, 200, 255, 0.9);
+  animation: voiceBarDance 0.8s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+.voice-icon-container.state-listening .voice-bar.bar-1 {
+  animation-delay: 0s;
+}
+
+.voice-icon-container.state-listening .voice-bar.bar-2 {
+  animation-delay: 0.1s;
+}
+
+.voice-icon-container.state-listening .voice-bar.bar-main {
+  animation: voiceBarDanceMain 0.6s ease-in-out infinite;
+  animation-delay: 0.2s;
+}
+
+.voice-icon-container.state-listening .voice-bar.bar-3 {
+  animation-delay: 0.3s;
+}
+
+.voice-icon-container.state-listening .voice-bar.bar-4 {
+  animation-delay: 0.4s;
+}
+
+@keyframes voiceBarDance {
+  0%, 100% {
+    transform: scaleY(0.6);
+  }
+  25% {
+    transform: scaleY(1.3);
+  }
+  50% {
+    transform: scaleY(0.4);
+  }
+  75% {
+    transform: scaleY(1.1);
+  }
+}
+
+@keyframes voiceBarDanceMain {
+  0%, 100% {
+    transform: scaleY(0.5);
+  }
+  25% {
+    transform: scaleY(0.9);
+  }
+  50% {
+    transform: scaleY(0.35);
+  }
+  75% {
+    transform: scaleY(0.8);
+  }
+}
+
+/* Processing State - Orange spinning effect */
+.send-button.voice-state-processing {
+  border-color: rgba(255, 165, 0, 0.5);
+  box-shadow: 0 0 25px rgba(255, 165, 0, 0.2);
+  animation: voiceProcessingShimmer 1s linear infinite;
+}
+
+@keyframes voiceProcessingShimmer {
+  0% {
+    box-shadow: 0 0 25px rgba(255, 165, 0, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(255, 165, 0, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 25px rgba(255, 165, 0, 0.2);
+  }
+}
+
+.voice-state-bg.processing {
+  opacity: 1;
+  background: conic-gradient(from 0deg at center,
+    transparent 0deg,
+    rgba(255, 165, 0, 0.1) 90deg,
+    transparent 180deg,
+    rgba(255, 165, 0, 0.1) 270deg,
+    transparent 360deg);
+  animation: voiceProcessingSpin 1.5s linear infinite;
+}
+
+@keyframes voiceProcessingSpin {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.voice-icon-container.state-processing .voice-bar {
+  color: rgba(255, 165, 0, 0.8);
+  animation: voiceBarMorph 0.6s ease-in-out infinite alternate;
+  transform-origin: center;
+}
+
+.voice-icon-container.state-processing .voice-bar.bar-main {
+  animation: voiceBarMorphMain 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes voiceBarMorph {
+  0% {
+    transform: scaleY(1) scaleX(1);
+  }
+  100% {
+    transform: scaleY(0.7) scaleX(1.2);
+  }
+}
+
+@keyframes voiceBarMorphMain {
+  0% {
+    transform: scaleY(0.8) scaleX(1);
+  }
+  100% {
+    transform: scaleY(0.6) scaleX(1.15);
+  }
+}
+
+/* Sending State - Green flash and burst */
+.send-button.voice-state-sending {
+  border-color: rgba(100, 255, 100, 0.6);
+  animation: voiceSendingFlash 0.5s ease-out;
+}
+
+@keyframes voiceSendingFlash {
+  0% {
+    box-shadow: 0 0 20px rgba(100, 255, 100, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(100, 255, 100, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 25px rgba(100, 255, 100, 0.15);
+  }
+}
+
+.voice-state-bg.sending {
+  opacity: 1;
+  background: radial-gradient(circle at center,
+    rgba(100, 255, 100, 0.2) 0%,
+    rgba(100, 255, 100, 0.1) 30%,
+    transparent 60%);
+  animation: voiceSendingBurst 0.5s ease-out;
+}
+
+@keyframes voiceSendingBurst {
+  0% {
+    transform: translate(-50%, -50%) scale(0.3);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.5);
+    opacity: 0;
+  }
+}
+
+.voice-icon-container.state-sending .voice-bar {
+  color: rgba(100, 255, 100, 0.9);
+  animation: voiceBarCompress 0.3s ease-out;
+}
+
+.voice-icon-container.state-sending .voice-bar.bar-main {
+  animation: voiceBarCompressMain 0.3s ease-out;
+}
+
+@keyframes voiceBarCompress {
+  0% {
+    transform: scaleY(1.5);
+  }
+  50% {
+    transform: scaleY(0.3);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes voiceBarCompressMain {
+  0% {
+    transform: scaleY(1.2);
+  }
+  50% {
+    transform: scaleY(0.25);
+  }
+  100% {
+    transform: scaleY(0.85);
+  }
+}
+
+/* Waiting State - Grey dimmed with slow orbit */
+.send-button.voice-state-waiting {
+  border-color: rgba(150, 150, 150, 0.35);
+  opacity: 0.85;
+  animation: voiceWaitingFade 2.5s ease-in-out infinite;
+}
+
+@keyframes voiceWaitingFade {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(150, 150, 150, 0.1);
+    opacity: 0.8;
+  }
+  50% {
+    box-shadow: 0 0 15px rgba(150, 150, 150, 0.15);
+    opacity: 0.9;
+  }
+}
+
+.voice-state-bg.waiting {
+  opacity: 0.5;
+  background: radial-gradient(circle at center,
+    rgba(150, 150, 150, 0.05) 0%,
+    transparent 50%);
+  animation: voiceWaitingOrbit 3s linear infinite;
+}
+
+@keyframes voiceWaitingOrbit {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.voice-icon-container.state-waiting .voice-bar {
+  color: rgba(150, 150, 150, 0.6);
+  opacity: 0.4;
+  animation: voiceBarWaiting 2s ease-in-out infinite;
+}
+
+.voice-icon-container.state-waiting .voice-bar.bar-main {
+  animation: voiceBarWaitingMain 2s ease-in-out infinite;
+}
+
+@keyframes voiceBarWaiting {
+  0%, 100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(0.6);
+  }
+}
+
+@keyframes voiceBarWaitingMain {
+  0%, 100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(0.45);
+  }
+}
+
+/* Voice mode ring state variations */
+.voice-mode-ring.listening {
+  border-color: rgba(100, 200, 255, 0.7);
+  animation: voiceRingExpand 1.5s ease-in-out infinite;
+}
+
+@keyframes voiceRingExpand {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 0.5;
+  }
+}
+
+.voice-mode-ring.processing {
+  border-color: rgba(255, 165, 0, 0.6);
+  animation: voiceRingRotate 1s linear infinite;
+}
+
+@keyframes voiceRingRotate {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.voice-mode-ring.sending {
+  border-color: rgba(100, 255, 100, 0.7);
+  animation: voiceRingSendPulse 0.5s ease-out;
+}
+
+@keyframes voiceRingSendPulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.3);
+    opacity: 0;
+  }
+}
+
+.voice-mode-ring.waiting {
+  border-color: rgba(150, 150, 150, 0.4);
+  animation: none;
+  opacity: 0.3;
+}
+
 /* Input wrapper voice chat mode styles */
 .input-wrapper.voice-chat-mode::before {
   content: '';
@@ -712,3 +1118,4 @@ body.chat-active .main-content {
 .input-wrapper.voice-chat-mode .message-input::placeholder {
   color: rgba(100, 200, 255, 0.5);
 }
+

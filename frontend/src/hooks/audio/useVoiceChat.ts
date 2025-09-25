@@ -7,12 +7,15 @@ import { apiUrl } from '../../config/api';
 const AUTO_SILENCE_TIMEOUT_MS = 2500;
 const AUTO_MIN_SEGMENT_SIZE_BYTES = 1024;
 const AUTO_SILENCE_THRESHOLD = 15;
+const MIN_SPEECH_DURATION_MS = 500;
 
 interface UseVoiceChatProps {
   onTranscriptionComplete?: (text: string, context: { source: 'manual' | 'auto' }) => void;
   holdDetectionMs?: number;
   onSpeechStart?: () => void;
   silenceDurationMs?: number;
+  onSegmentProcessing?: (processing: boolean) => void;
+  isAwaitingResponse?: () => boolean;
 }
 
 interface UseVoiceChatReturn {
@@ -29,13 +32,16 @@ interface UseVoiceChatReturn {
   setVoiceChatMode: Dispatch<SetStateAction<boolean>>;
   toggleMicMute: () => void;
   setMicMuted: Dispatch<SetStateAction<boolean>>;
+  restartListeningIfNeeded: () => void;
 }
 
 export const useVoiceChat = ({
   onTranscriptionComplete,
   onSpeechStart,
   holdDetectionMs = 700,
-  silenceDurationMs = AUTO_SILENCE_TIMEOUT_MS
+  silenceDurationMs = AUTO_SILENCE_TIMEOUT_MS,
+  onSegmentProcessing,
+  isAwaitingResponse
 }: UseVoiceChatProps = {}): UseVoiceChatReturn => {
   const [isButtonHeld, setIsButtonHeld] = useState(false);
   const [wasHoldCompleted, setWasHoldCompleted] = useState(false);
@@ -55,6 +61,7 @@ export const useVoiceChat = ({
   const silenceDurationRef = useRef(silenceDurationMs);
   const isVoiceChatModeRef = useRef(isVoiceChatMode);
   const isMicMutedRef = useRef(isMicMuted);
+  const speechStartTimeRef = useRef<number | null>(null);
 
   const finalizeAutoSegmentRef = useRef<((reason: 'silence' | 'max_duration' | 'manual') => void) | undefined>(undefined);
   const startAutoRecorderRef = useRef<(() => void) | undefined>(undefined);
@@ -158,13 +165,16 @@ export const useVoiceChat = ({
       return;
     }
 
+    onSegmentProcessing?.(true);
     autoRecorderBusyRef.current = true;
     autoRecorderRef.current = null;
 
     clearSilenceTimer();
 
     const hadActiveSegment = autoSegmentActiveRef.current;
+    const speechDuration = speechStartTimeRef.current ? Date.now() - speechStartTimeRef.current : 0;
     autoSegmentActiveRef.current = false;
+    speechStartTimeRef.current = null;
     setIsRecording(false);
     setIsSoundDetected(false);
 
@@ -173,13 +183,15 @@ export const useVoiceChat = ({
 
       const shouldSend = reason !== 'manual'
         && audioBlob.size >= AUTO_MIN_SEGMENT_SIZE_BYTES
-        && (hadActiveSegment || reason === 'max_duration');
+        && (hadActiveSegment || reason === 'max_duration')
+        && speechDuration >= MIN_SPEECH_DURATION_MS;
 
       if (isMicMutedRef.current) {
         logger.info('[VOICE_CHAT] Dropped auto segment while microphone muted', {
           reason,
           size: audioBlob.size,
-          hadActiveSegment
+          hadActiveSegment,
+          speechDuration
         });
       } else if (shouldSend) {
         await sendAudioForTranscription(audioBlob);
@@ -187,19 +199,22 @@ export const useVoiceChat = ({
         logger.debug('[VOICE_CHAT] Dropped auto segment', {
           reason,
           size: audioBlob.size,
-          hadActiveSegment
+          hadActiveSegment,
+          speechDuration,
+          minRequired: MIN_SPEECH_DURATION_MS
         });
       }
     } catch (error) {
       logger.error('[VOICE_CHAT] Failed to finalize auto voice segment:', error);
     } finally {
       autoRecorderBusyRef.current = false;
+      onSegmentProcessing?.(false);
 
-      if (isVoiceChatModeRef.current && autoSessionActiveRef.current) {
+      if (isVoiceChatModeRef.current && autoSessionActiveRef.current && !isAwaitingResponse?.()) {
         startAutoRecorderRef.current?.();
       }
     }
-  }, [clearSilenceTimer, sendAudioForTranscription]);
+  }, [clearSilenceTimer, sendAudioForTranscription, onSegmentProcessing, isAwaitingResponse]);
 
   useEffect(() => {
     finalizeAutoSegmentRef.current = (reason) => {
@@ -229,6 +244,7 @@ export const useVoiceChat = ({
     if (soundDetected) {
       if (!autoSegmentActiveRef.current) {
         autoSegmentActiveRef.current = true;
+        speechStartTimeRef.current = Date.now();
         autoRecorderRef.current?.clearAudioBuffer();
         onSpeechStart?.();
       }
@@ -257,6 +273,11 @@ export const useVoiceChat = ({
 
     if (isMicMutedRef.current) {
       logger.debug('[VOICE_CHAT] Not starting auto recorder while microphone muted');
+      return;
+    }
+
+    if (isAwaitingResponse?.()) {
+      logger.debug('[VOICE_CHAT] Not starting auto recorder while awaiting AI response');
       return;
     }
 
@@ -294,7 +315,7 @@ export const useVoiceChat = ({
         }
       }
     }
-  }, [handleAutoAudioLevel]);
+  }, [handleAutoAudioLevel, isAwaitingResponse]);
 
   useEffect(() => {
     startAutoRecorderRef.current = () => {
@@ -322,6 +343,25 @@ export const useVoiceChat = ({
     startAutoRecorderRef.current?.();
     logger.info('[VOICE_CHAT] Live voice chat session started');
   }, [isMicMuted]);
+
+  const restartListeningIfNeeded = useCallback(() => {
+    if (!autoSessionActiveRef.current || !isVoiceChatModeRef.current) {
+      return;
+    }
+
+    if (isMicMutedRef.current) {
+      return;
+    }
+
+    if (autoRecorderRef.current && autoRecorderRef.current.isCurrentlyRecording()) {
+      return;
+    }
+
+    if (!isAwaitingResponse?.()) {
+      logger.info('[VOICE_CHAT] Restarting listening after AI response started');
+      startAutoRecorderRef.current?.();
+    }
+  }, [isAwaitingResponse]);
 
   const stopVoiceChatSession = useCallback(async () => {
     if (!autoSessionActiveRef.current && !autoRecorderRef.current) {
@@ -487,6 +527,7 @@ export const useVoiceChat = ({
     toggleVoiceChatMode,
     setVoiceChatMode: setIsVoiceChatMode,
     toggleMicMute,
-    setMicMuted: setMicMutedState
+    setMicMuted: setMicMutedState,
+    restartListeningIfNeeded
   };
 };

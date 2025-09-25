@@ -17,6 +17,9 @@ interface SendButtonProps {
   isStopRequestInFlight: boolean;
   activeStreamCount: number;
   atConcurrencyLimit: boolean;
+  isProcessingSegment?: boolean;
+  isSendingVoiceMessage?: boolean;
+  isAwaitingResponse?: boolean;
 }
 
 const SendButton: React.FC<SendButtonProps> = ({
@@ -34,15 +37,34 @@ const SendButton: React.FC<SendButtonProps> = ({
   isSendDisabled,
   isStopRequestInFlight,
   activeStreamCount,
-  atConcurrencyLimit
+  atConcurrencyLimit,
+  isProcessingSegment = false,
+  isSendingVoiceMessage = false,
+  isAwaitingResponse = false
 }) => {
+  let voiceState: 'idle' | 'listening' | 'processing' | 'sending' | 'waiting' = 'idle';
+  if (isVoiceChatMode) {
+    if (isSendingVoiceMessage) {
+      voiceState = 'sending';
+    } else if (isAwaitingResponse) {
+      voiceState = 'waiting';
+    } else if (isProcessingSegment) {
+      voiceState = 'processing';
+    } else if (isRecording && isSoundDetected) {
+      voiceState = 'listening';
+    } else {
+      voiceState = 'idle';
+    }
+  }
+
   const buttonClassName = [
     'send-button',
     (isSendDisabled && !isActiveChatStreaming) ? 'loading' : '',
     isButtonHeld ? 'held' : '',
     isRecording ? 'recording' : '',
     isVoiceChatMode ? 'voice-chat-mode' : '',
-    isVoiceChatMode && isMicMuted ? 'mic-muted' : ''
+    isVoiceChatMode && isMicMuted ? 'mic-muted' : '',
+    isVoiceChatMode ? `voice-state-${voiceState}` : ''
   ].filter(Boolean).join(' ');
 
   const hasMessage = message.trim().length > 0;
@@ -94,7 +116,7 @@ const SendButton: React.FC<SendButtonProps> = ({
         ) : hasMessage ? (
           '→'
         ) : (
-          <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''} ${isMicMuted ? 'muted' : ''}`}>
+          <div className={`voice-icon-container ${isVoiceChatMode ? 'voice-active' : ''} ${isMicMuted ? 'muted' : ''} ${isVoiceChatMode ? `state-${voiceState}` : ''}`}>
             <svg className="voice-bars-svg" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="4" y="8" width="2.5" height="8" rx="1" fill="currentColor" opacity="0.5" className="voice-bar bar-1"/>
               <rect x="8" y="5" width="2.5" height="14" rx="1" fill="currentColor" opacity="0.9" className="voice-bar bar-2"/>
@@ -102,7 +124,8 @@ const SendButton: React.FC<SendButtonProps> = ({
               <rect x="16" y="7" width="2.5" height="10" rx="1" fill="currentColor" opacity="0.7" className="voice-bar bar-3"/>
               <rect x="20" y="10" width="2" height="4" rx="1" fill="currentColor" opacity="0.4" className="voice-bar bar-4"/>
             </svg>
-            {isVoiceChatMode && <div className="voice-mode-ring" />}
+            {isVoiceChatMode && <div className={`voice-mode-ring ${voiceState}`} />}
+            {isVoiceChatMode && <div className={`voice-state-bg ${voiceState}`} />}
           </div>
         )}
       </button>

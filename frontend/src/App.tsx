@@ -77,6 +77,9 @@ function App() {
   const isProcessingVoiceQueueRef = useRef(false);
   const flushVoiceQueueRef = useRef<(() => void) | null>(null);
   const voiceChatActivationChatIdRef = useRef<string | null>(null);
+  const awaitingAIResponseRef = useRef(false);
+  const [isProcessingSegment, setIsProcessingSegment] = useState(false);
+  const [isSendingVoiceMessage, setIsSendingVoiceMessage] = useState(false);
 
   const enqueueVoiceTranscript = useCallback((text: string) => {
     const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -117,6 +120,10 @@ function App() {
     resetToggleOutlineTimer
   } = useBottomInputToggle();
 
+  const isAwaitingResponseCallback = useCallback(() => {
+    return awaitingAIResponseRef.current;
+  }, []);
+
   const {
     isButtonHeld,
     wasHoldCompleted,
@@ -128,7 +135,8 @@ function App() {
     handleButtonHoldEnd,
     toggleMicMute,
     setMicMuted,
-    setVoiceChatMode
+    setVoiceChatMode,
+    restartListeningIfNeeded
   } = useVoiceChat({
     onTranscriptionComplete: handleTranscriptionComplete,
     onSpeechStart: () => {
@@ -136,7 +144,11 @@ function App() {
         logger.info('[VOICE_CHAT] User speech detected - stopping TTS playback');
         chatRef.current.stopAllTTS();
       }
-    }
+    },
+    onSegmentProcessing: (processing) => {
+      setIsProcessingSegment(processing);
+    },
+    isAwaitingResponse: isAwaitingResponseCallback
   });
 
 
@@ -965,6 +977,8 @@ function App() {
     }
 
     isProcessingVoiceQueueRef.current = true;
+    setIsSendingVoiceMessage(true);
+    awaitingAIResponseRef.current = true;
     logger.info('[VOICE_CHAT] Dispatching queued voice message', { length: nextMessage.length });
 
     sendMessage({
@@ -976,10 +990,14 @@ function App() {
     }).then((sent) => {
       if (!sent) {
         voiceTranscriptQueueRef.current.unshift(nextMessage);
+        awaitingAIResponseRef.current = false;
       }
+      setIsSendingVoiceMessage(false);
     }).catch((error) => {
       logger.error('[VOICE_CHAT] Failed to send queued voice message:', error);
       voiceTranscriptQueueRef.current.unshift(nextMessage);
+      awaitingAIResponseRef.current = false;
+      setIsSendingVoiceMessage(false);
     }).finally(() => {
       isProcessingVoiceQueueRef.current = false;
       if (!isSendDisabled && voiceTranscriptQueueRef.current.length > 0) {
@@ -1061,11 +1079,30 @@ function App() {
     handleVoiceChatClick(source);
   }, [activeChatId, message, isSendDisabled, isActiveChatStreaming, hasUnreadyFiles, wasHoldCompleted, isVoiceChatMode, isMicMuted, isStopRequestInFlight, handleVoiceChatClick, handleStopStreaming, handleSend]);
 
+  const restartListeningRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    restartListeningRef.current = restartListeningIfNeeded;
+  }, [restartListeningIfNeeded]);
+
   const handleChatStateChange = useCallback((chatId: string, state: 'thinking' | 'responding' | 'static') => {
     logger.info('Chat state changed:', chatId, state);
-    setChats(prev => prev.map(chat => 
+
+    setChats(prev => prev.map(chat =>
       chat.id === chatId ? { ...chat, state } : chat
     ));
+
+    if (state === 'thinking' || state === 'responding') {
+      if (awaitingAIResponseRef.current) {
+        awaitingAIResponseRef.current = false;
+        logger.debug('[VOICE_CHAT] AI started responding, clearing await flag');
+
+        setTimeout(() => {
+          flushVoiceQueueRef.current?.();
+          restartListeningRef.current?.();
+        }, 100);
+      }
+    }
   }, []);
 
   const handleFirstMessageSent = useCallback((chatId: string) => {
@@ -1174,6 +1211,9 @@ function App() {
                   isStopRequestInFlight={isStopRequestInFlight}
                   activeStreamCount={activeStreamCount}
                   atConcurrencyLimit={atConcurrencyLimit}
+                  isProcessingSegment={isProcessingSegment}
+                  isSendingVoiceMessage={isSendingVoiceMessage}
+                  isAwaitingResponse={awaitingAIResponseRef.current}
                 />
               </div>
             </div>
@@ -1295,6 +1335,9 @@ function App() {
                     isStopRequestInFlight={isStopRequestInFlight}
                     activeStreamCount={activeStreamCount}
                     atConcurrencyLimit={atConcurrencyLimit}
+                    isProcessingSegment={isProcessingSegment}
+                    isSendingVoiceMessage={isSendingVoiceMessage}
+                    isAwaitingResponse={awaitingAIResponseRef.current}
                   />
                 </div>
               </div>
