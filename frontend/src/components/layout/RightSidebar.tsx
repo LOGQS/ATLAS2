@@ -103,7 +103,7 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal, chatId }) => {
                   onClick={() => handleSubsectionClick('web')}
                 >
                   <div className="sidebar-icon globe-icon"></div>
-                  Web
+                  Sources
                 </div>
               </div>
             </div>
