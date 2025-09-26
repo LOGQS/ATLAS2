@@ -91,18 +91,18 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal, chatId }) => {
                   <div className="sidebar-icon profile-icon"></div>
                   Profiles
                 </div>
-                <div 
+                <div
                   className="sidebar-item"
-                  onClick={() => handleSubsectionClick('files')}
+                  onClick={() => handleSubsectionClick('workspace')}
                 >
-                  <div className="sidebar-icon folder-icon"></div>
+                  <div className="sidebar-icon workspace-icon"></div>
                   Workspace
                 </div>
-                <div 
+                <div
                   className="sidebar-item"
-                  onClick={() => handleSubsectionClick('web')}
+                  onClick={() => handleSubsectionClick('sources')}
                 >
-                  <div className="sidebar-icon globe-icon"></div>
+                  <div className="sidebar-icon sources-icon"></div>
                   Sources
                 </div>
               </div>

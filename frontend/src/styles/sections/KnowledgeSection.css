@@ -222,7 +222,7 @@
   margin-top: 2px;
 }
 
-.file-actions, .folder-actions, .web-actions {
+.file-actions, .workspace-actions, .sources-actions {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -245,13 +245,13 @@
   color: #ffffff;
 }
 
-.folder-tree {
+.workspace-tree {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.folder-item {
+.workspace-item {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -263,30 +263,30 @@
   cursor: pointer;
 }
 
-.folder-item:hover {
+.workspace-item:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-.folder-item.nested {
+.workspace-item.nested {
   margin-left: 20px;
   background: rgba(255, 255, 255, 0.02);
 }
 
-.folder-name {
+.workspace-name {
   flex: 1;
   color: #ffffff;
   font-size: 12px;
   font-weight: 400;
 }
 
-.web-resources {
+.sources-resources {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.web-item {
+.sources-item {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -298,19 +298,19 @@
   cursor: pointer;
 }
 
-.web-item:hover {
+.sources-item:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.15);
 }
 
-.web-info {
+.sources-info {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.web-title {
+.sources-title {
   color: #ffffff;
   font-size: 12px;
   font-weight: 500;
@@ -319,7 +319,7 @@
   text-overflow: ellipsis;
 }
 
-.web-url {
+.sources-url {
   color: rgba(255, 255, 255, 0.6);
   font-size: 11px;
   margin-top: 2px;
@@ -333,12 +333,12 @@
   border-radius: 10px;
 }
 
-.modal-window .folder-item {
+.modal-window .workspace-item {
   padding: 10px;
   border-radius: 8px;
 }
 
-.modal-window .web-item {
+.modal-window .sources-item {
   padding: 12px;
   border-radius: 10px;
 }

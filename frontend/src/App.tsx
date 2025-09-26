@@ -16,7 +16,8 @@ import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
-import FilesWindow from './sections/FilesWindow';
+import WorkspaceWindow from './sections/WorkspaceWindow';
+import SourcesWindow from './sections/SourcesWindow';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
@@ -1383,8 +1384,8 @@ function App() {
         { id: 'search', className: 'search-modal', render: () => <SearchWindow /> },
         { id: 'settings', className: 'settings-modal', render: () => <SettingsWindow /> },
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
-        { id: 'files', className: 'files-modal', render: (isOpen: boolean) => <FilesWindow isOpen={isOpen} /> },
-        { id: 'web', className: 'web-modal', render: () => <KnowledgeSection activeSubsection="web" onSubsectionChange={() => {}} /> },
+        { id: 'workspace', className: 'workspace-modal', render: (isOpen: boolean) => <WorkspaceWindow isOpen={isOpen} /> },
+        { id: 'sources', className: 'sources-modal', render: () => <SourcesWindow /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}

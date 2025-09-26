@@ -81,22 +81,22 @@ const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
               </div>
             </div>
             <div className="section-body">
-              <div className="folder-tree">
-                <div className="folder-item">
-                  <div className="sidebar-icon folder-icon"></div>
-                  <span className="folder-name">Documents</span>
-                  <div className="folder-actions">
+              <div className="workspace-tree">
+                <div className="workspace-item">
+                  <div className="sidebar-icon workspace-icon"></div>
+                  <span className="workspace-name">Documents</span>
+                  <div className="workspace-actions">
                     <button className="action-btn">⋯</button>
                   </div>
                 </div>
-                <div className="folder-item nested">
-                  <div className="sidebar-icon folder-icon"></div>
-                  <span className="folder-name">Research</span>
+                <div className="workspace-item nested">
+                  <div className="sidebar-icon workspace-icon"></div>
+                  <span className="workspace-name">Research</span>
                 </div>
-                <div className="folder-item">
-                  <div className="sidebar-icon folder-icon"></div>
-                  <span className="folder-name">Projects</span>
-                  <div className="folder-actions">
+                <div className="workspace-item">
+                  <div className="sidebar-icon workspace-icon"></div>
+                  <span className="workspace-name">Projects</span>
+                  <div className="workspace-actions">
                     <button className="action-btn">⋯</button>
                   </div>
                 </div>
@@ -116,7 +116,7 @@ const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
             <div className="section-body">
               <div className="web-resources">
                 <div className="web-item">
-                  <div className="sidebar-icon globe-icon"></div>
+                  <div className="sidebar-icon sources-icon"></div>
                   <div className="web-info">
                     <span className="web-title">Documentation Hub</span>
                     <span className="web-url">docs.example.com</span>
@@ -126,7 +126,7 @@ const KnowledgeSection: React.FC<KnowledgeSectionProps> = ({
                   </div>
                 </div>
                 <div className="web-item">
-                  <div className="sidebar-icon globe-icon"></div>
+                  <div className="sidebar-icon sources-icon"></div>
                   <div className="web-info">
                     <span className="web-title">API Reference</span>
                     <span className="web-url">api.service.com</span>

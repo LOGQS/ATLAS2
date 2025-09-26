@@ -142,18 +142,19 @@
   max-height: 90vh;
 }
 
-.files-modal {
+.workspace-modal {
   width: 1200px;
   height: 750px;
   max-width: 90vw;
   max-height: 90vh;
 }
 
-.web-modal {
-  width: 650px;
-  height: 500px;
-  max-width: 90vw;
+.sources-modal {
+  width: 2000px;
+  height: 1000px;
+  max-width: 95vw;
   max-height: 90vh;
+  padding: 10px;
 }
 
 /* Enable scrolling for modal content when needed */
@@ -161,8 +162,8 @@
 .search-modal .section-content,
 .settings-modal .section-content,
 .profiles-modal .section-content,
-.files-modal .section-content,
-.web-modal .section-content {
+.workspace-modal .section-content,
+.sources-modal .section-content {
   height: 100%;
   overflow-y: auto;
 }

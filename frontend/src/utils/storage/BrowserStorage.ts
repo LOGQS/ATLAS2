@@ -9,6 +9,20 @@ export interface UISettings {
   attachedFilesCollapsed?: boolean;
 }
 
+export type SourcePane = 'web' | 'local';
+
+export type SourceInclusionState = 'included' | 'excluded';
+
+export interface SourcePreferences {
+  activePane: SourcePane;
+  searchQuery: string;
+  selectedTagIds: string[];
+  expandedNodes: Record<SourcePane, string[]>;
+  selectedNodeIds: Record<SourcePane, string | null>;
+  inclusionOverrides: Record<string, SourceInclusionState>;
+  pinnedSources: string[];
+}
+
 export interface AttachedFile {
   id: string;
   name: string;
@@ -26,9 +40,26 @@ const DEFAULT_SETTINGS: UISettings = {
   attachedFilesCollapsed: false,
 };
 
+export const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = {
+  activePane: 'web',
+  searchQuery: '',
+  selectedTagIds: [],
+  expandedNodes: {
+    web: [],
+    local: []
+  },
+  selectedNodeIds: {
+    web: null,
+    local: null
+  },
+  inclusionOverrides: {},
+  pinnedSources: []
+};
+
 export class BrowserStorage {
   private static readonly SETTINGS_KEY = 'atlas_ui_settings';
   private static readonly ATTACHED_FILES_KEY = 'atlas_attached_files';
+  private static readonly SOURCE_PREFS_KEY = 'atlas_source_preferences';
 
   static getUISettings(): UISettings {
     try {
@@ -86,4 +117,54 @@ export class BrowserStorage {
     }
   }
 
+  static getSourcePreferences(): SourcePreferences {
+    try {
+      const stored = localStorage.getItem(this.SOURCE_PREFS_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return {
+          ...DEFAULT_SOURCE_PREFERENCES,
+          ...parsed,
+          expandedNodes: {
+            ...DEFAULT_SOURCE_PREFERENCES.expandedNodes,
+            ...(parsed?.expandedNodes ?? {})
+          },
+          selectedNodeIds: {
+            ...DEFAULT_SOURCE_PREFERENCES.selectedNodeIds,
+            ...(parsed?.selectedNodeIds ?? {})
+          },
+          selectedTagIds: Array.isArray(parsed?.selectedTagIds)
+            ? parsed.selectedTagIds
+            : DEFAULT_SOURCE_PREFERENCES.selectedTagIds,
+          inclusionOverrides: parsed?.inclusionOverrides ?? { ...DEFAULT_SOURCE_PREFERENCES.inclusionOverrides },
+          pinnedSources: Array.isArray(parsed?.pinnedSources)
+            ? parsed.pinnedSources
+            : [...DEFAULT_SOURCE_PREFERENCES.pinnedSources]
+        };
+      }
+    } catch (error) {
+      console.warn('Failed to load source preferences from localStorage:', error);
+    }
+    return { ...DEFAULT_SOURCE_PREFERENCES };
+  }
+
+  static setSourcePreferences(preferences: SourcePreferences): void {
+    try {
+      localStorage.setItem(this.SOURCE_PREFS_KEY, JSON.stringify(preferences));
+    } catch (error) {
+      console.warn('Failed to save source preferences to localStorage:', error);
+    }
+  }
+
+  static updateSourcePreferences(
+    updater: SourcePreferences | ((current: SourcePreferences) => SourcePreferences)
+  ): SourcePreferences {
+    const current = this.getSourcePreferences();
+    const next =
+      typeof updater === 'function'
+        ? (updater as (current: SourcePreferences) => SourcePreferences)(current)
+        : updater;
+    this.setSourcePreferences(next);
+    return next;
+  }
 }

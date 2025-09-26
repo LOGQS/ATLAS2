@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import '../styles/sections/FilesWindow.css';
+import '../styles/sections/WorkspaceWindow.css';
 import { FileBrowserNode, FileBrowserNodeType, useLiveFileBrowser } from '../hooks/files/useLiveFileBrowser';
 
-interface FilesWindowProps {
+interface WorkspaceWindowProps {
   isOpen: boolean;
 }
 
@@ -39,7 +39,7 @@ const buildBreadcrumbs = (path: string): { label: string; path: string }[] => {
   return crumbs;
 };
 
-const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
+const WorkspaceWindow: React.FC<WorkspaceWindowProps> = ({ isOpen }) => {
   const {
     root,
     loading,
@@ -146,13 +146,13 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
     const displayName = normaliseName(node);
 
     return (
-      <div key={key} className="files-tree-node" style={{ paddingLeft: `${depth * 16}px` }}>
+      <div key={key} className="workspace-tree-node" style={{ paddingLeft: `${depth * 16}px` }}>
         <div
-          className={`files-tree-row ${selectedPath === node.path ? 'active' : ''}`}
+          className={`workspace-tree-row ${selectedPath === node.path ? 'active' : ''}`}
           onClick={() => selectPath(node.path)}
         >
           <button
-            className={`files-tree-toggle ${children.length > 0 ? '' : 'empty'} ${isExpanded ? 'open' : ''}`}
+            className={`workspace-tree-toggle ${children.length > 0 ? '' : 'empty'} ${isExpanded ? 'open' : ''}`}
             onClick={(event) => {
               event.stopPropagation();
               if (!isRoot && children.length > 0) {
@@ -162,10 +162,10 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
             aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
             disabled={isRoot || children.length === 0}
           />
-          <span className="files-tree-label">{displayName}</span>
+          <span className="workspace-tree-label">{displayName}</span>
         </div>
         {isExpanded && children.length > 0 && (
-          <div className="files-tree-children">
+          <div className="workspace-tree-children">
             {children.map(child => renderTree(child, depth + 1))}
           </div>
         )}
@@ -176,29 +176,29 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
   const creationPlaceholder = pendingCreation === 'directory' ? 'New folder name…' : 'New file name…';
 
   return (
-    <div className="files-window">
-      <div className="files-header">
+    <div className="workspace-window">
+      <div className="workspace-header">
         <div>
-          <h2>Workspace Files</h2>
-          <p>Manage everything stored in <span className="files-highlight">data/files</span>.</p>
+          <h2>Workspace</h2>
+          <p>Manage everything stored in <span className="workspace-highlight">data/files</span>.</p>
         </div>
-        <div className="files-actions">
+        <div className="workspace-actions">
           <button
-            className="files-action-btn"
+            className="workspace-action-btn"
             onClick={() => handleStartCreate('directory')}
           >
             <span className="icon">📁</span>
             New Folder
           </button>
           <button
-            className="files-action-btn"
+            className="workspace-action-btn"
             onClick={() => handleStartCreate('file')}
           >
             <span className="icon">📄</span>
             New File
           </button>
           <button
-            className="files-action-btn subtle"
+            className="workspace-action-btn subtle"
             onClick={refresh}
             disabled={loading}
           >
@@ -209,21 +209,21 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
       </div>
 
       {error && (
-        <div className="files-banner error">
+        <div className="workspace-banner error">
           <span>{error}</span>
           <button onClick={clearError} aria-label="Dismiss error">×</button>
         </div>
       )}
 
-      <div className="files-body">
-        <div className="files-tree">
+      <div className="workspace-body">
+        <div className="workspace-tree">
           {root ? renderTree(root) : (
-            <div className="files-empty-tree">Workspace initialising…</div>
+            <div className="workspace-empty-tree">Workspace initialising…</div>
           )}
         </div>
 
-        <div className="files-content">
-          <div className="files-breadcrumbs">
+        <div className="workspace-content">
+          <div className="workspace-breadcrumbs">
             {breadcrumbs.map((crumb, index) => (
               <React.Fragment key={crumb.path || 'root'}>
                 {index > 0 && <span className="separator">›</span>}
@@ -237,17 +237,17 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
             ))}
           </div>
 
-          <div className="files-table">
-            <div className="files-table-header">
+          <div className="workspace-table">
+            <div className="workspace-table-header">
               <div className="col name">Name</div>
               <div className="col type">Type</div>
               <div className="col size">Size</div>
               <div className="col modified">Modified</div>
               <div className="col actions" aria-hidden="true"></div>
             </div>
-            <div className="files-table-body">
+            <div className="workspace-table-body">
               {pendingCreation && (
-                <div className="files-row creating">
+                <div className="workspace-row creating">
                   <div className="col name">
                     <input
                       value={creationName}
@@ -275,9 +275,9 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
               )}
 
               {items.length === 0 && !pendingCreation && (
-                <div className="files-empty">
+                <div className="workspace-empty">
                   {loading ? (
-                    <div className="files-loading">
+                    <div className="workspace-loading">
                       <span className="spinner" />
                       <span>Loading…</span>
                     </div>
@@ -297,7 +297,7 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
                   (op.type === 'create' && op.data.parentPath === directoryPath && op.data.name === item.name)
                 );
                 return (
-                  <div key={item.path} className={`files-row ${isRenaming ? 'editing' : ''} ${hasPendingOperation ? 'pending-operation' : ''}`}>
+                  <div key={item.path} className={`workspace-row ${isRenaming ? 'editing' : ''} ${hasPendingOperation ? 'pending-operation' : ''}`}>
                     <div className="col name" onClick={() => item.type === 'directory' && selectPath(item.path)}>
                       <div className={`cell-content ${item.type}`}>
                         {isRenaming ? (
@@ -346,7 +346,7 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
       </div>
 
       {deleteTarget && (
-        <div className="files-delete-confirmation">
+        <div className="workspace-delete-confirmation">
           <div className="card">
             <h4>Delete “{deleteTarget.name}”?</h4>
             <p>This will permanently remove the {deleteTarget.type === 'directory' ? 'folder and its contents' : 'file'}.</p>
@@ -361,4 +361,4 @@ const FilesWindow: React.FC<FilesWindowProps> = ({ isOpen }) => {
   );
 };
 
-export default FilesWindow;
+export default WorkspaceWindow;

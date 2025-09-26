@@ -1,4 +1,4 @@
-.files-window {
+.workspace-window {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -6,7 +6,7 @@
   position: relative;
 }
 
-.files-header {
+.workspace-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -14,31 +14,31 @@
   margin-bottom: 20px;
 }
 
-.files-header h2 {
+.workspace-header h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.4px;
 }
 
-.files-header p {
+.workspace-header p {
   margin: 6px 0 0 0;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.6);
 }
 
-.files-highlight {
+.workspace-highlight {
   color: #6cc6ff;
   font-weight: 500;
 }
 
-.files-actions {
+.workspace-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-.files-action-btn {
+.workspace-action-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -54,25 +54,25 @@
   backdrop-filter: blur(10px);
 }
 
-.files-action-btn.subtle {
+.workspace-action-btn.subtle {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.files-action-btn:disabled {
+.workspace-action-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.files-action-btn:not(:disabled):hover {
+.workspace-action-btn:not(:disabled):hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(108, 198, 255, 0.3);
 }
 
-.files-action-btn .icon {
+.workspace-action-btn .icon {
   font-size: 14px;
 }
 
-.files-banner {
+.workspace-banner {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -82,13 +82,13 @@
   font-size: 12px;
 }
 
-.files-banner.error {
+.workspace-banner.error {
   background: rgba(255, 76, 97, 0.15);
   border: 1px solid rgba(255, 76, 97, 0.3);
   color: #ffb3bd;
 }
 
-.files-banner button {
+.workspace-banner button {
   background: transparent;
   border: none;
   color: inherit;
@@ -97,14 +97,14 @@
   line-height: 1;
 }
 
-.files-body {
+.workspace-body {
   display: flex;
   gap: 20px;
   flex: 1;
   min-height: 0;
 }
 
-.files-tree {
+.workspace-tree {
   width: 220px;
   padding: 16px 12px;
   border-radius: 16px;
@@ -114,16 +114,16 @@
   overflow-y: auto;
 }
 
-.files-empty-tree {
+.workspace-empty-tree {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.5);
 }
 
-.files-tree-node + .files-tree-node {
+.workspace-tree-node + .workspace-tree-node {
   margin-top: 4px;
 }
 
-.files-tree-row {
+.workspace-tree-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -133,16 +133,16 @@
   transition: all 0.2s ease;
 }
 
-.files-tree-row:hover {
+.workspace-tree-row:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.files-tree-row.active {
+.workspace-tree-row.active {
   background: rgba(108, 198, 255, 0.22);
   box-shadow: inset 0 0 0 1px rgba(108, 198, 255, 0.35);
 }
 
-.files-tree-toggle {
+.workspace-tree-toggle {
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -156,16 +156,16 @@
   transition: all 0.2s ease;
 }
 
-.files-tree-toggle.empty {
+.workspace-tree-toggle.empty {
   opacity: 0.35;
 }
 
-.files-tree-toggle:disabled {
+.workspace-tree-toggle:disabled {
   cursor: default;
   opacity: 0.4;
 }
 
-.files-tree-toggle::after {
+.workspace-tree-toggle::after {
   content: '';
   width: 6px;
   height: 6px;
@@ -175,21 +175,21 @@
   transition: transform 0.2s ease;
 }
 
-.files-tree-toggle.open::after {
+.workspace-tree-toggle.open::after {
   transform: rotate(45deg);
 }
 
-.files-tree-label {
+.workspace-tree-label {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.85);
   letter-spacing: 0.3px;
 }
 
-.files-tree-children {
+.workspace-tree-children {
   margin-top: 4px;
 }
 
-.files-content {
+.workspace-content {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -201,7 +201,7 @@
   min-width: 0;
 }
 
-.files-breadcrumbs {
+.workspace-breadcrumbs {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -209,7 +209,7 @@
   flex-wrap: wrap;
 }
 
-.files-breadcrumbs .crumb {
+.workspace-breadcrumbs .crumb {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 999px;
   border: 1px solid transparent;
@@ -220,23 +220,23 @@
   transition: all 0.2s ease;
 }
 
-.files-breadcrumbs .crumb.current {
+.workspace-breadcrumbs .crumb.current {
   color: #ffffff;
   border-color: rgba(108, 198, 255, 0.5);
   background: rgba(108, 198, 255, 0.2);
 }
 
-.files-breadcrumbs .crumb:not(.current):hover {
+.workspace-breadcrumbs .crumb:not(.current):hover {
   border-color: rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.1);
 }
 
-.files-breadcrumbs .separator {
+.workspace-breadcrumbs .separator {
   color: rgba(255, 255, 255, 0.35);
   font-size: 12px;
 }
 
-.files-table {
+.workspace-table {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -246,8 +246,8 @@
   overflow: hidden;
 }
 
-.files-table-header,
-.files-row {
+.workspace-table-header,
+.workspace-row {
   display: grid;
   grid-template-columns: minmax(200px, 2.4fr) minmax(80px, 0.8fr) minmax(90px, 0.8fr) minmax(120px, 1.1fr) minmax(140px, 1fr);
   align-items: center;
@@ -255,7 +255,7 @@
   gap: 12px;
 }
 
-.files-table-header {
+.workspace-table-header {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -264,30 +264,30 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.files-table-body {
+.workspace-table-body {
   flex: 1;
   overflow-y: auto;
 }
 
-.files-row {
+.workspace-row {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.85);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-.files-row:last-child {
+.workspace-row:last-child {
   border-bottom: none;
 }
 
-.files-row:hover:not(.creating):not(.editing) {
+.workspace-row:hover:not(.creating):not(.editing) {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.files-row.editing {
+.workspace-row.editing {
   background: rgba(108, 198, 255, 0.15);
 }
 
-.files-row.creating {
+.workspace-row.creating {
   background: rgba(255, 255, 255, 0.04);
 }
 
@@ -307,7 +307,7 @@
   font-size: 16px;
 }
 
-.files-row input {
+.workspace-row input {
   width: 100%;
   padding: 6px 8px;
   border-radius: 8px;
@@ -317,19 +317,19 @@
   font-size: 12px;
 }
 
-.files-row input:focus {
+.workspace-row input:focus {
   outline: none;
   border-color: rgba(108, 198, 255, 0.6);
   background: rgba(108, 198, 255, 0.1);
 }
 
-.files-row .col.actions {
+.workspace-row .col.actions {
   display: inline-flex;
   gap: 8px;
   justify-content: flex-end;
 }
 
-.files-row .col.actions button {
+.workspace-row .col.actions button {
   padding: 5px 12px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -340,64 +340,64 @@
   transition: all 0.2s ease;
 }
 
-.files-row .col.actions button.primary {
+.workspace-row .col.actions button.primary {
   background: linear-gradient(135deg, rgba(108, 198, 255, 0.85), rgba(120, 75, 209, 0.8));
   border-color: transparent;
 }
 
-.files-row .col.actions button.destructive {
+.workspace-row .col.actions button.destructive {
   background: rgba(255, 84, 112, 0.25);
   border-color: rgba(255, 84, 112, 0.45);
   color: #ffb3bd;
 }
 
-.files-row .col.actions button:disabled {
+.workspace-row .col.actions button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
-.files-row .col.actions button:not(:disabled):hover {
+.workspace-row .col.actions button:not(:disabled):hover {
   transform: translateY(-1px);
   box-shadow: 0 5px 14px rgba(108, 198, 255, 0.25);
 }
 
-.files-row .col.actions button.destructive:not(:disabled):hover {
+.workspace-row .col.actions button.destructive:not(:disabled):hover {
   box-shadow: 0 5px 14px rgba(255, 84, 112, 0.3);
 }
 
-.files-empty {
+.workspace-empty {
   padding: 32px 16px;
   text-align: center;
   color: rgba(255, 255, 255, 0.6);
 }
 
-.files-empty h4 {
+.workspace-empty h4 {
   margin: 0 0 6px 0;
   font-size: 14px;
   color: rgba(255, 255, 255, 0.8);
 }
 
-.files-loading {
+.workspace-loading {
   display: inline-flex;
   align-items: center;
   gap: 10px;
   justify-content: center;
 }
 
-.files-loading .spinner {
+.workspace-loading .spinner {
   width: 16px;
   height: 16px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.2);
   border-top-color: rgba(108, 198, 255, 0.8);
-  animation: files-spin 0.9s linear infinite;
+  animation: workspace-spin 0.9s linear infinite;
 }
 
-@keyframes files-spin {
+@keyframes workspace-spin {
   to { transform: rotate(360deg); }
 }
 
-.files-delete-confirmation {
+.workspace-delete-confirmation {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
@@ -408,7 +408,7 @@
   z-index: 10;
 }
 
-.files-delete-confirmation .card {
+.workspace-delete-confirmation .card {
   background: rgba(20, 20, 20, 0.95);
   border-radius: 16px;
   padding: 20px 24px;
@@ -418,25 +418,25 @@
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
 }
 
-.files-delete-confirmation h4 {
+.workspace-delete-confirmation h4 {
   margin: 0 0 8px 0;
   font-size: 16px;
   color: #ffffff;
 }
 
-.files-delete-confirmation p {
+.workspace-delete-confirmation p {
   margin: 0 0 18px 0;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.6);
 }
 
-.files-delete-confirmation .actions {
+.workspace-delete-confirmation .actions {
   display: flex;
   justify-content: center;
   gap: 12px;
 }
 
-.files-delete-confirmation button {
+.workspace-delete-confirmation button {
   padding: 8px 18px;
   border-radius: 999px;
   border: none;
@@ -445,31 +445,31 @@
   transition: all 0.2s ease;
 }
 
-.files-delete-confirmation button.destructive {
+.workspace-delete-confirmation button.destructive {
   background: rgba(255, 84, 112, 0.9);
   color: #ffffff;
 }
 
-.files-delete-confirmation button.destructive:hover {
+.workspace-delete-confirmation button.destructive:hover {
   background: rgba(255, 84, 112, 1);
 }
 
-.files-delete-confirmation button:not(.destructive) {
+.workspace-delete-confirmation button:not(.destructive) {
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
 }
 
-.files-delete-confirmation button:not(.destructive):hover {
+.workspace-delete-confirmation button:not(.destructive):hover {
   background: rgba(255, 255, 255, 0.2);
 }
 
 /* Pending operation indicator */
-.files-row.pending-operation {
+.workspace-row.pending-operation {
   position: relative;
   opacity: 0.7;
 }
 
-.files-row.pending-operation::before {
+.workspace-row.pending-operation::before {
   content: '';
   position: absolute;
   left: 0;
@@ -493,11 +493,11 @@
   }
 }
 
-.files-row.pending-operation .cell-content {
+.workspace-row.pending-operation .cell-content {
   position: relative;
 }
 
-.files-row.pending-operation .icon {
+.workspace-row.pending-operation .icon {
   opacity: 0.6;
   animation: iconSpin 2s linear infinite;
 }
@@ -512,11 +512,11 @@
 }
 
 @media (max-width: 960px) {
-  .files-body {
+  .workspace-body {
     flex-direction: column;
   }
 
-  .files-tree {
+  .workspace-tree {
     width: 100%;
     max-height: 160px;
   }
