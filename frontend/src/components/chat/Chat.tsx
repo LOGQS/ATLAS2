@@ -129,7 +129,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const mountedRef = useRef(true);
   const duplicateCheckerRef = useRef<MessageDuplicateChecker>(new MessageDuplicateChecker(DUPLICATE_WINDOW_MS));
   const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
@@ -146,13 +146,13 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     return isDuplicate;
   }, [chatId]);
   
-  const scrollControl = useScrollControl({ 
-    chatId, 
+  const scrollControl = useScrollControl({
+    chatId,
     streamingState: liveOverlay.state,
     containerRef: messagesContainerRef,
     scrollType: 'chat'
   });
-  const resetToAutoScroll = scrollControl.resetToAutoScroll;
+  const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
   const { isLoading, loadHistory } = useChatHistory({ chatId, setMessages, messages });
 
   const sendMessageRef = useRef<((content: string, attachedFiles?: AttachedFile[]) => Promise<void>) | undefined>(undefined);
@@ -324,25 +324,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useMessageIdSync({ chatId, setMessages });
 
 
-  const scrollToBottom = useCallback(() => {
-    if (!scrollControl.shouldAutoScroll()) {
-      return;
-    }
-
-    const container = messagesEndRef.current?.parentElement;
-    if (container) {
-      scrollControl.notifyProgrammaticScroll();
-      container.scrollTop = container.scrollHeight;
-    }
-  }, [scrollControl]);
-
   const handleScrollToBottom = useCallback(() => {
-    scrollControl.resetToAutoScroll();
-    const container = messagesEndRef.current?.parentElement;
-    if (container) {
-      scrollControl.notifyProgrammaticScroll();
-      container.scrollTop = container.scrollHeight;
-    }
+    scrollControl.forceScrollToBottom();
   }, [scrollControl]);
 
   const releasePersistingAfterStream = useCallback((context: string) => {
@@ -527,19 +510,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
 
   useEffect(() => {
-    const container = messagesEndRef.current?.parentElement;
-    if (container && messagesContainerRef.current !== container) {
-      messagesContainerRef.current = container;
-    }
-  }, []);
-
-  useEffect(() => {
     scrollRestoreBaselineRef.current = messages;
     needsScrollRestoreRef.current = true;
   }, [chatId, messages]);
 
   useLayoutEffect(() => {
-    const container = messagesEndRef.current?.parentElement as HTMLElement | null;
+    const container = messagesContainerRef.current;
     if (!container) return;
 
     const isScrollable = computeIsScrollable(container);
@@ -555,13 +531,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     needsScrollRestoreRef.current = false;
     scrollRestoreBaselineRef.current = messages;
-    scrollControl.notifyProgrammaticScroll();
     container.scrollTop = container.scrollHeight;
-    resetToAutoScroll();
-  }, [chatId, messages, resetToAutoScroll, scrollControl]);
+  }, [chatId, messages]);
 
   useEffect(() => {
-    const container = messagesEndRef.current?.parentElement as HTMLElement | null;
+    const container = messagesContainerRef.current;
     if (!container) return;
     const ro = new ResizeObserver(() => {
       setNeedsBottomAnchor(computeIsScrollable(container));
@@ -572,7 +546,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   useEffect(() => {
     const handler = () => {
-      const container = messagesEndRef.current?.parentElement as HTMLElement | null;
+      const container = messagesContainerRef.current;
       setNeedsBottomAnchor(computeIsScrollable(container || null));
     };
     window.addEventListener('chatContentResized', handler as any);
@@ -586,26 +560,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId]);
 
   useEffect(() => {
-    if (liveOverlay.state === 'responding') {
-      scrollToBottom();
-      const shouldShow = !scrollControl.shouldAutoScroll();
-      setShowScrollButton(shouldShow);
-    } else if (liveOverlay.state === 'static') {
+    if (scrollControlStreaming) {
+      setShowScrollButton(!scrollControlEnabled);
+    } else {
       setShowScrollButton(false);
     }
-  }, [liveOverlay.contentBuf, liveOverlay.state, scrollToBottom, scrollControl]);
-
-  useEffect(() => {
-    if (showScrollButton && scrollControl.shouldAutoScroll()) {
-      setShowScrollButton(false);
-    }
-  }, [scrollControl, showScrollButton]);
-
-  useEffect(() => {
-    if (liveOverlay.state === 'static') {
-      scrollToBottom();
-    }
-  }, [messages, scrollToBottom, liveOverlay.state]);
+  }, [scrollControlStreaming, scrollControlEnabled]);
 
   const rendered = useMemo(() => {
     const out = [...messages];
@@ -1164,7 +1124,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   return (
     <>
       <div className="chat-messages">
-        <div className="messages-container">
+        <div className="messages-container" ref={messagesContainerRef}>
           {(needsBottomAnchor || (forceBottomDuringStreaming && canRenderOverlay)) && (
             <div className="spacer" style={{flex: '1 0 auto'}}></div>
           )}

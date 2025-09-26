@@ -1,5 +1,5 @@
 // status: complete
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import MessageRenderer from '../message/MessageRenderer';
 import '../../styles/message/MessageRenderer.css';
 import logger from '../../utils/core/logger';
@@ -14,8 +14,8 @@ interface ThinkBoxProps {
   chatScrollControl?: {
     shouldAutoScroll: () => boolean;
     onStreamStart: () => void;
-    resetToAutoScroll: () => void;
-    notifyProgrammaticScroll: () => void;
+    onStreamEnd: () => void;
+    forceScrollToBottom: () => void;
   };
 }
 
@@ -30,72 +30,51 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [displayedThoughts, setDisplayedThoughts] = useState('');
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
-  const thinkBoxContentRef = useRef<HTMLElement>(null);
+  const thinkBoxContentRef = useRef<HTMLDivElement | null>(null);
   const hasExpandedForCurrentStream = useRef<boolean>(false);
   
   const thinkBoxScrollControl = useScrollControl({
     chatId: `thinkbox-${chatId}-${messageId}`,
     streamingState: isStreaming ? 'thinking' : 'static',
     containerRef: thinkBoxContentRef,
-    scrollType: 'thinkbox'
+    scrollType: 'thinkbox',
+    isIsolated: true
   });
 
-
-  const scrollToBottom = useCallback(() => {
-    if (!thinkBoxScrollControl.shouldAutoScroll()) {
-      return;
-    }
-
-    if (chatScrollControl && !chatScrollControl.shouldAutoScroll()) {
-      return;
-    }
-
-    requestAnimationFrame(() => {
-      if (thoughtsEndRef.current) {
-        thinkBoxScrollControl.notifyProgrammaticScroll();
-        thoughtsEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-    });
-  }, [thinkBoxScrollControl, chatScrollControl]);
 
   useEffect(() => {
     if (isStreaming && thoughts) {
       setDisplayedThoughts(thoughts);
+      logger.info(`[THINKBOX] Updated thoughts for ${chatId}, streaming: ${isStreaming}`);
       if (thinkBoxScrollControl.shouldAutoScroll()) {
-        setTimeout(scrollToBottom, 0);
+        thinkBoxScrollControl.forceScrollToBottom();
       }
     } else if (!isStreaming) {
       setDisplayedThoughts(thoughts);
     }
-  }, [thoughts, isStreaming, scrollToBottom, thinkBoxScrollControl]);
+  }, [thoughts, isStreaming, chatId, thinkBoxScrollControl]);
 
   useEffect(() => {
     if (isStreaming && !hasExpandedForCurrentStream.current) {
       hasExpandedForCurrentStream.current = true;
       setIsCollapsed(false);
-      logger.debug(`[THINKBOX] Expanding ThinkBox for ${chatId} (streaming started)`);
+      logger.info(`[THINKBOX] Expanding ThinkBox for ${chatId} (streaming started)`);
       try {
         window.dispatchEvent(new CustomEvent('chatContentResized', { detail: { chatId, messageId, source: 'thinkbox', collapsed: false } }));
       } catch {}
-      
-      setTimeout(() => {
-        if (chatScrollControl?.shouldAutoScroll()) {
-          const thinkBoxElement = thoughtsEndRef.current;
-          const chatContainer = thinkBoxElement?.closest('.chat-messages')?.querySelector('.messages-container');
-          if (chatContainer) {
-            chatScrollControl.notifyProgrammaticScroll();
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            logger.info(`[SCROLL] ThinkBox triggered scroll to bottom for chat: ${chatId || 'unknown'}`);
-          }
-        } else {
-          logger.debug(`[SCROLL] ThinkBox scroll to bottom suppressed for ${chatId} (auto-scroll disabled)`);
-        }
-      }, 100);
+
+      thinkBoxScrollControl.onStreamStart();
+
+      logger.info(`[THINKBOX] Auto-scroll started for thinkbox-${chatId}`);
     } else if (!isStreaming && thoughts) {
       hasExpandedForCurrentStream.current = false;
+
+      thinkBoxScrollControl.onStreamEnd();
+      logger.info(`[THINKBOX] Auto-scroll ended for thinkbox-${chatId}`);
+
       const timer = setTimeout(() => {
         setIsCollapsed(true);
-        logger.debug(`[THINKBOX] Collapsing ThinkBox for ${chatId} (streaming ended)`);
+        logger.info(`[THINKBOX] Collapsing ThinkBox for ${chatId} (streaming ended)`);
         try {
           window.dispatchEvent(new CustomEvent('chatContentResized', { detail: { chatId, messageId, source: 'thinkbox', collapsed: true } }));
         } catch {}
@@ -103,20 +82,12 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
       return () => clearTimeout(timer);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, isStreaming, chatScrollControl]); 
-
-  useEffect(() => {
-    const thinkBoxContent = thoughtsEndRef.current?.closest('.think-box-content');
-    if (thinkBoxContent && thinkBoxContentRef.current !== thinkBoxContent) {
-      thinkBoxContentRef.current = thinkBoxContent as HTMLElement;
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thoughtsEndRef.current]); 
+  }, [chatId, isStreaming, thinkBoxScrollControl]); 
 
   const toggleCollapse = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    logger.debug(`[THINKBOX] Manual toggle collapse for ${chatId}: ${next}`);
+    logger.info(`[THINKBOX] Manual toggle collapse for ${chatId}: ${next ? 'collapsed' : 'expanded'}`);
     try {
       window.dispatchEvent(new CustomEvent('chatContentResized', { detail: { chatId, messageId, source: 'thinkbox', collapsed: next } }));
     } catch {}
@@ -153,7 +124,7 @@ const ThinkBox: React.FC<ThinkBoxProps> = ({
         </div>
       </div>
       
-      <div className={`think-box-content ${isCollapsed ? 'collapsed' : ''}`}>
+      <div className={`think-box-content ${isCollapsed ? 'collapsed' : ''}`} ref={thinkBoxContentRef}>
         <div className="think-box-text">
           <MessageRenderer 
             content={displayedThoughts} 

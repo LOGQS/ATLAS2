@@ -1,8 +1,4 @@
-import React, {
-  useState,
-  useCallback,
-  useRef
-} from 'react';
+import React, { useState, useCallback } from 'react';
 
 import logger from '../../utils/core/logger';
 import { AttachedFile } from '../../utils/storage/BrowserStorage';
@@ -19,7 +15,8 @@ interface UserMessageFilesProps {
   chatScrollControl?: {
     shouldAutoScroll: () => boolean;
     onStreamStart: () => void;
-    resetToAutoScroll: () => void;
+    onStreamEnd: () => void;
+    forceScrollToBottom: () => void;
   };
 }
 
@@ -79,8 +76,6 @@ const UserMessageFiles: React.FC<UserMessageFilesProps> = ({
   const [selectedFile, setSelectedFile] = useState<AttachedFile | null>(null);
   const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set());
   const [isCollapsed, setIsCollapsed] = useState(true);
-  const filesEndRef = useRef<HTMLDivElement>(null);
-
   const toggleCollapse = () => {
     const wasCollapsed = isCollapsed;
     setIsCollapsed(!isCollapsed);
@@ -88,12 +83,8 @@ const UserMessageFiles: React.FC<UserMessageFilesProps> = ({
     if (wasCollapsed) {
       setTimeout(() => {
         if (chatScrollControl?.shouldAutoScroll()) {
-          const filesElement = filesEndRef.current;
-          const chatContainer = filesElement?.closest('.chat-messages')?.querySelector('.messages-container');
-          if (chatContainer) {
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            logger.info(`[SCROLL] UserMessageFiles triggered scroll to bottom for chat: ${chatId || 'unknown'}`);
-          }
+          chatScrollControl.forceScrollToBottom();
+          logger.info(`[SCROLL] UserMessageFiles forced scroll to bottom for chat: ${chatId || 'unknown'}`);
         } else {
           logger.debug(`[SCROLL] UserMessageFiles scroll to bottom suppressed for ${chatId} (auto-scroll disabled)`);
         }
@@ -234,7 +225,6 @@ const UserMessageFiles: React.FC<UserMessageFilesProps> = ({
           );
         })}
         </div>
-        <div ref={filesEndRef} />
       </div>
       
       {showModal && selectedFile && (

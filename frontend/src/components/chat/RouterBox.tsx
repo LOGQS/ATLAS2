@@ -19,7 +19,8 @@ interface RouterBoxProps {
   chatScrollControl?: {
     shouldAutoScroll: () => boolean;
     onStreamStart: () => void;
-    resetToAutoScroll: () => void;
+    onStreamEnd: () => void;
+    forceScrollToBottom: () => void;
   };
 }
 
@@ -47,7 +48,7 @@ const RouterBox: React.FC<RouterBoxProps> = ({
     const isLiveOverlay = messageId?.startsWith('live_router_');
     const isPlaceholder = messageId?.startsWith('temp_');
     const shouldAnimate = isLiveOverlay || isPlaceholder;
-    logger.info(`[ROUTERBOX] Animation trigger check: selectedRoute=${selectedRoute}, hasAnimated=${hasAnimated}, isLiveOverlay=${isLiveOverlay}, isPlaceholder=${isPlaceholder}, shouldAnimate=${shouldAnimate}, messageId=${messageId}`);
+    logger.debug(`[ROUTERBOX] Animation check: route=${selectedRoute}, animated=${hasAnimated}, shouldAnimate=${shouldAnimate}`);
 
     if (selectedRoute && !hasAnimated && shouldAnimate) {
       const playRoutingAnimation = async () => {
@@ -104,13 +105,15 @@ const RouterBox: React.FC<RouterBoxProps> = ({
         setTimeout(() => {
           setIsCollapsed(true);
           setAnimationPhase('idle');
-          logger.info(`[ROUTERBOX] Routing animation completed for ${chatId}`);
+          logger.info(`[ROUTERBOX] Animation completed for ${chatId}, dispatching resize event`);
 
           try {
             window.dispatchEvent(new CustomEvent('chatContentResized', {
               detail: { chatId, messageId, source: 'routerbox', collapsed: true }
             }));
-          } catch {}
+          } catch (e) {
+            logger.warn(`[ROUTERBOX] Failed to dispatch resize event:`, e);
+          }
         }, 200);
       };
 
@@ -122,12 +125,14 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   const toggleCollapse = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    logger.info(`[ROUTERBOX] Manual toggle collapse for ${chatId}: ${next}`);
+    logger.info(`[ROUTERBOX] Manual toggle for ${chatId}: ${next ? 'collapsed' : 'expanded'}`);
     try {
       window.dispatchEvent(new CustomEvent('chatContentResized', {
         detail: { chatId, messageId, source: 'routerbox', collapsed: next }
       }));
-    } catch {}
+    } catch (e) {
+      logger.warn(`[ROUTERBOX] Failed to dispatch resize event:`, e);
+    }
   };
 
   logger.info(`[ROUTERBOX_VISIBILITY] RouterBox visibility check for ${chatId}: isVisible=${isVisible}, hasRouterDecision=${!!routerDecision}, isProcessing=${isProcessing}, selectedRoute=${routerDecision?.selectedRoute}`);
