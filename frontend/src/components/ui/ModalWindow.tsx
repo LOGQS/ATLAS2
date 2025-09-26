@@ -1,6 +1,6 @@
 // status: complete
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import '../../styles/ui/ModalWindow.css';
 
 interface ModalWindowProps {
@@ -18,6 +18,22 @@ const ModalWindow: React.FC<ModalWindowProps> = ({
   className = '',
   showCloseButton = true
 }) => {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose();
+      }
+    };
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
