@@ -5,6 +5,7 @@ import json
 import queue
 import time
 from threading import Lock
+from collections import deque
 from chat.chat import Chat, is_chat_processing, stop_chat_process
 from utils.config import Config
 from utils.logger import get_logger
@@ -31,6 +32,10 @@ _content_queues_lock = Lock()
 
 _subscribers = []
 _sub_lock = Lock()
+
+BACKLOG_EVENT_LIMIT = 500
+_backlog_events = deque()
+_backlog_lock = Lock()
 
 def get_sse_headers(include_cors=False):
     """Get standardized SSE headers"""
@@ -121,6 +126,16 @@ def _subscribe():
     q = queue.Queue()
     with _sub_lock:
         _subscribers.append(q)
+
+    backlog = _drain_backlog_events()
+    if backlog:
+        logger.info(f'[SSE] Replaying {len(backlog)} backlog event(s) to new subscriber')
+        for event in backlog:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                logger.warning('[SSE] Subscriber queue full while replaying backlog; dropping remaining events')
+                break
     return q
 
 def _unsubscribe(q):
@@ -128,13 +143,50 @@ def _unsubscribe(q):
         if q in _subscribers:
             _subscribers.remove(q)
 
+def _store_backlog_event(event: dict) -> None:
+    with _backlog_lock:
+        _backlog_events.append(event.copy())
+        if len(_backlog_events) > BACKLOG_EVENT_LIMIT:
+            _backlog_events.popleft()
+    chat_label = event.get('chat_id') or 'global'
+    logger.debug(f'[SSE] Stored backlog event for {chat_label}')
+
+
+def _drain_backlog_events() -> list[dict]:
+    with _backlog_lock:
+        if not _backlog_events:
+            return []
+        drained = list(_backlog_events)
+        _backlog_events.clear()
+    if drained:
+        logger.debug(f'[SSE] Drained {len(drained)} backlog event(s) for replay')
+    return drained
+
 def _broadcast(event: dict):
     with _sub_lock:
-        for q in list(_subscribers):
-            try:
-                q.put(event, block=False)
-            except queue.Full:
-                _subscribers.remove(q)
+        if not _subscribers:
+            _store_backlog_event(event)
+            return
+        subscribers_snapshot = list(_subscribers)
+
+    delivered = False
+    to_remove = []
+    for q in subscribers_snapshot:
+        try:
+            q.put_nowait(event)
+            delivered = True
+        except queue.Full:
+            to_remove.append(q)
+
+    if to_remove:
+        with _sub_lock:
+            for q in to_remove:
+                if q in _subscribers:
+                    _subscribers.remove(q)
+        logger.warning(f'[SSE] Removed {len(to_remove)} stale subscriber(s) with full queues')
+
+    if not delivered:
+        _store_backlog_event(event)
 
 
 def broadcast_global_event(event: dict) -> None:
