@@ -991,7 +991,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     const isLastAssistantMessage = message.id === lastAssistantMessage?.id;
     const hasLiveOverlayContent = liveOverlay.contentBuf.length > 0 || liveOverlay.thoughtsBuf.length > 0;
-    const isLiveStreamingMessage = isLastAssistantMessage && hasLiveOverlayContent;
+    const isLiveStreamingMessage =
+      isLastAssistantMessage && (hasLiveOverlayContent || liveOverlay.state !== 'static');
     const showCursor = isLiveStreamingMessage && liveOverlay.state === 'responding';
     const assistantMessageIsStatic = (isStatic || !isLiveStreamingMessage) && !(isLiveStreamingMessage && !message.content.trim());
 
