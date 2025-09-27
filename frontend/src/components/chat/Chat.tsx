@@ -39,6 +39,7 @@ interface ChatProps {
   onActiveStateChange?: (chatId: string, isReallyActive: boolean) => void;
   onBusyStateChange?: () => void;
   setIsMessageBeingSent?: React.Dispatch<React.SetStateAction<boolean>>;
+  isSendInProgress?: boolean;
   onChatSwitch?: (newChatId: string) => Promise<void>;
   isActive?: boolean;
   defaultProvider?: string;
@@ -67,6 +68,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   onActiveStateChange, 
   onBusyStateChange,
   setIsMessageBeingSent,
+  isSendInProgress = false,
   onChatSwitch,
   isActive = true, 
   autoTTSActive = false, 
@@ -994,7 +996,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     const isLiveStreamingMessage =
       isLastAssistantMessage && (hasLiveOverlayContent || liveOverlay.state !== 'static');
     const showCursor = isLiveStreamingMessage && liveOverlay.state === 'responding';
-    const assistantMessageIsStatic = (isStatic || !isLiveStreamingMessage) && !(isLiveStreamingMessage && !message.content.trim());
+    const assistantMessageIsStatic = (isStatic || !isLiveStreamingMessage)
+      && !(isLiveStreamingMessage && !message.content.trim())
+      && !(isLastAssistantMessage && isSendInProgress);
 
     const canAttachToThisMessage = !String(message.id).startsWith('temp_');
     return (

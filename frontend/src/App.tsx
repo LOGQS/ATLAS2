@@ -1277,6 +1277,7 @@ function App() {
               onActiveStateChange={handleActiveStateChange}
               onBusyStateChange={handleBusyStateChange}
               setIsMessageBeingSent={setIsMessageBeingSent}
+              isSendInProgress={isSendInProgressForActive}
               onChatSwitch={handleChatSwitch}
             />
             
