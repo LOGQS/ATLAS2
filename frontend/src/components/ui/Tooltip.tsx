@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import '../../styles/ui/Tooltip.css';
 
 interface TooltipProps {
@@ -37,7 +37,7 @@ const Tooltip: React.FC<TooltipProps> = ({
     setIsVisible(false);
   };
 
-  const calculatePosition = () => {
+  const calculatePosition = useCallback(() => {
     if (!targetRef.current || !tooltipRef.current) return;
 
     const targetRect = targetRef.current.getBoundingClientRect();
@@ -81,7 +81,7 @@ const Tooltip: React.FC<TooltipProps> = ({
     }
 
     setTooltipPosition({ top, left });
-  };
+  }, [position]);
 
   useEffect(() => {
     return () => {
@@ -95,7 +95,7 @@ const Tooltip: React.FC<TooltipProps> = ({
     if (isVisible) {
       calculatePosition();
     }
-  }, [isVisible, position]);
+  }, [isVisible, position, calculatePosition]);
 
   return (
     <>

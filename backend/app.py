@@ -35,6 +35,36 @@ logger = get_logger(__name__)
 
 _shutdown_handled = False
 
+def _build_reloader_exclude_patterns():
+    """Ensure Werkzeug reloader ignores system and venv library paths."""
+    prefixes = {
+        sys.base_prefix,
+        sys.base_exec_prefix,
+        getattr(sys, "real_prefix", None),
+        sys.prefix,
+    }
+    patterns = set()
+
+    for prefix in prefixes:
+        if not prefix:
+            continue
+        base = Path(prefix).resolve()
+        variants = {
+            base,
+            base / "Lib",
+            base / "lib",
+            base / "Lib" / "site-packages",
+            base / "lib" / "site-packages",
+        }
+
+        for variant in variants:
+            raw = str(variant)
+            posix = variant.as_posix()
+            for candidate in (raw, posix):
+                patterns.add(f"{candidate}*")
+
+    return sorted(patterns)
+
 def handle_shutdown(signum=None, frame=None):
     """Handle graceful shutdown - set all active chats to static state"""
     global _shutdown_handled
@@ -220,9 +250,15 @@ if __name__ == '__main__':
     logger.info("Shutdown handlers registered successfully")
     logger.info("Starting ATLAS2 Backend on 0.0.0.0:5000")
 
+    reloader_exclude_patterns = _build_reloader_exclude_patterns()
+    logger.info("Configured reloader exclude patterns: %s", reloader_exclude_patterns)
+
     app.run(
         host='0.0.0.0',
         port=5000,
         debug=True,
-        threaded=True
+        threaded=True,
+        reloader_type='stat',
+        exclude_patterns=reloader_exclude_patterns
     )
+
