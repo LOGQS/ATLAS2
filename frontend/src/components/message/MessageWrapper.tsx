@@ -3,6 +3,7 @@ import MessageControls from './MessageControls';
 import MessageEditEmbed from './MessageEditEmbed';
 import type { AttachedFile } from '../../types/messages';
 import MessageVersionSwitcher from './MessageVersionSwitcher';
+import MessageInfoOverlay from './MessageInfoOverlay';
 import '../../styles/message/MessageWrapper.css';
 
 interface MessageWrapperProps {
@@ -10,6 +11,15 @@ interface MessageWrapperProps {
   messageRole: 'user' | 'assistant';
   messageContent: string;
   attachedFiles?: AttachedFile[];
+  messageTimestamp?: string;
+  messageProvider?: string;
+  messageModel?: string;
+  messageRouterDecision?: {
+    route: string;
+    available_routes: any[];
+    selected_model: string | null;
+  } | null;
+  messageClientId?: string;
   isStatic?: boolean;
   isEditing?: boolean;
   children: React.ReactNode;
@@ -36,6 +46,11 @@ const MessageWrapper: React.FC<MessageWrapperProps> = ({
   messageRole,
   messageContent,
   attachedFiles,
+  messageTimestamp,
+  messageProvider,
+  messageModel,
+  messageRouterDecision,
+  messageClientId,
   isStatic = true,
   isEditing = false,
   children,
@@ -57,6 +72,7 @@ const MessageWrapper: React.FC<MessageWrapperProps> = ({
   className = ''
 }) => {
   const [showControls, setShowControls] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleMouseEnter = useCallback(() => {
@@ -93,6 +109,14 @@ const MessageWrapper: React.FC<MessageWrapperProps> = ({
     isEditing && 'editing'
   ].filter(Boolean).join(' ');
 
+  const handleInfoOpen = useCallback(() => {
+    setIsInfoOpen(true);
+  }, []);
+
+  const handleInfoClose = useCallback(() => {
+    setIsInfoOpen(false);
+  }, []);
+
   return (
     <div
       className={wrapperClasses}
@@ -121,6 +145,8 @@ const MessageWrapper: React.FC<MessageWrapperProps> = ({
           messageContent={messageContent}
           messageRole={messageRole}
           isVisible={showControls && isStatic}
+          showInfoButton={messageRole === 'assistant'}
+          onInfoClick={handleInfoOpen}
           onCopy={onCopy}
           onTTSToggle={onTTSToggle}
           onRetry={onRetry}
@@ -139,6 +165,20 @@ const MessageWrapper: React.FC<MessageWrapperProps> = ({
         isVisible={showControls && isStatic && !!onVersionSwitch && !!currentChatId}
         hasVersions={hasVersions}
         messageRole={messageRole}
+      />
+
+      <MessageInfoOverlay
+        isOpen={isInfoOpen}
+        onClose={handleInfoClose}
+        messageId={messageId}
+        messageClientId={messageClientId}
+        chatId={currentChatId}
+        messageContent={messageContent}
+        timestamp={messageTimestamp}
+        provider={messageProvider}
+        model={messageModel}
+        routerDecision={messageRouterDecision}
+        isAssistant={messageRole === 'assistant'}
       />
 
     </div>

@@ -141,6 +141,26 @@
   border-color: rgba(156, 39, 176, 0.3);
 }
 
+.message-info-btn {
+  background: rgba(120, 128, 140, 0.2);
+  color: rgba(225, 229, 236, 0.75);
+  border-color: rgba(165, 175, 188, 0.25);
+}
+
+.message-info-btn:hover {
+  background: rgba(150, 158, 170, 0.28);
+  color: #f0f2f6;
+  border-color: rgba(190, 198, 210, 0.4);
+}
+
+.message-info-btn:active {
+  background: rgba(150, 158, 170, 0.35);
+}
+
+.message-info-btn svg {
+  stroke-width: 1.8;
+}
+
 /* Button icons */
 .message-control-btn svg {
   width: 14px;

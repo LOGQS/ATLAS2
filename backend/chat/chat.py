@@ -451,12 +451,15 @@ class Chat:
     """
     
     def __init__(self, system_prompt: Optional[str] = None, chat_id: Optional[str] = None):
-        self.chat_id = chat_id or self._generate_unique_id()
+        if chat_id:
+            self.chat_id = chat_id
+        else:
+            self.chat_id = f"router_temp_{uuid.uuid4()}"
         self.system_prompt = system_prompt
-        
+
         self.providers = get_provider_map()
-        
-        if not self.chat_id.startswith("router_temp_"):
+
+        if self.chat_id and not self.chat_id.startswith("router_temp_"):
             if not db.chat_exists(self.chat_id):
                 logger.info(f"Creating new chat: {self.chat_id}")
                 db.create_chat(self.chat_id, self.system_prompt)

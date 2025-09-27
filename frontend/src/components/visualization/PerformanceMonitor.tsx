@@ -52,8 +52,7 @@ const PerformanceMonitor: React.FC<PerformanceMonitorProps> = ({ activeChatId })
       'Input Processing': '#3498db',     // Blue
       'Chat Creation': '#9b59b6',        // Purple
       'Component Mount': '#e74c3c',      // Red
-      'Message Prep': '#f39c12',         // Orange
-      'API Response Wait': '#95a5a6',    // Gray
+      'API Response Time': '#f39c12',    // Orange
       'Streaming': '#27ae60',            // Green
       'Streaming (ongoing)': '#16a085',  // Teal
     };

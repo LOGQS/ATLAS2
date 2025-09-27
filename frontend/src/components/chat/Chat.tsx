@@ -12,6 +12,7 @@ import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
 import { performanceTracker } from '../../utils/core/performanceTracker';
+import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 import { apiUrl } from '../../config/api';
 import { computeIsScrollable, MessageDuplicateChecker } from '../../utils/chat/chatHelpers';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -605,7 +606,118 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     
     return out;
   }, [messages, chatId, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, liveOverlay.state]);
-  
+
+  const recordAssistantStats = useCallback((message: Message | undefined | null) => {
+
+    if (!chatId || !message) {
+      return;
+    }
+
+    const storageKey = message.clientId ?? message.id;
+    const baseClientId = message.clientId && message.clientId.includes(':')
+      ? message.clientId.split(':')[0]
+      : null;
+
+
+    if (!storageKey) {
+      return;
+    }
+
+    const existing = BrowserStorage.getMessageStats(chatId, message.id)
+      ?? BrowserStorage.getMessageStats(chatId, storageKey)
+      ?? (baseClientId ? BrowserStorage.getMessageStats(chatId, baseClientId) : null);
+
+    const metricKeys = [message.clientId, baseClientId, message.id, chatId].filter(Boolean) as string[];
+
+    let metrics = null as ReturnType<typeof performanceTracker.getMetrics>;
+    for (const key of metricKeys) {
+      const candidateMetrics = performanceTracker.getMetrics(key);
+
+      if (candidateMetrics) {
+        const timestampCount = Object.keys(candidateMetrics.timestamps || {}).length;
+        const phaseCount = candidateMetrics.phases?.length || 0;
+        const hasApiMarks = !!(candidateMetrics.timestamps?.[performanceTracker.MARKS.API_CALL_START] &&
+                              candidateMetrics.timestamps?.[performanceTracker.MARKS.FIRST_STREAM_EVENT]);
+
+
+        if (hasApiMarks || timestampCount >= 5) {
+          metrics = candidateMetrics;
+          break;
+        }
+      }
+    }
+
+    if (!metrics) {
+      return;
+    }
+
+    const totalTimeMs = Number.isFinite(metrics.totalTime) ? metrics.totalTime : null;
+    const timestamps = metrics.timestamps ?? {};
+    const firstStream = timestamps[performanceTracker.MARKS.FIRST_STREAM_EVENT];
+    const apiCallSent = timestamps[performanceTracker.MARKS.API_CALL_SENT];
+    const respondingStart = timestamps[performanceTracker.MARKS.STREAM_RESPONDING];
+    const completeMark = timestamps[performanceTracker.MARKS.STREAM_COMPLETE];
+
+    let firstTokenMs: number | null = null;
+    if (typeof apiCallSent === 'number' && typeof firstStream === 'number') {
+      const diff = firstStream - apiCallSent;
+      firstTokenMs = diff >= 0 ? diff : null;
+    }
+
+    let streamingTimeMs: number | null = null;
+    if (typeof completeMark === 'number') {
+      const startPoint = typeof respondingStart === 'number'
+        ? respondingStart
+        : (typeof firstStream === 'number' ? firstStream : null);
+      if (typeof startPoint === 'number') {
+        const duration = completeMark - startPoint;
+        streamingTimeMs = duration >= 0 ? duration : null;
+      }
+    }
+
+    const phaseDurations = metrics.phases?.reduce<Record<string, number>>((acc, phase) => {
+      if (typeof phase.duration === 'number' && !Number.isNaN(phase.duration)) {
+        acc[phase.name] = phase.duration;
+      }
+      return acc;
+    }, {}) ?? {};
+
+
+    const performanceMarks = Object.keys(timestamps ?? {}).length > 0 ? { ...timestamps } : undefined;
+    const hasPerformanceData = Boolean(performanceMarks) || Object.keys(phaseDurations).length > 0;
+
+    const needsUpdate = !existing
+      || (totalTimeMs != null && existing.totalTimeMs == null)
+      || (streamingTimeMs != null && existing.streamingTimeMs == null)
+      || (firstTokenMs != null && existing.firstTokenMs == null)
+      || (hasPerformanceData && (!existing.performanceMarks || !existing.phaseDurations))
+      || (message.timestamp && !existing.messageTimestamp);
+
+    if (!needsUpdate) {
+      return;
+    }
+
+    BrowserStorage.saveMessageStats(chatId, storageKey, {
+      messageId: message.id,
+      totalTimeMs,
+      streamingTimeMs,
+      firstTokenMs,
+      recordedAt: new Date().toISOString(),
+      source: 'performance-tracker' as const,
+      performanceMarks,
+      phaseDurations,
+      messageTimestamp: message.timestamp ?? null,
+    });
+
+    BrowserStorage.setMessageStatsAlias(chatId, message.id, storageKey);
+    if (message.clientId) {
+      BrowserStorage.setMessageStatsAlias(chatId, message.clientId, storageKey);
+    }
+    if (baseClientId) {
+      BrowserStorage.setMessageStatsAlias(chatId, baseClientId, storageKey);
+    }
+  }, [chatId]);
+
   useEffect(() => {
     const isCurrentlyStreaming = liveOverlay.state !== 'static';
     
@@ -634,6 +746,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       setWasStreaming(false);
 
       const lastAssistantMessage = [...rendered].reverse().find(m => m.role === 'assistant');
+      if (lastAssistantMessage) {
+        recordAssistantStats(lastAssistantMessage);
+      }
       const needPersistFetch = !lastAssistantMessage;
       if (needPersistFetch) {
         try {
@@ -674,7 +789,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       
       logger.info(`[STREAM_STATE] ===== FINAL STATE VERIFICATION COMPLETED =====`);
     }
-  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered, releasePersistingAfterStream, autoTTSActive, isTTSSupported, handleTTSToggle]);
+  }, [liveOverlay.state, setIsMessageBeingSent, messageOperations.isDeleting, messageOperations.isRetrying, messageOperations.isEditing, wasStreaming, chatId, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, messages, isLoading, isOperationLoading, loadHistory, rendered, releasePersistingAfterStream, autoTTSActive, isTTSSupported, handleTTSToggle, recordAssistantStats]);
 
   useEffect(() => {
     if (persistingAfterStream) return;
@@ -809,6 +924,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     const cid = crypto.randomUUID();
 
+    performanceTracker.startTracking(cid, chatId);
     performanceTracker.linkClientId(cid, chatId);
 
     const userMsg: Message = {
@@ -832,7 +948,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     try {
       logger.debug(`[Chat] Sending message to ${chatId}: "${content.substring(0, 50)}..."`);
 
-      performanceTracker.mark(performanceTracker.MARKS.API_CALL_START, cid);
+      performanceTracker.mark(performanceTracker.MARKS.API_CALL_START, chatId);
 
       const controller = new AbortController();
       const fetchPromise = fetch(apiUrl('/api/chat/stream'), {
@@ -848,7 +964,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         signal: controller.signal
       });
 
-      performanceTracker.mark(performanceTracker.MARKS.API_CALL_SENT, cid);
+      performanceTracker.mark(performanceTracker.MARKS.API_CALL_SENT, chatId);
 
       const response = await fetchPromise;
 
@@ -947,6 +1063,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           messageRole={message.role}
           messageContent={message.content}
           attachedFiles={message.attachedFiles}
+          messageTimestamp={message.timestamp}
+          messageProvider={message.provider}
+          messageModel={message.model}
+          messageRouterDecision={message.routerDecision ?? null}
+          messageClientId={message.clientId}
           isStatic={true}
           isEditing={isMessageBeingEdited(message.id)}
           onCopy={handleMessageCopy}
@@ -1008,6 +1129,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         messageRole={message.role}
         messageContent={message.content}
         attachedFiles={message.attachedFiles}
+        messageTimestamp={message.timestamp}
+        messageProvider={message.provider}
+        messageModel={message.model}
+        messageRouterDecision={message.routerDecision ?? null}
+        messageClientId={message.clientId}
         isStatic={assistantMessageIsStatic}
         isEditing={isMessageBeingEdited(message.id)}
         onCopy={handleMessageCopy}

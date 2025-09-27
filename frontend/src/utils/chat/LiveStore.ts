@@ -184,6 +184,7 @@ class LiveStore {
 
     if (next.state === 'thinking' && oldState !== 'thinking') {
       performanceTracker.mark(performanceTracker.MARKS.STREAM_THINKING, chatId);
+      performanceTracker.mark(performanceTracker.MARKS.FIRST_STREAM_EVENT, chatId);
     } else if (next.state === 'responding' && oldState !== 'responding') {
       performanceTracker.mark(performanceTracker.MARKS.STREAM_RESPONDING, chatId);
     }
@@ -333,9 +334,6 @@ class LiveStore {
 
         logger.info(`[LIVESTORE_SSE] Processing ${ev.type} event for chat: ${chatId}`);
 
-        if (!this.byChat.has(chatId) && (ev.type === 'chat_state' || ev.type === 'thoughts' || ev.type === 'answer')) {
-          performanceTracker.mark(performanceTracker.MARKS.FIRST_STREAM_EVENT, chatId);
-        }
 
         logger.info(`[LIVESTORE_SSE] Current state for ${chatId}: state=${cur.state}, content=${cur.contentBuf.length}chars, thoughts=${cur.thoughtsBuf.length}chars`);
 

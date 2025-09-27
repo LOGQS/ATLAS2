@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { Message } from '../../types/messages';
 import logger from '../../utils/core/logger';
+import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 
 interface UseMessageIdSyncProps {
   chatId?: string;
@@ -45,15 +46,25 @@ export const useMessageIdSync = ({ chatId, setMessages }: UseMessageIdSyncProps)
           const isTemp = m.id.startsWith('temp_');
 
           if (!userReplaced && userMessageId && m.role === 'user' && isTemp) {
-            logger.info(`[MessageIdSync] Promoting temp user ${m.id} -> ${userMessageId}`);
+            const previousId = m.id;
+            logger.info(`[MessageIdSync] Promoting temp user ${previousId} -> ${userMessageId}`);
             updated[i] = { ...m, id: userMessageId };
             userReplaced = true;
+            BrowserStorage.promoteMessageStats(chatId, previousId, userMessageId);
+            if (m.clientId) {
+              BrowserStorage.setMessageStatsAlias(chatId, m.clientId, userMessageId);
+            }
           }
 
           if (!assistantReplaced && assistantMessageId && m.role === 'assistant' && isTemp) {
-            logger.info(`[MessageIdSync] Promoting temp assistant ${m.id} -> ${assistantMessageId}`);
+            const previousId = m.id;
+            logger.info(`[MessageIdSync] Promoting temp assistant ${previousId} -> ${assistantMessageId}`);
             updated[i] = { ...m, id: assistantMessageId };
             assistantReplaced = true;
+            BrowserStorage.promoteMessageStats(chatId, previousId, assistantMessageId);
+            if (m.clientId) {
+              BrowserStorage.setMessageStatsAlias(chatId, m.clientId, assistantMessageId);
+            }
           }
 
           if (userReplaced && (assistantReplaced || !assistantMessageId)) {

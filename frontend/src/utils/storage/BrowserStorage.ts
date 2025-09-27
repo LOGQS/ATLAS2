@@ -32,6 +32,20 @@ export interface AttachedFile {
   provider?: string;
 }
 
+export type MessageStatsSource = 'performance-tracker' | 'manual';
+
+export interface MessageGenerationStats {
+  messageId: string;
+  totalTimeMs: number | null;
+  streamingTimeMs: number | null;
+  firstTokenMs: number | null;
+  recordedAt: string;
+  source: MessageStatsSource;
+  performanceMarks?: Partial<Record<string, number>>;
+  phaseDurations?: Partial<Record<string, number>>;
+  messageTimestamp?: string | null;
+}
+
 const DEFAULT_SETTINGS: UISettings = {
   leftSidebarToggled: true,
   rightSidebarToggled: true,
@@ -56,10 +70,19 @@ export const DEFAULT_SOURCE_PREFERENCES: SourcePreferences = {
   pinnedSources: []
 };
 
+interface MessageStatsChatEntry {
+  records: Record<string, MessageGenerationStats>;
+  aliases: Record<string, string>;
+}
+
+type MessageStatsStorage = Record<string, MessageStatsChatEntry>;
+
 export class BrowserStorage {
   private static readonly SETTINGS_KEY = 'atlas_ui_settings';
   private static readonly ATTACHED_FILES_KEY = 'atlas_attached_files';
   private static readonly SOURCE_PREFS_KEY = 'atlas_source_preferences';
+  private static readonly MESSAGE_STATS_KEY = 'atlas_message_stats_v1';
+  private static readonly MESSAGE_STATS_LIMIT = 200;
 
   static getUISettings(): UISettings {
     try {
@@ -166,5 +189,221 @@ export class BrowserStorage {
         : updater;
     this.setSourcePreferences(next);
     return next;
+  }
+
+  private static getMessageStatsStorage(): MessageStatsStorage {
+    if (typeof window === 'undefined') {
+      return {};
+    }
+
+    try {
+      const stored = localStorage.getItem(this.MESSAGE_STATS_KEY);
+      if (!stored) {
+        return {};
+      }
+      const parsed = JSON.parse(stored) as MessageStatsStorage;
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      console.warn('Failed to load message stats from localStorage:', error);
+      return {};
+    }
+  }
+
+  private static persistMessageStatsStorage(storage: MessageStatsStorage): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      localStorage.setItem(this.MESSAGE_STATS_KEY, JSON.stringify(storage));
+    } catch (error) {
+      console.warn('Failed to persist message stats to localStorage:', error);
+    }
+  }
+
+  private static ensureMessageStatsEntry(storage: MessageStatsStorage, chatId: string): MessageStatsChatEntry {
+    if (!storage[chatId]) {
+      storage[chatId] = { records: {}, aliases: {} };
+    }
+    return storage[chatId];
+  }
+
+  private static resolveMessageStatsKey(entry: MessageStatsChatEntry | undefined, key: string): string {
+    if (!entry) {
+      return key;
+    }
+
+    let current = key;
+    const visited = new Set<string>();
+
+    while (entry.aliases[current] && !visited.has(current)) {
+      visited.add(current);
+      current = entry.aliases[current];
+    }
+
+    return current;
+  }
+
+  private static pruneMessageStats(entry: MessageStatsChatEntry): void {
+    const records = Object.entries(entry.records);
+    if (records.length <= this.MESSAGE_STATS_LIMIT) {
+      return;
+    }
+
+    records.sort(([, a], [, b]) => {
+      const aTime = new Date(a.recordedAt).getTime();
+      const bTime = new Date(b.recordedAt).getTime();
+      return aTime - bTime;
+    });
+
+    while (records.length > this.MESSAGE_STATS_LIMIT) {
+      const [oldestKey] = records.shift()!;
+      delete entry.records[oldestKey];
+    }
+  }
+
+  private static notifyMessageStatsUpdate(chatId: string, key: string, messageId?: string): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.dispatchEvent(new CustomEvent('messageStatsUpdated', {
+      detail: {
+        chatId,
+        key,
+        messageId: messageId ?? null
+      }
+    }));
+  }
+
+  static getMessageStats(chatId: string | undefined, key: string | undefined | null): MessageGenerationStats | null {
+    if (!chatId || !key) {
+      return null;
+    }
+
+    const storage = this.getMessageStatsStorage();
+    const entry = storage[chatId];
+    if (!entry) {
+      return null;
+    }
+
+    const resolvedKey = this.resolveMessageStatsKey(entry, key);
+    const record = entry.records[resolvedKey];
+    if (!record) {
+      return null;
+    }
+
+    return {
+      ...record,
+      performanceMarks: record.performanceMarks ? { ...record.performanceMarks } : undefined,
+      phaseDurations: record.phaseDurations ? { ...record.phaseDurations } : undefined,
+    };
+  }
+
+  static saveMessageStats(
+    chatId: string,
+    key: string,
+    input: Partial<Omit<MessageGenerationStats, 'messageId' | 'recordedAt' | 'source'>> & {
+      messageId?: string;
+      recordedAt?: string;
+      source?: MessageStatsSource;
+    }
+  ): MessageGenerationStats {
+    const storage = this.getMessageStatsStorage();
+    const entry = this.ensureMessageStatsEntry(storage, chatId);
+
+    const resolvedKey = this.resolveMessageStatsKey(entry, key);
+    const existing = entry.records[resolvedKey];
+
+    const record: MessageGenerationStats = {
+      messageId: input.messageId ?? existing?.messageId ?? resolvedKey,
+      totalTimeMs: input.totalTimeMs ?? existing?.totalTimeMs ?? null,
+      streamingTimeMs: input.streamingTimeMs ?? existing?.streamingTimeMs ?? null,
+      firstTokenMs: input.firstTokenMs ?? existing?.firstTokenMs ?? null,
+      recordedAt: input.recordedAt ?? existing?.recordedAt ?? new Date().toISOString(),
+      source: input.source ?? existing?.source ?? 'performance-tracker',
+      performanceMarks: {
+        ...(existing?.performanceMarks ?? {}),
+        ...(input.performanceMarks ?? {}),
+      },
+      phaseDurations: {
+        ...(existing?.phaseDurations ?? {}),
+        ...(input.phaseDurations ?? {}),
+      },
+      messageTimestamp: input.messageTimestamp ?? existing?.messageTimestamp ?? null,
+    };
+
+    if (record.performanceMarks && Object.keys(record.performanceMarks).length === 0) {
+      record.performanceMarks = undefined;
+    }
+
+    if (record.phaseDurations && Object.keys(record.phaseDurations).length === 0) {
+      record.phaseDurations = undefined;
+    }
+
+    entry.records[resolvedKey] = record;
+    this.pruneMessageStats(entry);
+    this.persistMessageStatsStorage(storage);
+    this.notifyMessageStatsUpdate(chatId, resolvedKey, record.messageId);
+    return record;
+  }
+
+  static setMessageStatsAlias(chatId: string, alias: string | undefined | null, targetKey: string): void {
+    if (!chatId || !alias || alias === targetKey) {
+      return;
+    }
+
+    const storage = this.getMessageStatsStorage();
+    const entry = this.ensureMessageStatsEntry(storage, chatId);
+    const resolvedTarget = this.resolveMessageStatsKey(entry, targetKey);
+
+    if (entry.aliases[alias] === resolvedTarget) {
+      return;
+    }
+
+    entry.aliases[alias] = resolvedTarget;
+    this.persistMessageStatsStorage(storage);
+    this.notifyMessageStatsUpdate(chatId, resolvedTarget);
+  }
+
+  static promoteMessageStats(chatId: string, fromKey: string, toKey: string): void {
+    if (!chatId || !fromKey || !toKey) {
+      return;
+    }
+
+    if (fromKey === toKey) {
+      this.setMessageStatsAlias(chatId, fromKey, toKey);
+      return;
+    }
+
+    const storage = this.getMessageStatsStorage();
+    const entry = storage[chatId];
+    if (!entry) {
+      this.setMessageStatsAlias(chatId, fromKey, toKey);
+      return;
+    }
+
+    const resolvedFrom = this.resolveMessageStatsKey(entry, fromKey);
+    const resolvedTo = this.resolveMessageStatsKey(entry, toKey);
+
+    const record = entry.records[resolvedFrom];
+    if (!record) {
+      this.setMessageStatsAlias(chatId, fromKey, resolvedTo);
+      return;
+    }
+
+    delete entry.records[resolvedFrom];
+    const updated: MessageGenerationStats = { ...record, messageId: resolvedTo };
+    entry.records[resolvedTo] = updated;
+
+    Object.entries(entry.aliases).forEach(([aliasKey, currentTarget]) => {
+      if (currentTarget === resolvedFrom) {
+        entry.aliases[aliasKey] = resolvedTo;
+      }
+    });
+    entry.aliases[fromKey] = resolvedTo;
+
+    this.persistMessageStatsStorage(storage);
+    this.notifyMessageStatsUpdate(chatId, resolvedTo, updated.messageId);
   }
 }

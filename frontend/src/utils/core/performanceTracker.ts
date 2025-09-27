@@ -155,8 +155,7 @@ class PerformanceTracker {
       { name: 'Input Processing', start: this.MARKS.SEND_INITIATED, end: this.MARKS.CHAT_CREATED },
       { name: 'Chat Creation', start: this.MARKS.CHAT_CREATED, end: this.MARKS.COMPONENT_MOUNTED },
       { name: 'Component Mount', start: this.MARKS.COMPONENT_MOUNTED, end: this.MARKS.API_CALL_START },
-      { name: 'Message Prep', start: this.MARKS.API_CALL_START, end: this.MARKS.API_CALL_SENT },
-      { name: 'API Response Wait', start: this.MARKS.API_CALL_SENT, end: this.MARKS.FIRST_STREAM_EVENT },
+      { name: 'API Response Time', start: this.MARKS.API_CALL_START, end: this.MARKS.FIRST_STREAM_EVENT },
       { name: 'Streaming', start: this.MARKS.FIRST_STREAM_EVENT, end: this.MARKS.STREAM_COMPLETE },
     ];
 
@@ -221,11 +220,11 @@ class PerformanceTracker {
 
     if (foundKey && foundEntry) {
       this.entries.delete(foundKey);
-      this.entries.set(clientId, foundEntry);
+      this.entries.set(chatId, foundEntry);
       foundEntry.messageId = clientId;
 
       if (this.activeEntry === foundKey) {
-        this.activeEntry = clientId;
+        this.activeEntry = chatId;
       }
 
       logger.info(`[PERF] Linked client ID ${clientId} to chat ${chatId}`);
