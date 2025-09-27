@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { performanceTracker } from '../../utils/core/performanceTracker';
 import { BrowserStorage, MessageGenerationStats } from '../../utils/storage/BrowserStorage';
+import Tooltip from '../ui/Tooltip';
 import '../../styles/message/MessageInfoOverlay.css';
 
 interface MessageInfoOverlayProps {
@@ -31,6 +32,21 @@ const formatTimestamp = (timestamp?: string): string | null => {
 
 const roundNumber = (value: number, fractionDigits: number = 2): string => {
   return value.toFixed(fractionDigits).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+};
+
+const tooltipDescriptions = {
+  model: 'The AI model used to generate this response',
+  provider: 'The API provider that served this request (e.g., Anthropic, OpenAI)',
+  route: 'The optimal routing decision made for this request based on available models and conditions',
+  apiResponseTime: 'Time from sending the request to receiving the first token from the API',
+  streamingTime: 'Time spent receiving and processing the streamed response',
+  totalGenerationTime: 'Complete time from request initiation to response completion',
+  tokensPerSecondStream: 'Estimated tokens generated per second during the streaming phase',
+  tokensPerSecondOverall: 'Estimated tokens generated per second for the entire generation process',
+  timestamp: 'When this message was created',
+  characters: 'Total number of characters in the response',
+  words: 'Total number of words in the response',
+  tokens: 'Estimated number of tokens in the response (approximately 1 token per 4 characters)'
 };
 
 const MessageInfoOverlay: React.FC<MessageInfoOverlayProps> = ({
@@ -266,50 +282,66 @@ const MessageInfoOverlay: React.FC<MessageInfoOverlayProps> = ({
           <h3>Generation</h3>
           <dl>
             {displayedModel && (
-              <div className="message-info-row">
-                <dt>Model</dt>
-                <dd>{displayedModel}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.model}>
+                <div className="message-info-row">
+                  <dt>Model</dt>
+                  <dd>{displayedModel}</dd>
+                </div>
+              </Tooltip>
             )}
             {provider && (
-              <div className="message-info-row">
-                <dt>Provider</dt>
-                <dd>{provider}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.provider}>
+                <div className="message-info-row">
+                  <dt>Provider</dt>
+                  <dd>{provider}</dd>
+                </div>
+              </Tooltip>
             )}
             {displayedRoute && (
-              <div className="message-info-row">
-                <dt>Route</dt>
-                <dd>{displayedRoute}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.route}>
+                <div className="message-info-row">
+                  <dt>Route</dt>
+                  <dd>{displayedRoute}</dd>
+                </div>
+              </Tooltip>
             )}
-            <div className="message-info-row">
-              <dt>API response time</dt>
-              <dd>{apiResponseSeconds !== null ? roundNumber(apiResponseSeconds, 2) + 's' : 'N/A'}</dd>
-            </div>
-            {streamingSeconds !== null && (
+            <Tooltip content={tooltipDescriptions.apiResponseTime}>
               <div className="message-info-row">
-                <dt>Streaming time</dt>
-                <dd>{roundNumber(streamingSeconds, 2)}s</dd>
+                <dt>API response time</dt>
+                <dd>{apiResponseSeconds !== null ? roundNumber(apiResponseSeconds, 2) + 's' : 'N/A'}</dd>
               </div>
+            </Tooltip>
+            {streamingSeconds !== null && (
+              <Tooltip content={tooltipDescriptions.streamingTime}>
+                <div className="message-info-row">
+                  <dt>Streaming time</dt>
+                  <dd>{roundNumber(streamingSeconds, 2)}s</dd>
+                </div>
+              </Tooltip>
             )}
             {durationSeconds !== null && (
-              <div className="message-info-row">
-                <dt>Total generation time</dt>
-                <dd>{roundNumber(durationSeconds, 2)}s</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.totalGenerationTime}>
+                <div className="message-info-row">
+                  <dt>Total generation time</dt>
+                  <dd>{roundNumber(durationSeconds, 2)}s</dd>
+                </div>
+              </Tooltip>
             )}
             {tokensPerSecondStream !== null && (
-              <div className="message-info-row">
-                <dt>~Tokens/sec (stream)</dt>
-                <dd>{roundNumber(tokensPerSecondStream, 2)}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.tokensPerSecondStream}>
+                <div className="message-info-row">
+                  <dt>~Tokens/sec (stream)</dt>
+                  <dd>{roundNumber(tokensPerSecondStream, 2)}</dd>
+                </div>
+              </Tooltip>
             )}
             {tokensPerSecondOverall !== null && (
-              <div className="message-info-row">
-                <dt>~Tokens/sec (overall)</dt>
-                <dd>{roundNumber(tokensPerSecondOverall, 2)}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.tokensPerSecondOverall}>
+                <div className="message-info-row">
+                  <dt>~Tokens/sec (overall)</dt>
+                  <dd>{roundNumber(tokensPerSecondOverall, 2)}</dd>
+                </div>
+              </Tooltip>
             )}
           </dl>
         </section>
@@ -318,23 +350,31 @@ const MessageInfoOverlay: React.FC<MessageInfoOverlayProps> = ({
           <h3>Content</h3>
           <dl>
             {formattedTimestamp && (
-              <div className="message-info-row">
-                <dt>Timestamp</dt>
-                <dd>{formattedTimestamp}</dd>
-              </div>
+              <Tooltip content={tooltipDescriptions.timestamp}>
+                <div className="message-info-row">
+                  <dt>Timestamp</dt>
+                  <dd>{formattedTimestamp}</dd>
+                </div>
+              </Tooltip>
             )}
-            <div className="message-info-row">
-              <dt>Characters</dt>
-              <dd>{characterCount}</dd>
-            </div>
-            <div className="message-info-row">
-              <dt>Words</dt>
-              <dd>{wordCount}</dd>
-            </div>
-            <div className="message-info-row">
-              <dt>~Tokens</dt>
-              <dd>{estimatedTokens}</dd>
-            </div>
+            <Tooltip content={tooltipDescriptions.characters}>
+              <div className="message-info-row">
+                <dt>Characters</dt>
+                <dd>{characterCount}</dd>
+              </div>
+            </Tooltip>
+            <Tooltip content={tooltipDescriptions.words}>
+              <div className="message-info-row">
+                <dt>Words</dt>
+                <dd>{wordCount}</dd>
+              </div>
+            </Tooltip>
+            <Tooltip content={tooltipDescriptions.tokens}>
+              <div className="message-info-row">
+                <dt>~Tokens</dt>
+                <dd>{estimatedTokens}</dd>
+              </div>
+            </Tooltip>
           </dl>
         </section>
       </div>
