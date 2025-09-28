@@ -84,31 +84,44 @@ ATLAS2/
 │   │       └── func_interface.py
 │   ├── app.py
 │   ├── chat/
-│   │   ├── chat_worker.py
 │   │   ├── chat.py
-│   │   └── providers.py
+│   │   ├── chat_worker.py
+│   │   ├── providers.py
+│   │   └── worker_pool.py
+│   ├── context/
+│   │   └── context_manager.py
 │   ├── features/
-│   │   └── stt.py
+│   │   ├── audio_processor.py
+│   │   ├── image_generation.py
+│   │   ├── image_providers.py
+│   │   ├── stt.py
+│   │   └── stt_providers.py
 │   ├── file_utils/
 │   │   ├── file_handler.py
 │   │   ├── file_operations.py
 │   │   ├── file_provider_manager.py
 │   │   ├── file_sync.py
+│   │   ├── filesystem_watcher.py
 │   │   ├── markdown_processor.py
 │   │   └── upload_worker.py
 │   ├── route/
+│   │   ├── agent_routes.py
 │   │   ├── chat_route.py
 │   │   ├── db_bulk_route.py
 │   │   ├── db_chat_management_route.py
 │   │   ├── db_message_route.py
 │   │   ├── db_route_utils.py
 │   │   ├── db_versioning_route.py
-│   │   └── file_route.py
+│   │   ├── file_browser_route.py
+│   │   ├── file_route.py
+│   │   ├── image_route.py
+│   │   └── stt_route.py
 │   └── utils/
 │       ├── cancellation_manager.py
 │       ├── config.py
 │       ├── db_utils.py
 │       ├── db_validation.py
+│       ├── format_validator.py
 │       ├── logger.py
 │       ├── message_versioning.py
 │       ├── rate_limiter.py
@@ -127,43 +140,66 @@ ATLAS2/
 │   │   │   ├── chat/
 │   │   │   │   ├── Chat.tsx
 │   │   │   │   ├── ChatVersionsWindow.tsx
+│   │   │   │   ├── RouterBox.tsx
 │   │   │   │   └── ThinkBox.tsx
 │   │   │   ├── files/
 │   │   │   │   ├── AttachedFiles.tsx
+│   │   │   │   ├── EmbeddedFileViewer.tsx
 │   │   │   │   └── UserMessageFiles.tsx
+│   │   │   ├── input/
+│   │   │   │   ├── MessageInputArea.tsx
+│   │   │   │   ├── SendButton.tsx
+│   │   │   │   └── VoiceChatMuteButton.tsx
 │   │   │   ├── layout/
 │   │   │   │   ├── LeftSidebar.tsx
 │   │   │   │   └── RightSidebar.tsx
 │   │   │   ├── message/
 │   │   │   │   ├── MessageControls.tsx
 │   │   │   │   ├── MessageEditEmbed.tsx
+│   │   │   │   ├── MessageInfoOverlay.tsx
 │   │   │   │   ├── MessageRenderer.tsx
 │   │   │   │   ├── MessageVersionSwitcher.tsx
 │   │   │   │   ├── MessageWrapper.tsx
 │   │   │   │   └── UserMessage.tsx
 │   │   │   ├── ui/
-│   │   │   │   └── ModalWindow.tsx
+│   │   │   │   ├── GlobalFileViewer.tsx
+│   │   │   │   ├── ModalWindow.tsx
+│   │   │   │   └── Tooltip.tsx
 │   │   │   ├── versioning/
 │   │   │   │   ├── VersioningHelpers.tsx
 │   │   │   │   └── VersionNode.tsx
-│   │   │   ├── visualization/
+│   │   │   └── visualization/
+│   │   │   │   ├── PerformanceMonitor.tsx
 │   │   │   │   ├── TreeVisualization.tsx
 │   │   │   │   └── TriggerLog.tsx
 │   │   ├── config/
-│   │   │   └── api.ts
+│   │   │   ├── api.ts
+│   │   │   ├── chat.ts
+│   │   │   └── providers.ts
+│   │   ├── constants/
+│   │   │   └── sources.ts
 │   │   ├── hooks/
 │   │   │   ├── app/
 │   │   │   │   └── useAppState.ts
+│   │   │   ├── audio/
+│   │   │   │   └── useVoiceChat.ts
 │   │   │   ├── chat/
+│   │   │   │   ├── useBulkOperations.ts
 │   │   │   │   ├── useChatHistory.ts
 │   │   │   │   └── useMessageIdSync.ts
 │   │   │   ├── files/
 │   │   │   │   ├── FileOperations.ts
 │   │   │   │   ├── FileStateUtils.ts
 │   │   │   │   ├── useDragDrop.ts
-│   │   │   │   └── useFileManagement.ts
+│   │   │   │   ├── useFileBrowser.ts
+│   │   │   │   ├── useFileManagement.ts
+│   │   │   │   └── useLiveFileBrowser.ts
+│   │   │   ├── sources/
+│   │   │   │   └── useSourceManager.ts
 │   │   │   ├── ui/
+│   │   │   │   ├── useBottomInputToggle.ts
 │   │   │   │   ├── useEditModal.ts
+│   │   │   │   ├── usePendingOps.ts
 │   │   │   │   ├── useScrollControl.ts
 │   │   │   │   └── useTTS.ts
 │   │   │   ├── versioning/
@@ -173,16 +209,20 @@ ATLAS2/
 │   │   │   ├── GalleryWindow.tsx
 │   │   │   ├── KnowledgeSection.tsx
 │   │   │   ├── SearchWindow.tsx
-│   │   │   └── SettingsWindow.tsx
+│   │   │   ├── SettingsWindow.tsx
+│   │   │   ├── SourcesWindow.tsx
+│   │   │   └── WorkspaceWindow.tsx
 │   │   ├── styles/
 │   │   │   ├── app/
 │   │   │   │   └── App.css
 │   │   │   ├── chat/
 │   │   │   │   ├── Chat.css
 │   │   │   │   ├── ChatVersionsWindow.css
+│   │   │   │   ├── RouterBox.css
 │   │   │   │   └── ThinkBox.css
 │   │   │   ├── files/
 │   │   │   │   ├── AttachedFiles.css
+│   │   │   │   ├── EmbeddedFileViewer.css
 │   │   │   │   └── UserMessageFiles.css
 │   │   │   ├── layout/
 │   │   │   │   ├── LeftSidebar.css
@@ -190,6 +230,7 @@ ATLAS2/
 │   │   │   ├── message/
 │   │   │   │   ├── MessageControls.css
 │   │   │   │   ├── MessageEditEmbed.css
+│   │   │   │   ├── MessageInfoOverlay.css
 │   │   │   │   ├── MessageRenderer.css
 │   │   │   │   ├── MessageVersionSwitcher.css
 │   │   │   │   └── MessageWrapper.css
@@ -197,10 +238,15 @@ ATLAS2/
 │   │   │   │   ├── GalleryWindow.css
 │   │   │   │   ├── KnowledgeSection.css
 │   │   │   │   ├── SearchWindow.css
-│   │   │   │   └── SettingsWindow.css
+│   │   │   │   ├── SettingsWindow.css
+│   │   │   │   ├── SourcesWindow.css
+│   │   │   │   └── WorkspaceWindow.css
 │   │   │   ├── ui/
-│   │   │   │   └── ModalWindow.css
-│   │   │   ├── visualization/
+│   │   │   │   ├── GlobalFileViewer.css
+│   │   │   │   ├── ModalWindow.css
+│   │   │   │   └── Tooltip.css
+│   │   │   └── visualization/
+│   │   │   │   ├── PerformanceMonitor.css
 │   │   │   │   ├── TreeVisualization.css
 │   │   │   │   └── TriggerLog.css
 │   │   ├── tests/
@@ -220,15 +266,19 @@ ATLAS2/
 │   │   ├── types/
 │   │   │   └── messages.ts
 │   │   ├── utils/
+│   │   │   ├── audio/
+│   │   │   │   └── audioRecorder.ts
 │   │   │   ├── chat/
-│   │   │   │   ├── chatHelpers.ts
-│   │   │   │   ├── chatUtils.ts
+│   │   │   │   ├── ChatHistoryCache.ts
 │   │   │   │   ├── ComponentReloadNotifier.ts
 │   │   │   │   ├── LiveStore.ts
 │   │   │   │   ├── OperationLoadingManager.ts
-│   │   │   │   └── SendButtonStateManager.ts
+│   │   │   │   ├── SendButtonStateManager.ts
+│   │   │   │   ├── chatHelpers.ts
+│   │   │   │   └── chatUtils.ts
 │   │   │   ├── core/
-│   │   │   │   └── logger.ts
+│   │   │   │   ├── logger.ts
+│   │   │   │   └── performanceTracker.ts
 │   │   │   ├── storage/
 │   │   │   │   └── BrowserStorage.ts
 │   │   │   ├── versioning/
