@@ -7,9 +7,7 @@ import ThinkBox from './ThinkBox';
 import RouterBox from './RouterBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
-import PlanBox from '../agentic/PlanBox';
-import ContextTimeline from '../agentic/ContextTimeline';
-import LLMMonitor from '../agentic/LLMMonitor';
+import PlanMessage from '../agentic/PlanMessage';
 import { liveStore } from '../../utils/chat/LiveStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
@@ -29,7 +27,6 @@ import '../../styles/chat/Chat.css';
 import '../../styles/chat/ThinkBox.css';
 import '../../styles/chat/RouterBox.css';
 import '../../styles/message/MessageRenderer.css';
-import '../../styles/agentic/Panels.css';
 import type { AttachedFile, Message } from '../../types/messages';
 
 const DUPLICATE_WINDOW_MS = 1000;
@@ -1265,18 +1262,31 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   return (
     <>
       <div className="chat-messages">
-        {planSummary && (
-          <div className="agentic-panels">
-            <PlanBox summary={planSummary} tasks={planTasks} chatId={chatId || ''} />
-            <ContextTimeline commits={planCommits} />
-            <LLMMonitor calls={planToolCalls} />
-          </div>
-        )}
         <div className="messages-container" ref={messagesContainerRef}>
           {(needsBottomAnchor || (forceBottomDuringStreaming && canRenderOverlay)) && (
             <div className="spacer" style={{flex: '1 0 auto'}}></div>
           )}
           {messageListContent}
+
+          {planSummary && (
+            <MessageWrapper
+              key={`plan-${planSummary.planId}`}
+              messageId={`plan-${planSummary.planId}`}
+              messageRole="assistant"
+              messageContent="Plan overview"
+              className="assistant-message agentic-plan-message-wrapper"
+              currentChatId={chatId}
+              isTTSSupported={false}
+            >
+              <PlanMessage
+                summary={planSummary}
+                tasks={planTasks}
+                commits={planCommits}
+                toolCalls={planToolCalls}
+                chatId={chatId || ''}
+              />
+            </MessageWrapper>
+          )}
 
           {canRenderOverlay && (
             <div className="assistant-message">
