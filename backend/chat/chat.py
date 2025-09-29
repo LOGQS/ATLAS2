@@ -737,24 +737,34 @@ class Chat:
     
     def start_background_processing(self, message: str, provider: Optional[str] = None,
                                   model: Optional[str] = None, include_reasoning: bool = True,
-                                  attached_file_ids: List[str] = None, use_router: bool = True, **config_params) -> bool:
+                                  attached_file_ids: List[str] = None, use_router: bool = True,
+                                  router_override: Optional[Dict[str, Any]] = None, **config_params) -> bool:
         """
         Start background processing of a message (non-blocking)
         Returns True if started successfully, False if already running
         """
+        route_choice = None
         if use_router and Config.get_default_router_state():
-            from agents.roles.router import router
-            chat_history = self.get_chat_history()
-            router_response = router.route_request(message, chat_history)
-            model = router_response['model']
-            provider = router_response['provider']
-            logger.info(f"Router selected for background processing: {model} with provider {provider}")
-        else:
-            if not provider:
-                provider = Config.get_default_provider()
-            if not model:
-                model = Config.get_default_model()
-            
+            if router_override:
+                route_choice = router_override.get('route')
+                provider = router_override.get('provider') or provider
+                model = router_override.get('model') or model
+                logger.info(f"Router override supplied for background processing: {route_choice} -> {model}")
+            else:
+                from agents.roles.router import router
+                chat_history = self.get_chat_history()
+                router_response = router.route_request(message, chat_history)
+                model = router_response['model']
+                provider = router_response['provider']
+                route_choice = router_response.get('route')
+                config_params.setdefault('router_available_routes', router_response.get('available_routes'))
+                logger.info(f"Router selected for background processing: {route_choice} -> {model}")
+        if not provider:
+            provider = Config.get_default_provider()
+        if not model:
+            model = Config.get_default_model()
+        config_params.setdefault('selected_route', route_choice)
+        
         is_edit_regeneration = config_params.get('is_edit_regeneration', False)
         existing_message_id = config_params.get('existing_message_id')
         

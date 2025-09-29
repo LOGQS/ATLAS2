@@ -1,0 +1,23 @@
+.agentic-panels {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+@media (min-width: 1024px) {
+  .agentic-panels {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .agentic-panels > .plan-box {
+    grid-column: span 1;
+  }
+
+  .agentic-panels > .context-timeline {
+    grid-column: span 1;
+  }
+
+  .agentic-panels > .llm-monitor {
+    grid-column: span 1;
+  }
+}

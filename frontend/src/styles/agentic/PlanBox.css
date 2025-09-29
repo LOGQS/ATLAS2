@@ -1,0 +1,250 @@
+.plan-box {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  color: #e2e8f0;
+}
+
+.plan-box__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.plan-box__meta {
+  margin-left: 8px;
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.8);
+}
+
+.plan-box__fingerprint {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.plan-box__body {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-box__task {
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid transparent;
+}
+
+.plan-box__task--running {
+  border-color: #38bdf8;
+}
+
+.plan-box__task--done {
+  border-color: #34d399;
+}
+
+.plan-box__task--failed {
+  border-color: #f87171;
+}
+
+.plan-box__task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.plan-box__task-id {
+  font-weight: 600;
+}
+
+.plan-box__task-state {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.plan-box__task-attempt {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.plan-box__empty {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+/* Plan status styling */
+.plan-box--pending_approval {
+  border-color: #f59e0b;
+}
+
+.plan-box--approved {
+  border-color: #34d399;
+}
+
+.plan-box--denied {
+  border-color: #f87171;
+}
+
+.plan-box__status {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.plan-box__status--pending_approval {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+}
+
+.plan-box__status--approved {
+  background: rgba(52, 211, 153, 0.2);
+  color: #34d399;
+}
+
+.plan-box__status--denied {
+  background: rgba(248, 113, 113, 0.2);
+  color: #f87171;
+}
+
+/* Approval section */
+.plan-box__approval {
+  margin: 12px 0;
+  padding: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+}
+
+.plan-box__approval-message {
+  margin-bottom: 12px;
+  font-size: 14px;
+  color: #f59e0b;
+  font-weight: 500;
+}
+
+.plan-box__approval-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.plan-box__approve-btn,
+.plan-box__deny-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.plan-box__approve-btn {
+  background: #34d399;
+  color: #0f172a;
+}
+
+.plan-box__approve-btn:hover:not(:disabled) {
+  background: #10b981;
+}
+
+.plan-box__approve-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.plan-box__deny-btn {
+  background: #f87171;
+  color: #0f172a;
+}
+
+.plan-box__deny-btn:hover:not(:disabled) {
+  background: #ef4444;
+}
+
+.plan-box__deny-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Status messages */
+.plan-box__status-message {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.plan-box__status-message--approved {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: #34d399;
+}
+
+.plan-box__status-message--denied {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
+}
+
+/* Error message */
+.plan-box__error {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 6px;
+  color: #f87171;
+  font-size: 13px;
+}
+
+/* Plan preview */
+.plan-box__plan-preview {
+  margin: 12px 0;
+  padding: 12px;
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.plan-box__plan-preview strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #e2e8f0;
+  font-size: 13px;
+}
+
+.plan-box__planned-task {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.plan-box__planned-task:last-child {
+  border-bottom: none;
+}
+
+.plan-box__planned-task-id {
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.plan-box__planned-task-tool {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.8);
+  background: rgba(30, 41, 59, 0.8);
+  padding: 2px 6px;
+  border-radius: 4px;
+}

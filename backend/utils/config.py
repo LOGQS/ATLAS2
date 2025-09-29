@@ -45,13 +45,19 @@ available_routes = [
         "route_name": "fast",
         "route_description": "Fast responses",
         "route_context": "Use when the user requests a fast response, prioritizing speed over depth."
+    },
+    {
+        "route_name": "taskflow",
+        "route_description": "Structured multi-step planning and tool execution",
+        "route_context": "Use when the request needs orchestration of tools, parallel subtasks, or durable context management"
     }
 ]
 
 ROUTE_MODEL_MAP = {
     "simple": "gemini-2.5-flash",
     "complex": "gemini-2.5-pro",
-    "fast": "openai/gpt-oss-120b"
+    "fast": "openai/gpt-oss-120b",
+    "taskflow": "gemini-2.5-pro"
 }
 
 def get_router_map():

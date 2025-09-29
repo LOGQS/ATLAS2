@@ -2,7 +2,9 @@
 
 import sqlite3
 import os
-from typing import Dict, Any, Optional, List, Callable
+import json
+import uuid
+from typing import Dict, Any, Optional, List, Callable, Tuple
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
 from utils.db_validation import DatabaseValidator
@@ -24,6 +26,8 @@ class DatabaseManager:
     MAX_DESCENDANT_DEPTH = 50
     MAX_SEARCH_ITERATIONS = 50
 
+    VALID_TASK_STATES = {'PENDING', 'RUNNING', 'PAUSED', 'NEEDS_HUMAN', 'DONE', 'FAILED', 'CANCELED'}
+
     _validator = DatabaseValidator
 
     def _handle_db_error(self, operation: str, error: Exception, return_value=None, reraise: bool = False):
@@ -42,10 +46,90 @@ class DatabaseManager:
         except Exception as e:
             return self._handle_db_error(operation, e, return_on_error, reraise)
     
+    def _ensure_json_text(self, payload: Any, context: str) -> str:
+        """Convert payload to JSON string, logging errors if serialization fails."""
+        if isinstance(payload, str):
+            return payload
+        try:
+            return json.dumps(payload)
+        except (TypeError, ValueError) as exc:
+            logger.error(f"Error serializing JSON during {context}: {exc}")
+            return json.dumps({})
+
+    def _generate_ctx_id(self) -> str:
+        """Generate a unique context snapshot identifier."""
+        return f"ctx_{uuid.uuid4().hex}"
+
+    def _normalize_context_row(self, row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+        """Convert an oplog row into an application-level dict."""
+        if not row:
+            return None
+        return {
+            'id': row['id'],
+            'chat_id': row['chat_id'],
+            'base_ctx_id': row['base_ctx_id'],
+            'new_ctx_id': row['new_ctx_id'],
+            'ops': self._safe_json_parse(row['op_json'], 'context snapshot load'),
+            'ts': row['ts']
+        }
+
+    def _normalize_plan_row(self, row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+        """Convert a plans table row to dict form."""
+        if not row:
+            return None
+        return {
+            'id': row['id'],
+            'chat_id': row['chat_id'],
+            'base_ctx_id': row['base_ctx_id'],
+            'ir': self._safe_json_parse(row['ir_json'], 'plan load'),
+            'fingerprint': row['fingerprint'],
+            'status': row['status'],
+            'ts': row['ts']
+        }
+
+    def _normalize_task_row(self, row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+        """Convert a tasks row to dict form."""
+        if not row:
+            return None
+        return {
+            'plan_id': row['plan_id'],
+            'task_id': row['id'],
+            'state': row['state'],
+            'definition': self._safe_json_parse(row['def_json'], 'task load'),
+            'base_ctx_id': row['base_ctx_id'],
+            'new_ctx_id': row['new_ctx_id'],
+            'attempt': row['attempt'],
+            'error': row['error'],
+            'cost': row['cost'],
+            'tokens': row['tokens'],
+            'provider': row['provider'],
+            'ts': row['ts']
+        }
+
+    def _normalize_tool_call_row(self, row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+        """Convert a tool_calls row to dict form."""
+        if not row:
+            return None
+        return {
+            'id': row['id'],
+            'plan_id': row['plan_id'],
+            'task_id': row['task_id'],
+            'attempt': row['attempt'],
+            'tool': row['tool'],
+            'provider': row['provider'],
+            'model': row['model'],
+            'input_hash': row['input_hash'],
+            'output_hash': row['output_hash'],
+            'ops': self._safe_json_parse(row['ops_json'], 'tool call ops load'),
+            'latency_ms': row['latency_ms'],
+            'tokens': row['tokens'],
+            'cost': row['cost'],
+            'ts': row['ts']
+        }
+
     def _safe_json_parse(self, json_string: str, context: str = "JSON parsing") -> Dict[str, Any]:
         """Safely parse JSON with error handling and logging"""
         try:
-            import json
             return json.loads(json_string) if json_string else {}
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"Error parsing JSON during {context}: {str(e)}")
@@ -286,6 +370,105 @@ class DatabaseManager:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_lineage_root ON message_lineage(root_message_id)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS oplog (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    base_ctx_id TEXT NOT NULL,
+                    new_ctx_id TEXT NOT NULL UNIQUE,
+                    op_json TEXT NOT NULL,
+                    ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_oplog_chat ON oplog(chat_id, id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_oplog_ctx ON oplog(new_ctx_id)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    base_ctx_id TEXT NOT NULL,
+                    ir_json TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL' CHECK (status IN ('PENDING_APPROVAL', 'APPROVED', 'DENIED')),
+                    ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_plans_chat ON plans(chat_id, ts)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_plans_base_ctx ON plans(base_ctx_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(chat_id, status)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('PENDING','RUNNING','PAUSED','NEEDS_HUMAN','DONE','FAILED','CANCELED')),
+                    def_json TEXT NOT NULL,
+                    base_ctx_id TEXT NOT NULL,
+                    new_ctx_id TEXT,
+                    attempt INTEGER NOT NULL,
+                    error TEXT,
+                    cost REAL DEFAULT 0,
+                    tokens INTEGER DEFAULT 0,
+                    provider TEXT,
+                    ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    PRIMARY KEY (plan_id, id, attempt),
+                    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tasks_plan_state ON tasks(plan_id, state)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tasks_new_ctx ON tasks(new_ctx_id)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tool_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    attempt INTEGER NOT NULL,
+                    tool TEXT NOT NULL,
+                    provider TEXT,
+                    model TEXT,
+                    input_hash TEXT NOT NULL,
+                    output_hash TEXT,
+                    ops_json TEXT,
+                    latency_ms INTEGER NOT NULL,
+                    tokens INTEGER DEFAULT 0,
+                    cost REAL DEFAULT 0,
+                    ts DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+                    FOREIGN KEY (plan_id, task_id, attempt) REFERENCES tasks(plan_id, id, attempt) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_calls_plan ON tool_calls(plan_id, task_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tool_calls_time ON tool_calls(ts)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS blobs (
+                    hash TEXT PRIMARY KEY,
+                    bytes BLOB NOT NULL
+                )
             """)
 
             # No migration logic required fresh schema creation only during development
@@ -1422,6 +1605,379 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error cascade deleting messages after {message_id}: {str(e)}")
             return 0
+
+    # === Agentic context and planning operations ===
+
+    def create_context_snapshot(self, chat_id: str, base_ctx_id: str, ops: Any, new_ctx_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Append a new snapshot to the context oplog for a chat."""
+        if not self._validate_string(chat_id, "chat_id"):
+            return None
+        if not isinstance(base_ctx_id, str) or not base_ctx_id.strip():
+            logger.warning("Invalid base_ctx_id provided for context snapshot")
+            return None
+
+        def transaction(conn, cursor):
+            ctx_id = new_ctx_id or self._generate_ctx_id()
+            payload = self._ensure_json_text(ops, "context snapshot serialization")
+            try:
+                cursor.execute(
+                    "INSERT INTO oplog (chat_id, base_ctx_id, new_ctx_id, op_json) VALUES (?, ?, ?, ?)",
+                    (chat_id, base_ctx_id, ctx_id, payload)
+                )
+            except sqlite3.IntegrityError as exc:
+                logger.error(f"Failed to insert context snapshot for {chat_id}: {exc}")
+                raise
+
+            cursor.execute("SELECT id, chat_id, base_ctx_id, new_ctx_id, op_json, ts FROM oplog WHERE new_ctx_id = ?", (ctx_id,))
+            row = cursor.fetchone()
+            return self._normalize_context_row(row)
+
+        return self._transaction_wrapper("creating context snapshot", transaction)
+
+    def get_context_snapshot(self, chat_id: str, ctx_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a specific context snapshot by chat and context id."""
+        if not self._validate_string(chat_id, "chat_id") or not isinstance(ctx_id, str):
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, chat_id, base_ctx_id, new_ctx_id, op_json, ts FROM oplog WHERE chat_id = ? AND new_ctx_id = ?", (chat_id, ctx_id))
+            row = cursor.fetchone()
+            return self._normalize_context_row(row)
+
+        return self._execute_with_connection("fetching context snapshot", query)
+
+    def get_context_snapshot_by_id(self, ctx_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a context snapshot using only the context identifier."""
+        if not isinstance(ctx_id, str):
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, chat_id, base_ctx_id, new_ctx_id, op_json, ts FROM oplog WHERE new_ctx_id = ?", (ctx_id,))
+            row = cursor.fetchone()
+            return self._normalize_context_row(row)
+
+        return self._execute_with_connection("fetching context snapshot by id", query)
+
+    def list_context_snapshots(self, chat_id: str, limit: int = 50, before_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """List context snapshots for a chat ordered from oldest to newest."""
+        if not self._validate_string(chat_id, "chat_id"):
+            return []
+
+        limit = max(1, min(limit, 500))
+
+        def query(conn, cursor):
+            if before_id is not None:
+                cursor.execute(
+                    "SELECT id, chat_id, base_ctx_id, new_ctx_id, op_json, ts FROM oplog WHERE chat_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+                    (chat_id, before_id, limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, chat_id, base_ctx_id, new_ctx_id, op_json, ts FROM oplog WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                    (chat_id, limit)
+                )
+            rows = cursor.fetchall()
+            snapshots = [self._normalize_context_row(row) for row in rows if row]
+            snapshots = [snap for snap in snapshots if snap]
+            snapshots.reverse()
+            return snapshots
+
+        return self._execute_with_connection("listing context snapshots", query, return_on_error=[]) or []
+
+    def get_latest_context_id(self, chat_id: str) -> Optional[str]:
+        """Return the most recent context identifier for a chat."""
+        if not self._validate_string(chat_id, "chat_id"):
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("SELECT new_ctx_id FROM oplog WHERE chat_id = ? ORDER BY id DESC LIMIT 1", (chat_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+        return self._execute_with_connection("fetching latest context id", query)
+
+    def ensure_context_root(self, chat_id: str) -> str:
+        """Ensure a chat has at least one context snapshot and return the base ctx id."""
+        if not self._validate_string(chat_id, "chat_id"):
+            raise ValueError("Invalid chat_id for ensure_context_root")
+
+        def transaction(conn, cursor):
+            cursor.execute("SELECT new_ctx_id FROM oplog WHERE chat_id = ? ORDER BY id ASC LIMIT 1", (chat_id,))
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+
+            root_ctx_id = self._generate_ctx_id()
+            cursor.execute(
+                "INSERT INTO oplog (chat_id, base_ctx_id, new_ctx_id, op_json) VALUES (?, ?, ?, ?)",
+                (chat_id, 'root', root_ctx_id, json.dumps({'ops': []}))
+            )
+            return root_ctx_id
+
+        return self._transaction_wrapper("ensuring context root", transaction)
+
+    def create_plan_record(self, plan_id: str, chat_id: str, base_ctx_id: str, ir_data: Any, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Insert or update a plan record."""
+        if not self._validate_string(plan_id, "plan_id") or not self._validate_string(chat_id, "chat_id"):
+            return None
+        if not isinstance(base_ctx_id, str) or not base_ctx_id.strip():
+            logger.warning("Invalid base_ctx_id provided for plan")
+            return None
+        if not isinstance(fingerprint, str) or not fingerprint.strip():
+            logger.warning("Invalid fingerprint provided for plan")
+            return None
+
+        def transaction(conn, cursor):
+            payload = self._ensure_json_text(ir_data, "plan serialization")
+            try:
+                cursor.execute(
+                    "INSERT INTO plans (id, chat_id, base_ctx_id, ir_json, fingerprint) VALUES (?, ?, ?, ?, ?)",
+                    (plan_id, chat_id, base_ctx_id, payload, fingerprint)
+                )
+            except sqlite3.IntegrityError:
+                cursor.execute(
+                    "UPDATE plans SET chat_id = ?, base_ctx_id = ?, ir_json = ?, fingerprint = ?, ts = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+                    (chat_id, base_ctx_id, payload, fingerprint, plan_id)
+                )
+
+            cursor.execute("SELECT id, chat_id, base_ctx_id, ir_json, fingerprint, status, ts FROM plans WHERE id = ?", (plan_id,))
+            row = cursor.fetchone()
+            return self._normalize_plan_row(row)
+
+        return self._transaction_wrapper("creating plan record", transaction)
+
+    def get_plan_record(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a plan record by id."""
+        if not self._validate_string(plan_id, "plan_id"):
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, chat_id, base_ctx_id, ir_json, fingerprint, status, ts FROM plans WHERE id = ?", (plan_id,))
+            row = cursor.fetchone()
+            return self._normalize_plan_row(row)
+
+        return self._execute_with_connection("fetching plan record", query)
+
+    def list_plan_records(self, chat_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """List recent plan records for a chat."""
+        if not self._validate_string(chat_id, "chat_id"):
+            return []
+
+        limit = max(1, min(limit, 200))
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, chat_id, base_ctx_id, ir_json, fingerprint, status, ts FROM plans WHERE chat_id = ? ORDER BY ts DESC LIMIT ?", (chat_id, limit))
+            rows = cursor.fetchall()
+            plans = [self._normalize_plan_row(row) for row in rows if row]
+            return [plan for plan in plans if plan]
+
+        return self._execute_with_connection("listing plan records", query, return_on_error=[]) or []
+
+    def update_plan_status(self, plan_id: str, status: str) -> Optional[Dict[str, Any]]:
+        """Update the approval status of a plan."""
+        if not self._validate_string(plan_id, "plan_id"):
+            return None
+        if status not in {'PENDING_APPROVAL', 'APPROVED', 'DENIED'}:
+            raise ValueError(f"Invalid plan status: {status}")
+
+        def transaction(conn, cursor):
+            cursor.execute(
+                "UPDATE plans SET status = ?, ts = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+                (status, plan_id)
+            )
+            if cursor.rowcount == 0:
+                return None
+
+            cursor.execute("SELECT id, chat_id, base_ctx_id, ir_json, fingerprint, status, ts FROM plans WHERE id = ?", (plan_id,))
+            row = cursor.fetchone()
+            return self._normalize_plan_row(row)
+
+        return self._transaction_wrapper("updating plan status", transaction)
+
+    def get_plans_by_status(self, chat_id: str, status: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get plans filtered by status for a chat."""
+        if not self._validate_string(chat_id, "chat_id"):
+            return []
+        if status not in {'PENDING_APPROVAL', 'APPROVED', 'DENIED'}:
+            return []
+
+        limit = max(1, min(limit, 200))
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, chat_id, base_ctx_id, ir_json, fingerprint, status, ts FROM plans WHERE chat_id = ? AND status = ? ORDER BY ts DESC LIMIT ?", (chat_id, status, limit))
+            rows = cursor.fetchall()
+            plans = [self._normalize_plan_row(row) for row in rows if row]
+            return [plan for plan in plans if plan]
+
+        return self._execute_with_connection("listing plans by status", query, return_on_error=[]) or []
+
+    def insert_task_attempt(self, plan_id: str, task_id: str, definition: Any, base_ctx_id: str, state: str = 'PENDING', attempt: Optional[int] = None, provider: Optional[str] = None, new_ctx_id: Optional[str] = None, error: Optional[str] = None, cost: float = 0.0, tokens: int = 0) -> Optional[Dict[str, Any]]:
+        """Insert a task attempt for a plan."""
+        if state.upper() not in self.VALID_TASK_STATES:
+            raise ValueError(f"Invalid task state: {state}")
+        if not self._validate_string(plan_id, "plan_id") or not self._validate_string(task_id, "task_id"):
+            return None
+        if not isinstance(base_ctx_id, str) or not base_ctx_id.strip():
+            logger.warning("Invalid base_ctx_id provided for task")
+            return None
+
+        def transaction(conn, cursor):
+            current_attempt = attempt
+            if current_attempt is None:
+                cursor.execute("SELECT COALESCE(MAX(attempt), 0) FROM tasks WHERE plan_id = ? AND id = ?", (plan_id, task_id))
+                row = cursor.fetchone()
+                current_attempt = (row[0] if row else 0) + 1
+
+            payload = self._ensure_json_text(definition, "task serialization")
+            try:
+                cursor.execute(
+                    "INSERT INTO tasks (id, plan_id, state, def_json, base_ctx_id, new_ctx_id, attempt, error, cost, tokens, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (task_id, plan_id, state.upper(), payload, base_ctx_id, new_ctx_id, current_attempt, error, cost, tokens, provider)
+                )
+            except sqlite3.IntegrityError:
+                cursor.execute(
+                    "UPDATE tasks SET state = ?, def_json = ?, base_ctx_id = ?, new_ctx_id = ?, error = ?, cost = ?, tokens = ?, provider = ?, ts = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE plan_id = ? AND id = ? AND attempt = ?",
+                    (state.upper(), payload, base_ctx_id, new_ctx_id, error, cost, tokens, provider, plan_id, task_id, current_attempt)
+                )
+
+            cursor.execute("SELECT plan_id, id, state, def_json, base_ctx_id, new_ctx_id, attempt, error, cost, tokens, provider, ts FROM tasks WHERE plan_id = ? AND id = ? AND attempt = ?", (plan_id, task_id, current_attempt))
+            row = cursor.fetchone()
+            return self._normalize_task_row(row)
+
+        return self._transaction_wrapper("inserting task attempt", transaction)
+
+    def get_task_attempt(self, plan_id: str, task_id: str, attempt: int) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific task attempt."""
+        def query(conn, cursor):
+            cursor.execute("SELECT plan_id, id, state, def_json, base_ctx_id, new_ctx_id, attempt, error, cost, tokens, provider, ts FROM tasks WHERE plan_id = ? AND id = ? AND attempt = ?", (plan_id, task_id, attempt))
+            row = cursor.fetchone()
+            return self._normalize_task_row(row)
+
+        return self._execute_with_connection("fetching task attempt", query)
+
+    def update_task_attempt_state(self, plan_id: str, task_id: str, attempt: int, *, state: Optional[str] = None, new_ctx_id: Optional[str] = None, error: Optional[str] = None, cost: Optional[float] = None, tokens: Optional[int] = None, provider: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Update mutable fields on an existing task attempt."""
+        updates = []
+        params: List[Any] = []
+        if state is not None:
+            state_value = state.upper()
+            if state_value not in self.VALID_TASK_STATES:
+                raise ValueError(f"Invalid task state: {state}")
+            updates.append("state = ?")
+            params.append(state_value)
+        if new_ctx_id is not None:
+            updates.append("new_ctx_id = ?")
+            params.append(new_ctx_id)
+        if error is not None:
+            updates.append("error = ?")
+            params.append(error)
+        if cost is not None:
+            updates.append("cost = ?")
+            params.append(cost)
+        if tokens is not None:
+            updates.append("tokens = ?")
+            params.append(tokens)
+        if provider is not None:
+            updates.append("provider = ?")
+            params.append(provider)
+
+        updates.append("ts = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+
+        if not updates:
+            return self.get_task_attempt(plan_id, task_id, attempt)
+
+        def transaction(conn, cursor):
+            cursor.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE plan_id = ? AND id = ? AND attempt = ?",
+                (*params, plan_id, task_id, attempt)
+            )
+            cursor.execute("SELECT plan_id, id, state, def_json, base_ctx_id, new_ctx_id, attempt, error, cost, tokens, provider, ts FROM tasks WHERE plan_id = ? AND id = ? AND attempt = ?", (plan_id, task_id, attempt))
+            row = cursor.fetchone()
+            return self._normalize_task_row(row)
+
+        return self._transaction_wrapper("updating task attempt", transaction)
+
+    def list_tasks_for_plan(self, plan_id: str) -> List[Dict[str, Any]]:
+        """List all task attempts for a plan ordered by task id and attempt."""
+        if not self._validate_string(plan_id, "plan_id"):
+            return []
+
+        def query(conn, cursor):
+            cursor.execute("SELECT plan_id, id, state, def_json, base_ctx_id, new_ctx_id, attempt, error, cost, tokens, provider, ts FROM tasks WHERE plan_id = ? ORDER BY id ASC, attempt ASC", (plan_id,))
+            rows = cursor.fetchall()
+            tasks = [self._normalize_task_row(row) for row in rows if row]
+            return [task for task in tasks if task]
+
+        return self._execute_with_connection("listing tasks for plan", query, return_on_error=[]) or []
+
+    def record_tool_call(self, plan_id: str, task_id: str, attempt: int, tool: str, *, provider: Optional[str] = None, model: Optional[str] = None, input_hash: str, output_hash: Optional[str] = None, ops: Optional[Any] = None, latency_ms: int = 0, tokens: int = 0, cost: float = 0.0) -> Optional[Dict[str, Any]]:
+        """Record a tool call emitted during task execution."""
+        if not self._validate_string(plan_id, "plan_id") or not self._validate_string(task_id, "task_id"):
+            return None
+        if not isinstance(tool, str) or not tool.strip():
+            logger.warning("Invalid tool name provided for tool call")
+            return None
+        if not isinstance(input_hash, str) or not input_hash.strip():
+            logger.warning("Invalid input hash provided for tool call")
+            return None
+
+        def transaction(conn, cursor):
+            ops_payload = self._ensure_json_text(ops, "tool call ops serialization") if ops is not None else None
+            cursor.execute(
+                "INSERT INTO tool_calls (plan_id, task_id, attempt, tool, provider, model, input_hash, output_hash, ops_json, latency_ms, tokens, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (plan_id, task_id, attempt, tool, provider, model, input_hash, output_hash, ops_payload, latency_ms, tokens, cost)
+            )
+            row_id = cursor.lastrowid
+            cursor.execute("SELECT id, plan_id, task_id, attempt, tool, provider, model, input_hash, output_hash, ops_json, latency_ms, tokens, cost, ts FROM tool_calls WHERE id = ?", (row_id,))
+            row = cursor.fetchone()
+            return self._normalize_tool_call_row(row)
+
+        return self._transaction_wrapper("recording tool call", transaction)
+
+    def list_tool_calls_for_plan(self, plan_id: str) -> List[Dict[str, Any]]:
+        """List tool calls associated with a plan ordered by creation."""
+        if not self._validate_string(plan_id, "plan_id"):
+            return []
+
+        def query(conn, cursor):
+            cursor.execute("SELECT id, plan_id, task_id, attempt, tool, provider, model, input_hash, output_hash, ops_json, latency_ms, tokens, cost, ts FROM tool_calls WHERE plan_id = ? ORDER BY id ASC", (plan_id,))
+            rows = cursor.fetchall()
+            calls = [self._normalize_tool_call_row(row) for row in rows if row]
+            return [call for call in calls if call]
+
+        return self._execute_with_connection("listing tool calls", query, return_on_error=[]) or []
+
+    def store_blob(self, hash_value: str, data: bytes) -> bool:
+        """Store a binary blob keyed by hash."""
+        if not isinstance(hash_value, str) or not hash_value.strip():
+            logger.warning("Invalid hash for blob storage")
+            return False
+        if not isinstance(data, (bytes, bytearray)):
+            logger.warning("Blob data must be bytes-like")
+            return False
+
+        def transaction(conn, cursor):
+            cursor.execute("INSERT OR IGNORE INTO blobs (hash, bytes) VALUES (?, ?)", (hash_value, sqlite3.Binary(bytes(data))))
+            return True
+
+        return bool(self._transaction_wrapper("storing blob", transaction, True))
+
+    def get_blob(self, hash_value: str) -> Optional[bytes]:
+        """Retrieve a stored blob by hash."""
+        if not isinstance(hash_value, str) or not hash_value.strip():
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("SELECT bytes FROM blobs WHERE hash = ?", (hash_value,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            blob = row['bytes']
+            if isinstance(blob, memoryview):
+                blob = blob.tobytes()
+            return bytes(blob) if isinstance(blob, (bytes, bytearray)) else blob
+
+        return self._execute_with_connection("fetching blob", query)
 
     def set_file_state_callback(self, callback: Callable[[str, str, str, str], None]) -> None:
         """Set callback for file state changes to avoid circular imports"""

@@ -7,12 +7,16 @@ import ThinkBox from './ThinkBox';
 import RouterBox from './RouterBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
+import PlanBox from '../agentic/PlanBox';
+import ContextTimeline from '../agentic/ContextTimeline';
+import LLMMonitor from '../agentic/LLMMonitor';
 import { liveStore } from '../../utils/chat/LiveStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
 import { performanceTracker } from '../../utils/core/performanceTracker';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
+import { usePlanExecution } from '../../hooks/agentic/usePlanExecution';
 import { apiUrl } from '../../config/api';
 import { computeIsScrollable, MessageDuplicateChecker } from '../../utils/chat/chatHelpers';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -25,6 +29,7 @@ import '../../styles/chat/Chat.css';
 import '../../styles/chat/ThinkBox.css';
 import '../../styles/chat/RouterBox.css';
 import '../../styles/message/MessageRenderer.css';
+import '../../styles/agentic/Panels.css';
 import type { AttachedFile, Message } from '../../types/messages';
 
 const DUPLICATE_WINDOW_MS = 1000;
@@ -88,6 +93,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const [dismissedErrorAt, setDismissedErrorAt] = useState<number | null>(null);
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
   const [wasStreaming, setWasStreaming] = useState(false);
+
+  const planState = usePlanExecution(chatId);
+  const planSummary = planState?.summary ?? null;
+  const planTasks = planState ? Array.from(planState.tasks.values()) : [];
+  const planToolCalls = planState?.toolCalls ?? [];
+  const planCommits = planState?.contextCommits ?? [];
 
   const [needsBottomAnchor, setNeedsBottomAnchor] = useState(false);
   const [notLoadingSettled, setNotLoadingSettled] = useState(false);
@@ -635,7 +646,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
       if (candidateMetrics) {
         const timestampCount = Object.keys(candidateMetrics.timestamps || {}).length;
-        const phaseCount = candidateMetrics.phases?.length || 0;
         const hasApiMarks = !!(candidateMetrics.timestamps?.[performanceTracker.MARKS.API_CALL_START] &&
                               candidateMetrics.timestamps?.[performanceTracker.MARKS.FIRST_STREAM_EVENT]);
 
@@ -1197,7 +1207,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
+  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, isSendInProgress]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
@@ -1255,6 +1265,13 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   return (
     <>
       <div className="chat-messages">
+        {planSummary && (
+          <div className="agentic-panels">
+            <PlanBox summary={planSummary} tasks={planTasks} chatId={chatId || ''} />
+            <ContextTimeline commits={planCommits} />
+            <LLMMonitor calls={planToolCalls} />
+          </div>
+        )}
         <div className="messages-container" ref={messagesContainerRef}>
           {(needsBottomAnchor || (forceBottomDuringStreaming && canRenderOverlay)) && (
             <div className="spacer" style={{flex: '1 0 auto'}}></div>

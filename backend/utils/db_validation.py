@@ -19,7 +19,8 @@ class DatabaseValidator:
 
     ALLOWED_TABLES = {
         'chats', 'messages', 'files', 'user_settings',
-        'provider_configs', 'message_files', 'message_versions', 'message_lineage'
+        'provider_configs', 'message_files', 'message_versions', 'message_lineage',
+        'oplog', 'plans', 'tasks', 'tool_calls', 'blobs'
     }
 
     ALLOWED_COLUMNS = {
@@ -30,7 +31,10 @@ class DatabaseValidator:
         'stored_filename', 'file_type', 'file_extension', 'file_size',
         'upload_timestamp', 'md_filename', 'api_file_name', 'api_state',
         'temp_id', 'original_message_id', 'version_number', 'chat_version_id',
-        'operation', 'parent_message_id', 'root_message_id'
+        'operation', 'parent_message_id', 'root_message_id',
+        'base_ctx_id', 'new_ctx_id', 'op_json', 'ts', 'plan_id', 'fingerprint',
+        'ir_json', 'def_json', 'attempt', 'error', 'cost', 'tokens', 'tool',
+        'task_id', 'input_hash', 'output_hash', 'ops_json', 'latency_ms', 'hash', 'bytes'
     }
 
     @classmethod

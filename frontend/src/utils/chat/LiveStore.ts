@@ -3,6 +3,7 @@ import { apiUrl } from '../../config/api';
 import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
+import { planStore, PlanSummary } from '../agentic/PlanStore';
 
 type ChatLive = {
   state: 'thinking' | 'responding' | 'static';
@@ -14,6 +15,7 @@ type ChatLive = {
     availableRoutes: any[];
     selectedModel: string | null;
   } | null;
+  planSummary: PlanSummary | null;
   error: {
     message: string;
     receivedAt: number;
@@ -74,13 +76,27 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   selected_model?: string;
 }
 
+interface TaskflowPlanEvent extends BaseSSEEvent {
+  type: 'taskflow_plan';
+  plan_id: string;
+  fingerprint?: string;
+  plan: any;
+  status?: string;
+}
+
+interface PlanPendingApprovalEvent extends BaseSSEEvent {
+  type: 'plan_pending_approval';
+  plan_id: string;
+  message?: string;
+}
+
 interface ErrorEvent extends BaseSSEEvent {
   type: 'error';
   content?: string;
   message_id?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | ErrorEvent;
+type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | TaskflowPlanEvent | PlanPendingApprovalEvent | ErrorEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -160,6 +176,30 @@ class LiveStore {
     next.version++;
     logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, available=${ev.available_routes?.length || 0}`);
     this.enableParentFromBridge(chatId, 'Router decision');
+    return next;
+  }
+
+  private handleTaskflowPlanEvent(chatId: string, ev: any, cur: ChatLive): ChatLive {
+    if (ev.plan_id && ev.plan) {
+      const planData = { ...ev.plan };
+      if (ev.status) {
+        planData.status = ev.status;
+      }
+      planStore.registerPlan(chatId, { plan_id: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData });
+    }
+    const next = { ...cur };
+    const planData = ev.plan ? { ...ev.plan } : null;
+    if (planData && ev.status) {
+      planData.status = ev.status;
+    }
+    next.planSummary = ev.plan_id ? { planId: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData } : null;
+    next.version++;
+    // For pending approval, keep chat in static state
+    if (ev.status === 'PENDING_APPROVAL') {
+      next.state = 'static';
+    } else if (next.state === 'static') {
+      next.state = 'thinking';
+    }
     return next;
   }
 
@@ -317,6 +357,7 @@ class LiveStore {
           contentBuf: '',
           thoughtsBuf: '',
           routerDecision: null,
+          planSummary: null,
           error: null,
           version: 0
         };
@@ -327,6 +368,22 @@ class LiveStore {
           logger.info(`[LIVESTORE_SSE] - Selected route: ${next.routerDecision?.selectedRoute}`);
           logger.info(`[LIVESTORE_SSE] - Available routes: ${next.routerDecision?.availableRoutes.length}`);
 
+          this.byChat.set(chatId, next);
+          this.emit(chatId, next, { eventType: ev.type });
+          return;
+        }
+
+        if (ev.type === 'taskflow_plan') {
+          const next = this.handleTaskflowPlanEvent(chatId, ev as any, cur);
+          this.byChat.set(chatId, next);
+          this.emit(chatId, next, { eventType: ev.type });
+          return;
+        }
+
+        if (ev.type === 'plan_pending_approval') {
+          const next = { ...cur };
+          next.state = 'static';
+          next.version++;
           this.byChat.set(chatId, next);
           this.emit(chatId, next, { eventType: ev.type });
           return;
@@ -393,6 +450,7 @@ class LiveStore {
       contentBuf: '',
       thoughtsBuf: '',
       routerDecision: null,
+      planSummary: null,
       error: null,
       version: 0
     };

@@ -1,0 +1,40 @@
+.context-timeline {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.context-timeline__header {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #e2e8f0;
+}
+
+.context-timeline__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.context-timeline__item {
+  background: rgba(30, 41, 59, 0.8);
+  border-radius: 8px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.context-timeline__ctx {
+  font-weight: 500;
+  color: #bae6fd;
+}
+
+.context-timeline__meta {
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.8);
+  display: flex;
+  justify-content: space-between;
+}
