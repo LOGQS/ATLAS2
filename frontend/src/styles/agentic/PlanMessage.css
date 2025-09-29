@@ -1,0 +1,70 @@
+.agentic-plan-message-wrapper {
+  margin-top: 16px;
+}
+
+.agentic-plan-message-wrapper .message-controls,
+.agentic-plan-message-wrapper .message-version-switcher {
+  display: none !important;
+}
+
+.agentic-plan-message-wrapper .message-content,
+.agentic-plan-message-wrapper .message-content > * {
+  width: 100%;
+}
+
+.agentic-plan-message {
+  --agentic-accent: #38bdf8;
+  --agentic-accent-glow: rgba(56, 189, 248, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+}
+
+.agentic-plan-message--pending_approval {
+  --agentic-accent: #fbbf24;
+  --agentic-accent-glow: rgba(251, 191, 36, 0.45);
+}
+
+.agentic-plan-message--approved,
+.agentic-plan-message--completed {
+  --agentic-accent: #34d399;
+  --agentic-accent-glow: rgba(52, 211, 153, 0.45);
+}
+
+.agentic-plan-message--denied {
+  --agentic-accent: #fb7185;
+  --agentic-accent-glow: rgba(251, 113, 133, 0.45);
+}
+
+.agentic-plan-message--running,
+.agentic-plan-message--executing,
+.agentic-plan-message--in_progress {
+  --agentic-accent: #38bdf8;
+  --agentic-accent-glow: rgba(56, 189, 248, 0.45);
+}
+
+.agentic-plan-message .context-timeline,
+.agentic-plan-message .llm-monitor {
+  --timeline-accent: var(--agentic-accent);
+  --timeline-accent-glow: var(--agentic-accent-glow);
+  --monitor-accent: var(--agentic-accent);
+  --monitor-accent-glow: var(--agentic-accent-glow);
+}
+
+.agentic-plan-message__grid {
+  display: grid;
+  gap: 18px;
+}
+
+@media (min-width: 768px) {
+  .agentic-plan-message__grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .agentic-plan-message-wrapper {
+    margin-top: 12px;
+  }
+}
