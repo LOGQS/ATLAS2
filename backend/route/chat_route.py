@@ -11,7 +11,7 @@ from chat.chat import Chat, is_chat_processing, stop_chat_process
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
-from agentic import AgenticService
+from agents.services.service import AgenticService
 from typing import Optional, Dict, Any, List
 
 logger = get_logger(__name__)

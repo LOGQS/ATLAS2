@@ -11,9 +11,9 @@ from utils.config import Config
 from utils.logger import get_logger
 from agents.prompts.planner_prompt import build_planner_prompt
 
-from .context_store import ContextStore
-from .task_ir import PlanIR, TaskDef
-from .tool_registry import tool_registry
+from ..services.context_store import ContextStore
+from ..models.task_ir import PlanIR, TaskDef
+from ..tools.tool_registry import tool_registry
 
 
 class TaskPlanner:

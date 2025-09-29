@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Optional
 from utils.db_utils import db
 from utils.logger import get_logger
 
-from .context_store import ContextStore
-from .events import ContextCommittedEvent, NullPlanEventPublisher, PlanEventPublisher, TaskStateEvent, ToolCallEvent
-from .task_ir import PlanIR, TaskDef
-from .tool_registry import ToolExecutionContext, ToolResult, tool_registry
+from ..services.context_store import ContextStore
+from ..events.events import ContextCommittedEvent, NullPlanEventPublisher, PlanEventPublisher, TaskStateEvent, ToolCallEvent
+from ..models.task_ir import PlanIR, TaskDef
+from ..tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 
 
 _TEMPLATE = re.compile(r"\{\{task\.([^.}]+)\.output\}\}")

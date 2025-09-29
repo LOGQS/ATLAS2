@@ -9,7 +9,7 @@ from flask import Flask, request
 from utils.db_utils import db
 from utils.logger import get_logger
 from utils.message_versioning import MessageVersioning
-from route.db_route_utils import (
+from utils.db_route_utils import (
     DBRouteConstants,
     ResponseBuilder,
     handle_route_error

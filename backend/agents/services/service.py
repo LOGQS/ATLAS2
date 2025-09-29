@@ -8,10 +8,10 @@ from utils.db_utils import db
 from utils.logger import get_logger
 
 from .context_store import ContextStore
-from .events import PlanEventEmitter, PlanEventPublisher
-from .executor import AgentExecutor
-from .planner import TaskPlanner
-from .task_ir import PlanIR
+from ..events.events import PlanEventEmitter, PlanEventPublisher
+from ..execution.executor import AgentExecutor
+from ..execution.planner import TaskPlanner
+from ..models.task_ir import PlanIR
 
 
 class AgenticService:

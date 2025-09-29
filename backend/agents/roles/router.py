@@ -4,7 +4,7 @@ from typing import Dict, Optional, List
 from utils.logger import get_logger
 from utils.config import Config, ROUTE_MODEL_MAP, available_routes, infer_provider_from_model
 from utils.format_validator import extract_route_choice
-from context.context_manager import get_router_context
+from agents.context.context_manager import get_router_context
 
 logger = get_logger(__name__)
 
