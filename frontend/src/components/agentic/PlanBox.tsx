@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import '../../styles/agentic/PlanBox.css';
 import { PlanSummary, TaskStateEntry } from '../../utils/agentic/PlanStore';
-import { apiCall } from '../../utils/api';
+import { apiUrl } from '../../config/api';
 
 interface PlanBoxProps {
   summary: PlanSummary;
@@ -59,9 +59,21 @@ const PlanBox: React.FC<PlanBoxProps> = ({ summary, tasks, chatId }) => {
     setLoading(true);
     setError(null);
     try {
-      await apiCall(`/api/chats/${chatId}/plan/${summary.planId}/approve`, 'POST');
+      const response = await fetch(apiUrl(`/api/chats/${chatId}/plan/${summary.planId}/approve`), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.error || 'Failed to approve plan');
+        console.error('Plan approval failed:', { status: response.status, error: data.error });
+      }
     } catch (err) {
-      setError('Failed to approve plan');
+      setError('Network error');
       console.error('Plan approval failed:', err);
     } finally {
       setLoading(false);
@@ -72,9 +84,21 @@ const PlanBox: React.FC<PlanBoxProps> = ({ summary, tasks, chatId }) => {
     setLoading(true);
     setError(null);
     try {
-      await apiCall(`/api/chats/${chatId}/plan/${summary.planId}/deny`, 'POST');
+      const response = await fetch(apiUrl(`/api/chats/${chatId}/plan/${summary.planId}/deny`), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.error || 'Failed to deny plan');
+        console.error('Plan denial failed:', { status: response.status, error: data.error });
+      }
     } catch (err) {
-      setError('Failed to deny plan');
+      setError('Network error');
       console.error('Plan denial failed:', err);
     } finally {
       setLoading(false);
