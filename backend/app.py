@@ -10,6 +10,7 @@ import multiprocessing
 from pathlib import Path
 import signal
 import atexit
+import warnings
 
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
@@ -34,6 +35,24 @@ from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 logger = get_logger(__name__)
 
 _shutdown_handled = False
+_startup_lock = threading.Lock()
+_startup_housekeeping_done = False
+_startup_sync_result = None
+_startup_reset_count = 0
+
+# Suppress noisy dependency warnings that surface on each worker spawn
+warnings.filterwarnings(
+    "ignore",
+    message="Couldn't find ffmpeg or avconv",
+    module="pydub.utils",
+    category=RuntimeWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+    module="ctranslate2",
+    category=UserWarning,
+)
 
 def _build_reloader_exclude_patterns():
     """Ensure Werkzeug reloader ignores system and venv library paths."""
@@ -64,6 +83,42 @@ def _build_reloader_exclude_patterns():
                 patterns.add(f"{candidate}*")
 
     return sorted(patterns)
+
+
+def _run_startup_housekeeping():
+    """Perform one-time filesystem/database coordination during startup."""
+    global _startup_housekeeping_done, _startup_sync_result, _startup_reset_count
+
+    if _startup_housekeeping_done:
+        logger.debug("Startup housekeeping already completed; skipping repeat run")
+        return _startup_sync_result, _startup_reset_count
+
+    with _startup_lock:
+        if _startup_housekeeping_done:
+            logger.debug("Startup housekeeping already completed; skipping repeat run")
+            return _startup_sync_result, _startup_reset_count
+
+        setup_filespace()
+
+        sync_result = sync_files_with_database()
+        _startup_sync_result = sync_result
+
+        if sync_result.get('success'):
+            logger.info("File sync completed: %s", sync_result['summary'])
+        else:
+            logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
+
+        reset_count = db.set_all_chats_static()
+        _startup_reset_count = reset_count
+        if reset_count > 0:
+            logger.info("Startup: Reset %d chat(s) to static state", reset_count)
+        else:
+            logger.debug("Startup: No active chats to reset")
+
+        _startup_housekeeping_done = True
+
+    return _startup_sync_result, _startup_reset_count
+
 
 def handle_shutdown(signum=None, frame=None):
     """Handle graceful shutdown - set all active chats to static state"""
@@ -118,19 +173,7 @@ def create_app():
     cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
     CORS(app, origins=[origin.strip() for origin in cors_origins])
     
-    setup_filespace()
-    
-    sync_result = sync_files_with_database()
-    if sync_result['success']:
-        logger.info(f"File sync completed: {sync_result['summary']}")
-    else:
-        logger.error(f"File sync failed: {sync_result['error']}")
-
-    startup_reset_count = db.set_all_chats_static()
-    if startup_reset_count > 0:
-        logger.info(f"Startup: Reset {startup_reset_count} chat(s) to static state")
-    else:
-        logger.debug("Startup: No active chats to reset")
+    _run_startup_housekeeping()
 
     register_chat_routes(app)
     register_agent_routes(app)
