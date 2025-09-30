@@ -50,18 +50,18 @@ You must respond with valid JSON in this exact structure:
 10. Use {{{{task.task_id.output}}}} syntax to reference previous task outputs
 11. Final task should typically have "commit_to_context": true to save the result
 
-## EXAMPLES:
+## EXAMPLE:
 
-User: "Write a research report on renewable energy"
+User: "Write a comprehensive report on renewable energy"
 Response:
 ```json
 {{
   "tasks": {{
-    "research_renewable": {{
-      "id": "research_renewable",
+    "research": {{
+      "id": "research",
       "tool": "llm.generate",
       "params": {{
-        "prompt": "Research and provide a comprehensive overview of renewable energy sources, including solar, wind, hydro, and geothermal. Include current statistics, advantages, disadvantages, and future outlook. Focus on technical details and recent developments.",
+        "prompt": "Research renewable energy sources (solar, wind, hydro, geothermal). Include statistics, advantages, disadvantages, and future outlook.",
         "provider": null,
         "model": null,
         "include_thoughts": false,
@@ -78,13 +78,13 @@ Response:
       "id": "write_report",
       "tool": "llm.generate",
       "params": {{
-        "prompt": "Using the research data: {{{{task.research_renewable.output}}}}\\n\\nWrite a well-structured research report on renewable energy with:\\n1. Executive summary\\n2. Introduction\\n3. Analysis of each energy source\\n4. Comparison and recommendations\\n5. Conclusion\\n\\nUse professional academic tone with clear headings and proper formatting.",
+        "prompt": "Using: {{{{task.research.output}}}}\\n\\nWrite a structured report with executive summary, analysis, and recommendations.",
         "provider": null,
         "model": null,
         "include_thoughts": false,
         "commit_to_context": true
       }},
-      "depends_on": ["research_renewable"],
+      "depends_on": ["research"],
       "reads": [],
       "writes": [],
       "retries": 0,
@@ -93,40 +93,9 @@ Response:
     }}
   }},
   "metadata": {{
-    "user_request": "Write a research report on renewable energy",
+    "user_request": "Write a comprehensive report on renewable energy",
     "planner": "TaskPlanner",
-    "description": "Research renewable energy sources and write comprehensive report"
-  }}
-}}
-```
-
-User: "Explain quantum computing"
-Response:
-```json
-{{
-  "tasks": {{
-    "explain_quantum": {{
-      "id": "explain_quantum",
-      "tool": "llm.generate",
-      "params": {{
-        "prompt": "Provide a clear, comprehensive explanation of quantum computing. Cover:\\n1. Basic principles and concepts\\n2. How quantum computers differ from classical computers\\n3. Key technologies (qubits, superposition, entanglement)\\n4. Current applications and limitations\\n5. Future potential\\n\\nUse accessible language while maintaining technical accuracy.",
-        "provider": null,
-        "model": null,
-        "include_thoughts": false,
-        "commit_to_context": true
-      }},
-      "depends_on": [],
-      "reads": [],
-      "writes": [],
-      "retries": 0,
-      "timeout_ms": null,
-      "policy": {{}}
-    }}
-  }},
-  "metadata": {{
-    "user_request": "Explain quantum computing",
-    "planner": "TaskPlanner",
-    "description": "Provide comprehensive explanation of quantum computing"
+    "description": "Research and report on renewable energy"
   }}
 }}
 ```
@@ -144,8 +113,7 @@ def build_planner_prompt(user_message: str, tool_registry) -> str:
     tools_list = []
     for tool_name in tool_registry.list():
         tool_spec = tool_registry.get(tool_name)
-        tools_list.append(f"- {tool_name}: {tool_spec.effects} (v{tool_spec.version})")
+        tools_list.append(f"- {tool_name}: {tool_spec.description}")
 
-    available_tools = "\n".join(tools_list) if tools_list else "- llm.generate: Language model text generation"
-
+    available_tools = "\n".join(tools_list)
     return planner_system_prompt.replace("{available_tools}", available_tools).replace("{user_message}", user_message)

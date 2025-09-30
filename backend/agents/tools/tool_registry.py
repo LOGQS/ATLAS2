@@ -38,6 +38,7 @@ class ToolSpec:
 
     name: str
     version: str
+    description: str
     effects: List[str]
     in_schema: Dict[str, Any]
     out_schema: Dict[str, Any]
@@ -136,6 +137,7 @@ def register_builtin_tools() -> None:
     llm_spec = ToolSpec(
         name="llm.generate",
         version="1.0",
+        description="Generate text using language models",
         effects=["net"],
         in_schema={"type": "object"},
         out_schema={"type": "object"},
@@ -143,6 +145,19 @@ def register_builtin_tools() -> None:
         rate_key="llm.generate",
     )
     tool_registry.register(llm_spec)
+    _logger.info("llm generate tool registered successfully")
+
+    try:
+        from .rag.index_func import rag_index_spec
+        from .rag.rag_search_func import rag_search_spec
+
+        tool_registry.register(rag_index_spec)
+        tool_registry.register(rag_search_spec)
+        _logger.info("RAG tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import RAG tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering RAG tools: {e}")
 
 
 register_builtin_tools()
