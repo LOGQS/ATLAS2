@@ -57,7 +57,7 @@ ROUTE_MODEL_MAP = {
     "simple": "gemini-2.5-flash",
     "complex": "gemini-2.5-pro",
     "fast": "openai/gpt-oss-120b",
-    "taskflow": "gemini-2.5-pro"
+    "taskflow": "gemini-2.5-flash" # for testing only
 }
 
 def get_router_map():

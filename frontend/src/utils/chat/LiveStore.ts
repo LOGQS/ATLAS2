@@ -264,6 +264,12 @@ class LiveStore {
     const oldState = next.state;
     next.state = 'static';
     next.error = null;
+
+    if (next.planSummary) {
+      logger.info(`[LIVESTORE_SSE] Clearing planSummary for ${chatId} after stream completion`);
+      next.planSummary = null;
+    }
+
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
     logger.debug(`[LIVESTORE_SSE] Final buffers - content: ${next.contentBuf.length}chars, thoughts: ${next.thoughtsBuf.length}chars`);
@@ -287,6 +293,8 @@ class LiveStore {
     next.state = 'static';
     next.contentBuf = '';
     next.thoughtsBuf = '';
+    next.planSummary = null; 
+    next.routerDecision = null; 
     next.error = {
       message,
       receivedAt: Date.now(),

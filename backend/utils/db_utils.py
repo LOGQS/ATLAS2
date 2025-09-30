@@ -244,6 +244,7 @@ class DatabaseManager:
                     model TEXT,
                     router_enabled INTEGER DEFAULT 0 CHECK(router_enabled IN (0,1)),
                     router_decision TEXT,
+                    plan_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
                 )
@@ -533,7 +534,8 @@ class DatabaseManager:
     def save_message(self, chat_id: str, role: str, content: str,
                     thoughts: Optional[str] = None, provider: Optional[str] = None,
                     model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None,
-                    router_enabled: bool = False, router_decision: Optional[str] = None) -> Optional[str]:
+                    router_enabled: bool = False, router_decision: Optional[str] = None,
+                    plan_id: Optional[str] = None) -> Optional[str]:
         """
         Save message to chat history with optional file attachments and router metadata.
 
@@ -547,6 +549,7 @@ class DatabaseManager:
             attached_file_ids: Optional list of file IDs to attach
             router_enabled: Whether router was enabled for this message
             router_decision: JSON string of router decision (route and available routes)
+            plan_id: Optional plan ID associated with this message
 
         Returns:
             Optional[str]: Generated message ID if successful, None if failed
@@ -558,10 +561,10 @@ class DatabaseManager:
                 message_id = self._generate_message_id(chat_id)
 
                 cursor.execute("""
-                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision, plan_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (message_id, chat_id, role, content, thoughts, provider, model,
-                      1 if router_enabled else 0, router_decision))
+                      1 if router_enabled else 0, router_decision, plan_id))
                 
                 if attached_file_ids:
                     for file_id in attached_file_ids:
@@ -728,33 +731,72 @@ class DatabaseManager:
             logger.error(f"[LINEAGE] Failed to get lineage versions for {message_id}: {e}")
             return []
     
-    def update_message(self, message_id: str, content: str, thoughts: Optional[str] = None) -> bool:
-        """Update existing message content and thoughts"""
+    def update_message(self, message_id: str, content: str, thoughts: Optional[str] = None, plan_id: Optional[str] = None) -> bool:
+        """Update existing message content, thoughts, and plan_id"""
+        if not self._validate_string(message_id, "message_id"):
+            return False
+
+        def update_operation(conn, cursor):
+            if plan_id is not None:
+                cursor.execute("""
+                    UPDATE messages
+                    SET content = ?, thoughts = ?, plan_id = ?, timestamp = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (content, thoughts, plan_id, message_id))
+            else:
+                cursor.execute("""
+                    UPDATE messages
+                    SET content = ?, thoughts = ?, timestamp = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (content, thoughts, message_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating message", update_operation, False)
+
+    def update_message_plan_id(self, message_id: str, plan_id: str) -> bool:
+        """Update only the plan_id field of a message"""
         if not self._validate_string(message_id, "message_id"):
             return False
 
         def update_operation(conn, cursor):
             cursor.execute("""
                 UPDATE messages
-                SET content = ?, thoughts = ?, timestamp = CURRENT_TIMESTAMP
+                SET plan_id = ?
                 WHERE id = ?
-            """, (content, thoughts, message_id))
+            """, (plan_id, message_id))
             conn.commit()
             return cursor.rowcount > 0
 
-        return self._execute_with_connection("updating message", update_operation, False)
-    
+        return self._execute_with_connection("updating message plan_id", update_operation, False)
+
+    def update_message_router_metadata(self, message_id: str, router_enabled: bool, router_decision: Optional[str]) -> bool:
+        """Update router metadata fields of a message"""
+        if not self._validate_string(message_id, "message_id"):
+            return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("""
+                UPDATE messages
+                SET router_enabled = ?, router_decision = ?
+                WHERE id = ?
+            """, (1 if router_enabled else 0, router_decision, message_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating message router metadata", update_operation, False)
+
     def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         """Get a single message by ID"""
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT id, chat_id, role, content, thoughts, provider, model, timestamp
-                    FROM messages 
+                    SELECT id, chat_id, role, content, thoughts, provider, model, plan_id, timestamp
+                    FROM messages
                     WHERE id = ?
                 """, (message_id,))
-                
+
                 row = cursor.fetchone()
                 if row:
                     return {
@@ -765,6 +807,7 @@ class DatabaseManager:
                         "thoughts": row["thoughts"],
                         "provider": row["provider"],
                         "model": row["model"],
+                        "plan_id": row["plan_id"],
                         "timestamp": row["timestamp"]
                     }
                 return None
@@ -781,7 +824,7 @@ class DatabaseManager:
                 SELECT
                     m.id as message_id, m.role, m.content, m.thoughts,
                     m.provider as message_provider, m.model, m.timestamp,
-                    m.router_enabled, m.router_decision,
+                    m.router_enabled, m.router_decision, m.plan_id,
                     f.id as file_id, f.original_name, f.file_size, f.file_type,
                     f.api_state, f.provider as file_provider, f.api_file_name,
                     mf.created_at as file_attached_at
@@ -802,6 +845,7 @@ class DatabaseManager:
                 "timestamp": None,
                 "routerEnabled": False,
                 "routerDecision": None,
+                "planId": None,
                 "attachedFiles": []
             })
 
@@ -818,7 +862,8 @@ class DatabaseManager:
                         "model": row["model"],
                         "timestamp": row["timestamp"],
                         "routerEnabled": bool(row["router_enabled"]),
-                        "routerDecision": self._safe_json_parse(row["router_decision"]) if row["router_decision"] else None
+                        "routerDecision": self._safe_json_parse(row["router_decision"]) if row["router_decision"] else None,
+                        "planId": row["plan_id"]
                     })
 
                 if row["file_id"]:

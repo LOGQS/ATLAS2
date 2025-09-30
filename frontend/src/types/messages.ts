@@ -23,5 +23,6 @@ export interface Message {
     available_routes: any[];
     selected_model: string | null;
   };
+  planId?: string;
 }
 

@@ -406,7 +406,7 @@ def cleanup_content_queue(chat_id: str):
 
 def _prepare_user_message_for_agentic(chat: Chat, message: str, attached_file_ids: List[str],
                                        is_retry: bool, existing_message_id: Optional[str],
-                                       is_edit_regeneration: bool) -> Dict[str, Any]:
+                                       is_edit_regeneration: bool, router_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     attached_file_ids = attached_file_ids or []
 
     if is_edit_regeneration and existing_message_id:
@@ -429,7 +429,24 @@ def _prepare_user_message_for_agentic(chat: Chat, message: str, attached_file_id
         if not attached_file_ids and preserved_ids:
             attached_file_ids = preserved_ids
     else:
-        user_message_id = db.save_message(chat.chat_id, 'user', message, attached_file_ids=attached_file_ids)
+        router_enabled = router_info is not None
+        router_decision = None
+        if router_info:
+            import json
+            router_decision = json.dumps({
+                'route': router_info['route'],
+                'available_routes': router_info['available_routes'],
+                'selected_model': router_info['model'],
+                'selected_provider': router_info['provider']
+            })
+        user_message_id = db.save_message(
+            chat.chat_id,
+            'user',
+            message,
+            attached_file_ids=attached_file_ids,
+            router_enabled=router_enabled,
+            router_decision=router_decision
+        )
 
     return {
         'user_message_id': user_message_id,
@@ -456,7 +473,8 @@ def handle_taskflow_stream(chat: Chat, message: str, router_info: Optional[Dict[
                 attached_file_ids,
                 is_retry,
                 existing_message_id,
-                is_edit_regeneration
+                is_edit_regeneration,
+                router_info
             )
             attached_ids = message_info['attached_file_ids']
             logger.info(f"[TASKFLOW] Prepared user message with {len(attached_ids)} attached files")
@@ -478,16 +496,18 @@ def handle_taskflow_stream(chat: Chat, message: str, router_info: Optional[Dict[
             logger.info(f"[TASKFLOW] Plan serialization complete, fingerprint: {fingerprint[:8]}")
         except Exception as plan_exc:
             logger.error(f"[TASKFLOW] Plan generation failed: {plan_exc}")
+            db.update_chat_state(chat.chat_id, 'static')
+            publish_state(chat.chat_id, 'static')
             yield format_sse_data({'type': 'error', 'content': f'Plan generation failed: {str(plan_exc)}'})
+            yield format_sse_data({'type': 'complete'})
             return
-
-        # Emit plan event for separate SSE endpoint (optional)
+        
         try:
             _emit_plan_event(chat.chat_id, plan.plan_id, 'plan_created', {'plan': plan_summary, 'fingerprint': fingerprint, 'status': 'PENDING_APPROVAL'})
         except Exception as emit_exc:
             logger.warning(f"[TASKFLOW] Plan event emission failed: {emit_exc}")
 
-        # Send plan via main chat stream (primary method)
+
         logger.info(f"[TASKFLOW] Sending taskflow_plan event via SSE for plan {plan.plan_id}")
         try:
             sse_plan = _broadcast_taskflow_plan(
@@ -646,6 +666,7 @@ def register_chat_routes(app: Flask):
             emitter = agentic_service.build_event_emitter()
             emitter.subscribe(lambda event_type, data: _emit_plan_event(chat_id, plan_id, event_type, data))
             try:
+                db.update_chat_state(chat_id, 'thinking')
                 publish_state(chat_id, 'thinking')
                 execution = agentic_service.execute_plan(chat_id, plan_id, events=emitter)
                 final_output = execution.get('final_output')
@@ -656,23 +677,46 @@ def register_chat_routes(app: Flask):
                 })
                 extra = {'final_output': final_output} if final_output else None
                 _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='COMPLETED', extra=extra)
+
+                assistant_message_id = execution.get('assistant_message_id')
+                if assistant_message_id:
+                    db.update_message_plan_id(assistant_message_id, plan_id)
+                    logger.info(f"[TASKFLOW] Associated plan {plan_id} with message {assistant_message_id}")
+
+                    try:
+                        history = db.get_chat_history(chat_id)
+                        if history:
+                            for msg in reversed(history):
+                                if msg.get('role') == 'user' and msg.get('routerEnabled'):
+                                    router_decision_str = None
+                                    if msg.get('routerDecision'):
+                                        router_decision_str = json.dumps(msg['routerDecision'])
+                                    db.update_message_router_metadata(assistant_message_id, True, router_decision_str)
+                                    logger.info(f"[TASKFLOW] Updated assistant message {assistant_message_id} with router metadata from user message")
+                                    break
+                    except Exception as router_update_exc:
+                        logger.warning(f"[TASKFLOW] Failed to update assistant message router metadata: {router_update_exc}")
+
                 if final_output:
+                    db.update_chat_state(chat_id, 'responding')
                     publish_state(chat_id, 'responding')
                     publish_content(
                         chat_id,
                         'answer',
                         final_output,
-                        message_id=execution.get('assistant_message_id'),
+                        message_id=assistant_message_id,
                         provider=execution.get('final_provider'),
                         model=execution.get('final_model'),
                         plan_id=plan_id
                     )
+                db.update_chat_state(chat_id, 'static')
                 publish_state(chat_id, 'static')
             except Exception as exc:
                 logger.error(f"[TASKFLOW] Plan execution failed: {exc}")
                 error_message = str(exc)
                 _emit_plan_event(chat_id, plan_id, 'execution_failed', {'error': error_message})
                 _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='FAILED', extra={'error': error_message})
+                db.update_chat_state(chat_id, 'static')
                 publish_state(chat_id, 'static')
 
         threading.Thread(target=run_execution, name=f'plan-exec-{plan_id}', daemon=True).start()

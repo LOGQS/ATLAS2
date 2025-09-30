@@ -101,6 +101,19 @@ class PlanStore {
     };
   }
 
+  clear(chatId: string) {
+    logger.info(`[PlanStore] Clearing plan for chat ${chatId}`);
+    this.plans.delete(chatId);
+    const emptyState: PlanExecutionState = {
+      summary: null,
+      tasks: new Map(),
+      toolCalls: [],
+      contextCommits: [],
+      lastEventAt: Date.now()
+    };
+    this.emit(chatId, emptyState);
+  }
+
   private emit(chatId: string, state: PlanExecutionState) {
     const listeners = this.listeners.get(chatId);
     if (!listeners) {
@@ -221,13 +234,19 @@ class PlanStore {
         if (event.final_output && state.summary) {
           state.summary.plan = { ...state.summary.plan, status: 'COMPLETED', final_output: event.final_output };
         }
-        break;
+        this.plans.set(chatId, state);
+        this.emit(chatId, state);
+        setTimeout(() => this.clear(chatId), 100);
+        return;
       }
       case 'execution_failed': {
         if (state.summary) {
           state.summary.plan = { ...state.summary.plan, status: 'FAILED', error: event.error };
         }
-        break;
+        this.plans.set(chatId, state);
+        this.emit(chatId, state);
+        setTimeout(() => this.clear(chatId), 100);
+        return;
       }
       default:
         logger.debug(`[PlanStore] Unhandled plan event type: ${event.type}`);

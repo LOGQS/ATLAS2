@@ -9,6 +9,7 @@ import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
 import PlanMessage from '../agentic/PlanMessage';
 import { liveStore } from '../../utils/chat/LiveStore';
+import { planStore } from '../../utils/agentic/PlanStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
@@ -93,9 +94,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const planState = usePlanExecution(chatId);
   const planSummary = planState?.summary ?? null;
-  const planTasks = planState ? Array.from(planState.tasks.values()) : [];
-  const planToolCalls = planState?.toolCalls ?? [];
-  const planCommits = planState?.contextCommits ?? [];
+  const planTasks = useMemo(() => planState ? Array.from(planState.tasks.values()) : [], [planState]);
+  const planToolCalls = useMemo(() => planState?.toolCalls ?? [], [planState]);
+  const planCommits = useMemo(() => planState?.contextCommits ?? [], [planState]);
 
   const [needsBottomAnchor, setNeedsBottomAnchor] = useState(false);
   const [notLoadingSettled, setNotLoadingSettled] = useState(false);
@@ -1166,9 +1167,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       >
         {(() => {
           const hasRouterDecision = message.routerDecision && message.routerDecision.route;
-          logger.info(`[ROUTER_DEBUG] Message RouterBox check for ${chatId} msg ${message.id}: routerEnabled=${routerEnabled}, hasRouterDecision=${hasRouterDecision}, routerDecision=${JSON.stringify(message.routerDecision)}`);
+          logger.info(`[ROUTER_DEBUG] Message RouterBox check for ${chatId} msg ${message.id}: messageRouterEnabled=${message.routerEnabled}, hasRouterDecision=${hasRouterDecision}, routerDecision=${JSON.stringify(message.routerDecision)}`);
 
-          return routerEnabled && hasRouterDecision && message.routerDecision && (
+          return message.routerEnabled && hasRouterDecision && message.routerDecision && (
             <RouterBox
               key={`routerbox-${message.clientId ?? String(message.id)}`}
               routerDecision={{
@@ -1228,11 +1229,64 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     logger.info(`[CHAT_RENDER] About to render message IDs: ${rendered.map(m => m.id).join(', ')}`);
     logger.info(`[CHAT_RENDER] Message preview: ${rendered.map(m => `${m.id}: "${m.content.substring(0, 30)}..."`).join(' | ')}`);
 
-    const renderedComponents = rendered.map((message) => {
+    const renderedComponents: React.ReactElement[] = [];
+
+    rendered.forEach((message) => {
       const originalIndex = messageIndexMap.get(message.id) ?? -1;
       logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
-      return renderMessage(message, originalIndex);
+
+      renderedComponents.push(renderMessage(message, originalIndex));
+
+      if (message.planId && chatId) {
+        const messagePlanState = planStore.get(chatId);
+        if (messagePlanState && messagePlanState.summary?.planId === message.planId) {
+          renderedComponents.push(
+            <MessageWrapper
+              key={`plan-${message.planId}`}
+              messageId={`plan-${message.planId}`}
+              messageRole="assistant"
+              messageContent="Plan overview"
+              className="assistant-message agentic-plan-message-wrapper"
+              currentChatId={chatId}
+              isTTSSupported={false}
+            >
+              <PlanMessage
+                summary={messagePlanState.summary}
+                tasks={Array.from(messagePlanState.tasks.values())}
+                commits={messagePlanState.contextCommits}
+                toolCalls={messagePlanState.toolCalls}
+                chatId={chatId || ''}
+              />
+            </MessageWrapper>
+          );
+        }
+      }
     });
+
+    if (planSummary) {
+      const isAlreadyRendered = rendered.some(msg => msg.planId === planSummary.planId);
+      if (!isAlreadyRendered) {
+        renderedComponents.push(
+          <MessageWrapper
+            key={`plan-${planSummary.planId}`}
+            messageId={`plan-${planSummary.planId}`}
+            messageRole="assistant"
+            messageContent="Plan overview"
+            className="assistant-message agentic-plan-message-wrapper"
+            currentChatId={chatId}
+            isTTSSupported={false}
+          >
+            <PlanMessage
+              summary={planSummary}
+              tasks={planTasks}
+              commits={planCommits}
+              toolCalls={planToolCalls}
+              chatId={chatId || ''}
+            />
+          </MessageWrapper>
+        );
+      }
+    }
 
     if (showErrorNotice && activeError) {
       renderedComponents.push(
@@ -1257,7 +1311,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
     return renderedComponents;
-  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
+  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError, planSummary, planTasks, planCommits, planToolCalls]);
 
   return (
     <>
@@ -1267,26 +1321,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
             <div className="spacer" style={{flex: '1 0 auto'}}></div>
           )}
           {messageListContent}
-
-          {planSummary && (
-            <MessageWrapper
-              key={`plan-${planSummary.planId}`}
-              messageId={`plan-${planSummary.planId}`}
-              messageRole="assistant"
-              messageContent="Plan overview"
-              className="assistant-message agentic-plan-message-wrapper"
-              currentChatId={chatId}
-              isTTSSupported={false}
-            >
-              <PlanMessage
-                summary={planSummary}
-                tasks={planTasks}
-                commits={planCommits}
-                toolCalls={planToolCalls}
-                chatId={chatId || ''}
-              />
-            </MessageWrapper>
-          )}
 
           {canRenderOverlay && (
             <div className="assistant-message">

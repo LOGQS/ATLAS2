@@ -31,11 +31,9 @@ class TaskPlanner:
 
         plan_id = f"plan_{uuid.uuid4().hex}"
 
-        # Generate plan using LLM
         planner_prompt = build_planner_prompt(user_message, tool_registry)
 
-        # Call LLM to generate plan
-        temp_chat = Chat(chat_id=f"planner_temp_{uuid.uuid4().hex}")
+        temp_chat = Chat(chat_id=f"router_temp_{uuid.uuid4().hex}")
         response = temp_chat.generate_text(
             message=planner_prompt,
             provider=Config.get_default_provider(),
@@ -45,9 +43,9 @@ class TaskPlanner:
         )
 
         if response.get("error"):
-            self._logger.error(f"Planner LLM call failed: {response['error']}")
-            # Fallback to simple plan
-            return self._create_fallback_plan(plan_id, latest_ctx, user_message)
+            error_msg = response['error']
+            self._logger.error(f"Planner LLM call failed: {error_msg}")
+            raise RuntimeError(f"Planner LLM call failed: {error_msg}")
 
         plan_text = response.get("text", "").strip()
 
@@ -87,7 +85,7 @@ class TaskPlanner:
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             self._logger.error(f"Failed to parse planner response: {e}")
             self._logger.error(f"Raw response: {plan_text}")
-            return self._create_fallback_plan(plan_id, latest_ctx, user_message)
+            raise RuntimeError(f"Failed to parse planner response: {str(e)}")
 
     def _create_fallback_plan(self, plan_id: str, base_ctx_id: str, user_message: str) -> PlanIR:
         """Create a simple fallback plan when LLM planning fails."""

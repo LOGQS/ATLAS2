@@ -18,6 +18,21 @@ from ..tools.tool_registry import ToolExecutionContext, ToolResult, tool_registr
 _TEMPLATE = re.compile(r"\{\{task\.([^.}]+)\.output\}\}")
 
 
+def _is_retryable_error(error: Exception) -> bool:
+    """Check if an error is transient and should be retried"""
+    error_str = str(error).lower()
+    return any([
+        "503" in error_str,
+        "overloaded" in error_str,
+        "temporarily" in error_str,
+        "unavailable" in error_str,
+        "rate limit" in error_str,
+        "quota" in error_str,
+        "timeout" in error_str,
+        "timed out" in error_str,
+    ])
+
+
 class AgentExecutor:
     """Executes Task-IR plans against the tool registry."""
 
@@ -60,21 +75,77 @@ class AgentExecutor:
             context = ToolExecutionContext(chat_id=chat_id, plan_id=plan.plan_id, task_id=task.task_id, ctx_id=base_ctx)
             tool_spec = self._registry.get(task.tool)
 
-            start = time.perf_counter()
-            try:
-                result = tool_spec.fn(resolved_params, context)
-                latency_ms = int((time.perf_counter() - start) * 1000)
-            except Exception as exc:
-                self._logger.error("Task %s failed: %s", task.task_id, exc)
-                self._db.update_task_attempt_state(
-                    plan.plan_id,
-                    task.task_id,
-                    attempt_no,
-                    state="FAILED",
-                    error=str(exc),
-                )
-                publisher.task_state_changed(TaskStateEvent(plan.plan_id, task.task_id, "FAILED", {"attempt": attempt_no, "error": str(exc)}))
-                raise
+            max_retries = 3
+            retry_delay = 2.0  
+            result = None
+            last_error = None
+
+            for retry_attempt in range(max_retries + 1):
+                start = time.perf_counter()
+                try:
+                    result = tool_spec.fn(resolved_params, context)
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    break 
+                except Exception as exc:
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    last_error = exc
+
+                    is_retryable = _is_retryable_error(exc)
+                    is_last_attempt = retry_attempt >= max_retries
+
+                    if is_retryable and not is_last_attempt:
+                        delay = retry_delay * (2 ** retry_attempt)
+                        self._logger.warning(
+                            "Task %s attempt %d failed with retryable error: %s. Retrying in %.1fs...",
+                            task.task_id, retry_attempt + 1, exc, delay
+                        )
+                        publisher.task_state_changed(
+                            TaskStateEvent(
+                                plan.plan_id,
+                                task.task_id,
+                                "RETRYING",
+                                {
+                                    "attempt": attempt_no,
+                                    "retry": retry_attempt + 1,
+                                    "max_retries": max_retries,
+                                    "error": str(exc),
+                                    "delay": delay
+                                }
+                            )
+                        )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        if is_retryable and is_last_attempt:
+                            self._logger.error(
+                                "Task %s failed after %d retries: %s",
+                                task.task_id, max_retries + 1, exc
+                            )
+                        else:
+                            self._logger.error("Task %s failed: %s", task.task_id, exc)
+
+                        self._db.update_task_attempt_state(
+                            plan.plan_id,
+                            task.task_id,
+                            attempt_no,
+                            state="FAILED",
+                            error=str(exc),
+                        )
+                        publisher.task_state_changed(
+                            TaskStateEvent(
+                                plan.plan_id,
+                                task.task_id,
+                                "FAILED",
+                                {"attempt": attempt_no, "error": str(exc), "retries": retry_attempt}
+                            )
+                        )
+                        raise
+
+            if result is None:
+                if last_error:
+                    raise last_error
+                else:
+                    raise RuntimeError(f"Task {task.task_id} completed without result or error")
 
             new_ctx_id = base_ctx
             snapshot = None
