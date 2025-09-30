@@ -1,5 +1,3 @@
-# status: stable
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -94,10 +92,42 @@ def _tool_rag_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     embed_model = params.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
     similarity = params.get("similarity", "cosine")
 
-    if not query:
-        raise ValueError("Query is required")
-    if not index_name:
-        raise ValueError("Index name is required")
+    if not query or not query.strip():
+        raise ValueError(
+            "query is required and cannot be empty or whitespace-only. "
+            "Provide a search query to find relevant content."
+        )
+
+    if len(query) > 5000:
+        raise ValueError(
+            f"query is too long ({len(query)} characters, ~{len(query)//4} tokens). "
+            "Maximum recommended length is ~5000 characters (~1250 tokens). "
+            "Break long queries into smaller, focused searches."
+        )
+
+    if not index_name or not index_name.strip():
+        raise ValueError("index_name is required and cannot be empty")
+
+    if not isinstance(top_k, int) or top_k <= 0:
+        raise ValueError(
+            f"top_k must be a positive integer, got: {top_k}. "
+            "Specify how many results to return (e.g., top_k=5)."
+        )
+
+    if top_k > 1000:
+        raise ValueError(
+            f"top_k ({top_k}) is too large. "
+            "Maximum is 1000 results to prevent performance issues. "
+            "Use smaller top_k values for better performance."
+        )
+
+    valid_similarities = {"cosine", "euclidean", "dot_product", "l2"}
+    if similarity not in valid_similarities:
+        raise ValueError(
+            f"similarity '{similarity}' is not valid. "
+            f"Choose from: {', '.join(sorted(valid_similarities))}. "
+            "Default is 'cosine' for most use cases."
+        )
 
     _logger.info(f"Searching '{index_name}' for: {query[:50]}...")
 
@@ -105,14 +135,10 @@ def _tool_rag_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
 
     pdir = Path(persist_dir) / index_name
     if not pdir.exists():
-        _logger.warning(f"Index '{index_name}' does not exist at {pdir}")
-        return ToolResult(
-            output={
-                "query": query,
-                "index": index_name,
-                "hits": []
-            },
-            metadata={"found": 0, "error": "Index not found"}
+        raise ValueError(
+            f"Index '{index_name}' does not exist. "
+            f"Create the index first using rag.index before searching. "
+            f"Available indices can be found in: {Path(persist_dir)}"
         )
 
     try:

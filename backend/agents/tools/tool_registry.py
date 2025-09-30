@@ -1,5 +1,3 @@
-# status: alpha
-
 from __future__ import annotations
 
 import hashlib
@@ -158,6 +156,30 @@ def register_builtin_tools() -> None:
         _logger.warning(f"Could not import RAG tools: {e}")
     except Exception as e:
         _logger.error(f"Error registering RAG tools: {e}")
+
+    try:
+        from .file_ops.read_func import read_file_spec
+        from .file_ops.write_func import write_file_spec
+        from .file_ops.edit_func import edit_file_spec
+        from .file_ops.move_func import move_file_spec
+        from .file_ops.move_lines_func import move_lines_spec
+        from .file_ops.search_func import search_files_spec
+        from .file_ops.list_func import list_dir_spec
+        from .file_ops.attach_func import attach_file_spec
+
+        tool_registry.register(read_file_spec)
+        tool_registry.register(write_file_spec)
+        tool_registry.register(edit_file_spec)
+        tool_registry.register(move_file_spec)
+        tool_registry.register(move_lines_spec)
+        tool_registry.register(search_files_spec)
+        tool_registry.register(list_dir_spec)
+        tool_registry.register(attach_file_spec)
+        _logger.info("File operations tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import file operations tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering file operations tools: {e}")
 
 
 register_builtin_tools()

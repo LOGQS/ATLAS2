@@ -1,5 +1,3 @@
-# status: stable
-
 from __future__ import annotations
 
 import hashlib
@@ -193,6 +191,22 @@ def _tool_rag_index(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     file_paths = params.get("file_paths", [])
     index_name = params.get("index_name", f"idx_{ctx.task_id}")
 
+    if not index_name or not index_name.strip():
+        raise ValueError("index_name cannot be empty")
+
+    invalid_chars = set('<>:"|?*\\/\x00')
+    if any(c in index_name for c in invalid_chars):
+        raise ValueError(
+            f"index_name '{index_name}' contains invalid characters. "
+            "Use only alphanumeric characters, underscores, and hyphens."
+        )
+
+    if len(index_name) > 200:
+        raise ValueError(
+            f"index_name is too long ({len(index_name)} characters). "
+            "Maximum length is 200 characters."
+        )
+
     default_persist_dir = str(Path(__file__).resolve().parent.parent.parent.parent.parent / "data" / "rag_data")
     persist_dir = params.get("persist_dir", default_persist_dir)
 
@@ -201,6 +215,27 @@ def _tool_rag_index(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     embed_model = params.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
     incremental = params.get("incremental", True)
     max_workers = params.get("max_workers") or multiprocessing.cpu_count()
+
+    if chunk_size < 100:
+        raise ValueError(
+            f"chunk_size ({chunk_size}) is too small. "
+            "Minimum is 100 tokens. Small chunks produce poor embeddings."
+        )
+
+    if chunk_size > 50000:
+        raise ValueError(
+            f"chunk_size ({chunk_size}) is too large. "
+            "Maximum is 50,000 tokens to prevent memory issues."
+        )
+
+    if overlap < 0:
+        raise ValueError("overlap cannot be negative")
+
+    if overlap >= chunk_size:
+        raise ValueError(
+            f"overlap ({overlap}) must be less than chunk_size ({chunk_size}). "
+            "Overlap >= chunk_size would create duplicate or invalid chunks."
+        )
 
     if content and not file_paths:
         return _index_content_mode(
@@ -238,8 +273,20 @@ def _index_content_mode(
     ctx: ToolExecutionContext
 ) -> ToolResult:
     """Index a single content string (lightweight mode for tool use)."""
-    if not content:
-        raise ValueError("Content is required for indexing")
+    if not content or not content.strip():
+        raise ValueError(
+            "Content is required for indexing and cannot be empty or whitespace-only. "
+            "Provide actual content to index."
+        )
+
+    content_size = len(content.encode('utf-8'))
+    max_content_size = 50 * 1024 * 1024
+    if content_size > max_content_size:
+        raise ValueError(
+            f"Content is too large ({content_size // (1024*1024)} MB). "
+            f"Maximum size for content mode is {max_content_size // (1024*1024)} MB. "
+            "Consider using file mode instead for very large content, or split into smaller chunks."
+        )
 
     content_hash = _sha256_content(content)
 
@@ -311,6 +358,24 @@ def _index_file_mode(
     ctx: ToolExecutionContext
 ) -> ToolResult:
     """Index files/directories with full parallel processing (complete RAG mode)."""
+    if not file_paths:
+        raise ValueError(
+            "file_paths cannot be empty. "
+            "Provide at least one file or directory path to index."
+        )
+
+    invalid_paths = []
+    for path_str in file_paths:
+        path = Path(path_str).resolve()
+        if not path.exists():
+            invalid_paths.append(path_str)
+
+    if invalid_paths:
+        raise ValueError(
+            f"The following paths do not exist: {', '.join(invalid_paths)}. "
+            "Verify all file/directory paths before indexing."
+        )
+
     pdir = Path(persist_dir) / index_name
     pdir.mkdir(parents=True, exist_ok=True)
 
@@ -321,7 +386,7 @@ def _index_file_mode(
         path = Path(path_str).resolve()
         if path.is_dir():
             all_files.extend([f for f in path.rglob("*") if f.is_file()])
-        else:
+        elif path.is_file():
             all_files.append(path)
 
     _logger.info(f"Found {len(all_files)} files to check")
