@@ -1205,7 +1205,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, routerEnabled, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, isSendInProgress]);
+  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, isSendInProgress]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
