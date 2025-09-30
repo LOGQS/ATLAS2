@@ -137,7 +137,43 @@ def register_builtin_tools() -> None:
         version="1.0",
         description="Generate text using language models",
         effects=["net"],
-        in_schema={"type": "object"},
+        in_schema={
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The prompt to send to the language model"
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Provider to use (defaults to configured default provider)"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model to use (defaults to configured default model)"
+                },
+                "include_thoughts": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include reasoning/thoughts in the response"
+                },
+                "commit_to_context": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Save the result to conversation context"
+                },
+                "attached_file_ids": {
+                    "type": "array",
+                    "description": "File IDs to attach to this generation"
+                },
+                "role": {
+                    "type": "string",
+                    "default": "assistant",
+                    "description": "Role for the message (assistant, user, etc.)"
+                }
+            },
+            "required": ["prompt"]
+        },
         out_schema={"type": "object"},
         fn=_tool_llm_generate,
         rate_key="llm.generate",

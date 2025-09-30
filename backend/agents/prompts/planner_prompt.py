@@ -113,7 +113,20 @@ def build_planner_prompt(user_message: str, tool_registry) -> str:
     tools_list = []
     for tool_name in tool_registry.list():
         tool_spec = tool_registry.get(tool_name)
-        tools_list.append(f"- {tool_name}: {tool_spec.description}")
+        params_info = ""
+        if tool_spec.in_schema and "properties" in tool_spec.in_schema:
+            required = tool_spec.in_schema.get("required", [])
+            params = []
+            for param_name, param_spec in tool_spec.in_schema["properties"].items():
+                param_type = param_spec.get("type", "any")
+                param_desc = param_spec.get("description", "")
+                param_required = " (required)" if param_name in required else " (optional)"
+                param_default = f", default: {param_spec['default']}" if "default" in param_spec else ""
+                params.append(f"    - {param_name} ({param_type}){param_required}{param_default}: {param_desc}")
+            if params:
+                params_info = "\n" + "\n".join(params)
+
+        tools_list.append(f"- {tool_name}: {tool_spec.description}{params_info}")
 
     available_tools = "\n".join(tools_list)
     return planner_system_prompt.replace("{available_tools}", available_tools).replace("{user_message}", user_message)
