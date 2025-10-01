@@ -65,6 +65,9 @@ class ToolRegistry:
     def list(self) -> List[str]:
         return sorted(self._tools.keys())
 
+    def get_all_tools(self) -> List[ToolSpec]:
+        return list(self._tools.values())
+
 
 tool_registry = ToolRegistry()
 _logger = get_logger(__name__)
