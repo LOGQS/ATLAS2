@@ -466,4 +466,36 @@
   transform: translateX(-50%) rotate(-30deg);
 }
 
+/* Context icon styling - code brackets style */
+.context-icon {
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 2px;
+  position: relative;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.context-icon::before {
+  content: '{';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-80%, -50%);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 9px;
+  font-weight: bold;
+  line-height: 1;
+}
+
+.context-icon::after {
+  content: '}';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-20%, -50%);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 9px;
+  font-weight: bold;
+  line-height: 1;
+}
+
 

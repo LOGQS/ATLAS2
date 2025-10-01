@@ -25,6 +25,7 @@ from route.file_route import register_file_routes
 from route.file_browser_route import register_file_browser_routes
 from route.stt_route import register_stt_routes
 from route.image_route import image_bp
+from route.token_route import register_token_routes
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
@@ -184,6 +185,7 @@ def create_app():
     register_file_routes(app)
     register_file_browser_routes(app)
     register_stt_routes(app)
+    register_token_routes(app)
     app.register_blueprint(image_bp)
 
     try:

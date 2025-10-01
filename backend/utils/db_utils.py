@@ -288,7 +288,11 @@ class DatabaseManager:
                     api_file_name TEXT,
                     api_state TEXT DEFAULT 'local' CHECK(api_state IN ('local', 'processing_md', 'uploading', 'uploaded', 'processing', 'ready', 'error', 'unavailable')),
                     provider TEXT,
-                    temp_id TEXT,  -- Store temp ID for race condition handling
+                    temp_id TEXT,
+                    token_count INTEGER,
+                    token_count_provider TEXT,
+                    token_count_model TEXT,
+                    token_count_method TEXT,
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL
                 )
             """)
@@ -472,8 +476,33 @@ class DatabaseManager:
                 )
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS token_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('router', 'planner', 'assistant', 'agent_tools')),
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    estimated_tokens INTEGER DEFAULT 0,
+                    actual_tokens INTEGER DEFAULT 0,
+                    message_id TEXT,
+                    plan_id TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_token_usage_chat ON token_usage(chat_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_token_usage_role ON token_usage(role)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp)
+            """)
+
             # No migration logic required fresh schema creation only during development
-            
+
             conn.commit()
 
 
@@ -599,6 +628,18 @@ class DatabaseManager:
                 }
         except Exception as e:
             logger.error(f"Error getting chat meta for {chat_id}: {e}")
+            return None
+
+    def get_chat_system_prompt(self, chat_id: str) -> Optional[str]:
+        """Get the system prompt for a chat."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT system_prompt FROM chats WHERE id = ?", (chat_id,))
+                row = cursor.fetchone()
+                return row['system_prompt'] if row else None
+        except Exception as e:
+            logger.error(f"Error getting system prompt for {chat_id}: {e}")
             return None
 
     def record_lineage(self, message_id: str, role: str, parent_message_id: Optional[str] = None) -> bool:
@@ -1206,7 +1247,11 @@ class DatabaseManager:
             "md_filename": row["md_filename"],
             "api_file_name": row["api_file_name"],
             "api_state": row["api_state"],
-            "provider": row["provider"]
+            "provider": row["provider"],
+            "token_count": row.get("token_count"),
+            "token_count_provider": row.get("token_count_provider"),
+            "token_count_model": row.get("token_count_model"),
+            "token_count_method": row.get("token_count_method")
         }
 
     def get_file_record(self, file_id: str) -> Optional[Dict[str, Any]]:
@@ -1341,6 +1386,88 @@ class DatabaseManager:
             return cursor.rowcount > 0
 
         return self._execute_with_connection("updating file MD info", update_operation, False)
+
+    def update_file_token_count(
+        self,
+        file_id: str,
+        token_count: int,
+        provider: str,
+        model: str,
+        method: str
+    ) -> bool:
+        """
+        Update cached token count for a file.
+
+        Args:
+            file_id: File identifier
+            token_count: Token count for the file
+            provider: Provider used for counting
+            model: Model used for counting
+            method: Method used (native/tiktoken/fallback)
+
+        Returns:
+            bool: True if updated successfully
+        """
+        if not self._validate_string(file_id, "file_id"):
+            return False
+
+        def update_operation(conn, cursor):
+            cursor.execute("""
+                UPDATE files
+                SET token_count = ?,
+                    token_count_provider = ?,
+                    token_count_model = ?,
+                    token_count_method = ?
+                WHERE id = ?
+            """, (token_count, provider, model, method, file_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+        return self._execute_with_connection("updating file token count", update_operation, False)
+
+    def get_file_token_count(
+        self,
+        file_id: str,
+        provider: str,
+        model: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get cached token count for a file if it matches the provider and model.
+
+        Args:
+            file_id: File identifier
+            provider: Provider to match
+            model: Model to match
+
+        Returns:
+            Dict with token_count and method if cache is valid, None otherwise
+        """
+        if not self._validate_string(file_id, "file_id"):
+            return None
+
+        def query(conn, cursor):
+            cursor.execute("""
+                SELECT token_count, token_count_provider, token_count_model, token_count_method
+                FROM files
+                WHERE id = ?
+            """, (file_id,))
+            row = cursor.fetchone()
+
+            if not row or not row["token_count"]:
+                return None
+
+            cached_provider = row["token_count_provider"]
+            cached_model = row["token_count_model"]
+
+            if cached_provider == provider and cached_model == model:
+                return {
+                    "token_count": row["token_count"],
+                    "method": row["token_count_method"]
+                }
+
+            return None
+
+        return self._execute_with_connection("getting file token count", query, None)
 
     def link_files_to_message(self, message_id: str, file_ids: List[str]) -> bool:
         """Link multiple files to a message"""
@@ -2027,6 +2154,157 @@ class DatabaseManager:
     def set_file_state_callback(self, callback: Callable[[str, str, str, str], None]) -> None:
         """Set callback for file state changes to avoid circular imports"""
         self._file_state_callback = callback
+
+    def save_token_usage(
+        self,
+        chat_id: str,
+        role: str,
+        provider: str,
+        model: str,
+        estimated_tokens: int = 0,
+        actual_tokens: int = 0,
+        message_id: Optional[str] = None,
+        plan_id: Optional[str] = None
+    ) -> bool:
+        """
+        Save token usage for a specific role in a chat.
+
+        Args:
+            chat_id: Chat identifier
+            role: One of 'router', 'planner', 'assistant', 'agent_tools'
+            provider: Provider name (e.g., 'gemini', 'groq')
+            model: Model name
+            estimated_tokens: Estimated token count
+            actual_tokens: Actual token count from provider response
+            message_id: Optional message ID this usage is associated with
+            plan_id: Optional plan ID this usage is associated with
+
+        Returns:
+            bool: True if saved successfully
+        """
+        if not self._validate_string(chat_id, "chat_id"):
+            return False
+
+        if role not in {'router', 'planner', 'assistant', 'agent_tools'}:
+            logger.warning(f"Invalid token usage role: {role}")
+            return False
+
+        def transaction(conn, cursor):
+            cursor.execute(
+                """INSERT INTO token_usage
+                   (chat_id, role, provider, model, estimated_tokens, actual_tokens, message_id, plan_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (chat_id, role, provider, model, estimated_tokens, actual_tokens, message_id, plan_id)
+            )
+            logger.debug(f"[TokenUsage] Saved {role} token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens}")
+            return True
+
+        return bool(self._transaction_wrapper("saving token usage", transaction))
+
+    def get_token_usage_by_chat(self, chat_id: str) -> Dict[str, Dict[str, int]]:
+        """
+        Get aggregated token usage for a chat, broken down by role.
+
+        Args:
+            chat_id: Chat identifier
+
+        Returns:
+            Dict with structure:
+            {
+                'router': {'estimated': int, 'actual': int, 'calls': int},
+                'planner': {'estimated': int, 'actual': int, 'calls': int},
+                'assistant': {'estimated': int, 'actual': int, 'calls': int},
+                'agent_tools': {'estimated': int, 'actual': int, 'calls': int}
+            }
+        """
+        if not self._validate_string(chat_id, "chat_id"):
+            return {
+                'router': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
+            }
+
+        def query(conn, cursor):
+            cursor.execute(
+                """SELECT role,
+                          SUM(estimated_tokens) as total_estimated,
+                          SUM(actual_tokens) as total_actual,
+                          COUNT(*) as call_count
+                   FROM token_usage
+                   WHERE chat_id = ?
+                   GROUP BY role""",
+                (chat_id,)
+            )
+            rows = cursor.fetchall()
+
+            result = {
+                'router': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
+                'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
+            }
+
+            for row in rows:
+                role = row['role']
+                if role in result:
+                    result[role] = {
+                        'estimated': row['total_estimated'] or 0,
+                        'actual': row['total_actual'] or 0,
+                        'calls': row['call_count'] or 0
+                    }
+
+            return result
+
+        return self._execute_with_connection("fetching token usage by chat", query, return_on_error={
+            'router': {'estimated': 0, 'actual': 0, 'calls': 0},
+            'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
+            'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
+            'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
+        })
+
+    def get_most_recent_token_usage(self, chat_id: str, role: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent token usage entry for a specific role in a chat.
+        Used to determine the last-used provider/model for that role.
+
+        Args:
+            chat_id: Chat identifier
+            role: Role to query ('router', 'planner', 'assistant', 'agent_tools')
+
+        Returns:
+            Dict with provider, model, timestamp, etc. or None if no usage found
+        """
+        if not self._validate_string(chat_id, "chat_id"):
+            return None
+
+        if role not in {'router', 'planner', 'assistant', 'agent_tools'}:
+            logger.warning(f"Invalid token usage role: {role}")
+            return None
+
+        def query(conn, cursor):
+            cursor.execute(
+                """SELECT provider, model, estimated_tokens, actual_tokens, timestamp
+                   FROM token_usage
+                   WHERE chat_id = ? AND role = ?
+                   ORDER BY timestamp DESC
+                   LIMIT 1""",
+                (chat_id, role)
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                'provider': row['provider'],
+                'model': row['model'],
+                'estimated_tokens': row['estimated_tokens'],
+                'actual_tokens': row['actual_tokens'],
+                'timestamp': row['timestamp']
+            }
+
+        return self._execute_with_connection("fetching most recent token usage", query, None)
 
 
 db = DatabaseManager()

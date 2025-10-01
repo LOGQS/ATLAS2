@@ -99,7 +99,19 @@ class Config:
     WORKER_POOL_SIZE = 4
     WORKER_MAX_PARALLEL_SPAWN = 5
     WORKER_INIT_TIMEOUT = 20.0
-    
+
+
+    TOKEN_COUNTING_METHODS = {
+        "gemini": "native",    
+        "groq": "tiktoken",    
+        "openrouter": "tiktoken", 
+        "huggingface": "fallback" 
+    }
+
+    TIKTOKEN_ENCODING = "cl100k_base"
+
+    FALLBACK_CHARS_PER_TOKEN = 4
+
     @classmethod
     def get_default_provider(cls) -> str:
         """Get the default provider name, validated against available providers."""
@@ -186,3 +198,32 @@ class Config:
     def get_worker_init_timeout(cls) -> float:
         """Get worker initialization timeout."""
         return cls.WORKER_INIT_TIMEOUT
+
+    @classmethod
+    def get_token_counting_method(cls, provider: str) -> str:
+        """
+        Get the token counting method for a provider.
+
+        Args:
+            provider: Provider name
+
+        Returns:
+            Token counting method: 'native', 'tiktoken', or 'fallback'
+        """
+        return cls.TOKEN_COUNTING_METHODS.get(provider, "fallback")
+
+    @classmethod
+    def get_tiktoken_encoding(cls) -> str:
+        """Get the tiktoken encoding name to use."""
+        return cls.TIKTOKEN_ENCODING
+
+    @classmethod
+    def get_fallback_chars_per_token(cls) -> int:
+        """Get the character-to-token ratio for fallback counting."""
+        return cls.FALLBACK_CHARS_PER_TOKEN
+
+    @classmethod
+    def get_router_provider(cls) -> str:
+        """Get the provider used for router model."""
+        router_model = cls.get_router_model()
+        return infer_provider_from_model(router_model)

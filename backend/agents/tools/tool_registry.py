@@ -85,6 +85,22 @@ def _tool_llm_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
     include_thoughts = bool(params.get("include_thoughts", False))
     attachments = params.get("attached_file_ids") or []
 
+    from agents.context.context_manager import context_manager
+    token_estimate = context_manager.estimate_request_tokens(
+        role="agent_tools",
+        provider=provider,
+        model=model,
+        system_prompt=None,
+        chat_history=[],
+        current_message=prompt,
+        file_attachments=attachments
+    )
+    from agents.context.context_manager import ContextManager
+    num_tools = len(tool_registry.get_all_tools())
+    tool_overhead_tokens = num_tools * ContextManager.TOOL_OVERHEAD_TOKENS_PER_TOOL
+    total_estimated = token_estimate['estimated_tokens']['total'] + tool_overhead_tokens
+    _logger.debug(f"Agent tool estimated tokens: {total_estimated} (prompt: {token_estimate['estimated_tokens']['total']}, tool overhead: {tool_overhead_tokens})")
+
     temp_chat = Chat(chat_id=f"router_temp_agent_{uuid.uuid4().hex}")
     response = temp_chat.generate_text(
         message=prompt,
@@ -98,12 +114,45 @@ def _tool_llm_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
     if response.get("error"):
         raise RuntimeError(response["error"])
 
+    actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, provider)
+    actual_tokens_count = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
+
+    estimated_tokens_with_overhead = total_estimated
+
+    token_usage = actual_tokens_data if actual_tokens_data else {
+        'total_tokens': estimated_tokens_with_overhead
+    }
+
+    from utils.db_utils import db
+    if actual_tokens_count > 0:
+        db.save_token_usage(
+            chat_id=ctx.chat_id,
+            role='agent_tools',
+            provider=provider,
+            model=model,
+            estimated_tokens=0,
+            actual_tokens=actual_tokens_count,
+            plan_id=ctx.plan_id
+        )
+    else:
+        db.save_token_usage(
+            chat_id=ctx.chat_id,
+            role='agent_tools',
+            provider=provider,
+            model=model,
+            estimated_tokens=estimated_tokens_with_overhead,
+            actual_tokens=0,
+            plan_id=ctx.plan_id
+        )
+    _logger.debug(f"[TokenUsage] Saved agent_tools token usage for chat {ctx.chat_id}, task {ctx.task_id}")
+
     output_text = response.get("text", "")
     metadata = {
         "provider": provider,
         "model": model,
         "thoughts": response.get("thoughts"),
-        "usage": response.get("usage"),
+        "usage": token_usage,
+        "token_estimate": token_estimate,
         "input_hash": _compute_input_hash({
             "prompt": prompt,
             "provider": provider,

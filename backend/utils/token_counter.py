@@ -1,26 +1,21 @@
 # status: complete
-    
-from utils.config import get_provider_map
+
+from agents.context.context_manager import context_manager
+
 
 def count_tokens(text: str, model: str = "", provider: str = "unknown") -> int:
     """
-    Count tokens using appropriate provider.
+    Count tokens using appropriate provider via context_manager.
     Fallback: 1 token ≈ 4 characters.
-    
+
     Args:
         text (str): Input text.
         model (str): Model name.
         provider (str): Provider name.
-    
+
     Returns:
         int: Token count.
     """
-    if provider == "unknown":
+    if provider == "unknown" or not model:
         return max(1, len(text) // 4)
-    
-    provider_map = get_provider_map()
-    provider_instance = provider_map.get(provider)
-    if provider_instance and hasattr(provider_instance, 'count_tokens'):
-        return provider_instance.count_tokens(text, model)
-    
-    return max(1, len(text) // 4)
+    return context_manager.count_tokens(text, model, provider)

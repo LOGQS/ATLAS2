@@ -9,6 +9,7 @@ import ModalWindow from './components/ui/ModalWindow';
 import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
+import ContextWindow from './components/chat/ContextWindow';
 import SendButton from './components/input/SendButton';
 import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
@@ -1400,6 +1401,12 @@ function App() {
 
       <ChatVersionsWindow
         isOpen={activeModal === 'chat-versions'}
+        onClose={handleCloseModal}
+        chatId={activeChatId !== 'none' ? activeChatId : undefined}
+      />
+
+      <ContextWindow
+        isOpen={activeModal === 'context'}
         onClose={handleCloseModal}
         chatId={activeChatId !== 'none' ? activeChatId : undefined}
       />

@@ -587,7 +587,7 @@ class Chat:
             if use_router and Config.get_default_router_state():
                 from agents.roles.router import router
                 chat_history = self.get_chat_history()
-                router_response = router.route_request(message, chat_history)
+                router_response = router.route_request(message, chat_history, chat_id=self.chat_id)
                 model = router_response['model']
                 provider = router_response['provider']
                 logger.info(f"Router selected: {model} with provider {provider}")
@@ -620,11 +620,56 @@ class Chat:
             file_attachments = self._resolve_api_file_names(new_file_ids, provider)
         
         logger.info(f"Generating text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
+
+        # Track token usage
+        from agents.context.context_manager import context_manager
+        token_estimate = context_manager.estimate_request_tokens(
+            role="assistant",
+            provider=provider,
+            model=model,
+            system_prompt=self.system_prompt,
+            chat_history=chat_history,
+            current_message=message,
+            file_attachments=file_attachments
+        )
+        logger.debug(f"Estimated tokens for request: {token_estimate['estimated_tokens']['total']}")
+
         response = self.providers[provider].generate_text(
-            message, model=model, include_thoughts=use_reasoning, 
+            message, model=model, include_thoughts=use_reasoning,
             chat_history=chat_history, file_attachments=file_attachments, **config_params
         )
-        
+
+        # Extract actual token usage if available
+        actual_tokens = context_manager.extract_actual_tokens_from_response(response, provider)
+        if actual_tokens:
+            logger.debug(f"Actual tokens used: {actual_tokens['total_tokens']}")
+            response['token_usage'] = actual_tokens
+        response['token_estimate'] = token_estimate
+
+        # Save token usage to database
+        if not is_router_call:
+            estimated_tokens = token_estimate['estimated_tokens']['total']
+            actual_tokens_count = actual_tokens['total_tokens'] if actual_tokens else 0
+            # Save both estimated (input estimate) and actual (total from API)
+            if actual_tokens_count > 0:
+                db.save_token_usage(
+                    chat_id=self.chat_id,
+                    role='assistant',
+                    provider=provider,
+                    model=model,
+                    estimated_tokens=estimated_tokens,
+                    actual_tokens=actual_tokens_count
+                )
+            else:
+                db.save_token_usage(
+                    chat_id=self.chat_id,
+                    role='assistant',
+                    provider=provider,
+                    model=model,
+                    estimated_tokens=estimated_tokens,
+                    actual_tokens=0
+                )
+            logger.debug(f"[TokenUsage] Saved assistant token usage for chat {self.chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count}")
 
         if response.get("text") and not is_router_call:
             db.save_message(
@@ -635,7 +680,7 @@ class Chat:
                 provider=provider,
                 model=model
             )
-        
+
         return response
     
     def generate_text_stream(self, message: str, provider: Optional[str] = None,
@@ -661,7 +706,7 @@ class Chat:
         if not is_router_call and use_router and Config.get_default_router_state():
             from agents.roles.router import router
             chat_history = self.get_chat_history()
-            router_response = router.route_request(message, chat_history)
+            router_response = router.route_request(message, chat_history, chat_id=self.chat_id)
             model = router_response['model']
             provider = router_response['provider']
             logger.info(f"Router selected for streaming: {model} with provider {provider}")
@@ -694,9 +739,22 @@ class Chat:
         
         full_text = ""
         full_thoughts = ""
-        
+
         logger.info(f"Generating streaming text with {provider}:{model} for chat {self.chat_id} with {len(chat_history)} previous messages and {len(file_attachments)} file attachments")
-        
+
+        # Track token usage for streaming
+        from agents.context.context_manager import context_manager
+        token_estimate = context_manager.estimate_request_tokens(
+            role="assistant",
+            provider=provider,
+            model=model,
+            system_prompt=self.system_prompt,
+            chat_history=chat_history,
+            current_message=message,
+            file_attachments=file_attachments
+        )
+        logger.debug(f"Estimated tokens for streaming request: {token_estimate['estimated_tokens']['total']}")
+
         if use_reasoning:
             db.update_chat_state(self.chat_id, "thinking")
             publish_state(self.chat_id, "thinking")
@@ -705,9 +763,9 @@ class Chat:
             db.update_chat_state(self.chat_id, "responding")
             publish_state(self.chat_id, "responding")
             current_state = "responding"
-        
+
         for chunk in self.providers[provider].generate_text_stream(
-            message, model=model, include_thoughts=use_reasoning, 
+            message, model=model, include_thoughts=use_reasoning,
             chat_history=chat_history, file_attachments=file_attachments, **config_params
         ):
 
@@ -729,7 +787,7 @@ class Chat:
                 )
             
             yield chunk
-        
+
         db.update_chat_state(self.chat_id, "static")
         publish_state(self.chat_id, "static")
     
@@ -753,7 +811,7 @@ class Chat:
             else:
                 from agents.roles.router import router
                 chat_history = self.get_chat_history()
-                router_response = router.route_request(message, chat_history)
+                router_response = router.route_request(message, chat_history, chat_id=self.chat_id)
                 model = router_response['model']
                 provider = router_response['provider']
                 route_choice = router_response.get('route')

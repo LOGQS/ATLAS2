@@ -65,12 +65,19 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal, chatId }) => {
                   </div>
                 </div>
                 <div className="chat-specific-content">
-                  <div 
+                  <div
                     className="sidebar-item"
                     onClick={() => handleSubsectionClick('chat-versions')}
                   >
                     <div className="sidebar-icon version-icon"></div>
                     Chat Versions
+                  </div>
+                  <div
+                    className="sidebar-item"
+                    onClick={() => handleSubsectionClick('context')}
+                  >
+                    <div className="sidebar-icon context-icon"></div>
+                    Context
                   </div>
                 </div>
               </div>

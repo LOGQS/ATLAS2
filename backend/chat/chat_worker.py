@@ -153,7 +153,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 if Config.get_default_router_state():
                                     from agents.roles.router import router
                                     chat_history = db.get_chat_history(actual_chat_id)
-                                    router_result = router.route_request(message, chat_history, providers)  # type: ignore
+                                    router_result = router.route_request(message, chat_history, providers, actual_chat_id)  # type: ignore
                                     model = router_result['model']
                                     provider = router_result['provider']
 
@@ -332,8 +332,10 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
             current_state = "responding"
         
+        streaming_usage_metadata = None  # Track usage from streaming
+
         for chunk in providers[provider].generate_text_stream(
-            message, model=model, include_thoughts=use_reasoning, 
+            message, model=model, include_thoughts=use_reasoning,
             chat_history=chat_history, file_attachments=file_attachments
         ):
             if child_conn.poll(0):
@@ -360,11 +362,18 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                         child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True})
                         return
                 except:
-                    pass  
-            
+                    pass
+
             content_changed = False
 
-            if chunk.get("type") == "thoughts":
+            if chunk.get("type") == "usage":
+                # Capture usage metadata from streaming providers
+                usage_data = chunk.get("usage") or chunk.get("usage_metadata")
+                if usage_data:
+                    streaming_usage_metadata = usage_data
+                    worker_logger.info(f"[CHAT-WORKER] Captured usage from stream: {streaming_usage_metadata}")
+
+            elif chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
                 current_content['full_thoughts'] = full_thoughts
                 try:
@@ -380,7 +389,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
                 except Exception as pub_error:
                     worker_logger.warning(f"[CHAT-WORKER] Failed to send answer chunk: {pub_error}")
-                
+
                 if current_state == "thinking":
                     try:
                         db.update_chat_state(chat_id, "responding")
@@ -416,6 +425,59 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         current_content['full_thoughts'] = ''
         current_content['assistant_message_id'] = None
         current_content['last_db_update'] = 0.0
+
+        # Save assistant token usage after streaming completes
+        # Get system prompt for token estimation
+        system_prompt = db.get_chat_system_prompt(chat_id)
+
+        # Estimate tokens for this request
+        from agents.context.context_manager import context_manager
+        token_estimate = context_manager.estimate_request_tokens(
+            role="assistant",
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            chat_history=chat_history,
+            current_message=message,
+            file_attachments=file_attachments
+        )
+        estimated_tokens = token_estimate['estimated_tokens']['total']
+
+        # Extract actual tokens from streaming usage if available
+        actual_tokens_count = 0
+        if streaming_usage_metadata:
+            # Handle different formats (Gemini vs OpenAI-compatible)
+            if 'total_token_count' in streaming_usage_metadata:
+                # Gemini format
+                actual_tokens_count = streaming_usage_metadata['total_token_count']
+            elif 'total_tokens' in streaming_usage_metadata:
+                # OpenAI-compatible format (Groq, OpenRouter)
+                actual_tokens_count = streaming_usage_metadata['total_tokens']
+            worker_logger.info(f"[TokenUsage] Using actual tokens from stream: {actual_tokens_count}")
+
+        # Save token usage with both estimated and actual
+        if actual_tokens_count > 0:
+            db.save_token_usage(
+                chat_id=chat_id,
+                role='assistant',
+                provider=provider,
+                model=model,
+                estimated_tokens=estimated_tokens,
+                actual_tokens=actual_tokens_count,
+                message_id=assistant_message_id
+            )
+            worker_logger.info(f"[TokenUsage] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count} tokens")
+        else:
+            db.save_token_usage(
+                chat_id=chat_id,
+                role='assistant',
+                provider=provider,
+                model=model,
+                estimated_tokens=estimated_tokens,
+                actual_tokens=0,
+                message_id=assistant_message_id
+            )
+            worker_logger.info(f"[TokenUsage] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens} tokens (no actual available)")
 
         worker_logger.info(f"[CHAT-WORKER] Processing completed successfully for {chat_id}")
         

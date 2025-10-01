@@ -33,14 +33,51 @@ class TaskPlanner:
 
         planner_prompt = build_planner_prompt(user_message, tool_registry)
 
+        # Track planner token usage
+        from agents.context.context_manager import context_manager
+        provider = Config.get_default_provider()
+        model = Config.get_default_model()
+        token_estimate = context_manager.estimate_request_tokens(
+            role="planner",
+            provider=provider,
+            model=model,
+            system_prompt=None,
+            chat_history=[],
+            current_message=planner_prompt,
+            file_attachments=[]
+        )
+        estimated_tokens = token_estimate['estimated_tokens']['total']
+        self._logger.debug(f"Planner estimated tokens: {estimated_tokens}")
+
         temp_chat = Chat(chat_id=f"router_temp_{uuid.uuid4().hex}")
         response = temp_chat.generate_text(
             message=planner_prompt,
-            provider=Config.get_default_provider(),
-            model=Config.get_default_model(),
+            provider=provider,
+            model=model,
             include_reasoning=False,
             use_router=False
         )
+
+        # Extract actual token usage and save to database
+        actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, provider)
+        actual_tokens_count = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
+
+        if actual_tokens_data:
+            self._logger.info(f"Planner actual tokens: {actual_tokens_count}")
+
+        # Save planner token usage to database
+        from utils.db_utils import db
+        # Save both estimated and actual tokens (actual may be 0 if not available)
+        db.save_token_usage(
+            chat_id=chat_id,
+            role='planner',
+            provider=provider,
+            model=model,
+            estimated_tokens=estimated_tokens,
+            actual_tokens=actual_tokens_count,
+            plan_id=plan_id
+        )
+        self._logger.debug(f"[TokenUsage] Saved planner token usage for chat {chat_id}, plan {plan_id}: estimated={estimated_tokens}, actual={actual_tokens_count}")
 
         if response.get("error"):
             error_msg = response['error']

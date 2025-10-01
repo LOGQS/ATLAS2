@@ -187,16 +187,18 @@ class Gemini:
         return formatted_history
     
     def count_tokens(self, contents: Any, model: str) -> int:
-        """Count tokens using Gemini API specific method"""
+        """
+        Count tokens using Gemini API specific method.
+
+        NOTE: countTokens is a lightweight metadata API that doesn't consume quota
+        like generation calls, so we don't rate limit it.
+        """
         if not self.is_available():
             return 0
-        
+
         try:
-            result = self._execute_with_rate_limit(
-                f"gemini:{model}",
-                self.client.models.count_tokens,
-                model=model, contents=contents
-            )
+            # Call directly without rate limiting - countTokens doesn't consume quota
+            result = self.client.models.count_tokens(model=model, contents=contents)
             return result.total_tokens
         except Exception as e:
             logger.error(f"Token counting failed: {e}")
@@ -298,10 +300,20 @@ class Gemini:
                 "error": error_message
             }
 
+        # Extract usage metadata if available
+        usage_metadata = None
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            usage_metadata = {
+                'prompt_token_count': response.usage_metadata.prompt_token_count,
+                'candidates_token_count': response.usage_metadata.candidates_token_count,
+                'total_token_count': response.usage_metadata.total_token_count
+            }
+
         return {
             "text": answer,
             "thoughts": thoughts if thoughts else None,
-            "model": model
+            "model": model,
+            "usage_metadata": usage_metadata
         }
     
     def generate_text_stream(self, prompt: str, model: str = "", 
@@ -353,9 +365,11 @@ class Gemini:
 
         has_content = False
         saw_invalid_chunk = False
+        last_chunk = None
 
         try:
             for chunk in stream:
+                last_chunk = chunk
                 if (not chunk or not chunk.candidates or len(chunk.candidates) == 0
                     or not chunk.candidates[0].content or not chunk.candidates[0].content.parts):
                     saw_invalid_chunk = True
@@ -380,6 +394,15 @@ class Gemini:
             error_message = self._extract_error_message(e)
             logger.error(f"Gemini streaming request failed: {error_message}")
             raise RuntimeError(error_message) from e
+
+        # Extract usage metadata from last chunk if available
+        if last_chunk and hasattr(last_chunk, 'usage_metadata') and last_chunk.usage_metadata:
+            usage_metadata = {
+                'prompt_token_count': last_chunk.usage_metadata.prompt_token_count,
+                'candidates_token_count': last_chunk.usage_metadata.candidates_token_count,
+                'total_token_count': last_chunk.usage_metadata.total_token_count
+            }
+            yield {"type": "usage", "usage_metadata": usage_metadata}
 
         if not has_content:
             if saw_invalid_chunk:
@@ -675,485 +698,3 @@ class Gemini:
 
         return default
 
-class DisabledProvider:
-    """Base class for disabled/placeholder providers"""
-    
-    def __init__(self, name: str = "DisabledProvider"):
-        self.name = name
-        self.status = "disabled"
-    
-    def is_available(self) -> bool:
-        return False
-    
-    def get_available_models(self) -> dict:
-        return {}
-
-class HuggingFace(DisabledProvider):
-    """HuggingFace API (currently disabled)"""
-    
-    def __init__(self):
-        super().__init__("HuggingFace")
-
-class Groq:
-    """
-    Groq API
-    """
-
-    AVAILABLE_MODELS = {
-        "groq/compound": {
-            "name": "Groq Compound",
-            "supports_reasoning": False 
-        },
-        "meta-llama/llama-4-maverick-17b-128e-instruct": {
-            "name": "Llama 4 Maverick 17B",
-            "supports_reasoning": False
-        },
-        "meta-llama/llama-4-scout-17b-16e-instruct": {
-            "name": "Llama 4 Scout 17B",
-            "supports_reasoning": False
-        },
-        "moonshotai/kimi-k2-instruct-0905": {
-            "name": "Kimi K2 Instruct",
-            "supports_reasoning": False
-        },
-        "openai/gpt-oss-120b": {
-            "name": "GPT-OSS 120B",
-            "supports_reasoning": True 
-        }
-    }
-
-    BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-    def __init__(self):
-        self.api_key = os.getenv("GROQ_API_KEY")
-        self.status = "enabled" if self.api_key else "disabled"
-        self.client = None
-
-        if self.api_key:
-            try:
-                from groq import Groq as GroqClient
-                self.client = GroqClient(api_key=self.api_key)
-                logger.info("Groq text generation client initialized successfully")
-            except ImportError:
-                logger.error("groq package not installed. Please run: pip install groq")
-                self.status = "disabled"
-            except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {str(e)}")
-                self.status = "disabled"
-
-    def is_available(self) -> bool:
-        return self.status == "enabled" and self.client is not None
-
-    def get_available_models(self) -> Dict[str, Any]:
-        """Get available models for this provider"""
-        return self.AVAILABLE_MODELS.copy()
-
-    def supports_reasoning(self, model: str) -> bool:
-        """Check if specific model supports reasoning"""
-        return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
-
-    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
-        """Common rate limiting wrapper for all API calls"""
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
-        return limiter.execute(method, operation_name, *args, **kwargs)
-
-    def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """Convert database chat history to Groq/OpenAI format"""
-        formatted_history = []
-
-        for message in chat_history:
-            role = message.get("role")
-            content = message.get("content", "")
-
-            if role == "user":
-                formatted_history.append({"role": "user", "content": content})
-            elif role == "assistant":
-                formatted_history.append({"role": "assistant", "content": content})
-
-        return formatted_history
-
-    def generate_text(self, prompt: str, model: str = "",
-                     include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
-                     file_attachments: List[str] = None,
-                     **config_params) -> Dict[str, Any]:
-        """Generate text response with chat history context"""
-        if not self.is_available():
-            return {"text": None, "thoughts": None, "error": "Provider not available"}
-
-        messages = []
-        if chat_history:
-            formatted_history = self._format_chat_history(chat_history)
-            messages.extend(formatted_history)
-
-        messages.append({"role": "user", "content": prompt})
-
-        request_params = {
-            "model": model,
-            "messages": messages
-        }
-
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_completion_tokens", "max_tokens", "top_p", "stop", "stream"]:
-                    if key == "max_tokens":
-                        request_params["max_completion_tokens"] = value
-                    else:
-                        request_params[key] = value
-
-        if include_thoughts and self.supports_reasoning(model):
-            request_params["include_reasoning"] = True
-
-        try:
-            response = self._execute_with_rate_limit(
-                f"groq:{model}",
-                self.client.chat.completions.create,
-                **request_params
-            )
-
-            thoughts = None
-            content = ""
-
-            if response and response.choices and len(response.choices) > 0:
-                message = response.choices[0].message
-                content = message.content or ""
-
-                if hasattr(message, 'reasoning') and message.reasoning:
-                    thoughts = message.reasoning
-                elif model == "groq/compound" and hasattr(message, 'executed_tools'):
-                    thoughts = str(message.executed_tools) if message.executed_tools else None
-
-            return {
-                "text": content,
-                "thoughts": thoughts,
-                "model": model
-            }
-
-        except Exception as e:
-            logger.error(f"Groq API request failed: {str(e)}")
-            return {
-                "text": None,
-                "thoughts": None,
-                "error": str(e)
-            }
-
-    def generate_text_stream(self, prompt: str, model: str = "",
-                           include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
-                           file_attachments: List[str] = None,
-                           **config_params) -> Generator[Dict[str, Any], None, None]:
-        """Generate streaming text response with chat history context"""
-        if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
-
-        messages = []
-        if chat_history:
-            formatted_history = self._format_chat_history(chat_history)
-            messages.extend(formatted_history)
-
-        messages.append({"role": "user", "content": prompt})
-
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "stream": True
-        }
-
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_completion_tokens", "max_tokens", "top_p", "stop"]:
-                    if key == "max_tokens":
-                        request_params["max_completion_tokens"] = value
-                    else:
-                        request_params[key] = value
-
-        if include_thoughts and self.supports_reasoning(model):
-            request_params["include_reasoning"] = True
-
-        try:
-            response = self._execute_with_rate_limit(
-                f"groq:{model}",
-                self.client.chat.completions.create,
-                **request_params
-            )
-
-            answer_started = False
-            thoughts_started = False
-
-            for chunk in response:
-                if chunk.choices and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-
-                    if hasattr(delta, 'reasoning') and delta.reasoning:
-                        if not thoughts_started:
-                            yield {"type": "thoughts_start"}
-                            thoughts_started = True
-                        yield {"type": "thoughts", "content": delta.reasoning}
-
-                    if delta.content:
-                        if not answer_started:
-                            yield {"type": "answer_start"}
-                            answer_started = True
-                        yield {"type": "answer", "content": delta.content}
-
-            yield {"type": "complete"}
-
-        except Exception as e:
-            logger.error(f"Groq streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
-
-class OpenRouter:
-    """
-    OpenRouter API
-    """
-
-    AVAILABLE_MODELS = {
-        "x-ai/grok-4-fast:free": {
-            "name": "Grok 4 Fast (Free)",
-            "supports_reasoning": True
-        },
-        "deepseek/deepseek-chat-v3.1:free": {
-            "name": "DeepSeek Chat v3.1 (Free)",
-            "supports_reasoning": True
-        },
-        "z-ai/glm-4.5-air:free": {
-            "name": "GLM 4.5 Air (Free)",
-            "supports_reasoning": False
-        },
-        "qwen/qwen3-coder:free": {
-            "name": "Qwen3 Coder (Free)",
-            "supports_reasoning": True
-        },
-        "moonshotai/kimi-k2:free": {
-            "name": "Kimi K2 (Free)",
-            "supports_reasoning": False
-        }
-    }
-
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-    def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        self.status = "enabled" if self.api_key else "disabled"
-
-        if self.api_key:
-            logger.info("OpenRouter client initialized successfully")
-        else:
-            logger.warning("OpenRouter API key not found, provider disabled")
-
-    def is_available(self) -> bool:
-        return self.status == "enabled" and self.api_key is not None
-
-    def get_available_models(self) -> Dict[str, Any]:
-        """Get available models for this provider"""
-        return self.AVAILABLE_MODELS.copy()
-
-    def supports_reasoning(self, model: str) -> bool:
-        """Check if specific model supports reasoning"""
-        return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
-
-    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
-        """Common rate limiting wrapper for all API calls"""
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
-        return limiter.execute(method, operation_name, *args, **kwargs)
-
-    def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """Convert database chat history to OpenRouter/OpenAI format"""
-        formatted_history = []
-
-        for message in chat_history:
-            role = message.get("role")
-            content = message.get("content", "")
-
-            if role == "user":
-                formatted_history.append({"role": "user", "content": content})
-            elif role == "assistant":
-                formatted_history.append({"role": "assistant", "content": content})
-
-        return formatted_history
-
-    def generate_text(self, prompt: str, model: str = "",
-                     include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
-                     file_attachments: List[str] = None,
-                     **config_params) -> Dict[str, Any]:
-        """Generate text response with chat history context"""
-        if not self.is_available():
-            return {"text": None, "thoughts": None, "error": "Provider not available"}
-
-        messages = []
-        if chat_history:
-            formatted_history = self._format_chat_history(chat_history)
-            messages.extend(formatted_history)
-
-        messages.append({"role": "user", "content": prompt})
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
-        }
-
-        data = {
-            "model": model,
-            "messages": messages
-        }
-
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
-
-        if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
-
-        try:
-            response = self._execute_with_rate_limit(
-                f"openrouter:{model}",
-                requests.post,
-                self.BASE_URL,
-                headers=headers,
-                json=data,
-                timeout=30
-            )
-
-            response.raise_for_status()
-            result = response.json()
-
-            if "choices" in result and len(result["choices"]) > 0:
-                message = result["choices"][0]["message"]
-                content = message.get("content", "")
-                reasoning = message.get("reasoning", "")
-
-                return {
-                    "text": content,
-                    "thoughts": reasoning if reasoning else None,
-                    "model": model
-                }
-            else:
-                logger.warning(f"Unexpected response format from OpenRouter: {result}")
-                return {
-                    "text": None,
-                    "thoughts": None,
-                    "error": "Invalid response format"
-                }
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"OpenRouter API request failed: {str(e)}")
-            return {
-                "text": None,
-                "thoughts": None,
-                "error": str(e)
-            }
-        except Exception as e:
-            logger.error(f"Unexpected error in OpenRouter generate_text: {str(e)}")
-            return {
-                "text": None,
-                "thoughts": None,
-                "error": str(e)
-            }
-
-    def generate_text_stream(self, prompt: str, model: str = "",
-                           include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
-                           file_attachments: List[str] = None,
-                           **config_params) -> Generator[Dict[str, Any], None, None]:
-        """Generate streaming text response with chat history context"""
-        if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
-
-        messages = []
-        if chat_history:
-            formatted_history = self._format_chat_history(chat_history)
-            messages.extend(formatted_history)
-
-        messages.append({"role": "user", "content": prompt})
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
-        }
-
-        data = {
-            "model": model,
-            "messages": messages,
-            "stream": True
-        }
-
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
-
-        if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
-
-        try:
-            response = self._execute_with_rate_limit(
-                f"openrouter:{model}",
-                requests.post,
-                self.BASE_URL,
-                headers=headers,
-                json=data,
-                stream=True,
-                timeout=30
-            )
-
-            response.raise_for_status()
-
-            answer_started = False
-            thoughts_started = False
-
-            for line in response.iter_lines():
-                if line:
-                    line_str = line.decode('utf-8')
-                    if line_str.startswith('data: '):
-                        line_str = line_str[6:]
-                        if line_str == '[DONE]':
-                            break
-
-                        try:
-                            chunk = json.loads(line_str)
-                            if "choices" in chunk and len(chunk["choices"]) > 0:
-                                delta = chunk["choices"][0].get("delta", {})
-                                content = delta.get("content", "")
-                                reasoning = delta.get("reasoning", "")
-
-                                if reasoning:
-                                    if not thoughts_started:
-                                        yield {"type": "thoughts_start"}
-                                        thoughts_started = True
-                                    yield {"type": "thoughts", "content": reasoning}
-
-                                if content:
-                                    if not answer_started:
-                                        yield {"type": "answer_start"}
-                                        answer_started = True
-                                    yield {"type": "answer", "content": content}
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse chunk: {line_str}")
-                            continue
-
-            yield {"type": "complete"}
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"OpenRouter streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
-        except Exception as e:
-            logger.error(f"Unexpected error in OpenRouter generate_text_stream: {str(e)}")
-            yield {"type": "error", "content": str(e)}
