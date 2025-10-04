@@ -1235,6 +1235,13 @@ class DatabaseManager:
         """Build file dictionary from database row to reduce duplication"""
         if not row:
             return None
+
+        def safe_get(row, key):
+            try:
+                return row[key] if key in row.keys() else None
+            except (KeyError, IndexError):
+                return None
+
         return {
             "id": row["id"],
             "original_name": row["original_name"],
@@ -1248,10 +1255,10 @@ class DatabaseManager:
             "api_file_name": row["api_file_name"],
             "api_state": row["api_state"],
             "provider": row["provider"],
-            "token_count": row.get("token_count"),
-            "token_count_provider": row.get("token_count_provider"),
-            "token_count_model": row.get("token_count_model"),
-            "token_count_method": row.get("token_count_method")
+            "token_count": safe_get(row, "token_count"),
+            "token_count_provider": safe_get(row, "token_count_provider"),
+            "token_count_model": safe_get(row, "token_count_model"),
+            "token_count_method": safe_get(row, "token_count_method")
         }
 
     def get_file_record(self, file_id: str) -> Optional[Dict[str, Any]]:
