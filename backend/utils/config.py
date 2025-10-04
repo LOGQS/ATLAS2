@@ -19,13 +19,14 @@ def get_provider_map() -> Dict[str, Any]:
         if _provider_cache is not None:
             return _provider_cache
 
-        from chat.providers import Gemini, HuggingFace, OpenRouter, Groq
+        from chat.providers import Gemini, HuggingFace, OpenRouter, Groq, Cerebras
 
         _provider_cache = {
             "gemini": Gemini(),
             "huggingface": HuggingFace(),
             "openrouter": OpenRouter(),
-            "groq": Groq()
+            "groq": Groq(),
+            "cerebras": Cerebras()
         }
 
         return _provider_cache
@@ -102,10 +103,11 @@ class Config:
 
 
     TOKEN_COUNTING_METHODS = {
-        "gemini": "native",    
-        "groq": "tiktoken",    
-        "openrouter": "tiktoken", 
-        "huggingface": "fallback" 
+        "gemini": "native",
+        "groq": "tiktoken",
+        "openrouter": "tiktoken",
+        "cerebras": "tiktoken",
+        "huggingface": "fallback"
     }
 
     TIKTOKEN_ENCODING = "cl100k_base"

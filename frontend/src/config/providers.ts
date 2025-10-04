@@ -18,9 +18,11 @@ export interface ProviderLimits {
 }
 
 export const DEFAULT_PROVIDER_LIMITS: ProviderLimits = {
-  gemini: 2 * 1024 * 1024 * 1024, 
-  huggingface: null, 
-  openrouter: null, 
+  gemini: 2 * 1024 * 1024 * 1024,
+  huggingface: null,
+  openrouter: null,
+  groq: null,
+  cerebras: null,
 };
 
 const PROVIDER_LIMITS_CACHE_KEY = 'atlas_provider_limits';

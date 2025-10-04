@@ -4,6 +4,7 @@ flask-cors
 google-genai
 markitdown[all]
 groq
+cerebras_cloud_sdk
 faster-whisper
 watchdog
 llama-index-core

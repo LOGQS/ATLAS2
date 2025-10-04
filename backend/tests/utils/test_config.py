@@ -21,6 +21,7 @@ class TestConfigTokenCounting(unittest.TestCase):
             ("gemini", "native"),
             ("groq", "tiktoken"),
             ("openrouter", "tiktoken"),
+            ("cerebras", "tiktoken"),
             ("huggingface", "fallback"),
             ("unknown", "fallback")
         ]

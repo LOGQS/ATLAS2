@@ -65,7 +65,7 @@ class TestTokenCounterDelegation(unittest.TestCase):
         """Different providers should all delegate when valid."""
         mock_context_manager.count_tokens.return_value = 50
 
-        providers = ["gemini", "openrouter", "groq", "huggingface"]
+        providers = ["gemini", "openrouter", "groq", "cerebras", "huggingface"]
         for provider in providers:
             with self.subTest(provider=provider):
                 tokens = count_tokens("test text", model="some-model", provider=provider)
