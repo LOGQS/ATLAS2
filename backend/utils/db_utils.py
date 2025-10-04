@@ -4,7 +4,7 @@ import sqlite3
 import os
 import json
 import uuid
-from typing import Dict, Any, Optional, List, Callable, Tuple
+from typing import Dict, Any, Optional, List, Callable
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
 from utils.db_validation import DatabaseValidator

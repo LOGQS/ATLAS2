@@ -122,8 +122,8 @@
 }
 
 .search-modal {
-  width: 600px;
-  height: 500px;
+  width: 1000px;
+  height: 800px;
   max-width: 90vw;
   max-height: 90vh;
 }
