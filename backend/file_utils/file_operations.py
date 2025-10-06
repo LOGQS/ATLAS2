@@ -7,28 +7,40 @@ from utils.logger import get_logger
 from utils.db_utils import db
 from utils.cancellation_manager import cancellation_manager
 from file_utils.markdown_processor import setup_filespace
+from file_utils.file_converter import try_convert_file
 
 logger = get_logger(__name__)
 
 def save_file(source_path, filename=None, file_type=None, chat_id=None, temp_id=None):
     """Copy a file to the files directory with unique ID tracking."""
+    converted_temp_path = None
     try:
         files_dir = Path(setup_filespace())
-        
+
         source = Path(source_path)
         if not source.exists():
             raise FileNotFoundError(f"Source file does not exist: {source_path}")
-        
+
         original_name = filename or source.name
-        
+
         file_id = str(uuid.uuid4())
-        
-        file_extension = Path(original_name).suffix.lower()
-        
+
+        converted_path, new_extension, new_filename = try_convert_file(str(source), original_name)
+
+        if converted_path:
+            logger.info(f"[CONVERT] Using converted file: {original_name} -> {new_filename}")
+            actual_source = Path(converted_path)
+            original_name = new_filename
+            file_extension = new_extension
+            converted_temp_path = converted_path 
+        else:
+            actual_source = source
+            file_extension = Path(original_name).suffix.lower()
+
         stored_filename = f"{file_id}_{original_name}"
         target_path = files_dir / stored_filename
-        
-        shutil.copy2(source, target_path)
+
+        shutil.copy2(actual_source, target_path)
         file_size = target_path.stat().st_size
         
         success = db.save_file_record(
@@ -40,14 +52,22 @@ def save_file(source_path, filename=None, file_type=None, chat_id=None, temp_id=
             file_size=file_size,
             chat_id=chat_id,
             api_state='local',
-            temp_id=temp_id  
+            temp_id=temp_id
         )
-        
+
         if not success:
             target_path.unlink()
             raise Exception("Failed to save file record to database")
-        
+
         logger.info(f"File saved with ID {file_id}: {source} -> {target_path}")
+
+        if converted_temp_path:
+            try:
+                Path(converted_temp_path).unlink()
+                logger.debug(f"[CONVERT] Cleaned up temporary converted file: {converted_temp_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"[CONVERT] Failed to cleanup temp file {converted_temp_path}: {str(cleanup_error)}")
+
         return {
             'success': True,
             'file_id': file_id,
@@ -58,9 +78,17 @@ def save_file(source_path, filename=None, file_type=None, chat_id=None, temp_id=
             'file_type': file_type,
             'file_extension': file_extension
         }
-    
+
     except Exception as e:
         logger.error(f"Error saving file: {str(e)}")
+
+        if converted_temp_path:
+            try:
+                Path(converted_temp_path).unlink()
+                logger.debug(f"[CONVERT] Cleaned up temporary converted file after error: {converted_temp_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"[CONVERT] Failed to cleanup temp file {converted_temp_path}: {str(cleanup_error)}")
+
         return {
             'success': False,
             'error': str(e)

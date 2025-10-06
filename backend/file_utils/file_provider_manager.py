@@ -88,15 +88,32 @@ class FileProviderManager:
                     return 'cancelled'
                 
                 metadata_result = provider.get_file_metadata(api_file_name)
-                
+
                 if not metadata_result['success']:
                     error_msg = metadata_result.get('error', '')
-                    
-                    if '403' in str(error_msg) and 'PERMISSION_DENIED' in str(error_msg):
-                        logger.info(f"File {file_id} ({api_file_name}) was likely deleted, stopping polling")
+                    error_str = str(error_msg)
+
+                    fatal_error_indicators = [
+                        'Failed to convert server response',
+                        'INVALID_ARGUMENT',
+                        'unsupported',
+                        'invalid format',
+                        'cannot process'
+                    ]
+
+                    is_fatal = any(indicator.lower() in error_str.lower() for indicator in fatal_error_indicators)
+
+                    if '403' in error_str and 'PERMISSION_DENIED' in error_str:
+                        logger.error(f"[POLLING] File {file_id} ({api_file_name}) permission denied (likely deleted), stopping polling")
                         db.update_file_api_info(file_id, api_state='error')
                         return 'error'
-                    
+
+                    if is_fatal:
+                        logger.error(f"[POLLING] Fatal error detected for file {file_id} ({api_file_name}): {error_msg}")
+                        logger.error(f"[POLLING] File format likely incompatible with provider, stopping polling")
+                        db.update_file_api_info(file_id, api_state='error')
+                        return 'error'
+
                     logger.warning(f"Failed to get metadata for {api_file_name}: {error_msg}")
                     time.sleep(poll_interval)
                     continue
