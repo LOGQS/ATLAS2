@@ -257,7 +257,8 @@ def _initialize_chat_process(chat_id: str):
 
 def _configure_chat_process(conn, chat_id: str, message: str, provider: str, model: str,
                           include_reasoning: bool, attached_file_ids: List[str],
-                          user_message_id: int, is_retry: bool, is_pooled: bool = False) -> bool:
+                          user_message_id: int, is_retry: bool, is_pooled: bool = False,
+                          router_result: Optional[Dict] = None) -> bool:
     """Configure and start the chat process"""
     if is_pooled:
         logger.debug(f"[CHAT-CONFIG] Using pre-initialized pooled worker for {chat_id}")
@@ -288,7 +289,9 @@ def _configure_chat_process(conn, chat_id: str, message: str, provider: str, mod
         'include_reasoning': include_reasoning,
         'attached_file_ids': attached_file_ids,
         'user_message_id': user_message_id,
-        'is_retry': is_retry
+        'is_retry': is_retry,
+        'router_already_called': True,  
+        'router_result': router_result 
     })
 
     relay_thread = threading.Thread(
@@ -301,18 +304,18 @@ def _configure_chat_process(conn, chat_id: str, message: str, provider: str, mod
     logger.info(f"Started background processing for chat {chat_id}")
     return True
 
-def _start_background_processing(chat_id: str, message: str, provider: str, model: str, include_reasoning: bool, attached_file_ids: List[str], user_message_id: int, is_retry: bool = False):
+def _start_background_processing(chat_id: str, message: str, provider: str, model: str, include_reasoning: bool, attached_file_ids: List[str], user_message_id: int, is_retry: bool = False, router_result: Optional[Dict] = None):
     """Start background processing using multiprocessing"""
-    
+
     with _chat_processes_lock:
         if not _prepare_background_process(chat_id):
             return False
-        
+
         try:
             process, conn, is_pooled = _initialize_chat_process(chat_id)
             return _configure_chat_process(conn, chat_id, message, provider, model,
                                          include_reasoning, attached_file_ids,
-                                         user_message_id, is_retry, is_pooled)
+                                         user_message_id, is_retry, is_pooled, router_result)
                 
         except (OSError, IOError) as e:
             logger.error(f"System error starting chat process for {chat_id}: {str(e)}")
@@ -358,7 +361,10 @@ def _relay_worker_messages(chat_id: str, conn):
                             chat_id,
                             message.get('selected_route'),
                             message.get('available_routes', []),
-                            message.get('selected_model')
+                            message.get('selected_model'),
+                            message.get('tools_needed'),
+                            message.get('execution_type'),
+                            message.get('fastpath_params')
                         )
                         logger.debug(f"[RELAY] Published router decision for {chat_id}: {message.get('selected_route')}")
 
@@ -587,7 +593,18 @@ class Chat:
             if use_router and Config.get_default_router_state():
                 from agents.roles.router import router
                 chat_history = self.get_chat_history()
-                router_response = router.route_request(message, chat_history, chat_id=self.chat_id)
+
+                attached_files = []
+                if attached_file_ids:
+                    for file_id in attached_file_ids:
+                        file_record = self.db.get_file_record(file_id)
+                        if file_record:
+                            attached_files.append({
+                                'id': file_record['id'],
+                                'name': file_record['original_name']
+                            })
+
+                router_response = router.route_request(message, chat_history, chat_id=self.chat_id, attached_files=attached_files)
                 model = router_response['model']
                 provider = router_response['provider']
                 logger.info(f"Router selected: {model} with provider {provider}")
@@ -802,11 +819,13 @@ class Chat:
         Returns True if started successfully, False if already running
         """
         route_choice = None
+        router_result_to_pass = None
         if use_router and Config.get_default_router_state():
             if router_override:
                 route_choice = router_override.get('route')
                 provider = router_override.get('provider') or provider
                 model = router_override.get('model') or model
+                router_result_to_pass = router_override  
                 logger.info(f"Router override supplied for background processing: {route_choice} -> {model}")
             else:
                 from agents.roles.router import router
@@ -815,6 +834,7 @@ class Chat:
                 model = router_response['model']
                 provider = router_response['provider']
                 route_choice = router_response.get('route')
+                router_result_to_pass = router_response  
                 config_params.setdefault('router_available_routes', router_response.get('available_routes'))
                 logger.info(f"Router selected for background processing: {route_choice} -> {model}")
         if not provider:
@@ -862,7 +882,8 @@ class Chat:
             logger.info(f"[DUPLICATE_FIX] Normal flow - created new user message {user_message_id}")
         
         return _start_background_processing(
-            self.chat_id, message, provider, model, include_reasoning, 
-            attached_file_ids, user_message_id, config_params.get('is_retry', False)
+            self.chat_id, message, provider, model, include_reasoning,
+            attached_file_ids, user_message_id, config_params.get('is_retry', False),
+            router_result_to_pass
         )
 

@@ -32,33 +32,131 @@ def get_provider_map() -> Dict[str, Any]:
         return _provider_cache
 
 available_routes = [
+    # Capability-based routes (no tools needed)
     {
-        "route_name": "simple",
-        "route_description": "Simple queries and basic conversations",
-        "route_context": "Use for greetings, simple Q&A, basic information requests, casual conversation"
+        "route_name": "creative_writing",
+        "route_description": "Creative content generation",
+        "route_context": "Stories, poems, marketing copy, creative narratives. Native capabilities sufficient."
     },
     {
-        "route_name": "complex",
-        "route_description": "Complex reasoning and analysis tasks",
-        "route_context": "Use for code generation, detailed analysis, multi-step problems, technical questions"
+        "route_name": "math_reasoning",
+        "route_description": "Mathematical reasoning and calculations",
+        "route_context": "Math problems, proofs, logic problems, calculations. Native reasoning sufficient."
     },
     {
-        "route_name": "fast",
-        "route_description": "Fast responses",
-        "route_context": "Use when the user requests a fast response, prioritizing speed over depth."
+        "route_name": "code_reasoning",
+        "route_description": "Code analysis and review without execution",
+        "route_context": "Algorithm explanation, code review, complexity analysis. File already in context."
     },
     {
-        "route_name": "taskflow",
-        "route_description": "Structured multi-step planning and tool execution",
-        "route_context": "Use when the request needs orchestration of tools, parallel subtasks, or durable context management"
+        "route_name": "visual_reasoning",
+        "route_description": "Visual analysis of uploaded media",
+        "route_context": "Image/video analysis, description, understanding. Media already in context."
+    },
+    {
+        "route_name": "general_conversation",
+        "route_description": "General questions and conversations",
+        "route_context": "Q&A, advice, explanations, discussions. Native reasoning sufficient."
+    },
+
+    # Execution mode routes (tools needed)
+    {
+        "route_name": "direct",
+        "route_description": "Single tool call with immediate execution",
+        "route_context": "One straightforward tool operation where all parameters are explicitly provided. Examples: reading a specific file, listing a directory, attaching a file. Result is returned directly to the model."
+    },
+
+    # Single domain routes
+    {
+        "route_name": "searcher",
+        "route_description": "Research and information gathering",
+        "route_context": "Web search, academic databases, document extraction, summarization. Agent iterates autonomously."
+    },
+    {
+        "route_name": "coder",
+        "route_description": "Complex software development requiring multiple operations",
+        "route_context": "Multi-step file operations: editing files, running tests, debugging, refactoring, building projects. Requires planning and sequential execution across multiple files or tools."
+    },
+    {
+        "route_name": "web_controller",
+        "route_description": "Browser automation and web interaction",
+        "route_context": "Browser navigation, scraping, form filling, web automation. Visual capabilities needed."
+    },
+    {
+        "route_name": "data_ops",
+        "route_description": "Data transformation and API operations",
+        "route_context": "JSON/CSV/SQL operations, API calls, data validation, format conversion."
+    },
+    {
+        "route_name": "rag",
+        "route_description": "Knowledge base operations",
+        "route_context": "Indexing, vector search, embedding, chunking. Knowledge base integration."
+    },
+    {
+        "route_name": "memory",
+        "route_description": "Persistent memory management",
+        "route_context": "Store, retrieve, search, habit tracking. User preference management."
+    },
+    {
+        "route_name": "system_agent",
+        "route_description": "Operating system control",
+        "route_context": "Windows registry, processes, network config, system operations. Requires elevated permissions."
+    },
+    {
+        "route_name": "teacher",
+        "route_description": "Educational assistance",
+        "route_context": "Explanation generation, quiz creation, assessment, curriculum building."
+    },
+    {
+        "route_name": "creative",
+        "route_description": "Multimodal content generation with tools",
+        "route_context": "Image generation, video creation, audio synthesis, template rendering. Requires generation tools."
+    },
+    {
+        "route_name": "gui_control",
+        "route_description": "Application automation",
+        "route_context": "GUI interaction, window management, application automation. Visual understanding needed."
+    },
+
+    # Multi-agent orchestration routes
+    {
+        "route_name": "multi_domain",
+        "route_description": "Multi-domain orchestration with planning",
+        "route_context": "Multiple domains or context-isolated parallel work. Requires planning and coordination."
+    },
+    {
+        "route_name": "iterative",
+        "route_description": "Iterative refinement with evaluation loops",
+        "route_context": "Generate-evaluate-refine cycles. Self-critique or multi-agent evaluation until quality threshold met."
     }
 ]
 
 ROUTE_MODEL_MAP = {
-    "simple": "gemini-2.5-flash",
-    "complex": "gemini-2.5-pro",
-    "fast": "openai/gpt-oss-120b",
-    "taskflow": "gemini-2.5-flash" # for testing only
+    # Capability-based (no tools)
+    "creative_writing": "gemini-2.5-pro",  # Creative tasks benefit from stronger model
+    "math_reasoning": "gemini-2.5-pro",     # Math requires strong reasoning
+    "code_reasoning": "gemini-2.5-pro",     # Code analysis needs strong model
+    "visual_reasoning": "gemini-2.5-flash", # Vision tasks, flash supports multimodal
+    "general_conversation": "gemini-2.5-flash", # General queries can use fast model
+
+    # Execution modes (tools needed)
+    "direct": "gemini-2.5-flash",           # FastPath optimization, quick execution
+
+    # Single domains
+    "searcher": "gemini-2.5-flash",         # Research with iteration
+    "coder": "gemini-2.5-pro",              # Code generation needs strong model
+    "web_controller": "gemini-2.5-flash",   # Browser automation
+    "data_ops": "gemini-2.5-flash",         # Data operations can use fast model
+    "rag": "gemini-2.5-flash",              # RAG operations optimized for speed
+    "memory": "gemini-2.5-flash",           # Memory operations are straightforward
+    "system_agent": "gemini-2.5-flash",     # System operations
+    "teacher": "gemini-2.5-pro",            # Educational content needs quality
+    "creative": "gemini-2.5-pro",           # Creative generation with tools
+    "gui_control": "gemini-2.5-flash",      # GUI automation
+
+    # Multi-agent orchestration
+    "multi_domain": "gemini-2.5-flash",     # Planning uses fast model, agents use their own
+    "iterative": "gemini-2.5-pro"           # Refinement benefits from strong evaluation
 }
 
 def get_router_map():

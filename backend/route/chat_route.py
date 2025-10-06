@@ -291,15 +291,21 @@ def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_
         "temp_id": temp_id
     })
 
-def publish_router_decision(chat_id: str, selected_route: str, available_routes: list, selected_model: str):
+def publish_router_decision(chat_id: str, selected_route: str, available_routes: list, selected_model: str,
+                           tools_needed=None, execution_type=None, fastpath_params=None):
     """Publishes a router decision event via SSE."""
-    _broadcast({
+    payload = {
         "type": "router_decision",
         "chat_id": chat_id,
         "selected_route": selected_route,
         "available_routes": available_routes,
-        "selected_model": selected_model
-    })
+        "selected_model": selected_model,
+        "tools_needed": tools_needed,
+        "execution_type": execution_type,
+        "fastpath_params": fastpath_params
+    }
+    logger.info(f"[SSE_BROADCAST] Router decision payload: route={selected_route}, tools_needed={tools_needed}, execution_type={execution_type}")
+    _broadcast(payload)
 
 def _subscribe_plan_events():
     q = queue.Queue()
@@ -872,7 +878,16 @@ def register_chat_routes(app: Flask):
                     from agents.roles.router import router as route_agent
                     chat_history = chat.get_chat_history()
                     router_info = route_agent.route_request(message, chat_history)
-                    publish_router_decision(chat.chat_id, router_info.get('route'), router_info.get('available_routes', []), router_info.get('model'))
+                    logger.info(f"[ROUTE_HANDLER_ROUTER] Router returned for {chat.chat_id}: route={router_info.get('route')}, tools_needed={router_info.get('tools_needed')} (type: {type(router_info.get('tools_needed'))})")
+                    publish_router_decision(
+                        chat.chat_id,
+                        router_info.get('route'),
+                        router_info.get('available_routes', []),
+                        router_info.get('model'),
+                        router_info.get('tools_needed'),
+                        router_info.get('execution_type'),
+                        router_info.get('fastpath_params')
+                    )
                     if router_info.get('route') == 'taskflow':
                         return handle_taskflow_stream(chat, message, router_info, attached_file_ids, is_retry, existing_message_id, is_edit_regeneration)
                     if router_info.get('provider'):

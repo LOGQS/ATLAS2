@@ -8,6 +8,9 @@ interface RouterDecision {
   selectedRoute: string | null;
   availableRoutes: any[];
   selectedModel: string | null;
+  toolsNeeded?: boolean | null;
+  executionType?: string | null;
+  fastpathParams?: string | null;
 }
 
 interface RouterBoxProps {
@@ -38,11 +41,22 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   const [scrollPosition, setScrollPosition] = useState(0);
   const [markedRoutes, setMarkedRoutes] = useState<Set<string>>(new Set());
   const routerContentRef = useRef<HTMLDivElement>(null);
+  const lastColorSchemeRef = useRef<string | null>(null);
 
   const selectedRoute = routerDecision?.selectedRoute || null;
   const availableRoutes = routerDecision?.availableRoutes || [];
+  const toolsNeeded = routerDecision?.toolsNeeded;
 
   const allRoutes = availableRoutes;
+
+  const colorScheme = toolsNeeded === false ? 'no-tools' : toolsNeeded === true ? 'with-tools' : 'default';
+
+  if (colorScheme !== lastColorSchemeRef.current) {
+    if (colorScheme === 'default' && selectedRoute) {
+      logger.info(`[ROUTERBOX_COLOR_ISSUE] RouterBox defaulting to blue for ${chatId} (msgId: ${messageId}): toolsNeeded=${toolsNeeded} (type: ${typeof toolsNeeded}), route=${selectedRoute}`);
+    }
+    lastColorSchemeRef.current = colorScheme;
+  }
 
   useEffect(() => {
     const isLiveOverlay = messageId?.startsWith('live_router_');
@@ -155,7 +169,7 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   };
 
   return (
-    <div className="router-box">
+    <div className={`router-box ${colorScheme}`}>
       <div
         className="router-box-header"
         onClick={toggleCollapse}

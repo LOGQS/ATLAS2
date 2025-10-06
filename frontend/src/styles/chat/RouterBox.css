@@ -1,4 +1,4 @@
-/* RouterBox Component - Icy/Frozen Theme */
+/* RouterBox Component - Icy/Frozen Theme with Dynamic Colors */
 .router-box {
   width: 100%;
   margin-bottom: 12px;
@@ -18,6 +18,7 @@
   position: relative;
 }
 
+/* Base pseudo-element - MUST come before modifier overrides */
 .router-box::before {
   content: '';
   position: absolute;
@@ -34,6 +35,7 @@
   opacity: 0.6;
 }
 
+/* Base hover - MUST come before modifier overrides */
 .router-box:hover {
   border-color: rgba(147, 197, 253, 0.3);
   background: linear-gradient(135deg,
@@ -42,6 +44,70 @@
     rgba(59, 130, 246, 0.05) 100%);
   box-shadow:
     0 8px 32px rgba(147, 197, 253, 0.15),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+
+/* NO TOOLS - Text Generation Path (Cool Blue/Gray) */
+.router-box.no-tools {
+  border-color: rgba(96, 165, 250, 0.3);
+  background: linear-gradient(135deg,
+    rgba(239, 246, 255, 0.04) 0%,
+    rgba(96, 165, 250, 0.06) 50%,
+    rgba(239, 246, 255, 0.04) 100%);
+  box-shadow:
+    0 4px 24px rgba(96, 165, 250, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1),
+    inset 0 -1px 1px rgba(96, 165, 250, 0.08);
+}
+
+.router-box.no-tools::before {
+  background: radial-gradient(
+    circle at 20% 80%,
+    rgba(96, 165, 250, 0.12) 0%,
+    transparent 60%
+  );
+}
+
+.router-box.no-tools:hover {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: linear-gradient(135deg,
+    rgba(239, 246, 255, 0.06) 0%,
+    rgba(96, 165, 250, 0.08) 50%,
+    rgba(239, 246, 255, 0.06) 100%);
+  box-shadow:
+    0 8px 32px rgba(96, 165, 250, 0.18),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+
+/* WITH TOOLS - Tool Execution Path (Warm Amber) */
+.router-box.with-tools {
+  border-color: rgba(245, 158, 11, 0.3);
+  background: linear-gradient(135deg,
+    rgba(254, 243, 199, 0.04) 0%,
+    rgba(245, 158, 11, 0.06) 50%,
+    rgba(254, 243, 199, 0.04) 100%);
+  box-shadow:
+    0 4px 24px rgba(245, 158, 11, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1),
+    inset 0 -1px 1px rgba(245, 158, 11, 0.08);
+}
+
+.router-box.with-tools::before {
+  background: radial-gradient(
+    circle at 20% 80%,
+    rgba(245, 158, 11, 0.12) 0%,
+    transparent 60%
+  );
+}
+
+.router-box.with-tools:hover {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: linear-gradient(135deg,
+    rgba(254, 243, 199, 0.06) 0%,
+    rgba(245, 158, 11, 0.08) 50%,
+    rgba(254, 243, 199, 0.06) 100%);
+  box-shadow:
+    0 8px 32px rgba(245, 158, 11, 0.18),
     inset 0 1px 1px rgba(255, 255, 255, 0.15);
 }
 
@@ -109,6 +175,26 @@
 .router-icon::before,
 .router-icon::after {
   box-shadow: 0 0 4px rgba(147, 197, 253, 0.4);
+}
+
+/* Icon glow for no-tools (cool blue) */
+.router-box.no-tools .router-icon::before,
+.router-box.no-tools .router-icon::after {
+  background: linear-gradient(90deg,
+    rgba(96, 165, 250, 0.4) 0%,
+    rgba(96, 165, 250, 0.8) 50%,
+    rgba(96, 165, 250, 0.4) 100%);
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
+}
+
+/* Icon glow for with-tools (warm amber) */
+.router-box.with-tools .router-icon::before,
+.router-box.with-tools .router-icon::after {
+  background: linear-gradient(90deg,
+    rgba(245, 158, 11, 0.4) 0%,
+    rgba(245, 158, 11, 0.8) 50%,
+    rgba(245, 158, 11, 0.4) 100%);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
 }
 
 /* Add third line for snowflake effect */
@@ -191,6 +277,24 @@
     transparent 70%
   );
   animation: badge-glow-pulse 2s ease-in-out infinite;
+}
+
+/* Badge glow for no-tools */
+.router-box.no-tools .route-badge-glow {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(96, 165, 250, 0.25) 0%,
+    transparent 70%
+  );
+}
+
+/* Badge glow for with-tools */
+.router-box.with-tools .route-badge-glow {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(245, 158, 11, 0.25) 0%,
+    transparent 70%
+  );
 }
 
 @keyframes badge-glow-pulse {

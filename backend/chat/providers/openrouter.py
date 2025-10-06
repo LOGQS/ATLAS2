@@ -19,10 +19,6 @@ class OpenRouter:
     """
 
     AVAILABLE_MODELS = {
-        "x-ai/grok-4-fast:free": {
-            "name": "Grok 4 Fast (Free)",
-            "supports_reasoning": True
-        },
         "deepseek/deepseek-chat-v3.1:free": {
             "name": "DeepSeek Chat v3.1 (Free)",
             "supports_reasoning": True

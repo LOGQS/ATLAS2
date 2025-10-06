@@ -16,7 +16,7 @@ class Router:
         self.router_enabled = Config.get_default_router_state()
         logger.info(f"Router initialized - enabled: {self.router_enabled}, model: {self.router_model}")
 
-    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None, providers=None, chat_id: Optional[str] = None) -> Dict[str, str]:
+    def route_request(self, message: str, chat_history: Optional[List[Dict]] = None, providers=None, chat_id: Optional[str] = None, attached_files: Optional[List[Dict]] = None) -> Dict[str, str]:
         """Route a request to the appropriate model.
 
         Args:
@@ -24,6 +24,7 @@ class Router:
             chat_history: Previous chat history
             providers: Optional provider instances
             chat_id: Optional chat ID for token tracking
+            attached_files: Optional list of files attached to current message
 
         Returns:
             Dict containing the model to use and the selected route
@@ -40,7 +41,7 @@ class Router:
             }
 
         try:
-            router_context = get_router_context(chat_history, message)
+            router_context = get_router_context(chat_history, message, attached_files)
             router_prompt = self._build_router_prompt(router_context)
             router_response = self._call_router_model(router_prompt, providers, chat_id)
 
@@ -58,20 +59,37 @@ class Router:
                     logger.info(f"  [{idx}] {role.upper()}: {content}")
             else:
                 logger.info("  (No chat history)")
+            logger.info("-" * 60)
+            logger.info("FULL CONSTRUCTED ROUTER PROMPT:")
+            logger.info(router_prompt)
+            logger.info("-" * 60)
             logger.info("Router Response:")
             logger.info(router_response)
             logger.info("=" * 60)
 
-            route_choice = extract_route_choice(router_response)
+            from utils.format_validator import extract_router_metadata
+            router_metadata = extract_router_metadata(router_response)
+
+            route_choice = router_metadata.get('choice') or extract_route_choice(router_response)
             selected_model = ROUTE_MODEL_MAP.get(route_choice, Config.get_default_model())
             selected_provider = infer_provider_from_model(selected_model)
 
             logger.info(f"Router decision: {route_choice} -> {selected_model} ({selected_provider} provider)")
+            if router_metadata.get('tools_needed') is not None:
+                logger.info(f"Tools needed: {router_metadata['tools_needed']}")
+            if router_metadata.get('execution_type'):
+                logger.info(f"Execution type: {router_metadata['execution_type']}")
+            if router_metadata.get('fastpath_params'):
+                logger.info(f"FastPath params: {router_metadata['fastpath_params']}")
+
             return {
                 'model': selected_model,
                 'provider': selected_provider,
                 'route': route_choice,
-                'available_routes': available_routes
+                'available_routes': available_routes,
+                'tools_needed': router_metadata.get('tools_needed'),
+                'execution_type': router_metadata.get('execution_type'),
+                'fastpath_params': router_metadata.get('fastpath_params')
             }
 
         except Exception as e:

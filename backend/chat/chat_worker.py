@@ -10,7 +10,7 @@ import sys
 import time
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 
 DB_UPDATE_THROTTLE_SECONDS = 0.25
@@ -148,12 +148,24 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 include_reasoning = command.get('include_reasoning', True)
                                 attached_file_ids = command.get('attached_file_ids', [])
                                 user_message_id = command.get('user_message_id')
+                                router_already_called = command.get('router_already_called', False)
+                                router_result = command.get('router_result') 
 
-                                router_result = None
-                                if Config.get_default_router_state():
+                                if Config.get_default_router_state() and not router_already_called:
                                     from agents.roles.router import router
                                     chat_history = db.get_chat_history(actual_chat_id)
-                                    router_result = router.route_request(message, chat_history, providers, actual_chat_id)  # type: ignore
+
+                                    attached_files = []
+                                    if attached_file_ids:
+                                        for file_id in attached_file_ids:
+                                            file_record = db.get_file_record(file_id)
+                                            if file_record:
+                                                attached_files.append({
+                                                    'id': file_record['id'],
+                                                    'name': file_record['original_name']
+                                                })
+
+                                    router_result = router.route_request(message, chat_history, providers, actual_chat_id, attached_files)  # type: ignore
                                     model = router_result['model']
                                     provider = router_result['provider']
 
@@ -163,10 +175,28 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'selected_route': router_result['route'],
                                         'available_routes': router_result['available_routes'],
                                         'selected_model': model,
-                                        'selected_provider': provider
+                                        'selected_provider': provider,
+                                        'tools_needed': router_result.get('tools_needed'),
+                                        'execution_type': router_result.get('execution_type'),
+                                        'fastpath_params': router_result.get('fastpath_params')
                                     })
 
                                     worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
+                                elif router_already_called and router_result:
+                                    worker_logger.info(f"[CHAT-WORKER] Using router result from route handler: {router_result.get('route')} with tools_needed={router_result.get('tools_needed')}, fastpath_params={'present' if router_result.get('fastpath_params') else 'absent'}")
+
+                                    child_conn.send({
+                                        'type': 'router_decision',
+                                        'chat_id': actual_chat_id,
+                                        'selected_route': router_result.get('route'),
+                                        'available_routes': router_result.get('available_routes', []),
+                                        'selected_model': model,
+                                        'selected_provider': provider,
+                                        'tools_needed': router_result.get('tools_needed'),
+                                        'execution_type': router_result.get('execution_type'),
+                                        'fastpath_params': router_result.get('fastpath_params')
+                                    })
+                                    worker_logger.info(f"[CHAT-WORKER] Broadcasted router decision from passed result")
 
                                 _process_message_in_worker(
                                     actual_chat_id, db, providers, message, provider, model,
@@ -232,6 +262,105 @@ def chat_worker(chat_id: str, child_conn) -> None:
             pass
 
 
+def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, worker_logger) -> Optional[str]:
+    """Execute a FastPath tool and return formatted output for the model.
+
+    Args:
+        fastpath_params: XML-like format with <TOOL> and <PARAM> tags
+        chat_id: The chat ID for context
+        ctx_id: Unique context ID for this execution (prevents duplicate detection)
+        worker_logger: Logger instance
+
+    Returns:
+        Formatted tool output string or None if execution fails
+    """
+    if not fastpath_params or not fastpath_params.strip():
+        return None
+
+    try:
+        import re
+
+        tool_match = re.search(r'<TOOL>\s*(.+?)\s*</TOOL>', fastpath_params, re.IGNORECASE | re.DOTALL)
+        if not tool_match:
+            worker_logger.warning(f"[FASTPATH] No <TOOL> tag found in: {fastpath_params}")
+            return None
+
+        tool_name = tool_match.group(1).strip()
+
+        param_pattern = r'<PARAM\s+name=["\'](.+?)["\']\s*>(.+?)</PARAM>'
+        param_matches = re.findall(param_pattern, fastpath_params, re.IGNORECASE | re.DOTALL)
+
+        params = {}
+        for param_name, param_value in param_matches:
+            params[param_name.strip()] = param_value.strip()
+
+        worker_logger.info(f"[FASTPATH] Parsed tool: {tool_name} with params: {params}")
+        worker_logger.debug(f"[FASTPATH] Using unique context ID: {ctx_id}")
+
+        from agents.tools.tool_registry import tool_registry, ToolExecutionContext
+        tool_spec = tool_registry.get(tool_name)
+
+        ctx = ToolExecutionContext(
+            chat_id=chat_id,
+            plan_id="fastpath",
+            task_id="fastpath",
+            ctx_id=ctx_id
+        )
+
+        result = tool_spec.fn(params, ctx)
+
+        worker_logger.info(f"[FASTPATH] Tool executed successfully, output type: {type(result.output)}")
+
+        formatted_output = _format_tool_output(tool_name, result.output, worker_logger)
+
+        return formatted_output
+
+    except Exception as e:
+        worker_logger.error(f"[FASTPATH] Tool execution failed: {str(e)}")
+        return None
+
+
+def _format_tool_output(tool_name: str, output: Any, worker_logger) -> str:
+    """Format tool output for clean presentation to the model.
+
+    Args:
+        tool_name: Name of the tool that was executed
+        output: Raw output from the tool
+        worker_logger: Logger instance
+
+    Returns:
+        Formatted string for model consumption
+    """
+    try:
+        if tool_name == 'file.read' and isinstance(output, dict):
+            if output.get('status') == 'success' and 'content' in output:
+                file_path = output.get('file_path', 'unknown')
+                content = output.get('content', '')
+                warnings_list = output.get('warnings', [])
+
+                formatted = f"File: {file_path}\n\n{content}"
+
+                if warnings_list:
+                    formatted += f"\n\n[Warnings: {'; '.join(warnings_list)}]"
+
+                return formatted
+            elif output.get('status') == 'duplicate':
+                return output.get('message', str(output))
+
+        if isinstance(output, dict):
+            import json
+            return json.dumps(output, indent=2)
+
+        if isinstance(output, str):
+            return output
+
+        return str(output)
+
+    except Exception as e:
+        worker_logger.warning(f"[FASTPATH] Error formatting output: {e}, using raw output")
+        return str(output)
+
+
 def _process_message_in_worker(chat_id: str, db, providers, message: str, provider: str, model: str,
                               include_reasoning: bool, attached_file_ids: list, user_message_id: Optional[int],
                               child_conn, worker_logger, current_content, router_result=None):
@@ -247,18 +376,72 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     if provider not in providers or not providers[provider].is_available():
         available = {name: prov.is_available() for name, prov in providers.items()}
         raise ValueError(f"Provider '{provider}' not available. Available: {available}")
-    
+
     use_reasoning = include_reasoning
     if use_reasoning and hasattr(providers[provider], 'supports_reasoning'):
         use_reasoning = providers[provider].supports_reasoning(model)
-    
+
     chat_history = db.get_chat_history(chat_id)
     if chat_history and chat_history[-1]["role"] == "user":
         chat_history = chat_history[:-1]
-    
+
+    system_prompt = db.get_chat_system_prompt(chat_id)
+
+    if router_result and router_result.get('fastpath_params'):
+        import uuid
+        unique_fastpath_id = f"fastpath_{uuid.uuid4().hex[:8]}"
+
+        fastpath_output = _execute_fastpath_tool(
+            router_result['fastpath_params'],
+            chat_id,
+            unique_fastpath_id,
+            worker_logger
+        )
+
+        if fastpath_output:
+            message = f"[SYSTEM CALLED THE RELEVANT TOOL. ANSWER USER QUERY WITH THE FOLLOWING TOOL OUTPUT:]\n\n{fastpath_output}\n\n---\n\n[USER QUERY:]\n{message}"
+            worker_logger.info(f"[FASTPATH] Prepended tool output to current user message")
+
     file_attachments = []
     if attached_file_ids:
         file_attachments = _resolve_api_file_names(attached_file_ids, provider, db, worker_logger)
+
+    worker_logger.info("=" * 80)
+    worker_logger.info("[MODEL INPUT] Complete prompt sent to model:")
+    worker_logger.info("=" * 80)
+
+    if system_prompt:
+        system_preview = system_prompt[:500] if len(system_prompt) > 500 else system_prompt
+        if len(system_prompt) > 500:
+            system_preview += f"... (truncated, total: {len(system_prompt)} chars)"
+        worker_logger.info(f"[SYSTEM PROMPT]: {system_preview}")
+    else:
+        worker_logger.info("[SYSTEM PROMPT]: None")
+
+    if chat_history:
+        worker_logger.info(f"\n[CHAT HISTORY]: {len(chat_history)} messages")
+        for idx, msg in enumerate(chat_history):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')[:200]
+            if len(msg.get('content', '')) > 200:
+                content += "..."
+            worker_logger.info(f"  [{idx}] {role}: {content}")
+    else:
+        worker_logger.info("\n[CHAT HISTORY]: Empty")
+
+    message_preview = message[:1500] if len(message) > 1500 else message
+    if len(message) > 1500:
+        message_preview += f"\n... (truncated, total: {len(message)} chars)"
+
+    if '[SYSTEM CALLED THE RELEVANT TOOL' in message:
+        worker_logger.info(f"\n[CURRENT MESSAGE] ⚡ (includes FastPath tool output):\n{message_preview}")
+    else:
+        worker_logger.info(f"\n[CURRENT MESSAGE]:\n{message_preview}")
+
+    if file_attachments:
+        worker_logger.info(f"\n[ATTACHMENTS]: {file_attachments}")
+
+    worker_logger.info("=" * 80)
 
     router_enabled = router_result is not None
     router_decision = None
@@ -267,7 +450,10 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             'route': router_result['route'],
             'available_routes': router_result['available_routes'],
             'selected_model': router_result['model'],
-            'selected_provider': router_result['provider']
+            'selected_provider': router_result['provider'],
+            'tools_needed': router_result.get('tools_needed'),
+            'execution_type': router_result.get('execution_type'),
+            'fastpath_params': router_result.get('fastpath_params')
         })
 
     assistant_message_id = db.save_message(
@@ -425,12 +611,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         current_content['full_thoughts'] = ''
         current_content['assistant_message_id'] = None
         current_content['last_db_update'] = 0.0
-
-        # Save assistant token usage after streaming completes
-        # Get system prompt for token estimation
-        system_prompt = db.get_chat_system_prompt(chat_id)
-
-        # Estimate tokens for this request
+        
         from agents.context.context_manager import context_manager
         token_estimate = context_manager.estimate_request_tokens(
             role="assistant",

@@ -59,6 +59,9 @@ interface ChatLive {
     selectedRoute: string | null;
     availableRoutes: any[];
     selectedModel: string | null;
+    toolsNeeded?: boolean | null;
+    executionType?: string | null;
+    fastpathParams?: string | null;
   } | null;
   state: 'thinking' | 'responding' | 'static';
   error: { message: string; receivedAt: number; messageId?: string | null } | null;
@@ -369,7 +372,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       } else if (snap.state === 'static') {
       }
 
-      logger.info(`[ROUTER_DEBUG] LiveStore update for ${chatId}: state=${snap.state}, hasRouterDecision=${!!snap.routerDecision}, routerDecision=${JSON.stringify(snap.routerDecision)}`);
+      if (snap.routerDecision) {
+        logger.info(`[CHAT_LIVESTORE_UPDATE] Chat.tsx received from LiveStore for ${chatId}: toolsNeeded=${snap.routerDecision.toolsNeeded}, route=${snap.routerDecision.selectedRoute}`);
+      }
 
       setLiveOverlay({
         contentBuf: snap.contentBuf,
@@ -401,7 +406,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
                 routerDecision: {
                   route: snap.routerDecision!.selectedRoute!,
                   available_routes: snap.routerDecision!.availableRoutes || [],
-                  selected_model: snap.routerDecision!.selectedModel
+                  selected_model: snap.routerDecision!.selectedModel,
+                  tools_needed: snap.routerDecision!.toolsNeeded ?? null,
+                  execution_type: snap.routerDecision!.executionType || null,
+                  fastpath_params: snap.routerDecision!.fastpathParams || null
                 }
               };
             }
@@ -1175,7 +1183,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
               routerDecision={{
                 selectedRoute: message.routerDecision.route || null,
                 availableRoutes: message.routerDecision.available_routes || [],
-                selectedModel: message.routerDecision.selected_model || null
+                selectedModel: message.routerDecision.selected_model || null,
+                toolsNeeded: message.routerDecision.tools_needed ?? null,
+                executionType: message.routerDecision.execution_type || null,
+                fastpathParams: message.routerDecision.fastpath_params || null
               }}
               isProcessing={isLiveStreamingMessage && liveOverlay.state === 'thinking'}
               isVisible={true}
@@ -1325,13 +1336,17 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           {canRenderOverlay && (
             <div className="assistant-message">
               {(() => {
-                const shouldShowRouter = routerEnabled && (liveOverlay.routerDecision || liveOverlay.state === 'thinking');
-                logger.info(`[ROUTER_DEBUG] Live RouterBox render check for ${chatId}: routerEnabled=${routerEnabled}, hasRouterDecision=${!!liveOverlay.routerDecision}, state=${liveOverlay.state}, shouldShow=${shouldShowRouter}`);
+                const routerDecision = liveOverlay.routerDecision;
+                const shouldShowRouter = routerEnabled && routerDecision;
 
-                return shouldShowRouter && (
+                if (shouldShowRouter && routerDecision) {
+                  logger.info(`[CHAT_ROUTERBOX_RENDER] Passing to RouterBox for ${chatId}: toolsNeeded=${routerDecision.toolsNeeded}, route=${routerDecision.selectedRoute}`);
+                }
+
+                return shouldShowRouter && routerDecision && (
                   <RouterBox
                     key={`routerbox-live-${chatId}`}
-                    routerDecision={liveOverlay.routerDecision}
+                    routerDecision={routerDecision}
                     isProcessing={liveOverlay.state === 'thinking'}
                     isVisible={true}
                     chatId={chatId}

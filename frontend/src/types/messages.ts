@@ -22,6 +22,9 @@ export interface Message {
     route: string;
     available_routes: any[];
     selected_model: string | null;
+    tools_needed?: boolean | null;
+    execution_type?: string | null;
+    fastpath_params?: string | null;
   };
   planId?: string;
 }

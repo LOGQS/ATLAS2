@@ -40,12 +40,14 @@ class ContextManager:
             self._provider_map = get_provider_map()
         return self._provider_map
 
-    def build_router_context(self, chat_history=None, current_message=None):
+    def build_router_context(self, chat_history=None, current_message=None, current_message_files=None, include_tools=False):
         """Build router context with chat history and current message.
 
         Args:
             chat_history: List of chat messages
             current_message: The current user message
+            current_message_files: Optional list of files attached to current message
+            include_tools: Whether to include tool definitions for FastPath
 
         Returns:
             Formatted context string for router
@@ -61,10 +63,47 @@ class ContextManager:
                 if len(content) > 500:
                     content = content[:500] + "..."
                 context_parts.append(f"{role.upper()}: {content}")
+
+                attached_files = msg.get('attachedFiles', [])
+                if attached_files:
+                    file_names = [f.get('name', 'unknown') for f in attached_files]
+                    files_str = ', '.join(file_names)
+                    context_parts.append(f"[SYSTEM MESSAGE: {files_str} {'FILE WAS' if len(file_names) == 1 else 'FILES WERE'} ATTACHED TO THIS MESSAGE BY THE USER]")
             context_parts.append("=" * 50)
 
         if current_message:
             context_parts.append(f"CURRENT REQUEST: {current_message}")
+
+            if current_message_files:
+                file_names = [f.get('name', 'unknown') for f in current_message_files]
+                files_str = ', '.join(file_names)
+                context_parts.append(f"[SYSTEM MESSAGE: {files_str} {'FILE WAS' if len(file_names) == 1 else 'FILES WERE'} ATTACHED TO THIS MESSAGE BY THE USER]")
+
+        if include_tools:
+            from agents.tools.tool_registry import tool_registry
+            tools = tool_registry.get_all_tools()
+
+            if tools:
+                context_parts.append("\n" + "=" * 50)
+                context_parts.append("AVAILABLE TOOLS (for FastPath extraction):")
+                context_parts.append("=" * 50)
+
+                for tool in tools:
+                    context_parts.append(f"\n{tool.name}:")
+                    context_parts.append(f"  Description: {tool.description}")
+
+                    if tool.in_schema and 'properties' in tool.in_schema:
+                        required = tool.in_schema.get('required', [])
+                        props = tool.in_schema['properties']
+
+                        params_list = []
+                        for param_name, param_spec in props.items():
+                            param_type = param_spec.get('type', 'any')
+                            is_required = ' (required)' if param_name in required else ''
+                            params_list.append(f"{param_name}: {param_type}{is_required}")
+
+                        if params_list:
+                            context_parts.append(f"  Parameters: {', '.join(params_list)}")
 
         return "\n".join(context_parts)
 
@@ -1083,11 +1122,10 @@ class ContextManager:
         }
 
 
-# Global instance
+
 context_manager = ContextManager()
 
 
-# Backward compatibility function
-def get_router_context(chat_history=None, current_message=None):
+def get_router_context(chat_history=None, current_message=None, current_message_files=None, include_tools=True):
     """Legacy function for backward compatibility."""
-    return context_manager.build_router_context(chat_history, current_message)
+    return context_manager.build_router_context(chat_history, current_message, current_message_files, include_tools)

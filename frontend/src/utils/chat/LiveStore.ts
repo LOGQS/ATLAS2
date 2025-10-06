@@ -14,6 +14,9 @@ type ChatLive = {
     selectedRoute: string | null;
     availableRoutes: any[];
     selectedModel: string | null;
+    toolsNeeded?: boolean | null;
+    executionType?: string | null;
+    fastpathParams?: string | null;
   } | null;
   planSummary: PlanSummary | null;
   error: {
@@ -74,6 +77,9 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   selected_route?: string;
   available_routes?: any[];
   selected_model?: string;
+  tools_needed?: boolean | null;
+  execution_type?: string | null;
+  fastpath_params?: string | null;
 }
 
 interface TaskflowPlanEvent extends BaseSSEEvent {
@@ -170,11 +176,14 @@ class LiveStore {
     next.routerDecision = {
       selectedRoute: ev.selected_route || null,
       availableRoutes: ev.available_routes || [],
-      selectedModel: ev.selected_model || null
+      selectedModel: ev.selected_model || null,
+      toolsNeeded: ev.tools_needed ?? null,
+      executionType: ev.execution_type || null,
+      fastpathParams: ev.fastpath_params || null
     };
     next.error = null;
     next.version++;
-    logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, available=${ev.available_routes?.length || 0}`);
+    logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, tools_needed=${ev.tools_needed} (type: ${typeof ev.tools_needed}), available=${ev.available_routes?.length || 0}`);
     this.enableParentFromBridge(chatId, 'Router decision');
     return next;
   }
