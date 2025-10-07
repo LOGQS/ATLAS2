@@ -294,5 +294,25 @@ def register_builtin_tools() -> None:
     except Exception as e:
         _logger.error(f"Error registering media generation tools: {e}")
 
+    try:
+        from .system_ops.exec_func import exec_command_spec
+        from .system_ops.exec_manage_func import (
+            exec_status_spec,
+            exec_kill_spec,
+            exec_list_spec,
+            exec_wait_spec
+        )
+
+        tool_registry.register(exec_command_spec)
+        tool_registry.register(exec_status_spec)
+        tool_registry.register(exec_kill_spec)
+        tool_registry.register(exec_list_spec)
+        tool_registry.register(exec_wait_spec)
+        _logger.info("System operation tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import system operation tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering system operation tools: {e}")
+
 
 register_builtin_tools()
