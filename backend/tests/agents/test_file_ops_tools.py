@@ -8,6 +8,7 @@ This module tests all file operation tools including:
 - file.list_dir: List directory contents with filtering
 - file.search: Search for files using glob patterns
 - file.move_lines: Move lines between files
+- file.grep: Search for text patterns within file contents
 """
 
 import sys
@@ -28,6 +29,7 @@ from agents.tools.file_ops.move_func import _tool_move_file
 from agents.tools.file_ops.list_func import _tool_list_dir
 from agents.tools.file_ops.search_func import _tool_search_files
 from agents.tools.file_ops.move_lines_func import _tool_move_lines
+from agents.tools.file_ops.grep_func import _tool_grep_files
 
 
 class TestFileReadTool(unittest.TestCase):
@@ -1046,6 +1048,385 @@ class TestFileMoveLinesTool(unittest.TestCase):
             )
 
         self.assertIn("out of range", str(cm.exception))
+
+
+class TestFileGrepTool(unittest.TestCase):
+    """Test file.grep tool functionality."""
+
+    def setUp(self):
+        """Create test context and temporary directory."""
+        self.ctx = ToolExecutionContext(
+            chat_id="test_chat",
+            plan_id="test_plan",
+            task_id="test_task",
+            ctx_id="test_ctx_grep"
+        )
+        self.temp_dir = tempfile.mkdtemp()
+        self.temp_path = Path(self.temp_dir)
+
+    def tearDown(self):
+        """Clean up temporary files."""
+        import shutil
+        if self.temp_path.exists():
+            shutil.rmtree(self.temp_path)
+
+    def test_grep_simple_literal_search(self):
+        """Should find literal text pattern in files."""
+        file1 = self.temp_path / "file1.txt"
+        file2 = self.temp_path / "file2.txt"
+        file1.write_text("Hello World\nFoo Bar\n", encoding='utf-8')
+        file2.write_text("Hello There\nTest\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {"pattern": "Hello", "search_root": str(self.temp_path)},
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["files_with_matches"], 2)
+        self.assertEqual(result.output["summary"]["total_matches"], 2)
+
+    def test_grep_case_insensitive(self):
+        """Should search case-insensitively when case_sensitive=False."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("Hello\nhello\nHELLO\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "hello",
+                "case_sensitive": False,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_matches"], 3)
+
+    def test_grep_case_sensitive(self):
+        """Should search case-sensitively by default."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("Hello\nhello\nHELLO\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "hello",
+                "case_sensitive": True,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_matches"], 1)
+
+    def test_grep_regex_pattern(self):
+        """Should support regex patterns when use_regex=True."""
+        test_file = self.temp_path / "test.py"
+        test_file.write_text("def foo():\n    pass\ndef bar():\n    pass\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": r"def \w+\(",
+                "use_regex": True,
+                "search_root": str(self.temp_path),
+                "file_pattern": "*.py"
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_matches"], 2)
+
+    def test_grep_whole_word_match(self):
+        """Should match whole words only when whole_word=True."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("test testing tested\ntest\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "test",
+                "whole_word": True,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_matches"], 2)
+
+    def test_grep_context_lines(self):
+        """Should include context lines before and after matches."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("Line 1\nLine 2\nMATCH\nLine 4\nLine 5\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "MATCH",
+                "context_before": 1,
+                "context_after": 1,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        matches = result.output["matches"][0]["matches"]
+        self.assertEqual(len(matches), 1)
+
+        context = matches[0]["context"]
+        self.assertEqual(len(context), 3)  
+        self.assertEqual(context[0]["line_number"], 2)
+        self.assertEqual(context[1]["line_number"], 3)
+        self.assertEqual(context[1]["is_match"], True)
+        self.assertEqual(context[2]["line_number"], 4)
+
+    def test_grep_file_pattern_filter(self):
+        """Should filter files by glob pattern."""
+        (self.temp_path / "test.py").write_text("python content\n", encoding='utf-8')
+        (self.temp_path / "test.txt").write_text("text content\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "content",
+                "file_pattern": "*.py",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["files_with_matches"], 1)
+        self.assertIn(".py", result.output["matches"][0]["file_path"])
+
+    def test_grep_max_matches_per_file(self):
+        """Should limit matches per file."""
+        test_file = self.temp_path / "test.txt"
+        content = "\n".join([f"match {i}" for i in range(10)])
+        test_file.write_text(content, encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "match",
+                "max_matches_per_file": 3,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(len(result.output["matches"][0]["matches"]), 3)
+        self.assertIn("warnings", result.output)
+
+    def test_grep_max_files_limit(self):
+        """Should limit number of files with matches."""
+        for i in range(5):
+            (self.temp_path / f"file{i}.txt").write_text("match\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "match",
+                "max_files": 2,
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(len(result.output["matches"]), 2)
+        self.assertTrue(result.output["summary"]["truncated"])
+
+    def test_grep_no_matches(self):
+        """Should return success with empty results when no matches."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("Hello World\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "nonexistent",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_matches"], 0)
+        self.assertIn("message", result.output)
+
+    def test_grep_empty_pattern(self):
+        """Should raise ValueError for empty pattern."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {"pattern": "", "search_root": str(self.temp_path)},
+                self.ctx
+            )
+
+        self.assertIn("pattern is required", str(cm.exception))
+
+    def test_grep_missing_pattern(self):
+        """Should raise ValueError when pattern is missing."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {"search_root": str(self.temp_path)},
+                self.ctx
+            )
+
+        self.assertIn("pattern is required", str(cm.exception))
+
+    def test_grep_invalid_regex(self):
+        """Should raise ValueError for invalid regex pattern."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {
+                    "pattern": "[invalid(regex",
+                    "use_regex": True,
+                    "search_root": str(self.temp_path)
+                },
+                self.ctx
+            )
+
+        self.assertIn("Invalid regex pattern", str(cm.exception))
+
+    def test_grep_invalid_search_root(self):
+        """Should raise ValueError for nonexistent search root."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {"pattern": "test", "search_root": "nonexistent_dir"},
+                self.ctx
+            )
+
+        self.assertIn("does not exist", str(cm.exception))
+
+    def test_grep_context_out_of_range(self):
+        """Should raise ValueError for context lines out of range."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {
+                    "pattern": "test",
+                    "context_before": 25,
+                    "search_root": str(self.temp_path)
+                },
+                self.ctx
+            )
+
+        self.assertIn("cannot exceed 20", str(cm.exception))
+
+    def test_grep_negative_context(self):
+        """Should raise ValueError for negative context values."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {
+                    "pattern": "test",
+                    "context_before": -1,
+                    "search_root": str(self.temp_path)
+                },
+                self.ctx
+            )
+
+        self.assertIn("must be non-negative", str(cm.exception))
+
+    def test_grep_max_matches_out_of_range(self):
+        """Should raise ValueError for max_matches_per_file out of range."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {
+                    "pattern": "test",
+                    "max_matches_per_file": 2000,
+                    "search_root": str(self.temp_path)
+                },
+                self.ctx
+            )
+
+        self.assertIn("must be between 1 and 1000", str(cm.exception))
+
+    def test_grep_skips_binary_files(self):
+        """Should automatically skip binary files."""
+        text_file = self.temp_path / "text.txt"
+        binary_file = self.temp_path / "binary.bin"
+        text_file.write_text("match\n", encoding='utf-8')
+        binary_file.write_bytes(b'\x00\x01\x02\x03match')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "match",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        # Should only find match in text file, not binary
+        self.assertEqual(result.output["summary"]["files_with_matches"], 1)
+        self.assertIn("text.txt", result.output["matches"][0]["file_path"])
+
+    def test_grep_line_numbers(self):
+        """Should include correct line numbers in matches."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("Line 1\nLine 2 match\nLine 3\nLine 4 match\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "match",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        matches = result.output["matches"][0]["matches"]
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(matches[0]["line_number"], 2)
+        self.assertEqual(matches[1]["line_number"], 4)
+
+    def test_grep_recursive_search(self):
+        """Should search recursively in subdirectories."""
+        subdir = self.temp_path / "subdir"
+        subdir.mkdir()
+        (self.temp_path / "file1.txt").write_text("match\n", encoding='utf-8')
+        (subdir / "file2.txt").write_text("match\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "match",
+                "file_pattern": "**/*.txt",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["files_with_matches"], 2)
+
+    def test_grep_directory_traversal_prevention(self):
+        """Should reject file patterns with directory traversal."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_grep_files(
+                {
+                    "pattern": "test",
+                    "file_pattern": "../*.txt",
+                    "search_root": str(self.temp_path)
+                },
+                self.ctx
+            )
+
+        self.assertIn("directory traversal", str(cm.exception))
+
+    def test_grep_no_files_matching_pattern(self):
+        """Should handle case when no files match file_pattern."""
+        (self.temp_path / "file.txt").write_text("content\n", encoding='utf-8')
+
+        result = _tool_grep_files(
+            {
+                "pattern": "content",
+                "file_pattern": "*.py",
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["total_files_searched"], 0)
+        self.assertIn("message", result.output)
 
 
 if __name__ == "__main__":

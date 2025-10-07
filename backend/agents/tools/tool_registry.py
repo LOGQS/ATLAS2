@@ -254,6 +254,7 @@ def register_builtin_tools() -> None:
         from .file_ops.search_func import search_files_spec
         from .file_ops.list_func import list_dir_spec
         from .file_ops.attach_func import attach_file_spec
+        from .file_ops.grep_func import grep_files_spec
 
         tool_registry.register(read_file_spec)
         tool_registry.register(write_file_spec)
@@ -263,6 +264,7 @@ def register_builtin_tools() -> None:
         tool_registry.register(search_files_spec)
         tool_registry.register(list_dir_spec)
         tool_registry.register(attach_file_spec)
+        tool_registry.register(grep_files_spec)
         _logger.info("File operations tools registered successfully")
     except ImportError as e:
         _logger.warning(f"Could not import file operations tools: {e}")
