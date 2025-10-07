@@ -2,16 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import '../../styles/chat/RouterBox.css';
 import logger from '../../utils/core/logger';
-
-
-interface RouterDecision {
-  selectedRoute: string | null;
-  availableRoutes: any[];
-  selectedModel: string | null;
-  toolsNeeded?: boolean | null;
-  executionType?: string | null;
-  fastpathParams?: string | null;
-}
+import type { RouterDecision } from '../../types/messages';
 
 interface RouterBoxProps {
   routerDecision: RouterDecision | null;

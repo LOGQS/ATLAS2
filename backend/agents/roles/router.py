@@ -5,6 +5,7 @@ from utils.logger import get_logger
 from utils.config import Config, ROUTE_MODEL_MAP, available_routes, infer_provider_from_model
 from utils.format_validator import extract_route_choice
 from agents.context.context_manager import get_router_context
+from agents.domains import domain_registry  # Ensure domains are registered at module load
 
 logger = get_logger(__name__)
 
@@ -79,6 +80,8 @@ class Router:
                 logger.info(f"Tools needed: {router_metadata['tools_needed']}")
             if router_metadata.get('execution_type'):
                 logger.info(f"Execution type: {router_metadata['execution_type']}")
+            if router_metadata.get('domain_id'):
+                logger.info(f"Domain: {router_metadata['domain_id']}")
             if router_metadata.get('fastpath_params'):
                 logger.info(f"FastPath params: {router_metadata['fastpath_params']}")
 
@@ -89,6 +92,7 @@ class Router:
                 'available_routes': available_routes,
                 'tools_needed': router_metadata.get('tools_needed'),
                 'execution_type': router_metadata.get('execution_type'),
+                'domain_id': router_metadata.get('domain_id'),
                 'fastpath_params': router_metadata.get('fastpath_params')
             }
 
@@ -116,9 +120,12 @@ class Router:
         for route in available_routes:
             routes_str += f"- {route['route_name']}: {route['route_description']} ({route['route_context']})\n"
 
+        domains_str = domain_registry.get_domain_descriptions_for_router()
+
         from agents.prompts.router_prompt import router_system_prompt
 
         prompt = router_system_prompt.replace("{available_routes}", routes_str.strip())
+        prompt = prompt.replace("{available_domains}", domains_str)
         prompt = prompt.replace("{available_information}", context)
 
         return prompt

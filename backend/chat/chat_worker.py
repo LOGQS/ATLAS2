@@ -178,25 +178,14 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'selected_provider': provider,
                                         'tools_needed': router_result.get('tools_needed'),
                                         'execution_type': router_result.get('execution_type'),
+                                        'domain_id': router_result.get('domain_id'),
                                         'fastpath_params': router_result.get('fastpath_params')
                                     })
 
                                     worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
                                 elif router_already_called and router_result:
                                     worker_logger.info(f"[CHAT-WORKER] Using router result from route handler: {router_result.get('route')} with tools_needed={router_result.get('tools_needed')}, fastpath_params={'present' if router_result.get('fastpath_params') else 'absent'}")
-
-                                    child_conn.send({
-                                        'type': 'router_decision',
-                                        'chat_id': actual_chat_id,
-                                        'selected_route': router_result.get('route'),
-                                        'available_routes': router_result.get('available_routes', []),
-                                        'selected_model': model,
-                                        'selected_provider': provider,
-                                        'tools_needed': router_result.get('tools_needed'),
-                                        'execution_type': router_result.get('execution_type'),
-                                        'fastpath_params': router_result.get('fastpath_params')
-                                    })
-                                    worker_logger.info(f"[CHAT-WORKER] Broadcasted router decision from passed result")
+                                    worker_logger.info(f"[CHAT-WORKER] Router decision already broadcasted by route handler, skipping duplicate broadcast")
 
                                 _process_message_in_worker(
                                     actual_chat_id, db, providers, message, provider, model,
@@ -318,6 +307,167 @@ def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, work
     except Exception as e:
         worker_logger.error(f"[FASTPATH] Tool execution failed: {str(e)}")
         return None
+
+
+def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_history: list,
+                         attached_file_ids: list, assistant_message_id: int, child_conn,
+                         worker_logger, current_content):
+    """Execute a domain task with the single domain executor."""
+
+    try:
+        from agents.execution.single_domain_executor import single_domain_executor
+
+        worker_logger.info("=" * 80)
+        worker_logger.info(f"[DOMAIN-EXEC-START] Starting domain execution")
+        worker_logger.info(f"[DOMAIN-EXEC-START] Domain ID: {domain_id}")
+        worker_logger.info(f"[DOMAIN-EXEC-START] Chat ID: {chat_id}")
+        worker_logger.info(f"[DOMAIN-EXEC-START] User request: {message[:200]}...")
+        worker_logger.info(f"[DOMAIN-EXEC-START] Attached files: {len(attached_file_ids)} files")
+        worker_logger.info("=" * 80)
+
+        db.update_chat_state(chat_id, "responding")
+        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
+
+        attached_files = []
+        if attached_file_ids:
+            for file_id in attached_file_ids:
+                file_record = db.get_file_record(file_id)
+                if file_record:
+                    attached_files.append({
+                        'id': file_record['id'],
+                        'name': file_record['original_name']
+                    })
+
+        import uuid
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        initial_domain_data = {
+            'task_id': task_id,
+            'domain_id': domain_id,
+            'agent_id': 'dev_agent',  
+            'status': 'starting',
+            'actions': [],
+            'plan': None,
+            'context_snapshots': [],
+            'output': ''
+        }
+        initial_domain_json = json.dumps(initial_domain_data)
+
+        worker_logger.info(f"[DOMAIN-EXEC-INIT] Sending initial domain_execution event")
+        child_conn.send({
+            'type': 'content',
+            'chat_id': chat_id,
+            'content_type': 'domain_execution',
+            'content': initial_domain_json
+        })
+
+        worker_logger.info(f"[DOMAIN-EXEC] Calling single_domain_executor.execute_domain_task...")
+        result = single_domain_executor.execute_domain_task(
+            domain_id=domain_id,
+            user_request=message,
+            chat_id=chat_id,
+            chat_history=chat_history,
+            attached_files=attached_files,
+            task_budget=None  
+        )
+
+        worker_logger.info("=" * 80)
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Execution completed")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Status: {result.get('status')}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Task ID: {result.get('task_id')}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Agent ID: {result.get('agent_id')}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Plan steps: {len(result.get('plan', []))}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Actions: {len(result.get('actions', []))}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Output length: {len(result.get('output', ''))} chars")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Has error: {'error' in result}")
+        worker_logger.info("=" * 80)
+
+        if 'error' not in result:
+            domain_execution_data = {
+                'task_id': result.get('task_id'),
+                'domain_id': result.get('domain_id'),
+                'agent_id': result.get('agent_id'),
+                'status': result.get('status'),
+                'actions': result.get('actions', []),
+                'plan': result.get('plan'),
+                'context_snapshots': result.get('context_snapshots', []),
+                'output': result.get('output', '')
+            }
+            domain_execution_json = json.dumps(domain_execution_data)
+
+            worker_logger.info(f"[DOMAIN-EXEC-SSE] Preparing to send domain_execution SSE event")
+            worker_logger.info(f"[DOMAIN-EXEC-SSE] Event data preview: {domain_execution_json[:300]}...")
+            worker_logger.info(f"[DOMAIN-EXEC-SSE] Plan object: {result.get('plan')}")
+            worker_logger.info(f"[DOMAIN-EXEC-SSE] Actions count: {len(result.get('actions', []))}")
+
+            child_conn.send({
+                'type': 'content',
+                'chat_id': chat_id,
+                'content_type': 'domain_execution',
+                'content': domain_execution_json
+            })
+
+            worker_logger.info(f"[DOMAIN-EXEC-SSE] Successfully sent domain_execution event via child_conn")
+
+        output_text = result.get('output', '')
+        if result.get('error'):
+            output_text = f"Error during domain execution: {result['error']}"
+            worker_logger.error(f"[DOMAIN-EXEC-ERROR] Error: {result['error']}")
+
+        worker_logger.info(f"[DOMAIN-EXEC-DB] Updating database message {assistant_message_id}")
+        if assistant_message_id and output_text:
+            db.update_message(
+                assistant_message_id,
+                output_text,
+                thoughts=None,
+                domain_execution=domain_execution_json if 'error' not in result else None
+            )
+            worker_logger.info(f"[DOMAIN-EXEC-DB] Successfully saved output ({len(output_text)} chars) to message {assistant_message_id}")
+            if 'error' not in result:
+                worker_logger.info(f"[DOMAIN-EXEC-DB] Saved domain_execution JSON to message")
+
+        worker_logger.info(f"[DOMAIN-EXEC-SSE] Sending answer content ({len(output_text)} chars)")
+        child_conn.send({
+            'type': 'content',
+            'chat_id': chat_id,
+            'content_type': 'answer',
+            'content': output_text
+        })
+
+        worker_logger.info(f"[DOMAIN-EXEC-COMPLETE] Setting chat state to static and sending completion events")
+        db.update_chat_state(chat_id, "static")
+        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+
+        current_content['full_text'] = ''
+        current_content['full_thoughts'] = ''
+        current_content['assistant_message_id'] = None
+        current_content['last_db_update'] = 0.0
+
+        worker_logger.info("=" * 80)
+        worker_logger.info(f"[DOMAIN-EXEC-COMPLETE] Domain execution workflow completed successfully")
+        worker_logger.info("=" * 80)
+
+    except Exception as e:
+        worker_logger.error("=" * 80)
+        worker_logger.error(f"[DOMAIN-EXEC-ERROR] Domain execution failed: {str(e)}")
+        import traceback
+        worker_logger.error(f"[DOMAIN-EXEC-ERROR] Traceback: {traceback.format_exc()}")
+        worker_logger.error("=" * 80)
+
+        error_text = f"Domain execution error: {str(e)}"
+        if assistant_message_id:
+            db.update_message(assistant_message_id, error_text)
+
+        child_conn.send({
+            'type': 'content',
+            'chat_id': chat_id,
+            'content_type': 'error',
+            'content': error_text
+        })
+
+        db.update_chat_state(chat_id, "static")
+        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
 
 
 def _format_tool_output(tool_name: str, output: Any, worker_logger) -> str:
@@ -453,6 +603,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             'selected_provider': router_result['provider'],
             'tools_needed': router_result.get('tools_needed'),
             'execution_type': router_result.get('execution_type'),
+            'domain_id': router_result.get('domain_id'),
             'fastpath_params': router_result.get('fastpath_params')
         })
 
@@ -507,7 +658,19 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
     
     full_text = current_content['full_text']
     full_thoughts = current_content['full_thoughts']
-    
+
+    domain_id = router_result and router_result.get('domain_id')
+    route = router_result and router_result.get('route')
+
+    if domain_id and route != 'direct':
+        worker_logger.info(f"[DOMAIN-EXECUTION] Detected domain execution: {domain_id}")
+        _execute_domain_task(
+            chat_id, db, domain_id, message, chat_history,
+            attached_file_ids, assistant_message_id, child_conn, worker_logger,
+            current_content
+        )
+        return
+
     try:
         if use_reasoning:
             db.update_chat_state(chat_id, "thinking")

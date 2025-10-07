@@ -4,20 +4,15 @@ import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
 import { planStore, PlanSummary } from '../agentic/PlanStore';
+import type { RouterDecision, DomainExecution } from '../../types/messages';
 
 type ChatLive = {
   state: 'thinking' | 'responding' | 'static';
   lastAssistantId: string | null;
   contentBuf: string;
   thoughtsBuf: string;
-  routerDecision: {
-    selectedRoute: string | null;
-    availableRoutes: any[];
-    selectedModel: string | null;
-    toolsNeeded?: boolean | null;
-    executionType?: string | null;
-    fastpathParams?: string | null;
-  } | null;
+  routerDecision: RouterDecision | null;
+  domainExecution: DomainExecution | null;
   planSummary: PlanSummary | null;
   error: {
     message: string;
@@ -102,7 +97,12 @@ interface ErrorEvent extends BaseSSEEvent {
   message_id?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | TaskflowPlanEvent | PlanPendingApprovalEvent | ErrorEvent;
+interface DomainExecutionEvent extends BaseSSEEvent {
+  type: 'domain_execution';
+  content?: string;
+}
+
+type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | TaskflowPlanEvent | PlanPendingApprovalEvent | ErrorEvent | DomainExecutionEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -302,8 +302,8 @@ class LiveStore {
     next.state = 'static';
     next.contentBuf = '';
     next.thoughtsBuf = '';
-    next.planSummary = null; 
-    next.routerDecision = null; 
+    next.planSummary = null;
+    next.routerDecision = null;
     next.error = {
       message,
       receivedAt: Date.now(),
@@ -312,6 +312,26 @@ class LiveStore {
     next.version++;
     this.enableParentFromBridge(chatId, 'Error event');
     logger.warn(`[LIVESTORE_SSE] Error event for ${chatId}: ${message}`);
+    return next;
+  }
+
+  private handleDomainExecutionEvent(chatId: string, ev: DomainExecutionEvent, cur: ChatLive): ChatLive {
+    const next = { ...cur };
+    logger.info(`[DOMAIN-EXEC-LIVESTORE] handleDomainExecutionEvent called for ${chatId}`);
+    logger.info(`[DOMAIN-EXEC-LIVESTORE] Event content length: ${ev.content?.length || 0} chars`);
+    logger.info(`[DOMAIN-EXEC-LIVESTORE] Event content preview: ${ev.content?.substring(0, 200)}`);
+    try {
+      const domainExecution = JSON.parse(ev.content || '{}');
+      logger.info(`[DOMAIN-EXEC-LIVESTORE] Parsed domain execution: domain_id=${domainExecution.domain_id}, status=${domainExecution.status}, plan=${!!domainExecution.plan}, actions=${domainExecution.actions?.length || 0}`);
+      next.domainExecution = domainExecution;
+      next.version++;
+      logger.info(`[DOMAIN-EXEC-LIVESTORE] Updated next.domainExecution, version=${next.version}`);
+      logger.info(`[DOMAIN-EXEC-LIVESTORE] next.domainExecution is now: ${JSON.stringify(next.domainExecution).substring(0, 200)}`);
+      this.enableParentFromBridge(chatId, 'Domain execution');
+    } catch (err) {
+      logger.error(`[DOMAIN-EXEC-LIVESTORE] Failed to parse domain execution for ${chatId}:`, err);
+      logger.error(`[DOMAIN-EXEC-LIVESTORE] Event content was: ${ev.content}`);
+    }
     return next;
   }
 
@@ -374,6 +394,7 @@ class LiveStore {
           contentBuf: '',
           thoughtsBuf: '',
           routerDecision: null,
+          domainExecution: null,
           planSummary: null,
           error: null,
           version: 0
@@ -423,6 +444,9 @@ class LiveStore {
           case 'answer':
             next = this.handleAnswerEvent(chatId, ev as ContentEvent, cur);
             break;
+          case 'domain_execution':
+            next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionEvent, cur);
+            break;
           case 'complete':
             next = this.handleCompleteEvent(chatId, cur);
             break;
@@ -437,15 +461,19 @@ class LiveStore {
             return;
         }
 
-        logger.info(`[LIVESTORE_SSE] Storing updated state for ${chatId}:`);
-        logger.info(`[LIVESTORE_SSE] - Final state: ${next.state}`);
-        logger.info(`[LIVESTORE_SSE] - Content buffer: ${next.contentBuf.length}chars`);
-        logger.info(`[LIVESTORE_SSE] - Thoughts buffer: ${next.thoughtsBuf.length}chars`);
-        logger.info(`[LIVESTORE_SSE] - Version: ${next.version}`);
-        
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] Storing updated state for ${chatId}:`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Final state: ${next.state}`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Content buffer: ${next.contentBuf.length}chars`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Thoughts buffer: ${next.thoughtsBuf.length}chars`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Domain execution present: ${!!next.domainExecution}`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Router decision present: ${!!next.routerDecision}`);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] - Version: ${next.version}`);
+
         const stateChanged = cur.state !== next.state;
         this.byChat.set(chatId, next);
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] About to emit event type: ${ev.type}`);
         this.emit(chatId, next, { eventType: ev.type, stateChanged });
+        logger.info(`[DOMAIN-EXEC-LIVESTORE] Emitted successfully`);
       } catch (err) {
         logger.error('[LiveStore] Failed to process SSE event', err);
       }
@@ -467,6 +495,7 @@ class LiveStore {
       contentBuf: '',
       thoughtsBuf: '',
       routerDecision: null,
+      domainExecution: null,
       planSummary: null,
       error: null,
       version: 0

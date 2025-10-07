@@ -68,7 +68,7 @@ available_routes = [
 
     # Single domain routes
     {
-        "route_name": "searcher",
+        "route_name": "web_researcher",
         "route_description": "Research and information gathering",
         "route_context": "Web search, academic databases, document extraction, summarization. Agent iterates autonomously."
     },
@@ -83,14 +83,9 @@ available_routes = [
         "route_context": "Browser navigation, scraping, form filling, web automation. Visual capabilities needed."
     },
     {
-        "route_name": "data_ops",
+        "route_name": "data_processor",
         "route_description": "Data transformation and API operations",
         "route_context": "JSON/CSV/SQL operations, API calls, data validation, format conversion."
-    },
-    {
-        "route_name": "rag",
-        "route_description": "Knowledge base operations",
-        "route_context": "Indexing, vector search, embedding, chunking. Knowledge base integration."
     },
     {
         "route_name": "memory",
@@ -98,7 +93,7 @@ available_routes = [
         "route_context": "Store, retrieve, search, habit tracking. User preference management."
     },
     {
-        "route_name": "system_agent",
+        "route_name": "system_manager",
         "route_description": "Operating system control",
         "route_context": "Windows registry, processes, network config, system operations. Requires elevated permissions."
     },
@@ -106,11 +101,6 @@ available_routes = [
         "route_name": "teacher",
         "route_description": "Educational assistance",
         "route_context": "Explanation generation, quiz creation, assessment, curriculum building."
-    },
-    {
-        "route_name": "creative",
-        "route_description": "Multimodal content generation with tools",
-        "route_context": "Image generation, video creation, audio synthesis, template rendering. Requires generation tools."
     },
     {
         "route_name": "gui_control",
@@ -143,15 +133,13 @@ ROUTE_MODEL_MAP = {
     "direct": "gemini-2.5-flash",           # FastPath optimization, quick execution
 
     # Single domains
-    "searcher": "gemini-2.5-flash",         # Research with iteration
-    "coder": "gemini-2.5-pro",              # Code generation needs strong model
+    "web_researcher": "gemini-2.5-flash",   # Research with iteration
+    "coder": "gemini-2.5-flash",              # Code generation needs strong model
     "web_controller": "gemini-2.5-flash",   # Browser automation
-    "data_ops": "gemini-2.5-flash",         # Data operations can use fast model
-    "rag": "gemini-2.5-flash",              # RAG operations optimized for speed
+    "data_processor": "gemini-2.5-flash",   # Data operations can use fast model
     "memory": "gemini-2.5-flash",           # Memory operations are straightforward
-    "system_agent": "gemini-2.5-flash",     # System operations
+    "system_manager": "gemini-2.5-flash",   # System operations
     "teacher": "gemini-2.5-pro",            # Educational content needs quality
-    "creative": "gemini-2.5-pro",           # Creative generation with tools
     "gui_control": "gemini-2.5-flash",      # GUI automation
 
     # Multi-agent orchestration

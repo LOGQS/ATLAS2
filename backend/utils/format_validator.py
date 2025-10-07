@@ -57,7 +57,8 @@ def extract_router_metadata(router_response: str) -> Dict[str, any]:
         "choice": None,
         "tools_needed": None,
         "execution_type": None,
-        "fastpath_params": None
+        "fastpath_params": None,
+        "domain_id": None
     }
 
     try:
@@ -67,6 +68,7 @@ def extract_router_metadata(router_response: str) -> Dict[str, any]:
 
     metadata["tools_needed"] = extract_tools_needed(router_response)
     metadata["execution_type"] = _extract_tag(router_response, 'EXECUTION_TYPE')
+    metadata["domain_id"] = _extract_tag(router_response, 'DOMAIN')
 
     fastpath = _extract_tag(router_response, 'FASTPATH_PARAMS')
     metadata["fastpath_params"] = fastpath if fastpath else None

@@ -269,5 +269,16 @@ def register_builtin_tools() -> None:
     except Exception as e:
         _logger.error(f"Error registering file operations tools: {e}")
 
+    try:
+        from .plan_tools import write_plan_spec, update_plan_spec
+
+        tool_registry.register(write_plan_spec)
+        tool_registry.register(update_plan_spec)
+        _logger.info("Plan management tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import plan tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering plan tools: {e}")
+
 
 register_builtin_tools()

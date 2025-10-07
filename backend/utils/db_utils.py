@@ -244,6 +244,7 @@ class DatabaseManager:
                     model TEXT,
                     router_enabled INTEGER DEFAULT 0 CHECK(router_enabled IN (0,1)),
                     router_decision TEXT,
+                    domain_execution TEXT,
                     plan_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
@@ -772,18 +773,18 @@ class DatabaseManager:
             logger.error(f"[LINEAGE] Failed to get lineage versions for {message_id}: {e}")
             return []
     
-    def update_message(self, message_id: str, content: str, thoughts: Optional[str] = None, plan_id: Optional[str] = None) -> bool:
-        """Update existing message content, thoughts, and plan_id"""
+    def update_message(self, message_id: str, content: str, thoughts: Optional[str] = None, plan_id: Optional[str] = None, domain_execution: Optional[str] = None) -> bool:
+        """Update existing message content, thoughts, plan_id, and domain_execution"""
         if not self._validate_string(message_id, "message_id"):
             return False
 
         def update_operation(conn, cursor):
-            if plan_id is not None:
+            if plan_id is not None or domain_execution is not None:
                 cursor.execute("""
                     UPDATE messages
-                    SET content = ?, thoughts = ?, plan_id = ?, timestamp = CURRENT_TIMESTAMP
+                    SET content = ?, thoughts = ?, plan_id = ?, domain_execution = ?, timestamp = CURRENT_TIMESTAMP
                     WHERE id = ?
-                """, (content, thoughts, plan_id, message_id))
+                """, (content, thoughts, plan_id, domain_execution, message_id))
             else:
                 cursor.execute("""
                     UPDATE messages
@@ -865,7 +866,7 @@ class DatabaseManager:
                 SELECT
                     m.id as message_id, m.role, m.content, m.thoughts,
                     m.provider as message_provider, m.model, m.timestamp,
-                    m.router_enabled, m.router_decision, m.plan_id,
+                    m.router_enabled, m.router_decision, m.plan_id, m.domain_execution,
                     f.id as file_id, f.original_name, f.file_size, f.file_type,
                     f.api_state, f.provider as file_provider, f.api_file_name,
                     mf.created_at as file_attached_at
@@ -887,6 +888,7 @@ class DatabaseManager:
                 "routerEnabled": False,
                 "routerDecision": None,
                 "planId": None,
+                "domainExecution": None,
                 "attachedFiles": []
             })
 
@@ -904,7 +906,8 @@ class DatabaseManager:
                         "timestamp": row["timestamp"],
                         "routerEnabled": bool(row["router_enabled"]),
                         "routerDecision": self._safe_json_parse(row["router_decision"]) if row["router_decision"] else None,
-                        "planId": row["plan_id"]
+                        "planId": row["plan_id"],
+                        "domainExecution": self._safe_json_parse(row["domain_execution"]) if row["domain_execution"] else None
                     })
 
                 if row["file_id"]:

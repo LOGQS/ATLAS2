@@ -465,7 +465,8 @@ class Chat:
 
         self.providers = get_provider_map()
 
-        if self.chat_id and not self.chat_id.startswith("router_temp_"):
+        is_internal_chat = self.chat_id.startswith("router_temp_") or self.chat_id.startswith("domain_temp_")
+        if self.chat_id and not is_internal_chat:
             if not db.chat_exists(self.chat_id):
                 logger.info(f"Creating new chat: {self.chat_id}")
                 db.create_chat(self.chat_id, self.system_prompt)
@@ -483,7 +484,8 @@ class Chat:
     
     def get_chat_history(self) -> List[Dict[str, Any]]:
         """Get full chat history for current session"""
-        if self.chat_id.startswith("router_temp_"):
+        is_internal_chat = self.chat_id.startswith("router_temp_") or self.chat_id.startswith("domain_temp_")
+        if is_internal_chat:
             return []
         return db.get_chat_history(self.chat_id)
     
@@ -587,9 +589,9 @@ class Chat:
         Returns:
             Dict with response, reasoning, and metadata
         """
-        is_router_call = self.chat_id.startswith("router_temp_")
+        is_internal_call = self.chat_id.startswith("router_temp_") or self.chat_id.startswith("domain_temp_")
 
-        if not is_router_call:
+        if not is_internal_call:
             if use_router and Config.get_default_router_state():
                 from agents.roles.router import router
                 chat_history = self.get_chat_history()
@@ -656,18 +658,15 @@ class Chat:
             chat_history=chat_history, file_attachments=file_attachments, **config_params
         )
 
-        # Extract actual token usage if available
         actual_tokens = context_manager.extract_actual_tokens_from_response(response, provider)
         if actual_tokens:
             logger.debug(f"Actual tokens used: {actual_tokens['total_tokens']}")
             response['token_usage'] = actual_tokens
         response['token_estimate'] = token_estimate
 
-        # Save token usage to database
-        if not is_router_call:
+        if not is_internal_call:
             estimated_tokens = token_estimate['estimated_tokens']['total']
             actual_tokens_count = actual_tokens['total_tokens'] if actual_tokens else 0
-            # Save both estimated (input estimate) and actual (total from API)
             if actual_tokens_count > 0:
                 db.save_token_usage(
                     chat_id=self.chat_id,
@@ -688,7 +687,7 @@ class Chat:
                 )
             logger.debug(f"[TokenUsage] Saved assistant token usage for chat {self.chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count}")
 
-        if response.get("text") and not is_router_call:
+        if response.get("text") and not is_internal_call:
             db.save_message(
                 self.chat_id,
                 "assistant",
@@ -719,8 +718,8 @@ class Chat:
         """
         from route.chat_route import publish_state
 
-        is_router_call = self.chat_id.startswith("router_temp_")
-        if not is_router_call and use_router and Config.get_default_router_state():
+        is_internal_call = self.chat_id.startswith("router_temp_") or self.chat_id.startswith("domain_temp_")
+        if not is_internal_call and use_router and Config.get_default_router_state():
             from agents.roles.router import router
             chat_history = self.get_chat_history()
             router_response = router.route_request(message, chat_history, chat_id=self.chat_id)

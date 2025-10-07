@@ -5,6 +5,7 @@ import UserMessage from '../message/UserMessage';
 import UserMessageFiles from '../files/UserMessageFiles';
 import ThinkBox from './ThinkBox';
 import RouterBox from './RouterBox';
+import DomainBox from '../agentic/DomainBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
 import PlanMessage from '../agentic/PlanMessage';
@@ -27,6 +28,7 @@ import { useChatHistory } from '../../hooks/chat/useChatHistory';
 import '../../styles/chat/Chat.css';
 import '../../styles/chat/ThinkBox.css';
 import '../../styles/chat/RouterBox.css';
+import '../../styles/agentic/DomainBox.css';
 import '../../styles/message/MessageRenderer.css';
 import type { AttachedFile, Message } from '../../types/messages';
 
@@ -53,6 +55,8 @@ interface ChatProps {
 }
 
 interface ChatLive {
+  state: 'thinking' | 'responding' | 'static';
+  lastAssistantId: string | null;
   contentBuf: string;
   thoughtsBuf: string;
   routerDecision: {
@@ -63,8 +67,10 @@ interface ChatLive {
     executionType?: string | null;
     fastpathParams?: string | null;
   } | null;
-  state: 'thinking' | 'responding' | 'static';
+  domainExecution: any | null;
+  planSummary: { planId: string; fingerprint: string; plan: any } | null;
   error: { message: string; receivedAt: number; messageId?: string | null } | null;
+  version: number;
 }
 
 const Chat = React.memo(forwardRef<any, ChatProps>(({ 
@@ -85,11 +91,15 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const [firstMessageSent, setFirstMessageSent] = useState(false);
 
   const [liveOverlay, setLiveOverlay] = useState<ChatLive>({
+    state: 'static',
+    lastAssistantId: null,
     contentBuf: '',
     thoughtsBuf: '',
     routerDecision: null,
-    state: 'static',
-    error: null
+    domainExecution: null,
+    planSummary: null,
+    error: null,
+    version: 0
   });
   const [dismissedErrorAt, setDismissedErrorAt] = useState<number | null>(null);
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
@@ -376,13 +386,27 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         logger.info(`[CHAT_LIVESTORE_UPDATE] Chat.tsx received from LiveStore for ${chatId}: toolsNeeded=${snap.routerDecision.toolsNeeded}, route=${snap.routerDecision.selectedRoute}`);
       }
 
+      logger.info(`[DOMAIN-EXEC-CHAT] Chat.tsx received update from LiveStore for ${chatId}`);
+      logger.info(`[DOMAIN-EXEC-CHAT] - Domain execution present: ${!!snap.domainExecution}`);
+      if (snap.domainExecution) {
+        logger.info(`[DOMAIN-EXEC-CHAT] - Domain execution details: domain_id=${snap.domainExecution.domain_id}, status=${snap.domainExecution.status}`);
+      }
+      logger.info(`[DOMAIN-EXEC-CHAT] - State: ${snap.state}`);
+      logger.info(`[DOMAIN-EXEC-CHAT] - Version: ${snap.version}`);
+
       setLiveOverlay({
+        state: snap.state,
+        lastAssistantId: snap.lastAssistantId,
         contentBuf: snap.contentBuf,
         thoughtsBuf: snap.thoughtsBuf,
         routerDecision: snap.routerDecision,
-        state: snap.state,
-        error: (snap as any).error ?? null
+        domainExecution: snap.domainExecution,
+        planSummary: snap.planSummary,
+        error: snap.error ?? null,
+        version: snap.version
       });
+
+      logger.info(`[DOMAIN-EXEC-CHAT] setLiveOverlay called with domainExecution: ${!!snap.domainExecution}`);
 
       setDismissedErrorAt((prev: number | null) => {
         if (!('error' in snap) || !snap.error) {
@@ -462,7 +486,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         if (shouldClearState) {
           setMessages([]);
         }
-        setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static', error: null });
+        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
         setDismissedErrorAt(null);
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
@@ -934,7 +958,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ contentBuf: '', thoughtsBuf: '', routerDecision: null, state: 'static', error: null });
+    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
     setDismissedErrorAt(null);
     liveStore.reset(chatId);
 
@@ -1188,7 +1212,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
                 executionType: message.routerDecision.execution_type || null,
                 fastpathParams: message.routerDecision.fastpath_params || null
               }}
-              isProcessing={isLiveStreamingMessage && liveOverlay.state === 'thinking'}
+              isProcessing={isLiveStreamingMessage && liveOverlay.state === 'thinking' && !!liveOverlay.routerDecision}
               isVisible={true}
               chatId={chatId}
               messageId={message.id}
@@ -1200,14 +1224,37 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           <ThinkBox
             key={`thinkbox-${message.clientId ?? String(message.id)}`}
             thoughts={message.thoughts}
-            isStreaming={isLiveStreamingMessage && liveOverlay.state === 'thinking'}
+            isStreaming={isLiveStreamingMessage && liveOverlay.state === 'thinking' && liveOverlay.thoughtsBuf.length > 0}
             isVisible={true}
             chatId={chatId}
             messageId={message.id}
             chatScrollControl={scrollControl}
           />
         )}
-        
+        {(() => {
+          const domainExecutionData = (isLiveStreamingMessage && liveOverlay.domainExecution)
+            ? liveOverlay.domainExecution
+            : message.domainExecution;
+
+          const hasDomainExecution = domainExecutionData;
+          if (hasDomainExecution) {
+            const source = (isLiveStreamingMessage && liveOverlay.domainExecution) ? 'LIVE' : 'MESSAGE';
+            logger.info(`[DOMAIN-EXEC-RENDER] ${source} DomainBox check for ${chatId} msg ${message.id}: hasDomainExecution=${!!hasDomainExecution}, domainExecution=${JSON.stringify(domainExecutionData)}`);
+          }
+
+          return domainExecutionData && (
+            <DomainBox
+              key={`domainbox-${message.clientId ?? String(message.id)}`}
+              domainExecution={domainExecutionData}
+              isProcessing={isLiveStreamingMessage && liveOverlay.state !== 'static' && !!liveOverlay.domainExecution}
+              isVisible={true}
+              chatId={chatId}
+              messageId={message.id}
+              chatScrollControl={scrollControl}
+            />
+          );
+        })()}
+
         <div className="response-content">
           <MessageRenderer 
             content={message.content} 
@@ -1216,7 +1263,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, ttsState, lastAssistantMessage?.id, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, isSendInProgress]);
+  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
@@ -1333,6 +1380,13 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           )}
           {messageListContent}
 
+          {(() => {
+            logger.info(`[DOMAIN-EXEC-RENDER] canRenderOverlay=${canRenderOverlay}, domainExecution=${!!liveOverlay.domainExecution}, state=${liveOverlay.state}`);
+            logger.info(`[DOMAIN-EXEC-RENDER] lastAssistantFromMessages=${!!lastAssistantFromMessages}, notLoadingSettled=${notLoadingSettled}, persistingAfterStream=${persistingAfterStream}`);
+            return null;
+          })()}
+
+          {/* Render live overlay (without DomainBox - that's now in the message) */}
           {canRenderOverlay && (
             <div className="assistant-message">
               {(() => {
@@ -1367,7 +1421,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
                 />
               )}
               <div className="response-content">
-                <MessageRenderer 
+                <MessageRenderer
                   content={liveOverlay.contentBuf}
                   showCursor={liveOverlay.state === 'responding'}
                 />
