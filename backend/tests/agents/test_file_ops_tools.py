@@ -848,7 +848,7 @@ class TestFileSearchTool(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             _tool_search_files({"search_root": str(self.temp_path)}, self.ctx)
 
-        self.assertIn("pattern is required", str(cm.exception))
+        self.assertIn("pattern or patterns is required", str(cm.exception))
 
     def test_search_max_results_truncation(self):
         """Should truncate results when exceeding max_results."""
@@ -867,7 +867,220 @@ class TestFileSearchTool(unittest.TestCase):
         self.assertEqual(result.output["status"], "success")
         self.assertEqual(len(result.output["matches"]), 5)
         self.assertTrue(result.output["summary"]["truncated"])
-        self.assertIn("warning", result.output)
+        self.assertIn("warnings", result.output)
+        self.assertTrue(any("truncated" in w.lower() for w in result.output["warnings"]))
+
+    def test_search_multiple_patterns(self):
+        """Should search with multiple patterns."""
+        (self.temp_path / "test.py").write_text("content")
+        (self.temp_path / "test.js").write_text("content")
+        (self.temp_path / "test.txt").write_text("content")
+
+        result = _tool_search_files(
+            {
+                "pattern": "*.py",
+                "patterns": ["*.js"],
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(result.output["summary"]["files"], 2)
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertIn("test.py", names)
+        self.assertIn("test.js", names)
+        self.assertNotIn("test.txt", names)
+
+    def test_search_exclude_patterns(self):
+        """Should exclude files matching exclude patterns."""
+        (self.temp_path / "include.py").write_text("content")
+        (self.temp_path / "exclude.pyc").write_text("content")
+        (self.temp_path / "test_exclude.py").write_text("content")
+
+        result = _tool_search_files(
+            {
+                "pattern": "*",
+                "exclude_patterns": ["*.pyc", "test_*"],
+                "search_root": str(self.temp_path)
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertIn("include.py", names)
+        self.assertNotIn("exclude.pyc", names)
+        self.assertNotIn("test_exclude.py", names)
+
+    def test_search_hidden_files(self):
+        """Should control hidden file inclusion."""
+        (self.temp_path / ".hidden").write_text("content")
+        (self.temp_path / "visible.txt").write_text("content")
+
+        result = _tool_search_files(
+            {"pattern": "*", "search_root": str(self.temp_path)},
+            self.ctx
+        )
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertNotIn(".hidden", names)
+        self.assertGreater(result.output["summary"]["skipped_hidden"], 0)
+
+        result = _tool_search_files(
+            {
+                "pattern": "*",
+                "search_root": str(self.temp_path),
+                "include_hidden": True
+            },
+            self.ctx
+        )
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertIn(".hidden", names)
+
+    def test_search_with_metadata(self):
+        """Should include file metadata when requested."""
+        test_file = self.temp_path / "test.txt"
+        test_file.write_text("content" * 100)
+
+        result = _tool_search_files(
+            {
+                "pattern": "test.txt",
+                "search_root": str(self.temp_path),
+                "include_metadata": True
+            },
+            self.ctx
+        )
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertEqual(len(result.output["matches"]), 1)
+        match = result.output["matches"][0]
+        self.assertIn("metadata", match)
+        self.assertIn("size", match["metadata"])
+        self.assertIn("size_bytes", match["metadata"])
+        self.assertIn("modified_time", match["metadata"])
+        self.assertIn("modified_time_str", match["metadata"])
+        self.assertGreater(match["metadata"]["size_bytes"], 0)
+
+    def test_search_sort_by_name(self):
+        """Should sort results by name."""
+        (self.temp_path / "c.txt").write_text("content")
+        (self.temp_path / "a.txt").write_text("content")
+        (self.temp_path / "b.txt").write_text("content")
+
+        result = _tool_search_files(
+            {
+                "pattern": "*.txt",
+                "search_root": str(self.temp_path),
+                "sort_by": "name"
+            },
+            self.ctx
+        )
+
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertEqual(names, ["a.txt", "b.txt", "c.txt"])
+
+    def test_search_sort_by_size(self):
+        """Should sort results by size (largest first)."""
+        (self.temp_path / "small.txt").write_text("x")
+        (self.temp_path / "large.txt").write_text("x" * 1000)
+        (self.temp_path / "medium.txt").write_text("x" * 100)
+
+        result = _tool_search_files(
+            {
+                "pattern": "*.txt",
+                "search_root": str(self.temp_path),
+                "sort_by": "size",
+                "include_metadata": True
+            },
+            self.ctx
+        )
+
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertEqual(names[0], "large.txt")
+        self.assertEqual(names[-1], "small.txt")
+
+    def test_search_max_depth(self):
+        """Should limit recursion depth."""
+        (self.temp_path / "level0.txt").write_text("content")
+        dir1 = self.temp_path / "dir1"
+        dir1.mkdir()
+        (dir1 / "level1.txt").write_text("content")
+        dir2 = dir1 / "dir2"
+        dir2.mkdir()
+        (dir2 / "level2.txt").write_text("content")
+
+        result = _tool_search_files(
+            {
+                "pattern": "**/*.txt",
+                "search_root": str(self.temp_path),
+                "max_depth": 0
+            },
+            self.ctx
+        )
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertIn("level0.txt", names)
+        self.assertNotIn("level1.txt", names)
+        self.assertNotIn("level2.txt", names)
+
+        result = _tool_search_files(
+            {
+                "pattern": "**/*.txt",
+                "search_root": str(self.temp_path),
+                "max_depth": 1
+            },
+            self.ctx
+        )
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertIn("level0.txt", names)
+        self.assertIn("level1.txt", names)
+        self.assertNotIn("level2.txt", names)
+
+    def test_search_case_insensitive(self):
+        """Should support case-insensitive sorting."""
+        (self.temp_path / "Zebra.txt").write_text("content")
+        (self.temp_path / "apple.txt").write_text("content")
+        (self.temp_path / "Banana.txt").write_text("content")
+
+        result = _tool_search_files(
+            {
+                "pattern": "*.txt",
+                "search_root": str(self.temp_path),
+                "case_sensitive": False,
+                "sort_by": "name"
+            },
+            self.ctx
+        )
+
+        names = [m["name"] for m in result.output["matches"]]
+        self.assertEqual(names, ["apple.txt", "Banana.txt", "Zebra.txt"])
+
+    def test_search_invalid_sort_by(self):
+        """Should raise ValueError for invalid sort_by."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_search_files(
+                {
+                    "pattern": "*.txt",
+                    "search_root": str(self.temp_path),
+                    "sort_by": "invalid"
+                },
+                self.ctx
+            )
+
+        self.assertIn("sort_by must be one of", str(cm.exception))
+
+    def test_search_invalid_max_depth(self):
+        """Should raise ValueError for invalid max_depth."""
+        with self.assertRaises(ValueError) as cm:
+            _tool_search_files(
+                {
+                    "pattern": "*.txt",
+                    "search_root": str(self.temp_path),
+                    "max_depth": 25
+                },
+                self.ctx
+            )
+
+        self.assertIn("cannot exceed 20", str(cm.exception))
 
 
 class TestFileMoveLinesTool(unittest.TestCase):
