@@ -26,8 +26,10 @@ class ImageGeneration:
         """Get available models from provider"""
         return self.provider.get_available_models()
 
-    def generate_image(self, prompt: str, width: int = 1024, height: int = 1024,
-                      seed: Optional[int] = None, model: str = "flux") -> Dict[str, Any]:
+    def generate_image(self, prompt: str, width: int = 768, height: int = 768,
+                      seed: Optional[int] = None, model: str = "flux",
+                      enhance: bool = False, safe: bool = False,
+                      nologo: bool = True, private: bool = True) -> Dict[str, Any]:
         """
         Generate image from text prompt
 
@@ -37,6 +39,10 @@ class ImageGeneration:
             height: Image height in pixels
             seed: Random seed for reproducible generation
             model: Model to use for generation
+            enhance: Enhance prompt using LLM for more detail
+            safe: Strict NSFW filtering
+            nologo: Remove Pollinations logo (requires authentication)
+            private: Prevent image from appearing in public feed
 
         Returns:
             Dict with generation results including file path or error
@@ -49,5 +55,9 @@ class ImageGeneration:
             width=width,
             height=height,
             seed=seed,
-            model=model
+            model=model,
+            enhance=enhance,
+            safe=safe,
+            nologo=nologo,
+            private=private
         )

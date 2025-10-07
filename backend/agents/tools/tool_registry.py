@@ -280,5 +280,15 @@ def register_builtin_tools() -> None:
     except Exception as e:
         _logger.error(f"Error registering plan tools: {e}")
 
+    try:
+        from .media_generation.image_generate_func import image_generate_spec
+
+        tool_registry.register(image_generate_spec)
+        _logger.info("Media generation tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import media generation tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering media generation tools: {e}")
+
 
 register_builtin_tools()
