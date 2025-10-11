@@ -25,16 +25,14 @@ logger = get_logger(__name__)
 
 @dataclass
 class TerminalSession:
-    """Represents an active persistent terminal session with shell process."""
+    """Represents an active persistent terminal session with PTY."""
     session_id: str
     workspace_path: str
     process: Optional[subprocess.Popen]
-    # PTY support
-    is_pty: bool = False
+    # PTY fields
     master_fd: Optional[int] = None
     slave_fd: Optional[int] = None
     winpty_proc: Optional[Any] = None
-    local_echo: bool = False
     platform: str = field(default_factory=lambda: sys.platform)
     shell: str = ""
     line_ending: str = os.linesep
@@ -58,12 +56,8 @@ class TerminalRoute:
 
     @staticmethod
     def _session_running(session: 'TerminalSession') -> bool:
-        if getattr(session, 'is_pty', False):
-            return session.is_alive
-        try:
-            return session.process is not None and session.process.poll() is None
-        except Exception:
-            return False
+        """Check if PTY session is alive."""
+        return session.is_alive
 
     @staticmethod
     def _format_sse_event(payload: Dict[str, Any]) -> str:
@@ -90,47 +84,8 @@ class TerminalRoute:
                 except Exception as exc:
                     logger.warning(f"[TERMINAL] Failed to publish output to subscriber for session {session.session_id}: {exc}")
 
-    def _enable_windows_vt_mode(self, process: subprocess.Popen) -> bool:
-        """Enable Virtual Terminal processing for Windows console."""
-        if os.name != 'nt':
-            return False
-
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            # Constants for console mode
-            ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-            STD_OUTPUT_HANDLE = -11
-
-            kernel32 = ctypes.windll.kernel32
-
-            # Get console handle
-            h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
-            if h_out == -1:
-                logger.warning("[TERMINAL] Could not get console handle for VT mode")
-                return False
-
-            # Get current mode
-            mode = wintypes.DWORD()
-            if not kernel32.GetConsoleMode(h_out, ctypes.byref(mode)):
-                logger.warning("[TERMINAL] Could not get console mode for VT mode")
-                return False
-
-            # Enable VT processing
-            new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            if not kernel32.SetConsoleMode(h_out, new_mode):
-                logger.warning("[TERMINAL] Could not enable VT processing")
-                return False
-
-            logger.info("[TERMINAL] Enabled Windows Virtual Terminal processing")
-            return True
-        except Exception as e:
-            logger.warning(f"[TERMINAL] Failed to enable VT mode: {e}")
-            return False
-
     def _create_shell_process(self, workspace_path: Path) -> tuple[TerminalSession, Dict[str, Any]]:
-        """Create a persistent shell session; prefer a PTY if available."""
+        """Create a persistent PTY-based shell session."""
         # Detect and prepare venv activation if present
         venv_path = self._detect_venv(workspace_path)
         startup_commands = []
@@ -149,191 +104,133 @@ class TerminalRoute:
         env = os.environ.copy()
         env_vars = self._load_env_file(workspace_path)
         env.update(env_vars)
+        env['TERM'] = 'xterm-256color'
 
-        if os.name == 'nt':  # Windows
-            env['TERM'] = 'xterm-256color'
-            # Try pywinpty (ConPTY) for proper interactive behavior
+        if os.name == 'nt':  # Windows - requires pywinpty
             try:
-                from pywinpty import PtyProcess  # type: ignore
-                winpty_proc = PtyProcess.spawn('cmd.exe', cwd=str(workspace_path), env=env)
+                from winpty import PtyProcess  # type: ignore
+            except ImportError:
+                raise RuntimeError(
+                    "pywinpty is required for terminal on Windows. "
+                    "Install with: pip install pywinpty"
+                )
+
+            winpty_proc = PtyProcess.spawn('cmd.exe', cwd=str(workspace_path), env=env)
+            # Set UTF-8 encoding
+            try:
+                winpty_proc.write('chcp 65001 > NUL\r\n')
+            except Exception:
+                pass
+            # Run startup commands
+            for cmd in startup_commands:
                 try:
-                    winpty_proc.write('chcp 65001 > NUL\r\n')
+                    winpty_proc.write(cmd + '\r\n')
                 except Exception:
                     pass
-                for cmd in startup_commands:
-                    try:
-                        winpty_proc.write(cmd + '\r\n')
-                    except Exception:
-                        pass
-                metadata.update({
-                    "shell": "cmd.exe",
-                    "line_ending": "\r\n",
-                })
-                session = TerminalSession(
-                    session_id='',
-                    workspace_path=str(workspace_path),
-                    process=None,
-                    is_pty=True,
-                    winpty_proc=winpty_proc,
-                    local_echo=True,
-                    platform=sys.platform,
-                    shell='cmd.exe',
-                    line_ending='\r\n',
-                )
-                logger.info("[TERMINAL] Using pywinpty PTY backend on Windows")
-                return session, metadata
-            except Exception as e:
-                logger.warning(f"[TERMINAL] pywinpty unavailable/failure, falling back to pipes: {e}")
-                # Fallback to pipes as before
-                process = subprocess.Popen(
-                    ['cmd.exe'],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(workspace_path),
-                    env=env,
-                    text=True,
-                    bufsize=0,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-                )
-                self._enable_windows_vt_mode(process)
-                try:
-                    process.stdin.write("chcp 65001 > NUL\n")
-                    process.stdin.flush()
-                except Exception:
-                    pass
-                for cmd in startup_commands:
-                    process.stdin.write(f"{cmd}\n")
-                    process.stdin.flush()
-                metadata.update({
-                    "shell": "cmd.exe",
-                    "line_ending": "\r\n",
-                })
-                session = TerminalSession(
-                    session_id='',
-                    workspace_path=str(workspace_path),
-                    process=process,
-                    is_pty=False,
-                )
-                logger.info(f"[TERMINAL] Created persistent shell process in {workspace_path}")
-                logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
-                return session, metadata
-        else:  # Unix/Linux/Mac
-            # Set TERM for proper terminal emulation
-            env['TERM'] = 'xterm-256color'
+
+            metadata.update({
+                "shell": "cmd.exe",
+                "line_ending": "\r\n",
+            })
+            session = TerminalSession(
+                session_id='',
+                workspace_path=str(workspace_path),
+                process=None,
+                winpty_proc=winpty_proc,
+                platform=sys.platform,
+                shell='cmd.exe',
+                line_ending='\r\n',
+            )
+            logger.info("[TERMINAL] Created PTY session using pywinpty on Windows")
+            logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
+            return session, metadata
+
+        else:  # Unix/Linux/Mac - native PTY support
+            import pty, fcntl, termios, struct
 
             shell_path = os.environ.get('SHELL') or '/bin/bash'
             shell_executable = shell_path if shell_path and Path(shell_path).exists() else '/bin/bash'
+
+            master_fd, slave_fd = pty.openpty()
+            # Set default terminal size (will be updated by frontend)
+            rows, cols = 24, 80
+            winsz = struct.pack('HHHH', rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsz)
+
+            process = subprocess.Popen(
+                [shell_executable],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                cwd=str(workspace_path),
+                env=env,
+                bufsize=0,
+                preexec_fn=os.setsid
+            )
+            # Close slave fd in parent process
             try:
-                import pty, fcntl, termios, struct
-                master_fd, slave_fd = pty.openpty()
-                # Set a sane default size (will be updated by frontend resize)
-                rows, cols = 24, 80
-                winsz = struct.pack('HHHH', rows, cols, 0, 0)
-                fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsz)
-                process = subprocess.Popen(
-                    [shell_executable],
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    cwd=str(workspace_path),
-                    env=env,
-                    bufsize=0,
-                    preexec_fn=os.setsid
-                )
-                try:
-                    os.close(slave_fd)
-                except Exception:
-                    pass
-                for cmd in startup_commands:
-                    os.write(master_fd, (cmd + "\n").encode('utf-8', errors='ignore'))
-                metadata.update({
-                    "shell": shell_executable,
-                    "line_ending": "\n",
-                })
-                session = TerminalSession(
-                    session_id='',
-                    workspace_path=str(workspace_path),
-                    process=process,
-                    is_pty=True,
-                    master_fd=master_fd,
-                )
-                logger.info("[TERMINAL] Using PTY backend on Unix")
-                logger.info(f"[TERMINAL] Created persistent shell process in {workspace_path}")
-                logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
-                return session, metadata
-            except Exception as e:
-                logger.warning(f"[TERMINAL] PTY creation failed on Unix; falling back to pipes: {e}")
-                process = subprocess.Popen(
-                    [shell_executable],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(workspace_path),
-                    env=env,
-                    text=True,
-                    bufsize=0,
-                    preexec_fn=os.setsid
-                )
-                for cmd in startup_commands:
-                    process.stdin.write(f"{cmd}\n")
-                    process.stdin.flush()
-                metadata.update({
-                    "shell": shell_executable,
-                    "line_ending": "\n",
-                })
-                session = TerminalSession(
-                    session_id='',
-                    workspace_path=str(workspace_path),
-                    process=process,
-                    is_pty=False,
-                )
-                logger.info(f"[TERMINAL] Created persistent shell process in {workspace_path}")
-                logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
-                return session, metadata
+                os.close(slave_fd)
+            except Exception:
+                pass
+
+            # Run startup commands
+            for cmd in startup_commands:
+                os.write(master_fd, (cmd + "\n").encode('utf-8', errors='ignore'))
+
+            metadata.update({
+                "shell": shell_executable,
+                "line_ending": "\n",
+            })
+            session = TerminalSession(
+                session_id='',
+                workspace_path=str(workspace_path),
+                process=process,
+                master_fd=master_fd,
+                platform=sys.platform,
+                shell=shell_executable,
+                line_ending='\n',
+            )
+            logger.info("[TERMINAL] Created PTY session using native pty on Unix")
+            logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
+            return session, metadata
 
     def _output_reader_thread(self, session: TerminalSession):
-        """Background thread to read output from shell process.
+        """Background thread to read output from PTY.
 
-        Important: Reading large fixed-size blocks from a pipe (e.g., 4096)
-        can block until the buffer is full, which breaks interactivity.
-        We read small increments and flush frequently so prompts and
-        interactive program output appear immediately.
+        Reads in small increments and flushes frequently for immediate output
+        display of prompts and interactive programs.
         """
         try:
             logger.info(f"[TERMINAL] Output reader started for session {session.session_id}")
             buffer: list[str] = []
             last_flush = time.time()
-            flush_interval = 0.05  # seconds
-            max_buffer = 1024
+            flush_interval = 0.01  # 10ms for low latency
+            max_buffer = 512  # Smaller buffer for faster flushing
 
-            def read_from_session(max_bytes: int = 1024) -> str:
-                if session.is_pty:
-                    if os.name == 'nt' and session.winpty_proc is not None:
-                        try:
-                            data = session.winpty_proc.read(max_bytes)
-                            if isinstance(data, (bytes, bytearray)):
-                                return data.decode('utf-8', errors='ignore')
-                            return str(data)
-                        except Exception:
-                            return ''
-                    elif session.master_fd is not None:
-                        try:
-                            b = os.read(session.master_fd, max_bytes)
-                            return b.decode('utf-8', errors='ignore')
-                        except Exception:
-                            return ''
-                # Pipe fallback
-                try:
-                    return session.process.stdout.read(1)  # type: ignore
-                except Exception:
-                    return ''
+            def read_from_pty(max_bytes: int = 256) -> str:
+                """Read from PTY - Windows (pywinpty) or Unix (native)."""
+                if os.name == 'nt' and session.winpty_proc is not None:
+                    try:
+                        data = session.winpty_proc.read(max_bytes)
+                        if isinstance(data, (bytes, bytearray)):
+                            return data.decode('utf-8', errors='ignore')
+                        return str(data)
+                    except Exception:
+                        return ''
+                elif session.master_fd is not None:
+                    try:
+                        b = os.read(session.master_fd, max_bytes)
+                        return b.decode('utf-8', errors='ignore')
+                    except Exception:
+                        return ''
+                return ''
 
             while self._session_running(session):
-                ch = read_from_session(512)
+                ch = read_from_pty()
                 if ch:
                     buffer.append(ch)
                     now = time.time()
+                    # Flush buffer on newlines, size limit, or time interval
                     if ('\n' in ch) or ('\r' in ch) or (len(''.join(buffer)) >= max_buffer) or ((now - last_flush) >= flush_interval):
                         chunk = ''.join(buffer)
                         buffer.clear()
@@ -344,7 +241,7 @@ class TerminalRoute:
                     continue
                 if not self._session_running(session):
                     break
-                time.sleep(0.01)
+                time.sleep(0.001)  # 1ms sleep for lower latency
 
             # Flush any trailing buffer
             if buffer:
@@ -379,15 +276,14 @@ class TerminalRoute:
             return None
 
     def _create_new_session(self, workspace_path: str) -> TerminalSession:
-        """Create a new persistent terminal session with shell process."""
+        """Create a new persistent PTY terminal session."""
         session_id = str(uuid.uuid4())
 
-        # Create persistent shell process
+        # Create PTY shell process
         session, metadata = self._create_shell_process(Path(workspace_path))
         # Fill required fields
         session.session_id = session_id
         session.workspace_path = workspace_path
-        session.local_echo = False if getattr(session, 'is_pty', False) else (os.name == 'nt')
         session.platform = str(metadata.get("platform", sys.platform))
         session.shell = str(metadata.get("shell", ""))
         session.line_ending = str(metadata.get("line_ending", os.linesep))
@@ -405,7 +301,7 @@ class TerminalRoute:
         with self._session_lock:
             self._sessions[session_id] = session
 
-        logger.info(f"[TERMINAL] Created persistent session {session_id} for {workspace_path}")
+        logger.info(f"[TERMINAL] Created PTY session {session_id} for {workspace_path}")
         return session
 
     def _get_session(self, session_id: str) -> Optional[TerminalSession]:
@@ -414,7 +310,7 @@ class TerminalRoute:
             return self._sessions.get(session_id)
 
     def _kill_session(self, session_id: str) -> bool:
-        """Kill a terminal session and its shell process."""
+        """Kill a PTY terminal session and its shell process."""
         with self._session_lock:
             session = self._sessions.get(session_id)
             if not session:
@@ -422,45 +318,32 @@ class TerminalRoute:
 
             session.is_alive = False
 
-            # Kill the process
+            # Kill the PTY process
             try:
-                if session.is_pty:
-                    if os.name == 'nt' and session.winpty_proc is not None:
+                if os.name == 'nt' and session.winpty_proc is not None:
+                    # Windows PTY termination
+                    try:
+                        session.winpty_proc.terminate(True)
+                    except Exception:
                         try:
-                            session.winpty_proc.terminate(True)
-                        except Exception:
-                            try:
-                                session.winpty_proc.close(True)
-                            except Exception:
-                                pass
-                    else:
-                        # Unix PTY
-                        import signal
-                        try:
-                            os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
-                        except Exception:
-                            pass
-                        try:
-                            if session.master_fd is not None:
-                                os.close(session.master_fd)
+                            session.winpty_proc.close(True)
                         except Exception:
                             pass
                 else:
-                    if session.process.poll() is None:  # Still running
-                        if os.name == 'nt':  # Windows
-                            import signal
-                            os.kill(session.process.pid, signal.CTRL_BREAK_EVENT)
-                        else:  # Unix
-                            import signal
-                            os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
-                        session.process.wait(timeout=2)
-                logger.info(f"[TERMINAL] Killed session {session_id}")
+                    # Unix PTY termination
+                    import signal
+                    try:
+                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
+                    except Exception:
+                        pass
+                    try:
+                        if session.master_fd is not None:
+                            os.close(session.master_fd)
+                    except Exception:
+                        pass
+                logger.info(f"[TERMINAL] Killed PTY session {session_id}")
             except Exception as e:
                 logger.warning(f"[TERMINAL] Error killing session {session_id}: {e}")
-                try:
-                    session.process.kill()  # Force kill
-                except:
-                    pass
 
             self._broadcast_to_subscribers(session, {"type": "terminated"})
             self._broadcast_to_subscribers(session, None)
@@ -534,58 +417,11 @@ class TerminalRoute:
         return env_vars
 
     def _preprocess_command(self, session: TerminalSession, command_data: str) -> str:
-        """Preprocess command data before sending to shell.
+        """Pass command data directly to PTY.
 
-        Handles special commands and control characters.
-        Returns the processed command data, or None if fully handled.
+        PTY handles all control characters and terminal semantics natively,
+        so no preprocessing is needed.
         """
-        # In PTY mode we let control characters flow; the shell handles them.
-        if getattr(session, 'is_pty', False):
-            return command_data
-        # Handle Ctrl+C (ETX character)
-        if '\x03' in command_data:
-            # Try to send interrupt signal to the process group
-            try:
-                if os.name == 'nt':  # Windows
-                    import signal
-                    # Send Ctrl+C event to the process group
-                    # Note: This may not work perfectly with PIPE-only processes
-                    try:
-                        os.kill(session.process.pid, signal.CTRL_C_EVENT)
-                    except:
-                        # If CTRL_C_EVENT doesn't work, try CTRL_BREAK_EVENT
-                        os.kill(session.process.pid, signal.CTRL_BREAK_EVENT)
-                else:  # Unix
-                    import signal
-                    os.killpg(os.getpgid(session.process.pid), signal.SIGINT)
-
-                logger.info(f"[TERMINAL] Sent interrupt signal to session {session.session_id}")
-            except Exception as e:
-                logger.warning(f"[TERMINAL] Failed to send interrupt signal: {e}")
-
-            # Remove \x03 from command data (already handled as signal)
-            command_data = command_data.replace('\x03', '')
-
-            # If only \x03 was sent, return empty to avoid sending to stdin
-            if not command_data or command_data.strip() == '':
-                return ''
-
-        # Check if this is a clear screen command
-        # Note: cmd.exe with stdin=PIPE doesn't have a console, so cls won't work.
-        # We intercept it and send ANSI clear sequences directly to clients.
-        stripped_command = command_data.strip().lower()
-
-        if stripped_command in ['cls', 'clear']:
-            # Send ANSI clear sequence to all subscribers
-            # \x1b[2J - Clear entire screen
-            # \x1b[3J - Clear scrollback buffer
-            # \x1b[H  - Move cursor to home position (1,1)
-            clear_sequence = '\x1b[2J\x1b[3J\x1b[H'
-            self._broadcast_to_subscribers(session, {"type": "output", "data": clear_sequence})
-
-            # Return just newline to trigger shell to output new prompt; caller will normalize
-            return '\n'
-
         return command_data
 
     def _register_routes(self) -> None:
@@ -619,7 +455,6 @@ class TerminalRoute:
                 "success": True,
                 "session_id": session.session_id,
                 "workspace_path": session.workspace_path,
-                "local_echo": session.local_echo,
                 "platform": session.platform,
                 "shell": session.shell,
                 "line_ending": session.line_ending,
@@ -684,22 +519,18 @@ class TerminalRoute:
             else:
                 payload_to_write = payload_to_write.replace("\r\n", "\n")
 
-            # Send command to shell stdin / PTY
+            # Send command to PTY
             try:
-                if getattr(session, 'is_pty', False):
-                    if os.name == 'nt' and session.winpty_proc is not None:
-                        session.winpty_proc.write(payload_to_write)
-                    elif session.master_fd is not None:
-                        os.write(session.master_fd, payload_to_write.encode('utf-8', errors='ignore'))
-                    else:
-                        session.process.stdin.write(payload_to_write)
-                        session.process.stdin.flush()
+                if os.name == 'nt' and session.winpty_proc is not None:
+                    session.winpty_proc.write(payload_to_write)
+                elif session.master_fd is not None:
+                    os.write(session.master_fd, payload_to_write.encode('utf-8', errors='ignore'))
                 else:
-                    session.process.stdin.write(payload_to_write)
-                    session.process.stdin.flush()
+                    raise RuntimeError("No PTY available for session")
+
                 session.last_activity = time.time()
                 log_preview = payload_to_write.replace("\r", "\\r").replace("\n", "\\n")
-                logger.info(f"[TERMINAL] Sent input to session {session_id}: {log_preview[:200]}")
+                logger.info(f"[TERMINAL] Sent input to PTY session {session_id}: {log_preview[:200]}")
 
                 return jsonify({"success": True})
             except Exception as e:
@@ -764,7 +595,6 @@ class TerminalRoute:
                         "session_id": session.session_id,
                         "workspace_path": session.workspace_path,
                         "is_alive": self._session_running(session),
-                        "local_echo": session.local_echo,
                         "platform": session.platform,
                         "shell": session.shell,
                         "line_ending": session.line_ending,
@@ -848,7 +678,6 @@ class TerminalRoute:
                         "created_at": session.created_at,
                         "last_activity": session.last_activity,
                         "is_alive": self._session_running(session),
-                        "local_echo": session.local_echo,
                         "platform": session.platform,
                         "shell": session.shell,
                         "line_ending": session.line_ending,
@@ -867,7 +696,7 @@ class TerminalRoute:
             return jsonify({"success": False, "error": str(err)}), 500
 
     def resize_session_route(self):
-        """Resize a terminal session PTY to match client rows/cols."""
+        """Resize a PTY terminal session to match client rows/cols."""
         try:
             data = request.get_json(force=True)
             session_id = data.get("session_id")
@@ -883,12 +712,9 @@ class TerminalRoute:
             if not session:
                 return jsonify({"success": False, "error": "Session not found"}), 404
 
-            if not getattr(session, 'is_pty', False):
-                return jsonify({"success": True, "note": "not a PTY session"})
-
             if os.name == 'nt' and session.winpty_proc is not None:
                 try:
-                    session.winpty_proc.set_size(rows, cols)
+                    session.winpty_proc.setwinsize(rows, cols)
                     return jsonify({"success": True})
                 except Exception as e:
                     logger.warn(f"[TERMINAL] Failed to resize Windows PTY: {e}")

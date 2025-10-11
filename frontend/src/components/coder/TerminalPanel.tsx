@@ -8,51 +8,13 @@ import logger from '../../utils/core/logger';
 import { Icons } from '../ui/Icons';
 import 'xterm/css/xterm.css';
 
-const INPUT_FLUSH_DELAY_MS = 30;
+// Input batching removed - now using 10ms coalescing in queueInput
 const TERMINAL_SCROLLBACK = 5000;
 const DEFAULT_LINE_ENDING = '\n';
 const WINDOWS_LINE_ENDING = '\r\n';
 const CLEAR_SCREEN_SEQUENCE = '\u001b[2J\u001b[3J\u001b[H';
 
-const isLikelyWindowsEnvironment = () => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  try {
-    const { navigator } = window;
-    if (!navigator) {
-      return false;
-    }
-
-    const platform = (navigator.platform || '').toLowerCase();
-    const userAgent = (navigator.userAgent || '').toLowerCase();
-
-    if (platform.includes('win')) {
-      return true;
-    }
-
-    if (userAgent.includes('windows')) {
-      return true;
-    }
-  } catch (error) {
-    logger.debug('[TERMINAL] Failed to detect platform:', error);
-  }
-
-  return false;
-};
-
-const determineLocalEchoPreference = (explicit: unknown, workspacePath?: string) => {
-  if (typeof explicit === 'boolean') {
-    return explicit;
-  }
-
-  if (workspacePath && workspacePath.includes(':\\')) {
-    return true;
-  }
-
-  return isLikelyWindowsEnvironment();
-};
+// Removed local echo detection - PTY handles all terminal semantics
 
 interface SessionDescriptor {
   id: string;
@@ -60,7 +22,6 @@ interface SessionDescriptor {
   createdAt: number;
   isAlive: boolean;
   isConnected: boolean;
-  localEcho: boolean;
   platform?: string | null;
   shell?: string | null;
   lineEnding?: string | null;
@@ -76,18 +37,15 @@ interface SessionRuntime {
   opening: boolean;
   inputBuffer: string;
   flushTimer: number | null;
-  pendingChunks: string[];
-  isSending: boolean;
   disposables: Array<{ dispose: () => void }>;
   lastWorkspaceSummary: string | null;
   pendingIntro: ((instance: Terminal) => void) | null;
-  localEchoEnabled: boolean;
-  localInputBuffer: string;
   pendingOutput: string[];
   hasShownIntro: boolean;
   platform: string | null;
   shell: string | null;
   preferredLineEnding: string;
+  localEchoBuffer: string; // Characters we've shown optimistically but PTY hasn't confirmed yet
 }
 
 const isWindowsPlatformName = (platform?: string | null) => {
@@ -132,40 +90,6 @@ const resolvePreferredLineEnding = (
   return DEFAULT_LINE_ENDING;
 };
 
-const isWindowsRuntime = (runtime: SessionRuntime, workspacePath?: string | null) => {
-  if (runtime.platform && isWindowsPlatformName(runtime.platform)) {
-    return true;
-  }
-  if (runtime.shell) {
-    const normalizedShell = runtime.shell.toLowerCase();
-    if (normalizedShell.includes('powershell') || normalizedShell.includes('cmd')) {
-      return true;
-    }
-  }
-  if (runtime.preferredLineEnding === WINDOWS_LINE_ENDING) {
-    return true;
-  }
-  if (workspacePath && workspacePath.includes(':\\')) {
-    return true;
-  }
-  return isLikelyWindowsEnvironment();
-};
-
-const shouldPerformLocalClear = (
-  runtime: SessionRuntime,
-  command: string,
-  workspacePath?: string | null,
-) => {
-  if (!command) {
-    return false;
-  }
-  const normalized = command.trim().toLowerCase();
-  if (normalized !== 'cls') {
-    return false;
-  }
-  return isWindowsRuntime(runtime, workspacePath);
-};
-
 const writeBanner = (terminal: Terminal) => {
   terminal.writeln('\x1b[1;36mAtlas Interactive Terminal\x1b[0m');
   terminal.writeln('\x1b[36m----------------------------------------\x1b[0m');
@@ -192,88 +116,23 @@ const parseCreatedAt = (value: unknown): number => {
   return Date.now();
 };
 
-const normalizeInputForRuntime = (runtime: SessionRuntime, data: string): string => {
-  if (!data) {
-    return data;
+const isPrintableInput = (data: string): boolean => {
+  // Check if input is printable characters (not control sequences)
+  // Allow: letters, numbers, spaces, punctuation, Enter, Tab
+  // Disallow: escape sequences, Ctrl+C, Ctrl+D, arrow keys, etc.
+  if (!data || data.length === 0) return false;
+
+  // Single printable ASCII character (space to ~)
+  if (data.length === 1) {
+    const code = data.charCodeAt(0);
+    return (code >= 32 && code <= 126) || code === 13 || code === 10 || code === 9;
   }
 
-  const targetLineEnding = runtime.preferredLineEnding || DEFAULT_LINE_ENDING;
-  return data.replace(/\r\n|\r|\n/g, targetLineEnding);
-};
-
-const applyLocalEcho = (
-  runtime: SessionRuntime,
-  chunk: string,
-  workspacePath?: string | null,
-): string => {
-  if (!chunk) {
-    return '';
-  }
-
-  let rendered = '';
-
-  for (let index = 0; index < chunk.length; index += 1) {
-    const char = chunk[index];
-
-    if (char === '\r') {
-      const pendingCommand = runtime.localInputBuffer;
-      const newlineForEcho =
-        runtime.preferredLineEnding === WINDOWS_LINE_ENDING ? WINDOWS_LINE_ENDING : '\r\n';
-      rendered += newlineForEcho;
-      if (shouldPerformLocalClear(runtime, pendingCommand, workspacePath)) {
-        rendered += CLEAR_SCREEN_SEQUENCE;
-      }
-      runtime.localInputBuffer = '';
-      continue;
-    }
-
-    if (char === '\n') {
-      runtime.localInputBuffer = '';
-      continue;
-    }
-
-    if (char === '\x7f') {
-      if (runtime.localInputBuffer.length > 0) {
-        runtime.localInputBuffer = runtime.localInputBuffer.slice(0, -1);
-        rendered += '\b \b';
-      }
-      continue;
-    }
-
-    if (char === '\x1b') {
-      const remaining = chunk.slice(index);
-      if (remaining.startsWith('\u001b[')) {
-        let offset = 2;
-        while (offset < remaining.length) {
-          const code = remaining[offset];
-          if ((code >= '@' && code <= '~') || code === '~') {
-            index += offset;
-            break;
-          }
-          offset += 1;
-        }
-      }
-      continue;
-    }
-
-    if (char === '\u0003') {
-      runtime.localInputBuffer = '';
-      rendered += '^C\r\n';
-      continue;
-    }
-
-    if (char >= ' ') {
-      runtime.localInputBuffer += char;
-      rendered += char;
-      continue;
-    }
-  }
-
-  if (rendered) {
-    runtime.terminal.write(rendered);
-  }
-
-  return rendered;
+  // Multi-character input - only allow if all printable
+  return data.split('').every(char => {
+    const code = char.charCodeAt(0);
+    return (code >= 32 && code <= 126) || code === 13 || code === 10 || code === 9;
+  });
 };
 
 const writeRemoteChunk = (runtime: SessionRuntime, chunk: string) => {
@@ -287,10 +146,32 @@ const writeRemoteChunk = (runtime: SessionRuntime, chunk: string) => {
     return;
   }
 
-  // Write output directly to terminal
-  // Note: We don't need echo suppression because cmd.exe with stdin=PIPE
-  // does not echo input characters. Local echo provides immediate feedback,
-  // and server output is the actual command results.
+  // Smart echo suppression: if PTY is echoing what we already showed optimistically, suppress it
+  if (runtime.localEchoBuffer.length > 0) {
+    // Check if the incoming chunk starts with our local echo buffer
+    if (chunk.startsWith(runtime.localEchoBuffer)) {
+      // Perfect match - PTY confirmed our optimistic echo
+      const remaining = chunk.slice(runtime.localEchoBuffer.length);
+      runtime.localEchoBuffer = ''; // Clear buffer
+      if (remaining) {
+        runtime.terminal.write(remaining); // Only write what's new
+      }
+      return;
+    }
+
+    // Check if our local echo buffer starts with the incoming chunk (partial confirmation)
+    if (runtime.localEchoBuffer.startsWith(chunk)) {
+      // PTY is confirming part of what we showed - remove confirmed part
+      runtime.localEchoBuffer = runtime.localEchoBuffer.slice(chunk.length);
+      return; // Don't write - already displayed
+    }
+
+    // No match - something unexpected happened (tab completion, password masking, etc.)
+    // Clear buffer and show everything from PTY
+    runtime.localEchoBuffer = '';
+  }
+
+  // Write PTY output directly to terminal
   runtime.terminal.write(chunk);
 };
 
@@ -329,9 +210,8 @@ export const TerminalPanel: React.FC = () => {
 
     runtime.flushTimer = null;
     runtime.inputBuffer = '';
-    runtime.pendingChunks = [];
-    runtime.isSending = false;
     runtime.pendingOutput = [];
+    runtime.localEchoBuffer = ''; // Clear optimistic echo buffer
 
     runtime.disposables.forEach((disposable) => {
       try {
@@ -364,48 +244,21 @@ export const TerminalPanel: React.FC = () => {
     containerCallbacksRef.current.delete(sessionId);
   }, []);
 
-  const sendInputChunk = useCallback(async (sessionId: string, chunk: string) => {
+  const sendInputChunk = useCallback((sessionId: string, chunk: string) => {
     if (!chunk) {
       return;
     }
 
-    try {
-      const response = await fetch(apiUrl('/api/terminal/send'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, data: chunk }),
-      });
-
-      const payload = await response.json().catch(() => null);
-
-      if (!response.ok || !payload?.success) {
-        const message = payload?.error || `Failed to send input (status ${response.status})`;
-        throw new Error(message);
-      }
-    } catch (error) {
+    // FIRE-AND-FORGET: Send immediately without waiting for response
+    // Let the browser handle parallelism and don't block on responses
+    fetch(apiUrl('/api/terminal/send'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, data: chunk }),
+    }).catch(error => {
       logger.warn(`[TERMINAL] Failed to forward input for session ${sessionId}:`, error);
-    }
-  }, []);
-
-  const processPendingChunks = useCallback((sessionId: string) => {
-    const runtime = sessionsRef.current.get(sessionId);
-    if (!runtime || runtime.isSending) {
-      return;
-    }
-
-    const chunk = runtime.pendingChunks.shift();
-    if (!chunk) {
-      return;
-    }
-
-    runtime.isSending = true;
-    void sendInputChunk(sessionId, chunk).finally(() => {
-      runtime.isSending = false;
-      if (runtime.pendingChunks.length > 0) {
-        processPendingChunks(sessionId);
-      }
     });
-  }, [sendInputChunk]);
+  }, []);
 
   const flushInputBuffer = useCallback((sessionId: string) => {
     const runtime = sessionsRef.current.get(sessionId);
@@ -421,9 +274,9 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    runtime.pendingChunks.push(chunk);
-    processPendingChunks(sessionId);
-  }, [processPendingChunks]);
+    // Send immediately - no queueing
+    sendInputChunk(sessionId, chunk);
+  }, [sendInputChunk]);
 
   const queueInput = useCallback((sessionId: string, data: string) => {
     if (!data) {
@@ -435,19 +288,25 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    const normalizedData = normalizeInputForRuntime(runtime, data);
-    runtime.inputBuffer += normalizedData;
+    // Append to buffer
+    runtime.inputBuffer += data;
 
+    // Cancel existing timer
     if (runtime.flushTimer !== null) {
-      return;
+      if (typeof window !== 'undefined') {
+        window.clearTimeout(runtime.flushTimer);
+      }
+      runtime.flushTimer = null;
     }
 
-    if (typeof window === 'undefined') {
+    // Batch with very short delay (10ms) to coalesce rapid keystrokes
+    // But flush immediately if buffer gets large
+    if (typeof window === 'undefined' || runtime.inputBuffer.length > 50) {
       flushInputBuffer(sessionId);
       return;
     }
 
-    runtime.flushTimer = window.setTimeout(() => flushInputBuffer(sessionId), INPUT_FLUSH_DELAY_MS);
+    runtime.flushTimer = window.setTimeout(() => flushInputBuffer(sessionId), 10);
   }, [flushInputBuffer]);
 
   const sendResize = useCallback(async (sessionId: string, rows: number, cols: number) => {
@@ -469,7 +328,6 @@ export const TerminalPanel: React.FC = () => {
       sessionId: string,
       options?: {
         skipIntro?: boolean;
-        localEcho?: boolean;
         platform?: string | null;
         shell?: string | null;
         lineEnding?: string | null;
@@ -521,7 +379,6 @@ export const TerminalPanel: React.FC = () => {
       const resolvedPlatform = options?.platform ?? null;
       const resolvedShell = options?.shell ?? null;
       const resolvedLineEnding = resolvePreferredLineEnding(options?.lineEnding, resolvedPlatform);
-      const localEchoPreference = determineLocalEchoPreference(options?.localEcho, workspacePathRef.current);
 
       const runtime: SessionRuntime = {
         terminal,
@@ -533,29 +390,31 @@ export const TerminalPanel: React.FC = () => {
         opening: false,
         inputBuffer: '',
         flushTimer: null,
-        pendingChunks: [],
-        isSending: false,
         disposables: [],
         lastWorkspaceSummary: null,
         pendingIntro: null,
-        localEchoEnabled: localEchoPreference,
-        localInputBuffer: '',
         pendingOutput: [],
         hasShownIntro: false,
         platform: resolvedPlatform,
         shell: resolvedShell,
         preferredLineEnding: resolvedLineEnding,
+        localEchoBuffer: '', // Initialize optimistic echo buffer
       };
 
       sessionsRef.current.set(sessionId, runtime);
 
       const dataDisposable = terminal.onData((chunk) => {
         logger.debug('[TERMINAL_IO] onData', { sessionId, len: chunk?.length, sample: chunk?.slice?.(0, 40) });
-        // Apply local echo if enabled (for immediate visual feedback)
-        if (runtime.localEchoEnabled) {
-          applyLocalEcho(runtime, chunk, workspacePathRef.current);
+
+        // OPTIMISTIC LOCAL ECHO: Show printable characters immediately for responsiveness
+        // PTY will echo them back, but we'll suppress the duplicate in writeRemoteChunk
+        if (isPrintableInput(chunk)) {
+          runtime.terminal.write(chunk);
+          runtime.localEchoBuffer += chunk;
+          logger.debug('[TERMINAL_IO] local echo', { chunk, bufferLen: runtime.localEchoBuffer.length });
         }
-        // Send input to backend
+
+        // Send to backend (PTY will process and echo back)
         queueInput(sessionId, chunk);
       });
       runtime.disposables.push({
@@ -578,7 +437,7 @@ export const TerminalPanel: React.FC = () => {
         : (instance: Terminal) => {
             // Only show intro once per session
             if (!runtime.hasShownIntro) {
-              const isWin = isWindowsRuntime(runtime, workspacePathRef.current);
+              const isWin = isWindowsPlatformName(runtime.platform);
               if (!isWin) {
                 // Non-Windows: keep Atlas banner + workspace summary
                 writeBanner(instance);
@@ -718,8 +577,6 @@ export const TerminalPanel: React.FC = () => {
         case 'ready': {
           logger.info('[TERMINAL_SSE] ready', { sessionId, payload });
           const isAlive = Boolean(payload.is_alive ?? true);
-          const rawLocalEcho = typeof payload.local_echo === 'boolean' ? payload.local_echo : undefined;
-          const resolvedLocalEcho = determineLocalEchoPreference(rawLocalEcho, workspacePathRef.current);
           const incomingPlatform =
             typeof payload.platform === 'string' ? payload.platform : currentRuntime.platform;
           const incomingShell =
@@ -732,11 +589,9 @@ export const TerminalPanel: React.FC = () => {
             incomingLineEnding,
             currentRuntime.platform,
           );
-          currentRuntime.localEchoEnabled = resolvedLocalEcho;
           updateSessionDescriptor(sessionId, {
             isAlive,
             isConnected: isAlive,
-            localEcho: resolvedLocalEcho,
             platform: currentRuntime.platform,
             shell: currentRuntime.shell,
             lineEnding: currentRuntime.preferredLineEnding,
@@ -754,7 +609,6 @@ export const TerminalPanel: React.FC = () => {
           updateSessionDescriptor(sessionId, {
             isConnected: true,
             isAlive: true,
-            localEcho: currentRuntime.localEchoEnabled,
             platform: currentRuntime.platform,
             shell: currentRuntime.shell,
             lineEnding: currentRuntime.preferredLineEnding,
@@ -831,8 +685,6 @@ export const TerminalPanel: React.FC = () => {
         logger.info('[TERMINAL_UI] component destroyed before session create applied; ignoring', { sessionId });
         return null;
       }
-      const rawLocalEcho = typeof payload.local_echo === 'boolean' ? payload.local_echo : undefined;
-      const localEcho = determineLocalEchoPreference(rawLocalEcho, workspacePathRef.current);
       const platform = typeof payload.platform === 'string' ? payload.platform : null;
       const shell = typeof payload.shell === 'string' ? payload.shell : null;
       const resolvedLineEnding = resolvePreferredLineEnding(
@@ -840,7 +692,6 @@ export const TerminalPanel: React.FC = () => {
         platform,
       );
       const runtime = createRuntime(sessionId, {
-        localEcho,
         platform,
         shell,
         lineEnding: typeof payload.line_ending === 'string' ? payload.line_ending : undefined,
@@ -862,7 +713,6 @@ export const TerminalPanel: React.FC = () => {
           createdAt,
           isAlive: true,
           isConnected: false,
-          localEcho,
           platform,
           shell,
           lineEnding: resolvedLineEnding,
@@ -978,14 +828,16 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    const windowsContext = isWindowsRuntime(runtime, workspacePathRef.current);
+    const windowsContext = isWindowsPlatformName(runtime.platform);
     const newline = runtime.preferredLineEnding || (windowsContext ? WINDOWS_LINE_ENDING : DEFAULT_LINE_ENDING);
     const clearCommand = windowsContext ? `cls${newline}` : `clear${newline}`;
 
     try {
+      // Clear local echo buffer
+      runtime.localEchoBuffer = '';
+
       // Queue the clear command to be sent to the shell
       queueInput(activeSessionId, clearCommand);
-      runtime.localInputBuffer = '';
       if (windowsContext) {
         runtime.terminal.write(CLEAR_SCREEN_SEQUENCE);
       }
@@ -1042,7 +894,7 @@ export const TerminalPanel: React.FC = () => {
       }
 
       // Avoid printing a custom summary on Windows; let cmd.exe prompt reflect cwd
-      const isWin = isWindowsRuntime(runtime, workspacePathRef.current);
+      const isWin = isWindowsPlatformName(runtime.platform);
       if (runtime.isOpen && !isWin) {
         writeWorkspaceSummary(runtime.terminal, normalized || undefined);
       }
@@ -1112,8 +964,6 @@ export const TerminalPanel: React.FC = () => {
         }
 
         const descriptors: SessionDescriptor[] = relevant.map((item: any, index: number) => {
-          const rawLocalEcho = typeof item.local_echo === 'boolean' ? item.local_echo : undefined;
-          const localEcho = determineLocalEchoPreference(rawLocalEcho, workspacePathRef.current);
           const platform = typeof item.platform === 'string' ? item.platform : null;
           const shell = typeof item.shell === 'string' ? item.shell : null;
           const lineEnding = resolvePreferredLineEnding(
@@ -1126,7 +976,6 @@ export const TerminalPanel: React.FC = () => {
             createdAt: parseCreatedAt(item.created_at),
             isAlive: Boolean(item.is_alive ?? true),
             isConnected: false,
-            localEcho,
             platform,
             shell,
             lineEnding,
@@ -1137,7 +986,6 @@ export const TerminalPanel: React.FC = () => {
           logger.debug('[TERMINAL_UI] reattach runtime', { id: descriptor.id, platform: descriptor.platform, shell: descriptor.shell });
           createRuntime(descriptor.id, {
             skipIntro: true,
-            localEcho: descriptor.localEcho,
             platform: descriptor.platform ?? null,
             shell: descriptor.shell ?? null,
             lineEnding: descriptor.lineEnding ?? undefined,
