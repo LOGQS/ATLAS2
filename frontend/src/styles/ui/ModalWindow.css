@@ -157,6 +157,15 @@
   padding: 10px;
 }
 
+.coder-modal {
+  width: 1600px;
+  height: 900px;
+  max-width: 95vw;
+  max-height: 92vh;
+  padding: 0;
+  overflow: hidden;
+}
+
 /* Enable scrolling for modal content when needed */
 .gallery-modal .section-content,
 .search-modal .section-content,
@@ -166,6 +175,16 @@
 .sources-modal .section-content {
   height: 100%;
   overflow-y: auto;
+}
+
+.coder-modal .coder-window-v2 {
+  height: 100%;
+  overflow: hidden;
+  position: static;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  right: auto;
 }
 
 /* Adjust section styling for modals */

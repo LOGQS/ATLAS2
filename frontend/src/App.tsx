@@ -19,6 +19,7 @@ import SearchWindow from './sections/SearchWindow';
 import SettingsWindow from './sections/SettingsWindow';
 import WorkspaceWindow from './sections/WorkspaceWindow';
 import SourcesWindow from './sections/SourcesWindow';
+import CoderWindow from './sections/CoderWindow';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
@@ -1388,6 +1389,7 @@ function App() {
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
         { id: 'workspace', className: 'workspace-modal', render: (isOpen: boolean) => <WorkspaceWindow isOpen={isOpen} /> },
         { id: 'sources', className: 'sources-modal', render: () => <SourcesWindow /> },
+        { id: 'coder', className: 'coder-modal', render: (isOpen: boolean) => <CoderWindow isOpen={isOpen} chatId={activeChatId !== 'none' ? activeChatId : undefined} /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}

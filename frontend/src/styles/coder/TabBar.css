@@ -1,0 +1,164 @@
+.tab-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bolt-elements-background-depth-2);
+  border-bottom: 1px solid var(--bolt-elements-borderColor);
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-height: 40px;
+  max-height: 40px;
+  gap: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bolt-elements-borderColor) transparent;
+}
+
+.tab-bar::-webkit-scrollbar {
+  height: 3px;
+}
+
+.tab-bar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tab-bar::-webkit-scrollbar-thumb {
+  background: var(--bolt-elements-borderColor);
+  border-radius: 2px;
+}
+
+.tab-bar::-webkit-scrollbar-thumb:hover {
+  background: var(--bolt-elements-borderColorActive);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 40px;
+  background: var(--bolt-elements-background-depth-1);
+  border-right: 1px solid var(--bolt-elements-borderColor);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+  position: relative;
+  user-select: none;
+  white-space: nowrap;
+  max-width: 200px;
+  min-width: 80px;
+}
+
+.tab:hover {
+  background: var(--bolt-elements-background-depth-3);
+}
+
+.tab.active {
+  background: var(--bolt-elements-bg-depth-1);
+  border-bottom: 2px solid var(--accent-500);
+  height: 41px;
+}
+
+.tab.active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent-500);
+}
+
+.tab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tab-label {
+  font-size: 13px;
+  color: var(--bolt-elements-textSecondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab.active .tab-label {
+  color: var(--bolt-elements-textPrimary);
+  font-weight: 500;
+}
+
+.tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.tab-unsaved-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.tab-unsaved-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-500);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--bolt-elements-textTertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  opacity: 0;
+}
+
+.tab:hover .tab-close {
+  opacity: 1;
+}
+
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--bolt-elements-borderColorActive);
+  color: var(--bolt-elements-textPrimary);
+}
+
+/* Hide unsaved indicator when close button is visible */
+.tab:hover .tab-unsaved-indicator {
+  display: none;
+}
+
+.tab.active:not(:hover) .tab-close {
+  opacity: 0;
+}
+
+.tab.active:not(:hover) .tab-unsaved-indicator {
+  display: flex;
+}

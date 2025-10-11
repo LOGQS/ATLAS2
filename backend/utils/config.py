@@ -123,7 +123,7 @@ available_routes = [
 
 ROUTE_MODEL_MAP = {
     # Capability-based (no tools)
-    "creative_writing": "gemini-2.5-pro",  # Creative tasks benefit from stronger model
+    "creative_writing": "moonshotai/kimi-k2-instruct-0905",  # Creative tasks benefit from stronger model
     "math_reasoning": "gemini-2.5-pro",     # Math requires strong reasoning
     "code_reasoning": "gemini-2.5-pro",     # Code analysis needs strong model
     "visual_reasoning": "gemini-2.5-flash", # Vision tasks, flash supports multimodal

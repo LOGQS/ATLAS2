@@ -160,6 +160,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
   const needsScrollRestoreRef = useRef<boolean>(true);
   const scrollRestoreBaselineRef = useRef<Message[]>(messages);
+  const resizeObserverFrameRef = useRef<number | null>(null);
+  const lastObservedContainerSizeRef = useRef<{ width: number; height: number; scrollHeight: number } | null>(null);
 
   const autoTtsPlayedRef = useRef<Set<string>>(new Set());
 
@@ -581,11 +583,55 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
+
+    const updateScrollState = () => {
+      const containerEl = messagesContainerRef.current;
+      if (!containerEl) {
+        setNeedsBottomAnchor(false);
+        return;
+      }
+
+      const { clientWidth, clientHeight, scrollHeight } = containerEl;
+      const lastSize = lastObservedContainerSizeRef.current;
+
+      if (
+        lastSize &&
+        lastSize.width === clientWidth &&
+        lastSize.height === clientHeight &&
+        lastSize.scrollHeight === scrollHeight
+      ) {
+        return;
+      }
+
+      lastObservedContainerSizeRef.current = { width: clientWidth, height: clientHeight, scrollHeight };
+      setNeedsBottomAnchor(computeIsScrollable(containerEl));
+    };
+
+    if (typeof window === 'undefined') {
+      updateScrollState();
+      return;
+    }
+
     const ro = new ResizeObserver(() => {
-      setNeedsBottomAnchor(computeIsScrollable(container));
+      if (resizeObserverFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeObserverFrameRef.current);
+      }
+      resizeObserverFrameRef.current = window.requestAnimationFrame(() => {
+        resizeObserverFrameRef.current = null;
+        updateScrollState();
+      });
     });
+
     ro.observe(container);
-    return () => ro.disconnect();
+
+    return () => {
+      ro.disconnect();
+      if (resizeObserverFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeObserverFrameRef.current);
+        resizeObserverFrameRef.current = null;
+      }
+      lastObservedContainerSizeRef.current = null;
+    };
   }, [chatId]);
 
   useEffect(() => {

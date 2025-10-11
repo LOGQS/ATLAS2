@@ -1,0 +1,168 @@
+.diff-viewer {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: var(--bolt-elements-bg-depth-1);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.diff-container {
+  min-height: 100%;
+}
+
+.diff-line {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  white-space: pre;
+  font-family: inherit;
+}
+
+.diff-line-number {
+  display: inline-block;
+  width: 50px;
+  text-align: right;
+  padding-right: 16px;
+  color: var(--bolt-elements-textTertiary);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.diff-line-indicator {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  font-weight: bold;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.diff-line-content {
+  flex: 1;
+  padding-left: 8px;
+  overflow-x: auto;
+}
+
+.diff-line-added {
+  background-color: rgba(74, 222, 128, 0.15);
+  border-left: 3px solid rgb(74, 222, 128);
+}
+
+.diff-line-added .diff-line-indicator {
+  color: rgb(74, 222, 128);
+}
+
+.diff-line-removed {
+  background-color: rgba(248, 113, 113, 0.15);
+  border-left: 3px solid rgb(248, 113, 113);
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+
+.diff-line-removed .diff-line-indicator {
+  color: rgb(248, 113, 113);
+}
+
+/* Scrollbar styling */
+.diff-viewer::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.diff-viewer::-webkit-scrollbar-track {
+  background: var(--bolt-elements-bg-depth-2);
+}
+
+.diff-viewer::-webkit-scrollbar-thumb {
+  background: var(--bolt-elements-borderColor);
+  border-radius: 5px;
+}
+
+.diff-viewer::-webkit-scrollbar-thumb:hover {
+  background: var(--bolt-elements-textTertiary);
+}
+
+/* Diff Header - View Mode Toggle */
+.diff-header {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--bolt-elements-bg-depth-2);
+  border-bottom: 1px solid var(--bolt-elements-borderColor);
+}
+
+.diff-mode-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--bolt-elements-textSecondary);
+  background: transparent;
+  border: 1px solid var(--bolt-elements-borderColor);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.diff-mode-btn:hover {
+  background: var(--bolt-elements-bg-depth-3);
+  color: var(--bolt-elements-textPrimary);
+}
+
+.diff-mode-btn.active {
+  background: var(--bolt-elements-item-backgroundActive);
+  color: var(--bolt-elements-textPrimary);
+  border-color: rgb(59, 130, 246);
+}
+
+/* Split View Mode */
+.diff-container.split-mode {
+  display: flex;
+  flex-direction: column;
+}
+
+.split-diff-line {
+  display: flex;
+  min-height: 24px;
+  border-bottom: 1px solid var(--bolt-elements-borderColor);
+}
+
+.split-diff-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  white-space: pre;
+  font-family: inherit;
+  overflow-x: auto;
+}
+
+.split-diff-side:first-child {
+  border-right: 2px solid var(--bolt-elements-borderColor);
+}
+
+.split-diff-unchanged {
+  background: var(--bolt-elements-bg-depth-1);
+}
+
+.split-diff-added {
+  background-color: rgba(74, 222, 128, 0.15);
+  border-left: 3px solid rgb(74, 222, 128);
+}
+
+.split-diff-added .diff-line-indicator {
+  color: rgb(74, 222, 128);
+}
+
+.split-diff-removed {
+  background-color: rgba(248, 113, 113, 0.15);
+  border-left: 3px solid rgb(248, 113, 113);
+  text-decoration: line-through;
+  opacity: 0.8;
+}
+
+.split-diff-removed .diff-line-indicator {
+  color: rgb(248, 113, 113);
+}

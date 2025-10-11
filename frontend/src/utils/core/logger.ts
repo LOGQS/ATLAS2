@@ -36,7 +36,18 @@ const logger = {
     console.debug(`[ATLAS]`, message, ...fmtArgs(...args));
   },
   info: (message: string, ...args: any[]) => {
-    const allowedPatterns = ['[]'];
+    // Allowlist of patterns for info logs to be surfaced in the console.
+    // Keep concise to avoid spam; extend as needed for targeted modules.
+    const allowedPatterns = [
+      '[]',
+      '[TERMINAL]',
+      '[TERMINAL_UI]',
+      '[TERMINAL_SSE]',
+      '[TERMINAL_IO]',
+      '[CODER_WINDOW]',
+      '[CODER_CTX]',
+      '[XTERM]'
+    ];
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     if (shouldShow) {
       console.info(`[ATLAS]`, message, ...fmtArgs(...args));

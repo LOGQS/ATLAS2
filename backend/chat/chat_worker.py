@@ -375,10 +375,12 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Status: {result.get('status')}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Task ID: {result.get('task_id')}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Agent ID: {result.get('agent_id')}")
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Plan steps: {len(result.get('plan', []))}")
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Actions: {len(result.get('actions', []))}")
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Output length: {len(result.get('output', ''))} chars")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Plan steps: {len(result.get('plan') or [])}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Actions: {len(result.get('actions') or [])}")
+        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Output length: {len(result.get('output') or '')} chars")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Has error: {'error' in result}")
+        if 'error' in result:
+            worker_logger.error(f"[DOMAIN-EXEC-RESULT] Error: {result.get('error')}")
         worker_logger.info("=" * 80)
 
         if 'error' not in result:

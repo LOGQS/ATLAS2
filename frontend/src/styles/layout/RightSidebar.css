@@ -498,4 +498,24 @@
   line-height: 1;
 }
 
+.coder-icon {
+  border: 1px solid rgba(74, 144, 226, 0.6);
+  border-radius: 2px;
+  position: relative;
+  background: rgba(74, 144, 226, 0.1);
+}
+
+.coder-icon::before {
+  content: '</>';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(74, 144, 226, 0.8);
+  font-size: 8px;
+  font-weight: bold;
+  line-height: 1;
+  font-family: monospace;
+}
+
 

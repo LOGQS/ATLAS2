@@ -502,6 +502,57 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp)
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS coder_workspaces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL UNIQUE,
+                    workspace_path TEXT NOT NULL,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_coder_workspaces_chat ON coder_workspaces(chat_id)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS workspace_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_path TEXT NOT NULL,
+                    workspace_name TEXT NOT NULL,
+                    project_type TEXT,
+                    file_count INTEGER DEFAULT 0,
+                    last_opened TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    access_count INTEGER DEFAULT 1,
+                    metadata TEXT,
+                    UNIQUE(workspace_path)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workspace_history_last_opened ON workspace_history(last_opened DESC)
+            """)
+
+            # File edit history for snapshot/undo functionality (checkpoints)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS file_edit_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_path TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    edit_type TEXT DEFAULT 'checkpoint' CHECK(edit_type IN ('checkpoint')),
+                    content_hash TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_edit_history_lookup
+                ON file_edit_history(workspace_path, file_path, timestamp DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_edit_history_hash
+                ON file_edit_history(workspace_path, file_path, content_hash)
+            """)
+
             # No migration logic required fresh schema creation only during development
 
             conn.commit()

@@ -23,6 +23,10 @@ from route.db_bulk_route import register_db_bulk_routes
 from route.db_versioning_route import register_db_versioning_routes
 from route.file_route import register_file_routes
 from route.file_browser_route import register_file_browser_routes
+from route.coder_workspace_route import register_coder_workspace_routes
+from route.folder_picker_route import register_folder_picker_routes
+from route.coder_git_route import coder_git_bp
+from route.terminal_route import register_terminal_routes
 from route.stt_route import register_stt_routes
 from route.image_route import image_bp
 from route.token_route import register_token_routes
@@ -184,6 +188,10 @@ def create_app():
     register_db_versioning_routes(app)
     register_file_routes(app)
     register_file_browser_routes(app)
+    register_coder_workspace_routes(app)
+    register_folder_picker_routes(app)
+    app.register_blueprint(coder_git_bp)
+    register_terminal_routes(app)
     register_stt_routes(app)
     register_token_routes(app)
     app.register_blueprint(image_bp)

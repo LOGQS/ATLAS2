@@ -20,20 +20,24 @@ class OpenRouter:
 
     AVAILABLE_MODELS = {
         "deepseek/deepseek-chat-v3.1:free": {
-            "name": "DeepSeek Chat v3.1 (Free)",
+            "name": "DeepSeek Chat v3.1",
             "supports_reasoning": True
         },
         "z-ai/glm-4.5-air:free": {
-            "name": "GLM 4.5 Air (Free)",
+            "name": "GLM 4.5 Air",
             "supports_reasoning": False
         },
         "qwen/qwen3-coder:free": {
-            "name": "Qwen3 Coder (Free)",
+            "name": "Qwen3 Coder",
             "supports_reasoning": True
         },
         "moonshotai/kimi-k2:free": {
-            "name": "Kimi K2 (Free)",
+            "name": "Kimi K2",
             "supports_reasoning": False
+        },
+        "alibaba/tongyi-deepresearch-30b-a3b:free": {
+            "name": "Tongyi Deep Research",
+            "supports_reasoning": True
         }
     }
 

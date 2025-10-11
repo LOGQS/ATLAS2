@@ -1,0 +1,68 @@
+/* Bolt.diy-inspired CSS Variables for Coder Window */
+/* Dark Theme (matching bolt.diy dark mode) */
+
+:root {
+  /* Border Colors */
+  --bolt-elements-borderColor: rgba(255, 255, 255, 0.1);
+  --bolt-elements-borderColorActive: #0ea5e9;
+
+  /* Background Depths - Critical for proper layering */
+  --bolt-elements-bg-depth-1: #0a0a0a;
+  --bolt-elements-background-depth-1: #0a0a0a;
+  --bolt-elements-bg-depth-2: #171717;
+  --bolt-elements-background-depth-2: #171717;
+  --bolt-elements-bg-depth-3: #262626;
+  --bolt-elements-background-depth-3: #262626;
+  --bolt-elements-bg-depth-4: rgba(255, 255, 255, 0.05);
+
+  /* Text Colors */
+  --bolt-elements-textPrimary: #ffffff;
+  --bolt-elements-textSecondary: #a3a3a3;
+  --bolt-elements-textTertiary: #737373;
+
+  /* Item Colors */
+  --bolt-elements-item-contentDefault: rgba(255, 255, 255, 0.5);
+  --bolt-elements-item-contentActive: #ffffff;
+  --bolt-elements-item-contentAccent: #0ea5e9;
+  --bolt-elements-item-contentDanger: #ef4444;
+
+  --bolt-elements-item-backgroundDefault: rgba(255, 255, 255, 0);
+  --bolt-elements-item-backgroundActive: rgba(255, 255, 255, 0.1);
+  --bolt-elements-item-backgroundAccent: rgba(14, 165, 233, 0.1);
+  --bolt-elements-item-backgroundDanger: rgba(239, 68, 68, 0.1);
+
+  /* Button Colors */
+  --bolt-elements-button-primary-background: rgba(14, 165, 233, 0.1);
+  --bolt-elements-button-primary-backgroundHover: rgba(14, 165, 233, 0.2);
+  --bolt-elements-button-primary-text: #0ea5e9;
+
+  /* Accent Color */
+  --accent-500: #0ea5e9;
+
+  /* Layout Variables - NOT USED in modal context */
+  --header-height: 54px;
+}
+
+/* Custom Easing */
+.bolt-ease-cubic-bezier {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Modern Scrollbar */
+.modern-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.modern-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 100, 100, 0.3);
+  border-radius: 5px;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.5);
+}
