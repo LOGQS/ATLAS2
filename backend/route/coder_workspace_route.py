@@ -1,6 +1,6 @@
 # status: complete
 
-"""Routes for managing coder workspace - user-selected folders for code editing."""
+"""Routes for managing coder workspace"""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import shutil
 import json
 import os
 import hashlib
+import time
+import difflib
 
 from flask import Flask, jsonify, request
 
@@ -23,8 +25,144 @@ logger = get_logger(__name__)
 class CoderWorkspaceRoute:
     """Route handler for coder workspace management."""
 
-    _IGNORED_NAMES = {".git", "__pycache__", "node_modules", ".vscode", ".idea", "venv", ".env"}
-    _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit for reading files
+    # Comprehensive list of directories/files to ignore in file tree
+    _IGNORED_NAMES = {
+        # Version Control
+        ".git", ".svn", ".hg", ".bzr", ".fossil",
+        # Python
+        "__pycache__", "venv", "env", ".venv", ".env.local", ".pytest_cache", ".mypy_cache",
+        ".tox", ".eggs", "*.egg-info", ".coverage", "htmlcov", ".hypothesis", "pip-wheel-metadata",
+        ".ruff_cache", ".pytype", "*.pyc", "*.pyo", "*.pyd", ".Python", "pip-log.txt",
+        # Node/JavaScript/TypeScript
+        "node_modules", ".npm", ".yarn", ".pnpm", "coverage", "dist", "build", "out",
+        ".next", ".nuxt", ".cache", ".parcel-cache", ".turbo", ".vite", ".webpack",
+        ".rollup.cache", ".fusebox", ".dynamodb", ".tern-port", ".nyc_output", ".rpt2_cache",
+        # Ruby
+        ".bundle", "vendor/bundle", "vendor/ruby", ".yardoc", "Gemfile.lock",
+        # PHP
+        "vendor", "composer.lock",
+        # Elixir/Erlang
+        "_build", "deps", ".fetch", "erl_crash.dump",
+        # Rust (already had target, adding more)
+        "Cargo.lock",
+        # Go
+        "go.work.sum",
+        # Java/Kotlin/Scala
+        ".gradle", ".m2", ".sbt", ".bloop", ".metals", "project/target", "project/project",
+        # C/C++
+        "*.o", "*.a", "*.so", "*.dylib", "*.dll", "*.exe", "CMakeFiles", "CMakeCache.txt", ".cmake",
+        # iOS/macOS
+        "Pods", "DerivedData", ".xcworkspace", ".xcodeproj", "*.xcworkspace", "*.pbxuser",
+        "*.mode1v3", "*.mode2v3", "*.perspectivev3", ".swiftpm",
+        # Android
+        "*.apk", "*.dex", "*.ap_", ".externalNativeBuild", "captures",
+        # Database
+        "*.db-shm", "*.db-wal", "*.sqlite-journal",
+        # IDE/Editors
+        ".vscode", ".idea", ".vs", ".eclipse", ".sublime-workspace", ".sublime-project",
+        ".fleet", ".cursor", ".devcontainer",
+        # Editor temp/swap files
+        "*.swp", "*.swo", "*.swn", "*~", ".~lock.*", "*.tmp",
+        # System files
+        ".DS_Store", "Thumbs.db", "desktop.ini", "$RECYCLE.BIN", ".Spotlight-V100", ".Trashes",
+        # Build artifacts (general)
+        "target", "bin", "obj", "Debug", "Release", "classes", "*.class",
+        # Build systems
+        ".stack-work", ".buck-out", "bazel-bin", "bazel-out", "bazel-testlogs", "bazel-*",
+        # Package managers & build tools
+        "bower_components", "jspm_packages",
+        # Documentation build output
+        "_site", "site", ".docusaurus", ".docz", ".vuepress/dist", "docs/_build",
+        # Logs & temp
+        "logs", "*.log", "tmp", "temp", ".tmp", "*.pid", "*.seed", "*.pid.lock",
+        # Test/Coverage
+        ".nyc_output", "junit", "test-results", "coverage-report",
+        # Framework/Tool specific
+        ".sass-cache", ".angular", ".serverless", ".terraform", ".pulumi",
+        ".netlify", ".vercel", ".amplify", ".expo", ".expo-shared",
+        # Misc
+        "*.bak", "*.backup", "*.old",
+    }
+
+    # Configuration and important dotfiles to KEEP (whitelist)
+    _IMPORTANT_DOTFILES = {
+        # Environment & Config
+        ".env", ".env.example", ".env.template", ".env.development", ".env.production",
+        ".env.test", ".env.local", ".env.staging",
+        # Git
+        ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep", ".gitmessage",
+        # Editor Config
+        ".editorconfig",
+        # Linting & Formatting - JavaScript/TypeScript
+        ".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.yml", ".eslintrc.yaml",
+        ".eslintrc.cjs", ".eslintrc.mjs", ".eslintignore",
+        ".prettierrc", ".prettierrc.js", ".prettierrc.json", ".prettierrc.yml", ".prettierrc.yaml",
+        ".prettierrc.cjs", ".prettierrc.mjs", ".prettierrc.toml", ".prettierignore",
+        ".stylelintrc", ".stylelintrc.js", ".stylelintrc.json", ".stylelintrc.yml", ".stylelintignore",
+        # Linting & Formatting - Python
+        ".flake8", ".pylintrc", ".bandit", ".isort.cfg", ".black", ".yapfrc", ".ruff.toml",
+        ".mypy.ini", ".pydocstyle", ".pep8",
+        # Linting & Formatting - Ruby
+        ".rubocop.yml", ".rubocop_todo.yml", ".ruby-style.yml", ".reek.yml",
+        # Linting & Formatting - Go
+        ".golangci.yml", ".golangci.yaml", ".gofmt",
+        # Linting & Formatting - Rust
+        ".rustfmt.toml", ".clippy.toml",
+        # Linting & Formatting - C/C++
+        ".clang-format", ".clang-tidy",
+        # Linting & Formatting - PHP
+        ".php_cs", ".php_cs.dist", ".phpcs.xml", ".phpstan.neon",
+        # Linting & Formatting - Elixir
+        ".credo.exs", ".formatter.exs",
+        # Testing - JavaScript/TypeScript
+        ".nycrc", ".nycrc.json", ".jestrc", ".jestrc.js", ".jestrc.json",
+        ".mocharc", ".mocharc.js", ".mocharc.json", ".mocharc.yml",
+        ".ava.config.js", ".ava.config.cjs", ".ava.config.mjs",
+        ".jasmine.json", ".karma.conf.js",
+        # Testing - Python
+        ".coveragerc", "pytest.ini", "tox.ini",
+        # Build & Bundling
+        ".babelrc", ".babelrc.js", ".babelrc.json", ".babelrc.cjs", ".babelrc.mjs",
+        ".swcrc", ".browserslistrc", ".postcssrc", ".postcssrc.js", ".postcssrc.json",
+        ".webpackrc", ".webpackrc.js", ".rolluprc", ".rolluprc.js",
+        # Package Managers
+        ".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmrc", ".nvmrc", ".node-version",
+        ".gemrc", ".bundle/config",
+        # Version Management
+        ".python-version", ".ruby-version", ".java-version", ".node-version",
+        ".tool-versions", ".rbenv-version", ".jdkversion",
+        # Docker
+        ".dockerignore", ".dockerfile",
+        # CI/CD
+        ".travis.yml", ".gitlab-ci.yml", ".circleci", ".github",
+        ".jenkins", ".jenkinsfile", ".drone.yml", ".appveyor.yml",
+        # Deployment
+        ".vercelignore", ".netlify.toml", ".netlifyrc",
+        # Pre-commit & Git Hooks
+        ".pre-commit-config.yaml", ".pre-commit-hooks.yaml",
+        ".huskyrc", ".huskyrc.js", ".huskyrc.json", ".lintstagedrc", ".lintstagedrc.js",
+        # Code Quality & Security
+        ".codeclimate.yml", ".sonarcloud.properties", ".snyk",
+        ".dependabot", ".renovaterc", ".renovaterc.json",
+        # Release Management
+        ".releaserc", ".releaserc.js", ".releaserc.json", ".releaserc.yml",
+        ".semantic-release", ".changelogrc",
+        # Commit Standards
+        ".commitlintrc", ".commitlintrc.js", ".commitlintrc.json", ".commitlintrc.yml",
+        ".commitizen", ".czrc", ".cz.json",
+        # Documentation
+        ".markdownlint", ".markdownlint.json", ".markdownlintrc",
+        ".remarkrc", ".remarkrc.js", ".remarkrc.json",
+        # Various Config Formats
+        ".yamllint", ".shellcheckrc", ".htmlhintrc", ".csslintrc", ".sass-lint.yml",
+        ".stylelintcache", ".eslintcache", ".prettiercache",
+        # TypeScript
+        ".tsconfig", ".tsbuildinfo",
+        # Misc Project Config
+        ".watchmanconfig", ".flowconfig", ".buckconfig", ".bazelrc", ".yaspellerrc",
+    }
+    _MAX_FILE_SIZE = 10 * 1024 * 1024 
+    _MAX_CHECKPOINT_SIZE = 5 * 1024 * 1024  
 
     def __init__(self, app: Flask):
         self.app = app
@@ -38,16 +176,12 @@ class CoderWorkspaceRoute:
         coder_dir = project_root / "data" / "coder"
         coder_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create subdirectories
         (coder_dir / "temp_workspaces").mkdir(exist_ok=True)
         (coder_dir / "settings").mkdir(exist_ok=True)
 
         logger.info(f"[CODER_WORKSPACE] Ensured coder data directory: {coder_dir}")
         return coder_dir
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _get_workspace_path(self, chat_id: str) -> Optional[Path]:
         """Get the workspace path for a specific chat from database."""
@@ -97,7 +231,6 @@ class CoderWorkspaceRoute:
 
         candidate = (workspace_root / Path(relative)).resolve()
 
-        # Security: ensure path is within workspace
         if workspace_root not in candidate.parents and candidate != workspace_root:
             raise ValueError("Path is outside of workspace")
 
@@ -106,7 +239,17 @@ class CoderWorkspaceRoute:
     def _should_ignore(self, path: Union[Path, str]) -> bool:
         """Check if a file/folder should be ignored."""
         name = path if isinstance(path, str) else path.name
-        return name in self._IGNORED_NAMES or name.startswith('.')
+
+        if name in self._IGNORED_NAMES:
+            return True
+
+        if name in self._IMPORTANT_DOTFILES:
+            return False
+
+        if name.startswith('.'):
+            return True
+
+        return False
 
     def _serialise_node(
         self,
@@ -114,9 +257,19 @@ class CoderWorkspaceRoute:
         workspace_root: Path,
         depth: int = 0,
         max_depth: int = 10,
-        dir_entry: Optional[os.DirEntry] = None
+        dir_entry: Optional[os.DirEntry] = None,
+        stop_at_max_depth: bool = True
     ) -> Optional[Dict[str, Any]]:
-        """Serialize a file/folder node."""
+        """Serialize a file/folder node.
+
+        Args:
+            path: Path to serialize
+            workspace_root: Root of workspace
+            depth: Current depth
+            max_depth: Maximum depth to traverse
+            dir_entry: Optional DirEntry for efficiency
+            stop_at_max_depth: If True, stops at max_depth. If False, marks folders for "Load Deeper"
+        """
         if depth > max_depth:
             return None
 
@@ -125,7 +278,7 @@ class CoderWorkspaceRoute:
         else:
             entry_name = path.name
 
-        if dir_entry is not None and self._should_ignore(entry_name):
+        if self._should_ignore(entry_name):
             return None
 
         try:
@@ -133,8 +286,6 @@ class CoderWorkspaceRoute:
                 is_directory = dir_entry.is_dir(follow_symlinks=False)
                 stats = dir_entry.stat(follow_symlinks=False)
             else:
-                if self._should_ignore(path):
-                    return None
                 is_directory = path.is_dir()
                 stats = path.stat()
         except (FileNotFoundError, PermissionError) as e:
@@ -152,32 +303,50 @@ class CoderWorkspaceRoute:
         }
 
         if is_directory:
-            children: List[Dict[str, Any]] = []
-            try:
-                with os.scandir(path) as iterator:
-                    entries = [
-                        entry for entry in iterator
-                        if not self._should_ignore(entry.name)
-                    ]
-            except (PermissionError, FileNotFoundError) as err:
-                logger.warning("[CODER_WORKSPACE] Permission denied reading directory %s: %s", path, err)
-                entries = []
+            at_max_depth = depth == max_depth
 
-            entries.sort(
-                key=lambda entry: (
-                    not entry.is_dir(follow_symlinks=False),
-                    entry.name.lower()
+            if at_max_depth and stop_at_max_depth:
+                has_children = False
+                try:
+                    with os.scandir(path) as iterator:
+                        for entry in iterator:
+                            if not self._should_ignore(entry.name):
+                                has_children = True
+                                break
+                except (PermissionError, FileNotFoundError):
+                    has_children = False
+
+                if has_children:
+                    node["canLoadDeeper"] = True
+                    node["children"] = []
+                    node["item_count"] = 0
+                else:
+                    node["children"] = []
+                    node["item_count"] = 0
+            else:
+                children: List[Dict[str, Any]] = []
+                try:
+                    with os.scandir(path) as iterator:
+                        entries = list(iterator)
+                except (PermissionError, FileNotFoundError) as err:
+                    logger.warning("[CODER_WORKSPACE] Permission denied reading directory %s: %s", path, err)
+                    entries = []
+
+                entries.sort(
+                    key=lambda entry: (
+                        not entry.is_dir(follow_symlinks=False),
+                        entry.name.lower()
+                    )
                 )
-            )
 
-            for entry in entries:
-                child_path = path / entry.name
-                serialized = self._serialise_node(child_path, workspace_root, depth + 1, max_depth, entry)
-                if serialized:
-                    children.append(serialized)
+                for entry in entries:
+                    child_path = path / entry.name
+                    serialized = self._serialise_node(child_path, workspace_root, depth + 1, max_depth, entry, stop_at_max_depth)
+                    if serialized:
+                        children.append(serialized)
 
-            node["children"] = children
-            node["item_count"] = len(children)
+                node["children"] = children
+                node["item_count"] = len(children)
         else:
             node["size"] = stats.st_size
 
@@ -230,7 +399,8 @@ class CoderWorkspaceRoute:
                         elif 'express' in deps:
                             return 'Node.js/Express'
                         return 'Node.js'
-                except:
+                except Exception as e:
+                    logger.warning(f"[CODER_WORKSPACE] Failed to parse package.json: {e}")
                     return 'Node.js'
 
             if 'requirements.txt' in files or 'setup.py' in files or 'pyproject.toml' in files:
@@ -251,7 +421,7 @@ class CoderWorkspaceRoute:
             if 'composer.json' in files:
                 return 'PHP'
 
-            if '.sln' in str(files) or any('.csproj' in f for f in files):
+            if any(f.endswith('.sln') for f in files) or any(f.endswith('.csproj') for f in files):
                 return 'C#/.NET'
 
             return 'Mixed'
@@ -266,8 +436,13 @@ class CoderWorkspaceRoute:
             for root, dirs, files in os.walk(workspace_path):
                 dirs[:] = [d for d in dirs if d not in self._IGNORED_NAMES and not d.startswith('.')]
 
-                depth = len(Path(root).relative_to(workspace_path).parts)
-                if depth >= max_depth:
+                try:
+                    depth = len(Path(root).relative_to(workspace_path).parts)
+                    if depth >= max_depth:
+                        dirs.clear()
+                        continue
+                except ValueError:
+                    logger.warning(f"[CODER_WORKSPACE] Skipping path outside workspace: {root}")
                     dirs.clear()
                     continue
 
@@ -359,22 +534,27 @@ class CoderWorkspaceRoute:
 
     def _create_temp_workspace(self, chat_id: str) -> Path:
         """Create a temporary workspace for quick start."""
-        import time
         timestamp = int(time.time())
         temp_ws_dir = self._coder_data_dir / "temp_workspaces" / f"temp_{chat_id}_{timestamp}"
         temp_ws_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create basic structure
         (temp_ws_dir / "src").mkdir(exist_ok=True)
         (temp_ws_dir / "README.md").write_text(f"# Temporary Workspace\n\nCreated: {datetime.now().isoformat()}\n", encoding="utf-8")
 
         logger.info(f"[CODER_WORKSPACE] Created temp workspace: {temp_ws_dir}")
         return temp_ws_dir
 
+    def _get_workspace_settings_filename(self, workspace_path: str) -> str:
+        """Generate unique settings filename for workspace using hash of full path."""
+        path_hash = hashlib.sha256(workspace_path.encode('utf-8')).hexdigest()[:16]
+        workspace_name = Path(workspace_path).name
+        return f"{workspace_name}_{path_hash}_settings.json"
+
     def _save_workspace_settings(self, workspace_path: str, settings: Dict[str, Any]) -> bool:
         """Save workspace-specific settings."""
         try:
-            settings_file = self._coder_data_dir / "settings" / f"{Path(workspace_path).name}_settings.json"
+            settings_filename = self._get_workspace_settings_filename(workspace_path)
+            settings_file = self._coder_data_dir / "settings" / settings_filename
             with open(settings_file, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=2)
             logger.info(f"[CODER_WORKSPACE] Saved settings for {workspace_path}")
@@ -386,14 +566,14 @@ class CoderWorkspaceRoute:
     def _load_workspace_settings(self, workspace_path: str) -> Dict[str, Any]:
         """Load workspace-specific settings."""
         try:
-            settings_file = self._coder_data_dir / "settings" / f"{Path(workspace_path).name}_settings.json"
+            settings_filename = self._get_workspace_settings_filename(workspace_path)
+            settings_file = self._coder_data_dir / "settings" / settings_filename
             if settings_file.exists():
                 with open(settings_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception as e:
             logger.error(f"[CODER_WORKSPACE] Failed to load settings: {e}")
 
-        # Return defaults
         return {
             "environment": "Auto-detect",
             "agentMode": "Full Autonomy",
@@ -408,11 +588,14 @@ class CoderWorkspaceRoute:
     def _save_file_snapshot(self, workspace_path: str, file_path: str, content: str, edit_type: str = 'checkpoint') -> bool:
         """Save a checkpoint of file content to history."""
         try:
+            content_size = len(content.encode('utf-8'))
+            if content_size > self._MAX_CHECKPOINT_SIZE:
+                logger.warning(f"[CODER_WORKSPACE] Checkpoint too large ({content_size} bytes) for {file_path}, skipping")
+                return False
+
             content_hash = self._compute_content_hash(content)
 
             def query(conn, cursor):
-                # Always save checkpoint action, even if content is identical
-                # This tracks user actions (saves) even when content doesn't change
                 cursor.execute(
                     """
                     INSERT INTO file_edit_history (workspace_path, file_path, content, edit_type, content_hash)
@@ -430,36 +613,54 @@ class CoderWorkspaceRoute:
             return False
 
     def _compute_diff_stats(self, content1: str, content2: str) -> Dict[str, int]:
-        """Compute diff statistics between two content strings."""
-        lines_1 = content1.split('\n')
-        lines_2 = content2.split('\n')
+        """Compute diff statistics between two content strings using proper diff algorithm."""
+        lines_1 = content1.splitlines(keepends=False)
+        lines_2 = content2.splitlines(keepends=False)
 
-        # Simple line-based diff
-        lines_1_set = set(lines_1)
-        lines_2_set = set(lines_2)
+        matcher = difflib.SequenceMatcher(None, lines_1, lines_2)
 
-        lines_added = len([l for l in lines_2 if l not in lines_1_set])
-        lines_removed = len([l for l in lines_1 if l not in lines_2_set])
+        lines_added = 0
+        lines_removed = 0
+
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'delete':
+                lines_removed += (i2 - i1)
+            elif tag == 'insert':
+                lines_added += (j2 - j1)
+            elif tag == 'replace':
+                lines_removed += (i2 - i1)
+                lines_added += (j2 - j1)
 
         return {
             'linesAdded': lines_added,
             'linesRemoved': lines_removed
         }
 
-    def _get_file_history(self, workspace_path: str, file_path: str, limit: int = 50, include_diff_stats: bool = False) -> List[Dict[str, Any]]:
+    def _get_file_history(self, workspace_path: str, file_path: str, limit: Optional[int] = 50, include_diff_stats: bool = False) -> List[Dict[str, Any]]:
         """Get edit history for a specific file."""
         try:
             def query(conn, cursor):
-                cursor.execute(
-                    """
-                    SELECT id, content, timestamp, edit_type, content_hash
-                    FROM file_edit_history
-                    WHERE workspace_path = ? AND file_path = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                    """,
-                    (workspace_path, file_path, limit)
-                )
+                if limit is None:
+                    cursor.execute(
+                        """
+                        SELECT id, content, timestamp, edit_type, content_hash
+                        FROM file_edit_history
+                        WHERE workspace_path = ? AND file_path = ?
+                        ORDER BY timestamp DESC
+                        """,
+                        (workspace_path, file_path)
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, content, timestamp, edit_type, content_hash
+                        FROM file_edit_history
+                        WHERE workspace_path = ? AND file_path = ?
+                        ORDER BY timestamp DESC
+                        LIMIT ?
+                        """,
+                        (workspace_path, file_path, limit)
+                    )
                 rows = cursor.fetchall()
                 history = [
                     {
@@ -472,7 +673,6 @@ class CoderWorkspaceRoute:
                     for row in rows
                 ]
 
-                # Add per-checkpoint diff stats if requested
                 if include_diff_stats and len(history) > 1:
                     for i in range(len(history) - 1):
                         current = history[i]
@@ -481,8 +681,6 @@ class CoderWorkspaceRoute:
                         current['linesAdded'] = stats['linesAdded']
                         current['linesRemoved'] = stats['linesRemoved']
 
-                    # The oldest checkpoint (last in list) has no previous checkpoint
-                    # It represents the initial state, so no diff stats
                     history[-1]['linesAdded'] = 0
                     history[-1]['linesRemoved'] = 0
 
@@ -519,7 +717,6 @@ class CoderWorkspaceRoute:
         """Clean up old checkpoints, keeping only recent ones."""
         try:
             def query(conn, cursor):
-                # Delete old checkpoints beyond keep_count
                 cursor.execute(
                     """
                     DELETE FROM file_edit_history
@@ -543,14 +740,35 @@ class CoderWorkspaceRoute:
             logger.error(f"[CODER_WORKSPACE] Failed to cleanup checkpoints: {e}")
             return False
 
-    # ------------------------------------------------------------------
-    # Routes
-    # ------------------------------------------------------------------
+    def _update_file_path_in_history(self, workspace_path: str, old_file_path: str, new_file_path: str) -> bool:
+        """Update file path in history when file is renamed or moved."""
+        try:
+            def query(conn, cursor):
+                cursor.execute(
+                    """
+                    UPDATE file_edit_history
+                    SET file_path = ?
+                    WHERE workspace_path = ? AND file_path = ?
+                    """,
+                    (new_file_path, workspace_path, old_file_path)
+                )
+                updated = cursor.rowcount
+                conn.commit()
+                if updated > 0:
+                    logger.info(f"[CODER_WORKSPACE] Updated {updated} history records: {old_file_path} -> {new_file_path}")
+                return True
+
+            return db._execute_with_connection("update file path in history", query, return_on_error=False)
+        except Exception as e:
+            logger.error(f"[CODER_WORKSPACE] Failed to update file path in history: {e}")
+            return False
+
 
     def _register_routes(self) -> None:
         self.app.route("/api/coder-workspace/set", methods=["POST"], endpoint="coder_set_workspace")(self.set_workspace)
         self.app.route("/api/coder-workspace/get", methods=["GET"], endpoint="coder_get_workspace")(self.get_workspace)
         self.app.route("/api/coder-workspace/tree", methods=["GET"], endpoint="coder_get_tree")(self.get_tree)
+        self.app.route("/api/coder-workspace/tree/load-deeper", methods=["GET"], endpoint="coder_load_deeper")(self.load_deeper)
         self.app.route("/api/coder-workspace/file", methods=["GET"], endpoint="coder_read_file")(self.read_file)
         self.app.route("/api/coder-workspace/file", methods=["PUT"], endpoint="coder_write_file")(self.write_file)
         self.app.route("/api/coder-workspace/file/snapshot", methods=["POST"], endpoint="coder_save_snapshot")(self.save_snapshot)
@@ -592,7 +810,6 @@ class CoderWorkspaceRoute:
                 return jsonify({"success": False, "error": "Path is not a directory"}), 400
 
             if self._set_workspace_path(chat_id, str(path)):
-                # Add to global history
                 self._add_to_history(path)
 
                 logger.info("[CODER_WORKSPACE] Set workspace for chat %s: %s", chat_id, path)
@@ -675,6 +892,73 @@ class CoderWorkspaceRoute:
             logger.error("[CODER_WORKSPACE] Failed to build tree: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
 
+    def load_deeper(self):
+        """Load one additional depth level for a specific folder (session-only).
+
+        This endpoint is called when the user clicks "Load Deeper" on a folder at max depth.
+        It returns the children of that folder with 1 additional depth level.
+        """
+        try:
+            chat_id = request.args.get("chat_id")
+            folder_path = request.args.get("path", "")
+            current_depth = request.args.get("current_depth", type=int, default=10)
+
+            if not chat_id:
+                return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+            workspace_path = self._get_workspace_path(chat_id)
+            if not workspace_path or not workspace_path.exists():
+                return jsonify({"success": False, "error": "No workspace set or workspace not found"}), 404
+
+            target = self._resolve_path(workspace_path, folder_path)
+
+            if not target.exists():
+                return jsonify({"success": False, "error": "Folder not found"}), 404
+
+            if not target.is_dir():
+                return jsonify({"success": False, "error": "Path is not a directory"}), 400
+
+            children: List[Dict[str, Any]] = []
+            try:
+                with os.scandir(target) as iterator:
+                    entries = list(iterator)
+            except (PermissionError, FileNotFoundError) as err:
+                logger.warning("[CODER_WORKSPACE] Permission denied reading directory %s: %s", target, err)
+                entries = []
+
+            entries.sort(
+                key=lambda entry: (
+                    not entry.is_dir(follow_symlinks=False),
+                    entry.name.lower()
+                )
+            )
+
+            new_max_depth = current_depth + 1
+            for entry in entries:
+                child_path = target / entry.name
+                serialized = self._serialise_node(
+                    child_path,
+                    workspace_path,
+                    depth=current_depth + 1,
+                    max_depth=new_max_depth,
+                    dir_entry=entry,
+                    stop_at_max_depth=True
+                )
+                if serialized:
+                    children.append(serialized)
+
+            return jsonify({
+                "success": True,
+                "children": children,
+                "path": folder_path
+            })
+
+        except ValueError as err:
+            return jsonify({"success": False, "error": str(err)}), 400
+        except Exception as err:
+            logger.error("[CODER_WORKSPACE] Failed to load deeper: %s", err)
+            return jsonify({"success": False, "error": str(err)}), 500
+
     def read_file(self):
         """Read a file from the workspace."""
         try:
@@ -731,7 +1015,7 @@ class CoderWorkspaceRoute:
             chat_id = data.get("chat_id")
             file_path = data.get("path", "")
             content = data.get("content", "")
-            save_snapshot = data.get("save_snapshot", True)  # Save snapshot by default
+            save_snapshot = data.get("save_snapshot", True)  
 
             if not chat_id:
                 return jsonify({"success": False, "error": "chat_id is required"}), 400
@@ -745,10 +1029,8 @@ class CoderWorkspaceRoute:
             if target.is_dir():
                 return jsonify({"success": False, "error": "Path is a directory"}), 400
 
-            # Create parent directories if they don't exist
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            # Save checkpoint of CURRENT state BEFORE writing new content
             if save_snapshot and target.exists():
                 try:
                     current_content = target.read_text(encoding='utf-8')
@@ -758,11 +1040,9 @@ class CoderWorkspaceRoute:
                 except Exception as e:
                     logger.warning("[CODER_WORKSPACE] Failed to create pre-save checkpoint: %s", e)
 
-            # Write new content to disk
             target.write_text(content, encoding='utf-8')
             logger.info("[CODER_WORKSPACE] Wrote file: %s", target)
 
-            # Cleanup old checkpoints
             if save_snapshot:
                 self._cleanup_old_checkpoints(str(workspace_path), file_path)
 
@@ -862,11 +1142,9 @@ class CoderWorkspaceRoute:
             if not parent_path or not workspace_name:
                 return jsonify({"success": False, "error": "parent_path and workspace_name are required"}), 400
 
-            # Validate workspace name doesn't contain path separators
             if '/' in workspace_name or '\\' in workspace_name:
                 return jsonify({"success": False, "error": "Workspace name cannot contain path separators"}), 400
 
-            # Validate parent path exists and is a directory
             parent = Path(parent_path).resolve()
             if not parent.exists():
                 return jsonify({"success": False, "error": "Parent directory does not exist"}), 400
@@ -874,16 +1152,11 @@ class CoderWorkspaceRoute:
             if not parent.is_dir():
                 return jsonify({"success": False, "error": "Parent path is not a directory"}), 400
 
-            # Create new workspace folder
             new_workspace = parent / workspace_name
             if new_workspace.exists():
                 return jsonify({"success": False, "error": "A folder with that name already exists"}), 400
 
-            # Create the directory
             new_workspace.mkdir(parents=False, exist_ok=False)
-
-            # Create basic structure for better UX
-            (new_workspace / ".gitkeep").write_text("", encoding="utf-8")
 
             logger.info("[CODER_WORKSPACE] Created new workspace: %s", new_workspace)
 
@@ -948,7 +1221,6 @@ class CoderWorkspaceRoute:
             if not chat_id or not old_path_str or not new_name:
                 return jsonify({"success": False, "error": "chat_id, old_path, and new_name are required"}), 400
 
-            # Validate new name doesn't contain path separators
             if '/' in new_name or '\\' in new_name:
                 return jsonify({"success": False, "error": "New name cannot contain path separators"}), 400
 
@@ -964,12 +1236,40 @@ class CoderWorkspaceRoute:
             if new_target.exists():
                 return jsonify({"success": False, "error": "A file or folder with that name already exists"}), 400
 
+            new_path_str = str(new_target.relative_to(workspace_path).as_posix())
+
             old_target.rename(new_target)
             logger.info("[CODER_WORKSPACE] Renamed: %s -> %s", old_target, new_target)
 
+            if old_target.is_file() or not new_target.is_dir():
+                self._update_file_path_in_history(str(workspace_path), old_path_str, new_path_str)
+            else:
+                old_path_prefix = old_path_str if old_path_str.endswith('/') else old_path_str + '/'
+                new_path_prefix = new_path_str if new_path_str.endswith('/') else new_path_str + '/'
+
+                try:
+                    def query(conn, cursor):
+                        cursor.execute(
+                            """
+                            UPDATE file_edit_history
+                            SET file_path = ? || SUBSTR(file_path, ?)
+                            WHERE workspace_path = ? AND file_path LIKE ?
+                            """,
+                            (new_path_prefix, len(old_path_prefix) + 1, str(workspace_path), old_path_prefix + '%')
+                        )
+                        updated = cursor.rowcount
+                        conn.commit()
+                        if updated > 0:
+                            logger.info(f"[CODER_WORKSPACE] Updated {updated} history records for renamed directory")
+                        return True
+
+                    db._execute_with_connection("update directory history", query, return_on_error=False)
+                except Exception as e:
+                    logger.warning(f"[CODER_WORKSPACE] Failed to update directory history: {e}")
+
             return jsonify({
                 "success": True,
-                "new_path": str(new_target.relative_to(workspace_path))
+                "new_path": new_path_str
             })
 
         except ValueError as err:
@@ -1028,12 +1328,9 @@ class CoderWorkspaceRoute:
             if not chat_id:
                 return jsonify({"success": False, "error": "chat_id is required"}), 400
 
-            # Create temp workspace
             temp_ws_path = self._create_temp_workspace(chat_id)
 
-            # Set it as the workspace for this chat
             if self._set_workspace_path(chat_id, str(temp_ws_path)):
-                # Add to global history
                 self._add_to_history(temp_ws_path)
 
                 logger.info("[CODER_WORKSPACE] Created quick start workspace for chat %s: %s", chat_id, temp_ws_path)
@@ -1105,6 +1402,10 @@ class CoderWorkspaceRoute:
             if not workspace_path or not workspace_path.exists():
                 return jsonify({"success": False, "error": "No workspace set"}), 404
 
+            content_size = len(content.encode('utf-8'))
+            if content_size > self._MAX_CHECKPOINT_SIZE:
+                return jsonify({"success": False, "error": f"File too large ({content_size} bytes) for checkpoint (max {self._MAX_CHECKPOINT_SIZE} bytes)"}), 400
+
             success = self._save_file_snapshot(str(workspace_path), file_path, content, edit_type='checkpoint')
 
             return jsonify({"success": success})
@@ -1140,13 +1441,14 @@ class CoderWorkspaceRoute:
             return jsonify({"success": False, "error": str(err)}), 500
 
     def revert_file(self):
-        """Revert file to a previous version."""
+        """Revert file to a previous version by writing it to disk."""
         try:
             data = request.get_json(force=True)
             chat_id = data.get("chat_id")
             file_path = data.get("path", "")
             snapshot_id = data.get("snapshot_id")
             revert_to_saved = data.get("revert_to_saved", False)
+            save_snapshot = data.get("save_snapshot", True)
 
             if not chat_id or not file_path:
                 return jsonify({"success": False, "error": "chat_id and path are required"}), 400
@@ -1155,16 +1457,13 @@ class CoderWorkspaceRoute:
             if not workspace_path or not workspace_path.exists():
                 return jsonify({"success": False, "error": "No workspace set"}), 404
 
-            # Get content to revert to
             content = None
             if revert_to_saved:
-                # Revert to last checkpoint
                 content = self._get_latest_checkpoint(str(workspace_path), file_path)
                 if content is None:
                     return jsonify({"success": False, "error": "No checkpoint found"}), 404
             elif snapshot_id:
-                # Revert to specific snapshot
-                history = self._get_file_history(str(workspace_path), file_path, limit=1000)
+                history = self._get_file_history(str(workspace_path), file_path, limit=None)
                 snapshot = next((h for h in history if h['id'] == snapshot_id), None)
                 if not snapshot:
                     return jsonify({"success": False, "error": "Snapshot not found"}), 404
@@ -1172,11 +1471,30 @@ class CoderWorkspaceRoute:
             else:
                 return jsonify({"success": False, "error": "Either snapshot_id or revert_to_saved must be provided"}), 400
 
+            target = self._resolve_path(workspace_path, file_path)
+
+            if save_snapshot and target.exists():
+                try:
+                    current_content = target.read_text(encoding='utf-8')
+                    self._save_file_snapshot(str(workspace_path), file_path, current_content, edit_type='checkpoint')
+                except UnicodeDecodeError:
+                    logger.warning("[CODER_WORKSPACE] Could not read current content for checkpoint: %s", target)
+                except Exception as e:
+                    logger.warning("[CODER_WORKSPACE] Failed to create pre-revert checkpoint: %s", e)
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding='utf-8')
+            logger.info("[CODER_WORKSPACE] Reverted file: %s", target)
+
             return jsonify({
                 "success": True,
-                "content": content
+                "content": content,
+                "path": file_path,
+                "size": target.stat().st_size
             })
 
+        except ValueError as err:
+            return jsonify({"success": False, "error": str(err)}), 400
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to revert file: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
@@ -1217,18 +1535,16 @@ class CoderWorkspaceRoute:
 
             files = db._execute_with_connection("get workspace changes", query, return_on_error=[])
 
-            # Compute total workspace statistics (initial to latest for each file)
             total_added = 0
             total_removed = 0
 
             for file_info in files:
                 file_path = file_info['filePath']
-                history = self._get_file_history(str(workspace_path), file_path, limit=1000)
+                history = self._get_file_history(str(workspace_path), file_path, limit=None)
 
                 if len(history) >= 2:
-                    # Compare oldest (initial) to newest checkpoint
-                    oldest = history[-1]  # Last in DESC order
-                    newest = history[0]   # First in DESC order
+                    oldest = history[-1] 
+                    newest = history[0]   
 
                     stats = self._compute_diff_stats(oldest['content'], newest['content'])
                     total_added += stats['linesAdded']
@@ -1262,10 +1578,8 @@ class CoderWorkspaceRoute:
             if not workspace_path or not workspace_path.exists():
                 return jsonify({"success": False, "error": "No workspace set"}), 404
 
-            # Get file history
-            history = self._get_file_history(str(workspace_path), file_path, limit=1000)
+            history = self._get_file_history(str(workspace_path), file_path, limit=None)
 
-            # If no checkpoint IDs provided, compare last two checkpoints
             if not checkpoint_id_1 and not checkpoint_id_2:
                 if len(history) < 2:
                     return jsonify({
@@ -1274,30 +1588,26 @@ class CoderWorkspaceRoute:
                         "linesRemoved": 0,
                         "linesUnchanged": 0
                     })
-                checkpoint_1 = history[1]  # Older
-                checkpoint_2 = history[0]  # Newer
+                checkpoint_1 = history[1]  
+                checkpoint_2 = history[0]  
             else:
-                # Find specific checkpoints
                 checkpoint_1 = next((h for h in history if h['id'] == checkpoint_id_1), None)
                 checkpoint_2 = next((h for h in history if h['id'] == checkpoint_id_2), None)
 
                 if not checkpoint_1 or not checkpoint_2:
                     return jsonify({"success": False, "error": "Checkpoint not found"}), 404
 
-            # Compute diff statistics
             content_1 = checkpoint_1['content']
             content_2 = checkpoint_2['content']
 
-            lines_1 = content_1.split('\n')
-            lines_2 = content_2.split('\n')
+            stats = self._compute_diff_stats(content_1, content_2)
+            lines_added = stats['linesAdded']
+            lines_removed = stats['linesRemoved']
 
-            # Simple line-based diff (not perfect but fast)
-            lines_1_set = set(lines_1)
-            lines_2_set = set(lines_2)
-
-            lines_added = len([l for l in lines_2 if l not in lines_1_set])
-            lines_removed = len([l for l in lines_1 if l not in lines_2_set])
-            lines_unchanged = len(lines_1_set.intersection(lines_2_set))
+            lines_1 = content_1.splitlines(keepends=False)
+            lines_2 = content_2.splitlines(keepends=False)
+            matcher = difflib.SequenceMatcher(None, lines_1, lines_2)
+            lines_unchanged = sum(i2 - i1 for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag == 'equal')
 
             return jsonify({
                 "success": True,

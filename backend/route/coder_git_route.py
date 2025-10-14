@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 import subprocess
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from utils.db_utils import db
 from utils.logger import get_logger
 
@@ -44,10 +44,9 @@ def get_git_status(workspace_path: str) -> Optional[Dict[str, str]]:
     - '?' for untracked (git porcelain format)
     """
     if not os.path.exists(os.path.join(workspace_path, '.git')):
-        return None  # Not a git repository
+        return None  
 
     try:
-        # Run git status with porcelain format for consistent parsing
         result = subprocess.run(
             ['git', 'status', '--porcelain'],
             cwd=workspace_path,
@@ -66,26 +65,19 @@ def get_git_status(workspace_path: str) -> Optional[Dict[str, str]]:
             if not line.strip():
                 continue
 
-            # Porcelain format: XY filename
-            # X = staged status, Y = working tree status
             status_code = line[:2]
             file_path = line[3:].strip()
 
-            # Remove quotes if present
             if file_path.startswith('"') and file_path.endswith('"'):
                 file_path = file_path[1:-1]
 
-            # Determine overall status (prioritize working tree changes)
             if status_code[1] != ' ':
-                # Working tree has changes
                 status = status_code[1]
             elif status_code[0] != ' ':
-                # Staged changes
                 status = status_code[0]
             else:
-                status = '?'  # Unknown
+                status = '?'  
 
-            # Normalize status codes
             if status == 'M':
                 status_map[file_path] = 'modified'
             elif status == 'A':
@@ -97,7 +89,7 @@ def get_git_status(workspace_path: str) -> Optional[Dict[str, str]]:
             elif status == '?':
                 status_map[file_path] = 'untracked'
             else:
-                status_map[file_path] = 'modified'  # Default to modified
+                status_map[file_path] = 'modified' 
 
         return status_map
 
@@ -128,7 +120,6 @@ def get_status():
     status_map = get_git_status(str(workspace_path))
 
     if status_map is None:
-        # Not a git repository or error occurred
         return jsonify({
             "success": True,
             "is_git_repo": False,
@@ -160,7 +151,6 @@ def get_diff():
         return jsonify({"success": False, "error": "Not a git repository"}), 400
 
     try:
-        # Get diff for the file
         result = subprocess.run(
             ['git', 'diff', 'HEAD', '--', file_path],
             cwd=str(workspace_path),

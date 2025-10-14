@@ -17,6 +17,7 @@ interface FileNode {
   size?: number;
   children?: FileNode[];
   item_count?: number;
+  canLoadDeeper?: boolean; // True if folder is at max depth but has more content
 }
 
 interface FlattenedItem {
@@ -41,6 +42,7 @@ interface RowItemData {
   toggleMultiSelect: (path: string) => void;
   clearMultiSelect: () => void;
   toggleFolder: (path: string) => void;
+  loadDeeper: (folderPath: string, currentDepth: number) => Promise<void>;
   selectNode: (path: string) => void;
   selectFile: (path: string) => Promise<void>;
   handleRenameKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
@@ -87,7 +89,7 @@ function ContextMenuItem({ onSelect, children }: ContextMenuItemProps) {
   return (
     <ContextMenu.Item
       onSelect={onSelect}
-      className="flex items-center gap-2 px-2 py-1.5 outline-0 text-sm text-bolt-elements-textPrimary cursor-pointer text-bolt-elements-item-contentDefault hover:text-bolt-elements-item-contentActive hover:bg-bolt-elements-item-backgroundActive rounded-md"
+      className="flex items-center gap-2 px-2 py-1.5 outline-0 text-sm cursor-pointer text-bolt-elements-item-contentDefault hover:text-bolt-elements-item-contentActive hover:bg-bolt-elements-item-backgroundActive rounded-md"
     >
       <span className="shrink-0 w-4 h-4"></span>
       <span>{children}</span>
@@ -137,7 +139,7 @@ function FileContextMenu({ fullPath, isFolder, children }: FileContextMenuProps)
       <ContextMenu.Portal>
         <ContextMenu.Content
           className="border border-bolt-elements-borderColor rounded-md bg-bolt-elements-background-depth-1 w-56 p-1"
-          style={{ zIndex: 998 }}
+          style={{ zIndex: 9999 }}
         >
           {isFolder && (
             <>
@@ -216,6 +218,7 @@ export const FileTree: React.FC = () => {
     isGitRepo,
     gitStatus,
     toggleFolder,
+    loadDeeper,
     selectFile,
     selectNode,
     toggleMultiSelect,
@@ -419,6 +422,7 @@ export const FileTree: React.FC = () => {
     toggleMultiSelect,
     clearMultiSelect,
     toggleFolder,
+    loadDeeper,
     selectNode,
     selectFile,
     handleRenameKeyDown,
@@ -439,6 +443,7 @@ export const FileTree: React.FC = () => {
     toggleMultiSelect,
     clearMultiSelect,
     toggleFolder,
+    loadDeeper,
     selectNode,
     selectFile,
     handleRenameKeyDown,
@@ -465,6 +470,7 @@ export const FileTree: React.FC = () => {
       toggleMultiSelect,
       clearMultiSelect,
       toggleFolder,
+      loadDeeper,
       selectNode,
       selectFile,
       handleRenameKeyDown,
@@ -562,7 +568,19 @@ export const FileTree: React.FC = () => {
                 ) : (
                   <div className="flex items-center w-full">
                     <div className="flex-1 truncate pr-2">{node.name}</div>
-                    {node.item_count !== undefined && node.item_count > 0 && (
+                    {node.canLoadDeeper && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          loadDeeper(node.path, depth);
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-bolt-elements-button-primary-background text-bolt-elements-button-primary-text hover:bg-bolt-elements-button-primary-backgroundHover ml-auto"
+                        title="Load deeper content"
+                      >
+                        Load Deeper
+                      </button>
+                    )}
+                    {!node.canLoadDeeper && node.item_count !== undefined && node.item_count > 0 && (
                       <span className="text-xs text-bolt-elements-textTertiary ml-auto">
                         {node.item_count}
                       </span>

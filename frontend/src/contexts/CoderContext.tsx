@@ -11,6 +11,7 @@ interface FileNode {
   size?: number;
   children?: FileNode[];
   item_count?: number;
+  canLoadDeeper?: boolean; // True if folder is at max depth but has more content
 }
 
 interface EditorDocument {
@@ -116,6 +117,7 @@ const collectDirectoryPaths = (node: FileNode | null, acc: Set<string> = new Set
 interface CoderActions {
   setWorkspace: (path: string) => Promise<void>;
   loadFileTree: () => Promise<void>;
+  loadDeeper: (folderPath: string, currentDepth: number) => Promise<void>;
   toggleFolder: (path: string) => void;
   selectFile: (path: string) => Promise<void>;
   selectNode: (path: string) => void;
@@ -352,6 +354,69 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       return { ...prev, expandedFolders: next };
     });
   }, []);
+
+  const loadDeeper = useCallback(async (folderPath: string, currentDepth: number) => {
+    if (!chatId) return;
+
+    logger.info('[CODER_CTX] loadDeeper start', { chatId, folderPath, currentDepth });
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+
+    try {
+      const response = await fetch(
+        apiUrl(`/api/coder-workspace/tree/load-deeper?chat_id=${chatId}&path=${encodeURIComponent(folderPath)}&current_depth=${currentDepth}`)
+      );
+      const data = await response.json();
+
+      if (!data.success || !data.children) {
+        setState(prev => ({ ...prev, error: data.error || 'Failed to load deeper content', isLoading: false }));
+        return;
+      }
+
+      // Find the target folder in the tree and update its children
+      const updateNodeChildren = (node: FileNode): FileNode => {
+        if (node.path === folderPath) {
+          // This is the folder to update
+          return {
+            ...node,
+            children: data.children,
+            item_count: data.children.length,
+            canLoadDeeper: false, // Remove the canLoadDeeper flag after loading
+          };
+        }
+
+        if (node.children) {
+          return {
+            ...node,
+            children: node.children.map(updateNodeChildren),
+          };
+        }
+
+        return node;
+      };
+
+      setState(prev => {
+        if (!prev.fileTree) return { ...prev, isLoading: false };
+
+        const updatedTree = updateNodeChildren(prev.fileTree);
+
+        // Ensure the folder is expanded
+        const nextExpanded = new Set(prev.expandedFolders);
+        nextExpanded.add(folderPath);
+
+        return {
+          ...prev,
+          fileTree: updatedTree,
+          expandedFolders: nextExpanded,
+          isLoading: false,
+        };
+      });
+
+      logger.info('[CODER_CTX] loadDeeper success', { folderPath, childrenCount: data.children.length });
+    } catch (err) {
+      logger.error('[CODER] Failed to load deeper content:', err);
+      setState(prev => ({ ...prev, error: 'Failed to load deeper content', isLoading: false }));
+    }
+  }, [chatId]);
 
   const openTab = useCallback(async (filePath: string) => {
     if (!chatId) return;
@@ -1285,6 +1350,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     ...state,
     setWorkspace,
     loadFileTree,
+    loadDeeper,
     toggleFolder,
     selectFile,
     selectNode,
