@@ -25,7 +25,7 @@ def _set_dpi_awareness():
         return
 
     try:
-        # Try Windows 10+ method first (most accurate)
+        # Try Windows 10+ method first 
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
         logger.debug("[FOLDER_PICKER] Set DPI awareness (Per-Monitor V2)")
         _dpi_awareness_set = True
@@ -57,19 +57,16 @@ class FolderPickerRoute:
 
     def select_folder(self):
         """Open native folder picker dialog and return selected path."""
-        selected_path = [None]  # Use list to allow modification in thread
+        selected_path = [None]  
 
         def run_dialog():
             try:
-                # Set DPI awareness before creating Tk window (prevents blurry dialogs on high DPI displays)
                 _set_dpi_awareness()
 
-                # Create root window and hide it
                 root = tk.Tk()
                 root.withdraw()
-                root.attributes('-topmost', True)  # Bring dialog to front
+                root.attributes('-topmost', True) 
 
-                # Open folder picker dialog
                 folder_path = filedialog.askdirectory(
                     title="Select Workspace Folder",
                     mustexist=True
@@ -82,10 +79,9 @@ class FolderPickerRoute:
                 logger.error(f"[FOLDER_PICKER] Error opening dialog: {e}")
                 selected_path[0] = None
 
-        # Run dialog in thread to avoid blocking
         dialog_thread = threading.Thread(target=run_dialog)
         dialog_thread.start()
-        dialog_thread.join()  # Wait for dialog to close
+        dialog_thread.join() 
 
         if selected_path[0]:
             logger.info(f"[FOLDER_PICKER] User selected folder: {selected_path[0]}")
@@ -95,7 +91,6 @@ class FolderPickerRoute:
             })
         else:
             logger.info("[FOLDER_PICKER] User cancelled folder selection")
-            # Return 200 instead of 400 since cancellation is a valid user action
             return jsonify({
                 "success": False,
                 "cancelled": True

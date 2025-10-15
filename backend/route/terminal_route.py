@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-import subprocess
 import threading
 import uuid
 import time
 import queue
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from flask import Flask, jsonify, request, Response, stream_with_context
 
@@ -28,14 +25,7 @@ class TerminalSession:
     """Represents an active persistent terminal session with PTY."""
     session_id: str
     workspace_path: str
-    process: Optional[subprocess.Popen]
-    # PTY fields
-    master_fd: Optional[int] = None
-    slave_fd: Optional[int] = None
     winpty_proc: Optional[Any] = None
-    platform: str = field(default_factory=lambda: sys.platform)
-    shell: str = ""
-    line_ending: str = os.linesep
     output_queue: queue.Queue = field(default_factory=queue.Queue)
     output_thread: Optional[threading.Thread] = None
     created_at: float = field(default_factory=time.time)
@@ -47,6 +37,12 @@ class TerminalSession:
 
 class TerminalRoute:
     """Route handler for persistent terminal sessions."""
+
+    _PTY_READ_SIZE = 256  
+    _OUTPUT_FLUSH_INTERVAL = 0.05 
+    _OUTPUT_MAX_BUFFER = 512  
+
+    _VENV_NAMES = ['venv', '.venv', 'env', 'virtualenv', '.virtualenv']
 
     def __init__(self, app: Flask):
         self.app = app
@@ -72,11 +68,13 @@ class TerminalRoute:
         return subscriber_id, subscriber_queue
 
     def _remove_stream_subscriber(self, session: TerminalSession, subscriber_id: str) -> None:
+        """Remove a stream subscriber from the session."""
         with session.subscribers_lock:
             session.subscribers.pop(subscriber_id, None)
         logger.info(f"[TERMINAL] Removed stream subscriber {subscriber_id} for session {session.session_id}")
 
     def _broadcast_to_subscribers(self, session: TerminalSession, payload: Optional[Dict[str, Any]]) -> None:
+        """Broadcast a payload to all active subscribers for the session."""
         with session.subscribers_lock:
             for subscriber_queue in session.subscribers.values():
                 try:
@@ -84,154 +82,75 @@ class TerminalRoute:
                 except Exception as exc:
                     logger.warning(f"[TERMINAL] Failed to publish output to subscriber for session {session.session_id}: {exc}")
 
-    def _create_shell_process(self, workspace_path: Path) -> tuple[TerminalSession, Dict[str, Any]]:
+    def _create_shell_process(self, workspace_path: Path) -> TerminalSession:
         """Create a persistent PTY-based shell session."""
-        # Detect and prepare venv activation if present
+        try:
+            from winpty import PtyProcess
+        except ImportError:
+            raise RuntimeError("pywinpty is required. Install with: pip install pywinpty")
+
         venv_path = self._detect_venv(workspace_path)
         startup_commands = []
-        metadata: Dict[str, Any] = {
-            "platform": sys.platform,
-            "shell": "",
-            "line_ending": os.linesep,
-        }
 
         if venv_path:
             activation_cmd = self._get_venv_activation_command(venv_path)
             startup_commands.append(activation_cmd)
             logger.info(f"[TERMINAL] Will auto-activate venv: {venv_path}")
 
-        # Load .env file
         env = os.environ.copy()
         env_vars = self._load_env_file(workspace_path)
         env.update(env_vars)
         env['TERM'] = 'xterm-256color'
 
-        if os.name == 'nt':  # Windows - requires pywinpty
+        winpty_proc = PtyProcess.spawn('cmd.exe', cwd=str(workspace_path), env=env)
+
+        try:
+            winpty_proc.write('chcp 65001 > NUL\r\n')
+        except Exception as e:
+            logger.warning(f"[TERMINAL] Failed to set UTF-8 encoding: {e}")
+
+        for cmd in startup_commands:
             try:
-                from winpty import PtyProcess  # type: ignore
-            except ImportError:
-                raise RuntimeError(
-                    "pywinpty is required for terminal on Windows. "
-                    "Install with: pip install pywinpty"
-                )
+                winpty_proc.write(cmd + '\r\n')
+            except Exception as e:
+                logger.warning(f"[TERMINAL] Failed to execute startup command '{cmd}': {e}")
 
-            winpty_proc = PtyProcess.spawn('cmd.exe', cwd=str(workspace_path), env=env)
-            # Set UTF-8 encoding
-            try:
-                winpty_proc.write('chcp 65001 > NUL\r\n')
-            except Exception:
-                pass
-            # Run startup commands
-            for cmd in startup_commands:
-                try:
-                    winpty_proc.write(cmd + '\r\n')
-                except Exception:
-                    pass
-
-            metadata.update({
-                "shell": "cmd.exe",
-                "line_ending": "\r\n",
-            })
-            session = TerminalSession(
-                session_id='',
-                workspace_path=str(workspace_path),
-                process=None,
-                winpty_proc=winpty_proc,
-                platform=sys.platform,
-                shell='cmd.exe',
-                line_ending='\r\n',
-            )
-            logger.info("[TERMINAL] Created PTY session using pywinpty on Windows")
-            logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
-            return session, metadata
-
-        else:  # Unix/Linux/Mac - native PTY support
-            import pty, fcntl, termios, struct
-
-            shell_path = os.environ.get('SHELL') or '/bin/bash'
-            shell_executable = shell_path if shell_path and Path(shell_path).exists() else '/bin/bash'
-
-            master_fd, slave_fd = pty.openpty()
-            # Set default terminal size (will be updated by frontend)
-            rows, cols = 24, 80
-            winsz = struct.pack('HHHH', rows, cols, 0, 0)
-            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsz)
-
-            process = subprocess.Popen(
-                [shell_executable],
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                cwd=str(workspace_path),
-                env=env,
-                bufsize=0,
-                preexec_fn=os.setsid
-            )
-            # Close slave fd in parent process
-            try:
-                os.close(slave_fd)
-            except Exception:
-                pass
-
-            # Run startup commands
-            for cmd in startup_commands:
-                os.write(master_fd, (cmd + "\n").encode('utf-8', errors='ignore'))
-
-            metadata.update({
-                "shell": shell_executable,
-                "line_ending": "\n",
-            })
-            session = TerminalSession(
-                session_id='',
-                workspace_path=str(workspace_path),
-                process=process,
-                master_fd=master_fd,
-                platform=sys.platform,
-                shell=shell_executable,
-                line_ending='\n',
-            )
-            logger.info("[TERMINAL] Created PTY session using native pty on Unix")
-            logger.info(f"[TERMINAL] Shell metadata: platform={metadata.get('platform')} shell={metadata.get('shell')} line_ending={repr(metadata.get('line_ending'))}")
-            return session, metadata
+        session = TerminalSession(
+            session_id='',
+            workspace_path=str(workspace_path),
+            winpty_proc=winpty_proc,
+        )
+        logger.info("[TERMINAL] Created PTY session using pywinpty")
+        return session
 
     def _output_reader_thread(self, session: TerminalSession):
-        """Background thread to read output from PTY.
-
-        Reads in small increments and flushes frequently for immediate output
-        display of prompts and interactive programs.
-        """
+        """Background thread to read output from PTY."""
         try:
             logger.info(f"[TERMINAL] Output reader started for session {session.session_id}")
             buffer: list[str] = []
             last_flush = time.time()
-            flush_interval = 0.01  # 10ms for low latency
-            max_buffer = 512  # Smaller buffer for faster flushing
-
-            def read_from_pty(max_bytes: int = 256) -> str:
-                """Read from PTY - Windows (pywinpty) or Unix (native)."""
-                if os.name == 'nt' and session.winpty_proc is not None:
-                    try:
-                        data = session.winpty_proc.read(max_bytes)
-                        if isinstance(data, (bytes, bytearray)):
-                            return data.decode('utf-8', errors='ignore')
-                        return str(data)
-                    except Exception:
-                        return ''
-                elif session.master_fd is not None:
-                    try:
-                        b = os.read(session.master_fd, max_bytes)
-                        return b.decode('utf-8', errors='ignore')
-                    except Exception:
-                        return ''
-                return ''
+            flush_interval = self._OUTPUT_FLUSH_INTERVAL
+            max_buffer = self._OUTPUT_MAX_BUFFER
 
             while self._session_running(session):
-                ch = read_from_pty()
+                try:
+                    data = session.winpty_proc.read(self._PTY_READ_SIZE)
+                    if isinstance(data, (bytes, bytearray)):
+                        ch = data.decode('utf-8', errors='ignore')
+                    else:
+                        ch = str(data)
+                except Exception:
+                    ch = ''
+
                 if ch:
                     buffer.append(ch)
                     now = time.time()
-                    # Flush buffer on newlines, size limit, or time interval
-                    if ('\n' in ch) or ('\r' in ch) or (len(''.join(buffer)) >= max_buffer) or ((now - last_flush) >= flush_interval):
+
+                    has_newline = '\n' in ch or '\r' in ch
+                    buffer_full = len(''.join(buffer)) >= max_buffer
+                    time_to_flush = (now - last_flush) >= flush_interval
+
+                    if has_newline or buffer_full or time_to_flush:
                         chunk = ''.join(buffer)
                         buffer.clear()
                         session.output_queue.put(chunk)
@@ -239,11 +158,12 @@ class TerminalRoute:
                         session.last_activity = now
                         last_flush = now
                     continue
+
                 if not self._session_running(session):
                     break
-                time.sleep(0.001)  # 1ms sleep for lower latency
 
-            # Flush any trailing buffer
+                time.sleep(0.01)
+
             if buffer:
                 chunk = ''.join(buffer)
                 session.output_queue.put(chunk)
@@ -253,7 +173,7 @@ class TerminalRoute:
         finally:
             logger.info(f"[TERMINAL] Output reader stopping for session {session.session_id}")
             session.is_alive = False
-            session.output_queue.put(None)  # Signal end
+            session.output_queue.put(None)
             self._broadcast_to_subscribers(session, {"type": "terminated"})
             self._broadcast_to_subscribers(session, None)
 
@@ -279,16 +199,10 @@ class TerminalRoute:
         """Create a new persistent PTY terminal session."""
         session_id = str(uuid.uuid4())
 
-        # Create PTY shell process
-        session, metadata = self._create_shell_process(Path(workspace_path))
-        # Fill required fields
+        session = self._create_shell_process(Path(workspace_path))
         session.session_id = session_id
         session.workspace_path = workspace_path
-        session.platform = str(metadata.get("platform", sys.platform))
-        session.shell = str(metadata.get("shell", ""))
-        session.line_ending = str(metadata.get("line_ending", os.linesep))
 
-        # Start output reader thread
         output_thread = threading.Thread(
             target=self._output_reader_thread,
             args=(session,),
@@ -297,7 +211,6 @@ class TerminalRoute:
         output_thread.start()
         session.output_thread = output_thread
 
-        # Store session
         with self._session_lock:
             self._sessions[session_id] = session
 
@@ -318,29 +231,16 @@ class TerminalRoute:
 
             session.is_alive = False
 
-            # Kill the PTY process
             try:
-                if os.name == 'nt' and session.winpty_proc is not None:
-                    # Windows PTY termination
+                if session.winpty_proc is not None:
                     try:
                         session.winpty_proc.terminate(True)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"[TERMINAL] PTY terminate failed, trying close: {e}")
                         try:
                             session.winpty_proc.close(True)
-                        except Exception:
-                            pass
-                else:
-                    # Unix PTY termination
-                    import signal
-                    try:
-                        os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
-                    except Exception:
-                        pass
-                    try:
-                        if session.master_fd is not None:
-                            os.close(session.master_fd)
-                    except Exception:
-                        pass
+                        except Exception as e2:
+                            logger.warning(f"[TERMINAL] PTY close also failed: {e2}")
                 logger.info(f"[TERMINAL] Killed PTY session {session_id}")
             except Exception as e:
                 logger.warning(f"[TERMINAL] Error killing session {session_id}: {e}")
@@ -348,36 +248,15 @@ class TerminalRoute:
             self._broadcast_to_subscribers(session, {"type": "terminated"})
             self._broadcast_to_subscribers(session, None)
 
-            # Remove from sessions
             del self._sessions[session_id]
             return True
 
-    def _cleanup_old_sessions(self, max_age_seconds: int = 3600):
-        """Remove sessions inactive for more than max_age_seconds."""
-        with self._session_lock:
-            current_time = time.time()
-            to_remove = [
-                sid for sid, session in self._sessions.items()
-                if current_time - session.last_activity > max_age_seconds
-            ]
-
-        for sid in to_remove:
-            self._kill_session(sid)
-
     def _detect_venv(self, workspace_path: Path) -> Optional[Path]:
         """Detect Python virtual environment in workspace."""
-        # Common venv directory names
-        venv_names = ['venv', '.venv', 'env', 'virtualenv', '.virtualenv']
-
-        for venv_name in venv_names:
+        for venv_name in self._VENV_NAMES:
             venv_path = workspace_path / venv_name
             if venv_path.exists() and venv_path.is_dir():
-                # Check if it's a valid venv by looking for activate script
-                if os.name == 'nt':  # Windows
-                    activate_script = venv_path / 'Scripts' / 'activate.bat'
-                else:  # Unix/Linux/Mac
-                    activate_script = venv_path / 'bin' / 'activate'
-
+                activate_script = venv_path / 'Scripts' / 'activate.bat'
                 if activate_script.exists():
                     logger.info(f"[TERMINAL] Detected venv at: {venv_path}")
                     return venv_path
@@ -386,13 +265,8 @@ class TerminalRoute:
 
     def _get_venv_activation_command(self, venv_path: Path) -> str:
         """Get the command to activate a virtual environment."""
-        if os.name == 'nt':  # Windows
-            # Use call to run in same shell context
-            activate_script = venv_path / 'Scripts' / 'activate.bat'
-            return f'call "{activate_script}"'
-        else:  # Unix/Linux/Mac
-            activate_script = venv_path / 'bin' / 'activate'
-            return f'. "{activate_script}"'
+        activate_script = venv_path / 'Scripts' / 'activate.bat'
+        return f'call "{activate_script}"'
 
     def _load_env_file(self, workspace_path: Path) -> Dict[str, str]:
         """Load environment variables from .env file if it exists."""
@@ -404,10 +278,8 @@ class TerminalRoute:
                 with open(env_file, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
-                        # Skip comments and empty lines
                         if line and not line.startswith('#') and '=' in line:
                             key, value = line.split('=', 1)
-                            # Remove quotes if present
                             value = value.strip().strip('"').strip("'")
                             env_vars[key.strip()] = value
                 logger.info(f"[TERMINAL] Loaded {len(env_vars)} environment variables from .env")
@@ -415,14 +287,6 @@ class TerminalRoute:
                 logger.warning(f"[TERMINAL] Failed to load .env file: {e}")
 
         return env_vars
-
-    def _preprocess_command(self, session: TerminalSession, command_data: str) -> str:
-        """Pass command data directly to PTY.
-
-        PTY handles all control characters and terminal semantics natively,
-        so no preprocessing is needed.
-        """
-        return command_data
 
     def _register_routes(self) -> None:
         """Register terminal routes."""
@@ -447,7 +311,6 @@ class TerminalRoute:
             if not workspace_path or not workspace_path.exists():
                 return jsonify({"success": False, "error": "No workspace set"}), 404
 
-            # Create new session
             logger.info(f"[TERMINAL] Create session requested for chat_id={chat_id}, workspace={workspace_path}")
             session = self._create_new_session(str(workspace_path))
 
@@ -455,9 +318,6 @@ class TerminalRoute:
                 "success": True,
                 "session_id": session.session_id,
                 "workspace_path": session.workspace_path,
-                "platform": session.platform,
-                "shell": session.shell,
-                "line_ending": session.line_ending,
                 "created_at": session.created_at,
             })
 
@@ -486,52 +346,25 @@ class TerminalRoute:
             if not self._session_running(session):
                 return jsonify({"success": False, "error": "Session is not alive"}), 400
 
-            # Security check
-            dangerous_commands = ['rm -rf /', 'dd if=', 'mkfs', 'format', ':(){:|:&};:']
-            if payload_key == "command":
-                lower_command = raw_payload.lower()
-                if any(dangerous_cmd in lower_command for dangerous_cmd in dangerous_commands):
+            dangerous_patterns = ['rm -rf /', 'dd if=', 'mkfs', 'format c:', ':(){:|:&};:']
+            lower_payload = raw_payload.lower()
+            for pattern in dangerous_patterns:
+                if pattern in lower_payload:
+                    logger.warning(f"[TERMINAL] Blocked potentially dangerous command for session {session_id}: {raw_payload[:100]}")
                     return jsonify({"success": False, "error": "Command contains potentially dangerous operations"}), 400
 
             payload_to_write = raw_payload
             if payload_key == "command" and not raw_payload.endswith("\n") and not raw_payload.endswith("\r"):
                 payload_to_write = f"{raw_payload}\n"
 
-            # Preprocess the command first (e.g., Ctrl+C, cls/clear)
-            payload_to_write = self._preprocess_command(session, payload_to_write)
+            normalized_payload = payload_to_write.replace("\r\n", "\n").replace("\r", "\n")
+            payload_to_write = normalized_payload.replace("\n", "\r\n")
 
-            # If preprocessing consumed the entire command (e.g., Ctrl+C was handled),
-            # we still return success but don't send anything to stdin
-            if not payload_to_write:
-                logger.info(f"[TERMINAL] Preprocess consumed input for session {session_id}")
-                return jsonify({"success": True})
-
-            # Align line endings with underlying shell expectations AFTER preprocessing
             try:
-                line_ending = session.line_ending or os.linesep
-            except Exception:
-                line_ending = os.linesep
-
-            logger.debug(f"[TERMINAL] Normalizing input for session {session_id} with line_ending={repr(line_ending)}")
-            if line_ending == "\r\n":
-                normalized_payload = payload_to_write.replace("\r\n", "\n").replace("\r", "\n")
-                payload_to_write = normalized_payload.replace("\n", "\r\n")
-            else:
-                payload_to_write = payload_to_write.replace("\r\n", "\n")
-
-            # Send command to PTY
-            try:
-                if os.name == 'nt' and session.winpty_proc is not None:
-                    session.winpty_proc.write(payload_to_write)
-                elif session.master_fd is not None:
-                    os.write(session.master_fd, payload_to_write.encode('utf-8', errors='ignore'))
-                else:
-                    raise RuntimeError("No PTY available for session")
-
+                session.winpty_proc.write(payload_to_write)
                 session.last_activity = time.time()
                 log_preview = payload_to_write.replace("\r", "\\r").replace("\n", "\\n")
                 logger.info(f"[TERMINAL] Sent input to PTY session {session_id}: {log_preview[:200]}")
-
                 return jsonify({"success": True})
             except Exception as e:
                 logger.error(f"[TERMINAL] Failed to send command: {e}")
@@ -552,12 +385,11 @@ class TerminalRoute:
             if not session:
                 return jsonify({"success": False, "error": "Session not found"}), 404
 
-            # Collect all available output (non-blocking)
             output_lines = []
             try:
                 while not session.output_queue.empty():
                     line = session.output_queue.get_nowait()
-                    if line is None:  # End signal
+                    if line is None: 
                         break
                     output_lines.append(line)
             except queue.Empty:
@@ -595,9 +427,6 @@ class TerminalRoute:
                         "session_id": session.session_id,
                         "workspace_path": session.workspace_path,
                         "is_alive": self._session_running(session),
-                        "platform": session.platform,
-                        "shell": session.shell,
-                        "line_ending": session.line_ending,
                     })
 
                     while True:
@@ -678,9 +507,6 @@ class TerminalRoute:
                         "created_at": session.created_at,
                         "last_activity": session.last_activity,
                         "is_alive": self._session_running(session),
-                        "platform": session.platform,
-                        "shell": session.shell,
-                        "line_ending": session.line_ending,
                     }
                     for sid, session in self._sessions.items()
                 ]
@@ -712,24 +538,12 @@ class TerminalRoute:
             if not session:
                 return jsonify({"success": False, "error": "Session not found"}), 404
 
-            if os.name == 'nt' and session.winpty_proc is not None:
-                try:
-                    session.winpty_proc.setwinsize(rows, cols)
-                    return jsonify({"success": True})
-                except Exception as e:
-                    logger.warn(f"[TERMINAL] Failed to resize Windows PTY: {e}")
-                    return jsonify({"success": False, "error": str(e)}), 500
-            else:
-                try:
-                    import fcntl, termios, struct
-                    if session.master_fd is None:
-                        return jsonify({"success": False, "error": "missing PTY master fd"}), 500
-                    winsz = struct.pack('HHHH', rows, cols, 0, 0)
-                    fcntl.ioctl(session.master_fd, termios.TIOCSWINSZ, winsz)
-                    return jsonify({"success": True})
-                except Exception as e:
-                    logger.warn(f"[TERMINAL] Failed to resize Unix PTY: {e}")
-                    return jsonify({"success": False, "error": str(e)}), 500
+            try:
+                session.winpty_proc.setwinsize(rows, cols)
+                return jsonify({"success": True})
+            except Exception as e:
+                logger.warning(f"[TERMINAL] Failed to resize PTY: {e}")
+                return jsonify({"success": False, "error": str(e)}), 500
         except Exception as err:
             logger.error(f"[TERMINAL] Resize failed: {err}")
             return jsonify({"success": False, "error": str(err)}), 500
