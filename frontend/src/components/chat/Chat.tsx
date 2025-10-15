@@ -607,11 +607,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       setNeedsBottomAnchor(computeIsScrollable(containerEl));
     };
 
-    if (typeof window === 'undefined') {
-      updateScrollState();
-      return;
-    }
-
     const ro = new ResizeObserver(() => {
       if (resizeObserverFrameRef.current !== null) {
         window.cancelAnimationFrame(resizeObserverFrameRef.current);
