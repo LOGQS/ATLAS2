@@ -18,9 +18,6 @@ interface Command {
   category: 'file' | 'editor' | 'view' | 'terminal' | 'workspace';
 }
 
-/**
- * Command Palette - VS Code-like command runner with Ctrl+Shift+P
- */
 export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose }) => {
   const {
     saveFile,
@@ -39,9 +36,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
   const inputRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
 
-  // Define all available commands
   const allCommands = useMemo<Command[]>(() => [
-    // File commands
     {
       id: 'file.save',
       label: 'Save File',
@@ -61,7 +56,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
       description: `Save ${unsavedFiles.size} unsaved file(s)`,
       icon: <Icons.Save className="w-4 h-4" />,
       action: async () => {
-        // Would need to implement saveAll in context
         await saveFile();
         onClose();
       },
@@ -103,7 +97,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
       category: 'file',
     },
 
-    // Terminal commands
     {
       id: 'terminal.toggle',
       label: showTerminal ? 'Hide Terminal' : 'Show Terminal',
@@ -116,26 +109,22 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
       category: 'terminal',
     },
 
-    // View commands
     {
       id: 'view.commandPalette',
       label: 'Command Palette',
       description: 'Show all commands',
       icon: <PhosphorIcon.Terminal className="w-4 h-4" />,
       action: () => {
-        // Already open
       },
       category: 'view',
     },
 
-    // Editor commands
     {
       id: 'editor.foldAll',
       label: 'Fold All',
       description: 'Collapse all code regions',
       icon: <Icons.ChevronDown className="w-4 h-4" />,
       action: () => {
-        // Would need Monaco editor instance
         onClose();
       },
       category: 'editor',
@@ -146,7 +135,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
       description: 'Expand all code regions',
       icon: <Icons.ChevronDown className="w-4 h-4" style={{ transform: 'rotate(180deg)' }} />,
       action: () => {
-        // Would need Monaco editor instance
         onClose();
       },
       category: 'editor',
@@ -164,7 +152,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
     onClose,
   ]);
 
-  // Filter commands based on query
   const filteredCommands = useMemo(() => {
     if (!query.trim()) {
       return allCommands;
@@ -179,12 +166,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
     });
   }, [query, allCommands]);
 
-  // Reset selected index when results change
   useEffect(() => {
     setSelectedIndex(0);
   }, [filteredCommands]);
 
-  // Focus input when opened
   useEffect(() => {
     if (isOpen) {
       inputRef.current?.focus();
@@ -193,7 +178,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
     }
   }, [isOpen]);
 
-  // Scroll selected item into view
   useEffect(() => {
     if (selectedRef.current) {
       selectedRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -208,7 +192,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
     }
   }, []);
 
-  // Keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();

@@ -102,6 +102,19 @@ export const EditorPane = memo<EditorPaneProps>(({
           value={document.content}
           onChange={handleEditorChange}
           beforeMount={onEditorWillMount}
+          onMount={(editor, monaco) => {
+            editor.onKeyDown((e) => {
+              const key = e.browserEvent.key;
+
+              if ((key === 'a' || key === 's' || key === 'd') &&
+                  !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+                editor.trigger('keyboard', 'type', { text: key });
+
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            });
+          }}
           theme="vs-dark"
           options={{
             fontSize: 14,
