@@ -1,4 +1,4 @@
-import React, { useMemo, memo, useState } from 'react';
+import { useMemo, memo, useState } from 'react';
 import { diffLines as computeDiff, Change } from 'diff';
 import '../../styles/coder/DiffViewer.css';
 
@@ -7,7 +7,7 @@ type ViewMode = 'unified' | 'split';
 interface DiffViewerProps {
   original: string;
   modified: string;
-  language?: string;
+  language?: string; // Reserved for future syntax highlighting implementation
   defaultMode?: ViewMode;
 }
 
@@ -26,8 +26,53 @@ interface SplitDiffLine {
   type: 'added' | 'removed' | 'unchanged' | 'modified';
 }
 
-// Memoized diff line component for better rendering performance
-const DiffLineComponent = memo<{ line: DiffLine; index: number }>(({ line, index }) => {
+const splitAndFilterLines = (value: string): string[] => {
+  return value.split('\n').filter((line, idx, arr) => {
+    return idx < arr.length - 1 || line !== '';
+  });
+};
+
+const flushPendingChanges = (
+  removals: { lineNum: number; content: string }[],
+  additions: { lineNum: number; content: string }[],
+  result: SplitDiffLine[]
+): void => {
+  while (removals.length > 0 && additions.length > 0) {
+    const removed = removals.shift()!;
+    const added = additions.shift()!;
+    result.push({
+      originalLineNum: removed.lineNum,
+      modifiedLineNum: added.lineNum,
+      originalContent: removed.content,
+      modifiedContent: added.content,
+      type: 'modified'
+    });
+  }
+
+  while (removals.length > 0) {
+    const removed = removals.shift()!;
+    result.push({
+      originalLineNum: removed.lineNum,
+      modifiedLineNum: null,
+      originalContent: removed.content,
+      modifiedContent: null,
+      type: 'removed'
+    });
+  }
+
+  while (additions.length > 0) {
+    const added = additions.shift()!;
+    result.push({
+      originalLineNum: null,
+      modifiedLineNum: added.lineNum,
+      originalContent: null,
+      modifiedContent: added.content,
+      type: 'added'
+    });
+  }
+};
+
+const DiffLineComponent = memo<{ line: DiffLine }>(({ line }) => {
   let className = 'diff-line';
 
   if (line.type === 'added') {
@@ -41,7 +86,7 @@ const DiffLineComponent = memo<{ line: DiffLine; index: number }>(({ line, index
     : line.modifiedLineNum;
 
   return (
-    <div key={index} className={className}>
+    <div className={className}>
       <span className="diff-line-number">{displayLineNum}</span>
       <span className="diff-line-indicator">
         {line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}
@@ -53,10 +98,9 @@ const DiffLineComponent = memo<{ line: DiffLine; index: number }>(({ line, index
 
 DiffLineComponent.displayName = 'DiffLineComponent';
 
-// Memoized split diff line component for side-by-side view
-const SplitDiffLineComponent = memo<{ line: SplitDiffLine; index: number }>(({ line, index }) => {
+const SplitDiffLineComponent = memo<{ line: SplitDiffLine }>(({ line }) => {
   return (
-    <div key={index} className="split-diff-line">
+    <div className="split-diff-line">
       {/* Original (Left) Side */}
       <div className={`split-diff-side ${
         line.type === 'removed' || line.type === 'modified' ? 'split-diff-removed' :
@@ -95,10 +139,7 @@ export const DiffViewer = memo<DiffViewerProps>(({ original, modified, defaultMo
     let modifiedLineNum = 1;
 
     changes.forEach((change: Change) => {
-      const lines = change.value.split('\n').filter((line, idx, arr) => {
-        // Keep empty lines except the last one if it's empty
-        return idx < arr.length - 1 || line !== '';
-      });
+      const lines = splitAndFilterLines(change.value);
 
       lines.forEach((line) => {
         if (change.added) {
@@ -129,21 +170,17 @@ export const DiffViewer = memo<DiffViewerProps>(({ original, modified, defaultMo
     return result;
   }, [original, modified]);
 
-  // Compute split diff for side-by-side view
   const splitDiffLines = useMemo(() => {
     const changes = computeDiff(original, modified);
     const result: SplitDiffLine[] = [];
     let originalLineNum = 1;
     let modifiedLineNum = 1;
 
-    // Track removals and additions for pairing
     const removals: { lineNum: number; content: string }[] = [];
     const additions: { lineNum: number; content: string }[] = [];
 
     changes.forEach((change: Change) => {
-      const lines = change.value.split('\n').filter((line, idx, arr) => {
-        return idx < arr.length - 1 || line !== '';
-      });
+      const lines = splitAndFilterLines(change.value);
 
       if (change.removed) {
         lines.forEach(line => {
@@ -154,44 +191,8 @@ export const DiffViewer = memo<DiffViewerProps>(({ original, modified, defaultMo
           additions.push({ lineNum: modifiedLineNum++, content: line });
         });
       } else {
-        // First, pair up any pending removals and additions
-        while (removals.length > 0 && additions.length > 0) {
-          const removed = removals.shift()!;
-          const added = additions.shift()!;
-          result.push({
-            originalLineNum: removed.lineNum,
-            modifiedLineNum: added.lineNum,
-            originalContent: removed.content,
-            modifiedContent: added.content,
-            type: 'modified'
-          });
-        }
+        flushPendingChanges(removals, additions, result);
 
-        // Add remaining removals (no corresponding addition)
-        while (removals.length > 0) {
-          const removed = removals.shift()!;
-          result.push({
-            originalLineNum: removed.lineNum,
-            modifiedLineNum: null,
-            originalContent: removed.content,
-            modifiedContent: null,
-            type: 'removed'
-          });
-        }
-
-        // Add remaining additions (no corresponding removal)
-        while (additions.length > 0) {
-          const added = additions.shift()!;
-          result.push({
-            originalLineNum: null,
-            modifiedLineNum: added.lineNum,
-            originalContent: null,
-            modifiedContent: added.content,
-            type: 'added'
-          });
-        }
-
-        // Add unchanged lines
         lines.forEach((line) => {
           result.push({
             originalLineNum: originalLineNum++,
@@ -204,40 +205,7 @@ export const DiffViewer = memo<DiffViewerProps>(({ original, modified, defaultMo
       }
     });
 
-    // Handle any remaining removals/additions at the end
-    while (removals.length > 0 && additions.length > 0) {
-      const removed = removals.shift()!;
-      const added = additions.shift()!;
-      result.push({
-        originalLineNum: removed.lineNum,
-        modifiedLineNum: added.lineNum,
-        originalContent: removed.content,
-        modifiedContent: added.content,
-        type: 'modified'
-      });
-    }
-
-    while (removals.length > 0) {
-      const removed = removals.shift()!;
-      result.push({
-        originalLineNum: removed.lineNum,
-        modifiedLineNum: null,
-        originalContent: removed.content,
-        modifiedContent: null,
-        type: 'removed'
-      });
-    }
-
-    while (additions.length > 0) {
-      const added = additions.shift()!;
-      result.push({
-        originalLineNum: null,
-        modifiedLineNum: added.lineNum,
-        originalContent: null,
-        modifiedContent: added.content,
-        type: 'added'
-      });
-    }
+    flushPendingChanges(removals, additions, result);
 
     return result;
   }, [original, modified]);
@@ -266,11 +234,11 @@ export const DiffViewer = memo<DiffViewerProps>(({ original, modified, defaultMo
       <div className={`diff-container ${viewMode === 'split' ? 'split-mode' : ''}`}>
         {viewMode === 'unified' ? (
           diffLines.map((line, index) => (
-            <DiffLineComponent key={index} line={line} index={index} />
+            <DiffLineComponent key={index} line={line} />
           ))
         ) : (
           splitDiffLines.map((line, index) => (
-            <SplitDiffLineComponent key={index} line={line} index={index} />
+            <SplitDiffLineComponent key={index} line={line} />
           ))
         )}
       </div>

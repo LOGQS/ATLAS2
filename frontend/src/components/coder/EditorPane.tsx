@@ -106,10 +106,17 @@ export const EditorPane = memo<EditorPaneProps>(({
             editor.onKeyDown((e) => {
               const key = e.browserEvent.key;
 
-              if ((key === 'a' || key === 's' || key === 'd') &&
-                  !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-                editor.trigger('keyboard', 'type', { text: key });
+              if ((e.browserEvent.ctrlKey || e.browserEvent.metaKey) && key === 's') {
+                e.preventDefault();
+                e.stopPropagation();
+                onSave();
+                return;
+              }
 
+              if ((key === 'a' || key === 's' || key === 'd') &&
+                  !e.browserEvent.ctrlKey && !e.browserEvent.metaKey &&
+                  !e.browserEvent.shiftKey && !e.browserEvent.altKey) {
+                editor.trigger('keyboard', 'type', { text: key });
                 e.preventDefault();
                 e.stopPropagation();
               }
