@@ -1389,13 +1389,14 @@ function App() {
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
         { id: 'workspace', className: 'workspace-modal', render: (isOpen: boolean) => <WorkspaceWindow isOpen={isOpen} /> },
         { id: 'sources', className: 'sources-modal', render: () => <SourcesWindow /> },
-        { id: 'coder', className: 'coder-modal', render: (isOpen: boolean) => <CoderWindow isOpen={isOpen} chatId={activeChatId !== 'none' ? activeChatId : undefined} /> },
+        { id: 'coder', className: 'coder-modal', closeOnBackdropClick: false, render: (isOpen: boolean) => <CoderWindow isOpen={isOpen} chatId={activeChatId !== 'none' ? activeChatId : undefined} /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}
           isOpen={activeModal === modal.id}
           onClose={handleCloseModal}
           className={modal.className}
+          closeOnBackdropClick={modal.closeOnBackdropClick}
         >
           {modal.render(activeModal === modal.id)}
         </ModalWindow>
