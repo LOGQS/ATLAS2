@@ -218,6 +218,8 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     stateRef.current = state;
   }, [state]);
 
+  const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
+
   const setError = useCallback((error: string) => {
     setState(prev => ({ ...prev, error }));
   }, []);
@@ -495,8 +497,18 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       }));
     }
 
+    const controller = new AbortController();
+    const previousRequest = activeFileRequestRef.current;
+    if (previousRequest) {
+      previousRequest.controller.abort();
+    }
+    activeFileRequestRef.current = { path: filePath, controller };
+
     try {
-      const response = await fetch(apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`));
+      const response = await fetch(
+        apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`),
+        { signal: controller.signal }
+      );
       const data = await response.json();
 
       if (data.success) {
@@ -511,6 +523,10 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
         filePreloader.primeCache(filePath, data.content, data.language);
 
         setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+
           const nextOpenTabs = prev.openTabs.includes(filePath)
             ? prev.openTabs
             : [...prev.openTabs, filePath];
@@ -548,20 +564,39 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
         });
 
         // Preload related files for better IntelliSense
-        filePreloader.preloadRelatedFiles(
-          filePath,
-          data.content,
-          data.language,
-          stateRef.current.workspacePath,
-          chatId,
-          apiUrl
-        ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+        if (!activeFileRequestRef.current || activeFileRequestRef.current.path === filePath) {
+          filePreloader.preloadRelatedFiles(
+            filePath,
+            data.content,
+            data.language,
+            stateRef.current.workspacePath,
+            chatId,
+            apiUrl
+          ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+        }
       } else {
-        setState(prev => ({ ...prev, error: data.error || 'Failed to load file', isLoading: false }));
+        setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+          return { ...prev, error: data.error || 'Failed to load file', isLoading: false };
+        });
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
       logger.error('[CODER] Failed to load file:', err);
-      setState(prev => ({ ...prev, error: 'Failed to load file', isLoading: false }));
+      setState(prev => {
+        if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+          return prev;
+        }
+        return { ...prev, error: 'Failed to load file', isLoading: false };
+      });
+    } finally {
+      if (activeFileRequestRef.current && activeFileRequestRef.current.path === filePath) {
+        activeFileRequestRef.current = null;
+      }
     }
   }, [chatId]);
 

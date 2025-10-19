@@ -13,7 +13,8 @@ import os
 import hashlib
 import time
 import subprocess
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
+import threading
 import difflib
 
 from flask import Flask, jsonify, request
@@ -169,6 +170,11 @@ class CoderWorkspaceRoute:
     def __init__(self, app: Flask):
         self.app = app
         self._coder_data_dir = self._ensure_coder_data_dir()
+        self._workspace_cache: Dict[str, Path] = {}
+        self._workspace_cache_lock = threading.RLock()
+        self._file_cache: "OrderedDict[tuple[str, str], Dict[str, Any]]" = OrderedDict()
+        self._file_cache_lock = threading.RLock()
+        self._file_cache_max_entries = 256
         self._register_routes()
 
     def _ensure_coder_data_dir(self) -> Path:
@@ -184,9 +190,80 @@ class CoderWorkspaceRoute:
         logger.info(f"[CODER_WORKSPACE] Ensured coder data directory: {coder_dir}")
         return coder_dir
 
+    def _relative_path_key(self, workspace_root: Path, target: Path) -> str:
+        """Return a normalized relative key for caching."""
+        try:
+            relative = target.relative_to(workspace_root)
+        except ValueError:
+            relative = Path(os.path.relpath(target, workspace_root))
+        return relative.as_posix()
+
+    def _get_cached_file_payload(
+        self,
+        workspace_root: Path,
+        relative_key: str,
+        stat_result: os.stat_result
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = (str(workspace_root), relative_key)
+        with self._file_cache_lock:
+            entry = self._file_cache.get(cache_key)
+            if not entry:
+                return None
+            if entry["mtime_ns"] != getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9)) or entry["size"] != stat_result.st_size:
+                self._file_cache.pop(cache_key, None)
+                return None
+            self._file_cache.move_to_end(cache_key)
+            return entry["payload"]
+
+    def _store_file_payload_in_cache(
+        self,
+        workspace_root: Path,
+        relative_key: str,
+        stat_result: os.stat_result,
+        payload: Dict[str, Any]
+    ) -> None:
+        cache_key = (str(workspace_root), relative_key)
+        entry = {
+            "mtime_ns": getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9)),
+            "size": stat_result.st_size,
+            "payload": payload,
+        }
+        with self._file_cache_lock:
+            self._file_cache[cache_key] = entry
+            self._file_cache.move_to_end(cache_key)
+            if len(self._file_cache) > self._file_cache_max_entries:
+                self._file_cache.popitem(last=False)
+
+    def _invalidate_file_cache(
+        self,
+        workspace_root: Path,
+        relative_path: Optional[str] = None
+    ) -> None:
+        workspace_key = str(workspace_root)
+        with self._file_cache_lock:
+            if relative_path is None:
+                keys_to_remove = [key for key in self._file_cache if key[0] == workspace_key]
+            else:
+                normalized = relative_path.replace("\\", "/")
+                prefix = normalized + "/"
+                keys_to_remove = [
+                    key for key in self._file_cache
+                    if key[0] == workspace_key and (key[1] == normalized or key[1].startswith(prefix))
+                ]
+            for key in keys_to_remove:
+                self._file_cache.pop(key, None)
+
 
     def _get_workspace_path(self, chat_id: str) -> Optional[Path]:
         """Get the workspace path for a specific chat from database."""
+        if not chat_id:
+            return None
+
+        with self._workspace_cache_lock:
+            cached = self._workspace_cache.get(chat_id)
+            if cached is not None:
+                return cached
+
         try:
             def query(conn, cursor):
                 cursor.execute(
@@ -198,13 +275,24 @@ class CoderWorkspaceRoute:
                     return Path(result[0])
                 return None
 
-            return db._execute_with_connection("get workspace path", query)
+            path = db._execute_with_connection("get workspace path", query)
+            with self._workspace_cache_lock:
+                if path:
+                    self._workspace_cache[chat_id] = path
+                else:
+                    self._workspace_cache.pop(chat_id, None)
+            return path
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to get workspace path: %s", err)
             return None
 
     def _set_workspace_path(self, chat_id: str, path: str) -> bool:
         """Set the workspace path for a specific chat."""
+        previous_workspace = None
+        if chat_id:
+            with self._workspace_cache_lock:
+                previous_workspace = self._workspace_cache.get(chat_id)
+
         try:
             def query(conn, cursor):
                 cursor.execute(
@@ -220,7 +308,15 @@ class CoderWorkspaceRoute:
                 conn.commit()
                 return True
 
-            return db._execute_with_connection("set workspace path", query, return_on_error=False)
+            success = db._execute_with_connection("set workspace path", query, return_on_error=False)
+            if success:
+                new_workspace = Path(path)
+                with self._workspace_cache_lock:
+                    self._workspace_cache[chat_id] = new_workspace
+                if previous_workspace and previous_workspace != new_workspace:
+                    self._invalidate_file_cache(previous_workspace)
+                self._invalidate_file_cache(new_workspace)
+            return success
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to set workspace path: %s", err)
             return False
@@ -873,7 +969,6 @@ class CoderWorkspaceRoute:
 
                 event_type = event.get("type")
                 if event_type != "match":
-                    # Log other event types for debugging (begin, end, summary, etc.)
                     if event_type and lines_processed <= 5:
                         logger.debug("[CODER_WORKSPACE] Skipping event type: %s", event_type)
                     continue
@@ -952,7 +1047,6 @@ class CoderWorkspaceRoute:
                 per_file_counts[relative_path] += 1
                 total_matches += 1
 
-                # Log progress every 100 matches
                 if total_matches % 100 == 0:
                     logger.debug(
                         "[CODER_WORKSPACE] Search progress - matches=%d, files=%d, lines=%d",
@@ -984,8 +1078,6 @@ class CoderWorkspaceRoute:
 
         logger.debug("[CODER_WORKSPACE] Checking for stderr output...")
         stderr_output = ""
-        # Skip reading stderr to avoid blocking - it's already been consumed by the process
-        # If there were errors, ripgrep would have returned a non-zero exit code
         logger.debug("[CODER_WORKSPACE] Stderr check completed")
 
         if process.returncode not in (0, 1, None) and not truncated:
@@ -1307,8 +1399,15 @@ class CoderWorkspaceRoute:
             if target.is_dir():
                 return jsonify({"success": False, "error": "Path is a directory"}), 400
 
-            if target.stat().st_size > self._MAX_FILE_SIZE:
+            stat_result = target.stat()
+
+            if stat_result.st_size > self._MAX_FILE_SIZE:
                 return jsonify({"success": False, "error": "File too large (max 10MB)"}), 400
+
+            relative_key = self._relative_path_key(workspace_path, target)
+            cached_payload = self._get_cached_file_payload(workspace_path, relative_key, stat_result)
+            if cached_payload:
+                return jsonify(cached_payload)
 
             try:
                 content = target.read_text(encoding='utf-8')
@@ -1320,14 +1419,18 @@ class CoderWorkspaceRoute:
 
             language = self._get_language_from_extension(target.name)
 
-            return jsonify({
+            payload = {
                 "success": True,
                 "content": content,
-                "path": file_path,
+                "path": relative_key,
                 "name": target.name,
                 "language": language,
-                "size": target.stat().st_size
-            })
+                "size": stat_result.st_size
+            }
+
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, payload)
+
+            return jsonify(payload)
 
         except ValueError as err:
             return jsonify({"success": False, "error": str(err)}), 400
@@ -1373,10 +1476,23 @@ class CoderWorkspaceRoute:
             if save_snapshot:
                 self._cleanup_old_checkpoints(str(workspace_path), file_path)
 
+            stat_result = target.stat()
+            relative_key = self._relative_path_key(workspace_path, target)
+            language = self._get_language_from_extension(target.name)
+            cache_payload = {
+                "success": True,
+                "content": content,
+                "path": relative_key,
+                "name": target.name,
+                "language": language,
+                "size": stat_result.st_size
+            }
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, cache_payload)
+
             return jsonify({
                 "success": True,
-                "path": file_path,
-                "size": target.stat().st_size
+                "path": relative_key,
+                "size": stat_result.st_size
             })
 
         except ValueError as err:
@@ -1411,9 +1527,21 @@ class CoderWorkspaceRoute:
             new_file.write_text("", encoding='utf-8')
             logger.info("[CODER_WORKSPACE] Created file: %s", new_file)
 
+            stat_result = new_file.stat()
+            relative_key = self._relative_path_key(workspace_path, new_file)
+            cache_payload = {
+                "success": True,
+                "content": "",
+                "path": relative_key,
+                "name": new_file.name,
+                "language": self._get_language_from_extension(new_file.name),
+                "size": stat_result.st_size
+            }
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, cache_payload)
+
             return jsonify({
                 "success": True,
-                "path": str(new_file.relative_to(workspace_path))
+                "path": relative_key
             })
 
         except ValueError as err:
@@ -1518,6 +1646,8 @@ class CoderWorkspaceRoute:
             if not target.exists():
                 return jsonify({"success": False, "error": "Path does not exist"}), 404
 
+            relative_key = self._relative_path_key(workspace_path, target)
+
             if is_directory:
                 if not target.is_dir():
                     return jsonify({"success": False, "error": "Path is not a directory"}), 400
@@ -1528,6 +1658,8 @@ class CoderWorkspaceRoute:
                     return jsonify({"success": False, "error": "Path is a directory"}), 400
                 target.unlink()
                 logger.info("[CODER_WORKSPACE] Deleted file: %s", target)
+
+            self._invalidate_file_cache(workspace_path, relative_key)
 
             return jsonify({"success": True})
 
@@ -1559,6 +1691,7 @@ class CoderWorkspaceRoute:
             if not old_target.exists():
                 return jsonify({"success": False, "error": "Path does not exist"}), 404
 
+            old_relative_key = self._relative_path_key(workspace_path, old_target)
             new_target = old_target.parent / new_name
             if new_target.exists():
                 return jsonify({"success": False, "error": "A file or folder with that name already exists"}), 400
@@ -1567,6 +1700,9 @@ class CoderWorkspaceRoute:
 
             old_target.rename(new_target)
             logger.info("[CODER_WORKSPACE] Renamed: %s -> %s", old_target, new_target)
+            new_relative_key = self._relative_path_key(workspace_path, new_target)
+            self._invalidate_file_cache(workspace_path, old_relative_key)
+            self._invalidate_file_cache(workspace_path, new_relative_key)
 
             if old_target.is_file() or not new_target.is_dir():
                 self._update_file_path_in_history(str(workspace_path), old_path_str, new_path_str)
