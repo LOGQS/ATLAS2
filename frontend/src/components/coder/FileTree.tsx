@@ -212,7 +212,6 @@ export const FileTree: React.FC = () => {
     selectedFile,
     activeTabPath,
     unsavedFiles,
-    searchQuery,
     creatingNode,
     multiSelectedFiles,
     isGitRepo,
@@ -399,9 +398,8 @@ export const FileTree: React.FC = () => {
   }, []);
 
   const filteredTree = useMemo(() => {
-    if (!fileTree || !searchQuery) return fileTree;
-    return filterNode(fileTree, searchQuery);
-  }, [fileTree, searchQuery, filterNode]);
+    return fileTree;
+  }, [fileTree]);
 
   // Flatten the tree into a linear list for virtualization
   const flattenedItems = useMemo(() => {

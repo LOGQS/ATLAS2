@@ -12,6 +12,8 @@ import json
 import os
 import hashlib
 import time
+import subprocess
+from collections import defaultdict
 import difflib
 
 from flask import Flask, jsonify, request
@@ -764,6 +766,330 @@ class CoderWorkspaceRoute:
             return False
 
 
+    def _load_file_lines(self, path: Path) -> List[str]:
+        """Load file content into a list of lines with graceful decoding."""
+        try:
+            return path.read_text(encoding='utf-8').splitlines()
+        except UnicodeDecodeError:
+            return path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception as exc:
+            logger.debug("[CODER_WORKSPACE] Failed to read %s: %s", path, exc)
+            return []
+
+    def _search_with_ripgrep(
+        self,
+        workspace_path: Path,
+        query: str,
+        case_sensitivity: str,
+        use_regex: bool,
+        whole_word: bool,
+        include_hidden: bool,
+        max_results: int,
+        per_file_limit: int,
+        context_lines: int,
+        max_file_size_bytes: int
+    ) -> tuple[List[Dict[str, Any]], int, bool]:
+        """Perform workspace search using ripgrep."""
+        command = [
+            "rg",
+            "--json",
+            "--no-config",
+            "--max-count",
+            str(per_file_limit),
+            "--max-columns",
+            "512",
+        ]
+
+        if max_file_size_bytes:
+            command.extend(["--max-filesize", str(max_file_size_bytes)])
+
+        if case_sensitivity == "sensitive":
+            command.append("--case-sensitive")
+        elif case_sensitivity == "insensitive":
+            command.append("--ignore-case")
+        else:
+            command.append("--smart-case")
+
+        if whole_word:
+            command.append("--word-regexp")
+
+        if not use_regex:
+            command.append("--fixed-strings")
+
+        if include_hidden:
+            command.append("--hidden")
+
+        command.append("--")
+        command.append(query)
+        command.append(".")
+
+        logger.debug("[CODER_WORKSPACE] Executing ripgrep command: %s", ' '.join(command[:10]) + '...')
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(workspace_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1,
+            )
+            logger.debug("[CODER_WORKSPACE] Ripgrep process started - PID=%s", process.pid)
+        except FileNotFoundError:
+            logger.error("[CODER_WORKSPACE] Ripgrep executable not found - ensure 'rg' is in PATH")
+            raise ValueError("Ripgrep (rg) not found. Please install ripgrep.")
+        except Exception as exc:
+            logger.error("[CODER_WORKSPACE] Failed to start ripgrep process: %s", exc)
+            raise
+
+        results: Dict[str, Dict[str, Any]] = {}
+        per_file_counts: Dict[str, int] = defaultdict(int)
+        line_cache: Dict[str, List[str]] = {}
+        total_matches = 0
+        truncated = False
+        lines_processed = 0
+
+        try:
+            stdout = process.stdout
+            assert stdout is not None
+            logger.debug("[CODER_WORKSPACE] Reading ripgrep output...")
+            for raw_line in stdout:
+                lines_processed += 1
+                if total_matches >= max_results:
+                    truncated = True
+                    break
+
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    logger.debug("[CODER_WORKSPACE] Failed to parse JSON line: %s", exc)
+                    continue
+
+                event_type = event.get("type")
+                if event_type != "match":
+                    # Log other event types for debugging (begin, end, summary, etc.)
+                    if event_type and lines_processed <= 5:
+                        logger.debug("[CODER_WORKSPACE] Skipping event type: %s", event_type)
+                    continue
+
+                data = event.get("data", {})
+                path_info = data.get("path", {})
+                path_text = path_info.get("text")
+                if not path_text:
+                    continue
+
+                absolute_path = (workspace_path / Path(path_text)).resolve()
+                try:
+                    relative_path = absolute_path.relative_to(workspace_path).as_posix()
+                except ValueError:
+                    relative_path = Path(path_text).as_posix()
+
+                if per_file_counts[relative_path] >= per_file_limit:
+                    continue
+
+                line_number = data.get("line_number") or 0
+                line_payload = data.get("lines", {})
+                line_text = (line_payload.get("text") or "").rstrip("\n\r")
+
+                submatches_payload = data.get("submatches", [])
+                submatches = []
+                for sub in submatches_payload:
+                    start = sub.get("start")
+                    end = sub.get("end")
+                    if start is None or end is None:
+                        continue
+                    submatches.append({"start": int(start), "end": int(end)})
+
+                if not submatches:
+                    continue
+
+                lines_list = line_cache.get(relative_path)
+                if lines_list is None and context_lines > 0:
+                    lines_list = self._load_file_lines(absolute_path)
+                    line_cache[relative_path] = lines_list
+                elif lines_list is None:
+                    line_cache[relative_path] = []
+                    lines_list = []
+
+                before: List[Dict[str, Any]] = []
+                after: List[Dict[str, Any]] = []
+
+                if context_lines > 0 and lines_list:
+                    index = max(line_number - 1, 0)
+                    for offset in range(context_lines, 0, -1):
+                        pos = index - offset
+                        if pos >= 0 and pos < len(lines_list):
+                            before.append({
+                                "lineNumber": pos + 1,
+                                "text": lines_list[pos],
+                            })
+                    for offset in range(1, context_lines + 1):
+                        pos = index + offset
+                        if pos < len(lines_list):
+                            after.append({
+                                "lineNumber": pos + 1,
+                                "text": lines_list[pos],
+                            })
+
+                file_entry = results.setdefault(
+                    relative_path,
+                    {"path": relative_path, "matches": []},
+                )
+                file_entry["matches"].append({
+                    "lineNumber": int(line_number),
+                    "lineText": line_text,
+                    "submatches": submatches,
+                    "before": before,
+                    "after": after,
+                })
+
+                per_file_counts[relative_path] += 1
+                total_matches += 1
+
+                # Log progress every 100 matches
+                if total_matches % 100 == 0:
+                    logger.debug(
+                        "[CODER_WORKSPACE] Search progress - matches=%d, files=%d, lines=%d",
+                        total_matches, len(results), lines_processed
+                    )
+
+                if total_matches >= max_results:
+                    truncated = True
+                    logger.debug("[CODER_WORKSPACE] Max results reached, truncating search")
+                    break
+
+            logger.debug(
+                "[CODER_WORKSPACE] Finished reading output - lines=%d, matches=%d, files=%d",
+                lines_processed, total_matches, len(results)
+            )
+
+        finally:
+            if truncated and process.poll() is None:
+                logger.debug("[CODER_WORKSPACE] Terminating ripgrep process (truncated)")
+                process.terminate()
+
+            try:
+                process.wait(timeout=0.5)
+                logger.debug("[CODER_WORKSPACE] Ripgrep process terminated - returncode=%s", process.returncode)
+            except subprocess.TimeoutExpired:
+                logger.warning("[CODER_WORKSPACE] Ripgrep process timeout - force killing")
+                process.kill()
+                process.wait()
+
+        logger.debug("[CODER_WORKSPACE] Checking for stderr output...")
+        stderr_output = ""
+        # Skip reading stderr to avoid blocking - it's already been consumed by the process
+        # If there were errors, ripgrep would have returned a non-zero exit code
+        logger.debug("[CODER_WORKSPACE] Stderr check completed")
+
+        if process.returncode not in (0, 1, None) and not truncated:
+            logger.error("[CODER_WORKSPACE] Ripgrep failed with returncode=%s: %s", process.returncode, stderr_output.strip())
+            raise ValueError(stderr_output.strip() or "ripgrep failed")
+
+        logger.debug("[CODER_WORKSPACE] Building result list from %d files", len(results))
+        ordered_results = list(results.values())
+
+        logger.debug("[CODER_WORKSPACE] Sorting %d results by path", len(ordered_results))
+        ordered_results.sort(key=lambda entry: entry["path"])
+
+        logger.debug("[CODER_WORKSPACE] Returning %d files with %d total matches", len(ordered_results), total_matches)
+        return ordered_results, total_matches, truncated
+
+    def search_workspace(self):
+        """HTTP API handler for searching within the active workspace."""
+        start_time = time.time()
+        try:
+            data = request.get_json(silent=True) or {}
+
+            chat_id = data.get("chat_id") or request.args.get("chat_id")
+            query = (data.get("query") or "").strip()
+
+            logger.info("[CODER_WORKSPACE] Search request received - chat_id=%s, query='%s'", chat_id, query[:50] if query else None)
+
+            if not chat_id:
+                logger.warning("[CODER_WORKSPACE] Search rejected - missing chat_id")
+                return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+            if not query:
+                logger.warning("[CODER_WORKSPACE] Search rejected - empty query")
+                return jsonify({"success": False, "error": "query is required"}), 400
+
+            workspace_path = self._get_workspace_path(chat_id)
+            if not workspace_path or not workspace_path.exists():
+                logger.warning("[CODER_WORKSPACE] Search rejected - no workspace set for chat_id=%s", chat_id)
+                return jsonify({"success": False, "error": "No workspace set"}), 404
+
+            max_results = int(data.get("max_results", 200))
+            max_results = max(1, min(max_results, 2000))
+
+            per_file_limit = int(data.get("per_file_matches", 50))
+            per_file_limit = max(1, min(per_file_limit, 200))
+
+            context_lines = int(data.get("context_lines", 2))
+            context_lines = max(0, min(context_lines, 5))
+
+            case_sensitivity = data.get("case_sensitivity", "smart")
+            if case_sensitivity not in {"smart", "sensitive", "insensitive"}:
+                case_sensitivity = "smart"
+
+            use_regex = bool(data.get("regex", False))
+            whole_word = bool(data.get("whole_word", False))
+            include_hidden = bool(data.get("include_hidden", False))
+
+            max_file_size_bytes = data.get("max_file_size_bytes")
+            if not isinstance(max_file_size_bytes, int) or max_file_size_bytes <= 0:
+                max_file_size_bytes = 2 * 1024 * 1024
+
+            logger.info(
+                "[CODER_WORKSPACE] Starting ripgrep search - workspace=%s, case=%s, regex=%s, word=%s, max_results=%d",
+                workspace_path.name, case_sensitivity, use_regex, whole_word, max_results
+            )
+
+            results, total_matches, truncated = self._search_with_ripgrep(
+                workspace_path,
+                query,
+                case_sensitivity,
+                use_regex,
+                whole_word,
+                include_hidden,
+                max_results,
+                per_file_limit,
+                context_lines,
+                max_file_size_bytes,
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            logger.info(
+                "[CODER_WORKSPACE] Search completed - matches=%d, files=%d, duration=%dms, truncated=%s",
+                total_matches, len(results), duration_ms, truncated
+            )
+
+            return jsonify({
+                "success": True,
+                "results": results,
+                "truncated": truncated,
+                "stats": {
+                    "totalMatches": total_matches,
+                    "filesWithMatches": len(results),
+                    "durationMs": duration_ms,
+                },
+            })
+
+        except ValueError as exc:
+            logger.error("[CODER_WORKSPACE] Search validation error: %s", exc)
+            return jsonify({"success": False, "error": str(exc)}), 400
+        except Exception as err:
+            logger.error("[CODER_WORKSPACE] Workspace search failed: %s", err, exc_info=True)
+            return jsonify({"success": False, "error": "Search failed"}), 500
+
+
     def _register_routes(self) -> None:
         self.app.route("/api/coder-workspace/set", methods=["POST"], endpoint="coder_set_workspace")(self.set_workspace)
         self.app.route("/api/coder-workspace/get", methods=["GET"], endpoint="coder_get_workspace")(self.get_workspace)
@@ -787,6 +1113,7 @@ class CoderWorkspaceRoute:
         self.app.route("/api/coder-workspace/settings", methods=["POST"], endpoint="coder_save_settings")(self.save_settings)
         self.app.route("/api/coder-workspace/workspace/changes", methods=["GET"], endpoint="coder_workspace_changes")(self.get_workspace_changes)
         self.app.route("/api/coder-workspace/file/diff-stats", methods=["GET"], endpoint="coder_file_diff_stats")(self.get_file_diff_stats)
+        self.app.route("/api/coder-workspace/search", methods=["POST"], endpoint="coder_search_workspace")(self.search_workspace)
 
     def set_workspace(self):
         """Set the workspace path for a chat."""
