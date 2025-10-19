@@ -144,8 +144,8 @@ export const FileHistoryPanel: React.FC<FileHistoryPanelProps> = ({ isOpen, onCl
                 </div>
                 <div className="diff-content">
                   <DiffViewer
-                    original={currentDocument.content}
-                    modified={selectedSnapshot.content}
+                    original={selectedSnapshot.content}
+                    modified={currentDocument.content}
                   />
                 </div>
               </div>
