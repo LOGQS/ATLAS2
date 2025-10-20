@@ -85,6 +85,7 @@ export interface RouterDecision {
   toolsNeeded?: boolean | null;
   executionType?: string | null;
   fastpathParams?: string | null;
+  error?: string | null;
 }
 
 export interface Message {

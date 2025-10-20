@@ -43,6 +43,7 @@ interface LiveOperationFeedProps {
 
 const LiveOperationFeed: React.FC<LiveOperationFeedProps> = ({ operations, onClear }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   useEffect(() => {
     if (!operations.length) {
@@ -62,43 +63,71 @@ const LiveOperationFeed: React.FC<LiveOperationFeedProps> = ({ operations, onCle
   }
 
   return (
-    <div className="coder-live-ops">
+    <motion.div
+      className={`coder-live-ops ${isCollapsed ? 'collapsed' : 'expanded'}`}
+      initial={false}
+      animate={{
+        height: isCollapsed ? 'auto' : 'auto',
+        opacity: 1
+      }}
+      transition={{
+        duration: 0.3,
+        ease: [0.4, 0.0, 0.2, 1] // iOS-like easing
+      }}
+    >
       <div className="coder-live-ops__header">
-        <div className="coder-live-ops__header-left">
+        <button
+          className="coder-live-ops__toggle"
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          title={isCollapsed ? 'Expand live changes' : 'Collapse live changes'}
+        >
+          <Icons.ChevronDown className={`coder-live-ops__toggle-icon ${isCollapsed ? 'collapsed' : ''}`} />
+        </button>
+        <div className="coder-live-ops__header-content">
           <span className="coder-live-ops__title">Live Changes</span>
           <span className="coder-live-ops__count">{operations.length}</span>
         </div>
-        <button className="coder-live-ops__clear" onClick={onClear}>
+        <button className="coder-live-ops__clear" onClick={onClear} title="Clear all changes">
           Clear
         </button>
       </div>
-      <div className="coder-live-ops__list">
-        {operations.map(op => {
-          const isExpanded = expandedId === op.id;
-          const timestamp = new Date(op.timestamp).toLocaleTimeString();
-          return (
-            <div key={op.id} className={`coder-live-ops__item ${isExpanded ? 'expanded' : ''}`}>
-              <button
-                className="coder-live-ops__item-toggle"
-                onClick={() => setExpandedId(isExpanded ? null : op.id)}
-              >
-                <span className="coder-live-ops__item-action">{op.action}</span>
-                <span className="coder-live-ops__item-path">{op.filePath}</span>
-                <span className="coder-live-ops__item-meta">
-                  {op.tool} · {timestamp}
-                </span>
-                <Icons.ChevronDown className="coder-live-ops__item-chevron" />
-              </button>
-              {isExpanded && (
-                <div className="coder-live-ops__diff">
-                  <DiffViewer original={op.before ?? ''} modified={op.after ?? ''} defaultMode="split" />
+      <AnimatePresence>
+        {!isCollapsed && (
+          <motion.div
+            className="coder-live-ops__list"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: [0.4, 0.0, 0.2, 1] }}
+          >
+            {operations.map(op => {
+              const isExpanded = expandedId === op.id;
+              const timestamp = new Date(op.timestamp).toLocaleTimeString();
+              return (
+                <div key={op.id} className={`coder-live-ops__item ${isExpanded ? 'expanded' : ''}`}>
+                  <button
+                    className="coder-live-ops__item-toggle"
+                    onClick={() => setExpandedId(isExpanded ? null : op.id)}
+                  >
+                    <span className="coder-live-ops__item-action">{op.action}</span>
+                    <span className="coder-live-ops__item-path">{op.filePath}</span>
+                    <span className="coder-live-ops__item-meta">
+                      {op.tool} · {timestamp}
+                    </span>
+                    <Icons.ChevronDown className="coder-live-ops__item-chevron" />
+                  </button>
+                  {isExpanded && (
+                    <div className="coder-live-ops__diff">
+                      <DiffViewer original={op.before ?? ''} modified={op.after ?? ''} defaultMode="split" />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 };
 
@@ -137,6 +166,13 @@ const CoderWindowContent: React.FC = () => {
   const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const monacoConfigured = useRef(false);
+  const hasLiveOperations = liveOperations.length > 0;
+  const sidebarDefaultSize = 22;
+  const liveOperationsDefaultSize = 20;
+  const editorDefaultSize = hasLiveOperations
+    ? 100 - sidebarDefaultSize - liveOperationsDefaultSize
+    : 100 - sidebarDefaultSize;
+  const panelGroupKey = hasLiveOperations ? 'coder-horizontal-with-live' : 'coder-horizontal-without-live';
 
   // Open modal when workspace is not set (only on mount or when hasWorkspace becomes false)
   useEffect(() => {
@@ -271,108 +307,70 @@ const CoderWindowContent: React.FC = () => {
 
       {hasWorkspace && (
         <div className="coder-workbench-container">
-          {liveOperations.length > 0 && (
-            <LiveOperationFeed operations={liveOperations} onClear={clearLiveOperations} />
-          )}
-
           <div className="coder-workbench-wrapper">
-            {/* Top Toolbar */}
-            <div className="flex items-center px-3 py-2 border-b border-bolt-elements-borderColor gap-1.5">
-              <Slider
-                selected={selectedView}
-                options={sliderOptions}
-                setSelected={setSelectedView}
-              />
-              <button
-                onClick={() => setIsWorkspaceHistoryOpen(true)}
-                className="
-                  flex items-center gap-1.5 px-3 py-1.5
-                  text-xs font-medium
-                  bg-bolt-elements-bg-depth-2 text-bolt-elements-textPrimary
-                  border border-bolt-elements-borderColor
-                  rounded-md
-                  hover:bg-bolt-elements-bg-depth-3
-                  transition-colors duration-150
-                "
-                title="View workspace history"
-              >
-                <Icons.History className="w-3.5 h-3.5" />
-                Workspace History
-              </button>
-              <div className="ml-auto" />
+            {/* Top Toolbar - iOS-like with grouped sections */}
+            <div className="coder-toolbar">
+              <div className="coder-toolbar__section">
+                <Slider
+                  selected={selectedView}
+                  options={sliderOptions}
+                  setSelected={setSelectedView}
+                />
+              </div>
+
+              <div className="coder-toolbar__section">
+                <button
+                  onClick={() => setIsWorkspaceHistoryOpen(true)}
+                  className="coder-toolbar__button"
+                  title="View workspace history"
+                >
+                  <Icons.History className="w-3.5 h-3.5" />
+                  <span>Workspace History</span>
+                </button>
+              </div>
+
+              <div className="coder-toolbar__spacer" />
               {selectedView === 'code' && (
-                <>
+                <div className="coder-toolbar__section coder-toolbar__section--actions">
                   {splitMode === 'none' ? (
                     <>
                       <button
                         onClick={splitEditorHorizontal}
-                        className="
-                          flex items-center gap-1.5 px-3 py-1.5
-                          text-xs font-medium
-                          bg-bolt-elements-bg-depth-2 text-bolt-elements-textPrimary
-                          border border-bolt-elements-borderColor
-                          rounded-md
-                          hover:bg-bolt-elements-bg-depth-3
-                          transition-colors duration-150
-                        "
+                        className="coder-toolbar__button"
                         title="Split editor horizontally"
                       >
                         <Icons.ChevronRight className="w-3.5 h-3.5" />
-                        Split Horizontal
+                        <span>Split Horizontal</span>
                       </button>
                       <button
                         onClick={splitEditorVertical}
-                        className="
-                          flex items-center gap-1.5 px-3 py-1.5
-                          text-xs font-medium
-                          bg-bolt-elements-bg-depth-2 text-bolt-elements-textPrimary
-                          border border-bolt-elements-borderColor
-                          rounded-md
-                          hover:bg-bolt-elements-bg-depth-3
-                          transition-colors duration-150
-                        "
+                        className="coder-toolbar__button"
                         title="Split editor vertically"
                       >
                         <Icons.ChevronDown className="w-3.5 h-3.5" />
-                        Split Vertical
+                        <span>Split Vertical</span>
                       </button>
                     </>
                   ) : (
                     <button
                       onClick={closeSplit}
-                      className="
-                        flex items-center gap-1.5 px-3 py-1.5
-                        text-xs font-medium
-                        bg-bolt-elements-bg-depth-2 text-bolt-elements-textPrimary
-                        border border-bolt-elements-borderColor
-                        rounded-md
-                        hover:bg-bolt-elements-bg-depth-3
-                        transition-colors duration-150
-                      "
+                      className="coder-toolbar__button"
                       title="Close split view"
                     >
                       <Icons.Close className="w-3.5 h-3.5" />
-                      Close Split
+                      <span>Close Split</span>
                     </button>
                   )}
+                  <div className="coder-toolbar__separator" />
                   <button
                     onClick={toggleTerminal}
-                    className="
-                      flex items-center gap-1.5 px-3 py-1.5
-                      text-xs font-medium
-                      bg-bolt-elements-bg-depth-2 text-bolt-elements-textPrimary
-                      border border-bolt-elements-borderColor
-                      rounded-md
-                      hover:bg-bolt-elements-bg-depth-3
-                      hover:border-bolt-elements-borderColorActive
-                      transition-all duration-150
-                    "
+                    className={`coder-toolbar__button ${showTerminal ? 'coder-toolbar__button--active' : ''}`}
                     title={showTerminal ? 'Hide terminal (Ctrl+`)' : 'Show terminal (Ctrl+`)'}
                   >
                     <Icons.Terminal className="w-3.5 h-3.5" />
-                    {showTerminal ? 'Hide' : 'Show'} Terminal
+                    <span>{showTerminal ? 'Hide' : 'Show'} Terminal</span>
                   </button>
-                </>
+                </div>
               )}
             </div>
 
@@ -386,12 +384,15 @@ const CoderWindowContent: React.FC = () => {
                   defaultSize={showTerminal ? 70 : 100}
                   minSize={20}
                 >
-                  <PanelGroup direction="horizontal">
+                  <PanelGroup
+                    key={panelGroupKey}
+                    direction="horizontal"
+                  >
                     {/* Sidebar Panel */}
                     <Panel
                       id="sidebar"
                       order={1}
-                      defaultSize={20}
+                      defaultSize={sidebarDefaultSize}
                       minSize={15}
                       collapsible
                       className="border-r border-bolt-elements-borderColor"
@@ -405,7 +406,13 @@ const CoderWindowContent: React.FC = () => {
                     <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
 
                     {/* Editor Panel */}
-                    <Panel id="editor" order={2} defaultSize={80} minSize={20} className="flex flex-col">
+                    <Panel
+                      id="editor"
+                      order={2}
+                      defaultSize={editorDefaultSize}
+                      minSize={20}
+                      className="flex flex-col"
+                    >
                       <div className="h-full flex flex-col" style={{background: 'var(--bolt-elements-bg-depth-1)'}}>
                         {/* Tab Bar */}
                         <TabBar />
@@ -425,6 +432,7 @@ const CoderWindowContent: React.FC = () => {
                               onHistoryClick={() => setIsHistoryPanelOpen(true)}
                               onEditorWillMount={handleEditorWillMount}
                               onPaneClick={() => {}}
+                              chatId={chatId}
                             />
                           ) : (
                             /* Split Editor View */
@@ -451,6 +459,7 @@ const CoderWindowContent: React.FC = () => {
                                   onHistoryClick={() => setIsHistoryPanelOpen(true)}
                                   onEditorWillMount={handleEditorWillMount}
                                   onPaneClick={() => switchPane('primary')}
+                                  chatId={chatId}
                                 />
                               </Panel>
 
@@ -475,6 +484,7 @@ const CoderWindowContent: React.FC = () => {
                                   onHistoryClick={() => setIsHistoryPanelOpen(true)}
                                   onEditorWillMount={handleEditorWillMount}
                                   onPaneClick={() => switchPane('secondary')}
+                                  chatId={chatId}
                                 />
                               </Panel>
                             </PanelGroup>
@@ -482,6 +492,26 @@ const CoderWindowContent: React.FC = () => {
                         </div>
                       </div>
                     </Panel>
+
+                    {/* Live Operations Panel - RIGHT SIDE */}
+                    {hasLiveOperations && (
+                      <>
+                        <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
+                        <Panel
+                          id="live-operations"
+                          order={3}
+                          defaultSize={liveOperationsDefaultSize}
+                          minSize={15}
+                          maxSize={40}
+                          collapsible
+                          className="border-l border-bolt-elements-borderColor"
+                        >
+                          <div className="h-full flex flex-col bg-bolt-elements-background-depth-2">
+                            <LiveOperationFeed operations={liveOperations} onClear={clearLiveOperations} />
+                          </div>
+                        </Panel>
+                      </>
+                    )}
                   </PanelGroup>
                 </Panel>
 
@@ -541,4 +571,3 @@ const CoderWindow: React.FC<CoderWindowProps> = ({ isOpen, chatId }) => {
 };
 
 export default CoderWindow;
-

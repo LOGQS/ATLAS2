@@ -26,10 +26,17 @@ Based on TOOLS_NEEDED decision, choose from the appropriate routes below.
 When routing to **direct**, if you can extract tool parameters:
 1. Match request to a tool from AVAILABLE TOOLS (in context below)
 2. Extract ALL required parameters that are explicitly stated
-3. Format as XML-like tags:
+3. Format using tag delimiters (NOT XML - use for regex extraction):
    <TOOL>tool_name</TOOL>
    <PARAM name="param1">value1</PARAM>
    <PARAM name="param2">value2</PARAM>
+
+   CRITICAL: Write parameter values LITERALLY between tags.
+   - DO NOT escape < > & " or any characters
+   - DO NOT convert to &lt; &gt; &amp; &quot;
+   - Tags are delimiters only - content is extracted via regex
+   - Example: <PARAM name="content"><html><body>Hello</body></html></PARAM>
+
 4. Only use if completely unambiguous - leave empty if uncertain
 
 ## REQUEST CONTEXT:
@@ -58,6 +65,7 @@ For tool-based routes EXCEPT 'direct', specify which domain from the list above.
 <FASTPATH_PARAMS>
 <TOOL>tool_name</TOOL>
 <PARAM name="param_name">param_value</PARAM>
+(Write values literally - NO escaping of < > & " characters)
 OR leave empty if not applicable
 </FASTPATH_PARAMS>
 <CHOICE>

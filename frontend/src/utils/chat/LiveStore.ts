@@ -75,6 +75,7 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   tools_needed?: boolean | null;
   execution_type?: string | null;
   fastpath_params?: string | null;
+  error?: string | null;
 }
 
 interface TaskflowPlanEvent extends BaseSSEEvent {
@@ -209,11 +210,16 @@ class LiveStore {
       selectedModel: ev.selected_model || null,
       toolsNeeded: ev.tools_needed ?? null,
       executionType: ev.execution_type || null,
-      fastpathParams: ev.fastpath_params || null
+      fastpathParams: ev.fastpath_params || null,
+      error: ev.error || null
     };
     next.error = null;
     next.version++;
-    logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, tools_needed=${ev.tools_needed} (type: ${typeof ev.tools_needed}), available=${ev.available_routes?.length || 0}`);
+    if (ev.error) {
+      logger.warn(`[ROUTER_LIVESTORE] Router decision with error for ${chatId}: ${ev.error}, falling back to model=${ev.selected_model}`);
+    } else {
+      logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, tools_needed=${ev.tools_needed} (type: ${typeof ev.tools_needed}), available=${ev.available_routes?.length || 0}`);
+    }
     this.enableParentFromBridge(chatId, 'Router decision');
     return next;
   }

@@ -5,7 +5,7 @@ to ensure consistent, parseable responses.
 """
 
 AGENT_RESPONSE_FORMAT = """
-Respond using the following XML-like structure (no extra text before or after):
+Respond using the following structure (no extra text before or after):
 
 <AGENT_DECISION>
 <MESSAGE>
@@ -31,8 +31,32 @@ Rules:
 - Use absolute/explicit parameter values; never leave placeholders.
 - Only reference tools from the allowlist. One tool per decision turn.
 - When STATUS is COMPLETE, leave the TOOL_CALL section empty (no TOOL/REASON/PARAM tags).
-- Never execute tools yourself�?"you only propose them for approval.
+- Never execute tools yourself—you only propose them for approval.
 - Do not add any text outside the <AGENT_DECISION> block.
+
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL - PARAMETER VALUE FORMATTING (READ THIS CAREFULLY):
+═══════════════════════════════════════════════════════════════════════════════
+
+Tags are DELIMITERS for regex extraction - NOT XML. Write parameter values LITERALLY.
+
+❌ WRONG - DO NOT DO THIS:
+<PARAM name="content">&lt;html&gt;&lt;body&gt;Hello&lt;/body&gt;&lt;/html&gt;</PARAM>
+<PARAM name="text">She said &quot;hello&quot; &amp; waved</PARAM>
+
+✓ CORRECT - DO THIS:
+<PARAM name="content"><html><body>Hello</body></html></PARAM>
+<PARAM name="text">She said "hello" & waved</PARAM>
+
+Rules for parameter values:
+• Write content EXACTLY as-is between <PARAM> tags
+• DO NOT escape < > & " ' or any special characters
+• DO NOT convert to &lt; &gt; &amp; &quot; &apos;
+• DO NOT apply XML/HTML entity encoding
+• Tags are regex delimiters - content is extracted literally
+• Multi-line values are allowed - write them naturally
+
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 

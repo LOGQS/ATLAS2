@@ -1,9 +1,11 @@
 ﻿# status: complete
 
 import uuid
+import pickle
 import multiprocessing
 import threading
-from typing import Dict, Any, Optional, Generator, List
+from queue import Queue, Empty
+from typing import Dict, Any, Optional, Generator, List, Tuple
 from utils.config import get_provider_map, Config
 from utils.db_utils import db
 from utils.logger import get_logger
@@ -21,6 +23,93 @@ _chat_processes_lock = threading.Lock()
 _chat_processes: Dict[str, multiprocessing.Process] = {}
 _chat_process_connections: Dict[str, Any] = {}
 _chat_process_status: Dict[str, str] = {}
+_chat_command_queues: Dict[str, Dict[str, Queue]] = {}
+
+
+def _register_command_queue(chat_id: str, command_id: str) -> Queue:
+    """Create and register a response queue for a pending command."""
+    with _chat_processes_lock:
+        command_map = _chat_command_queues.setdefault(chat_id, {})
+        response_queue = Queue()
+        command_map[command_id] = response_queue
+        return response_queue
+
+
+def _pop_command_queue(chat_id: str, command_id: str) -> None:
+    """Remove a response queue once the command has been resolved."""
+    with _chat_processes_lock:
+        command_map = _chat_command_queues.get(chat_id)
+        if not command_map:
+            return
+        command_map.pop(command_id, None)
+        if not command_map:
+            _chat_command_queues.pop(chat_id, None)
+
+
+def _fail_pending_command_queues(chat_id: str, error: str) -> None:
+    """Fail and drain any pending command queues for a chat."""
+    with _chat_processes_lock:
+        command_map = _chat_command_queues.pop(chat_id, {})
+
+    if not command_map:
+        return
+
+    failure_payload_template = {
+        'success': False,
+        'chat_id': chat_id,
+        'error': error,
+    }
+    for command_id, queue in command_map.items():
+        try:
+            payload = dict(failure_payload_template)
+            payload['command_id'] = command_id
+            queue.put_nowait(payload)
+        except Exception:
+            continue
+
+
+def _issue_worker_command(
+    chat_id: str,
+    payload: Dict[str, Any],
+    timeout: float,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+    """
+    Send a command to a worker process and wait for the response using the relay queue.
+
+    Returns a tuple of (response, error, command_id). Only one of response/error will be non-None.
+    """
+    with _chat_processes_lock:
+        conn = _chat_process_connections.get(chat_id)
+        process = _chat_processes.get(chat_id)
+        if not conn or not process or not process.is_alive():
+            logger.error(f"[WORKER-COMMAND] No active worker available for {chat_id}")
+            return None, 'Chat worker is not active', None
+
+        command_id = f"cmd_{uuid.uuid4().hex[:10]}"
+        response_queue = Queue()
+        command_map = _chat_command_queues.setdefault(chat_id, {})
+        command_map[command_id] = response_queue
+
+    command = dict(payload)
+    command['command_id'] = command_id
+
+    try:
+        conn.send(command)
+        response = response_queue.get(timeout=timeout)
+        if isinstance(response, dict):
+            return response, None, command_id
+        return {'success': True, 'chat_id': chat_id, 'command_id': command_id}, None, command_id
+    except Empty:
+        logger.warning(f"[WORKER-COMMAND] Timeout waiting for response (command={payload.get('command')}) on chat {chat_id}")
+        return None, 'Worker did not respond in time', command_id
+    except (OSError, BrokenPipeError, EOFError, pickle.UnpicklingError, AssertionError) as comm_error:
+        logger.error(f"[WORKER-COMMAND] Communication error for chat {chat_id}: {type(comm_error).__name__}: {comm_error}")
+        return None, str(comm_error), command_id
+    except Exception as exc:
+        logger.error(f"[WORKER-COMMAND] Unexpected error for chat {chat_id}: {exc}")
+        return None, str(exc), command_id
+    finally:
+        _pop_command_queue(chat_id, command_id)
 
 def _terminate_process_safely(process: multiprocessing.Process, chat_id: str) -> None:
     """Safely terminate a process with proper error handling"""
@@ -71,55 +160,51 @@ def is_chat_processing(chat_id: str) -> bool:
 
 def cleanup_completed_processes():
     """Clean up completed/dead processes"""
+    completed_chats: List[str] = []
+
     with _chat_processes_lock:
-        completed_chats = []
         for chat_id, process in list(_chat_processes.items()):
             status = _chat_process_status.get(chat_id)
             if not process.is_alive() or status in ['completed', 'cancelled']:
                 completed_chats.append(chat_id)
-        
+
         for chat_id in completed_chats:
-            if chat_id in _chat_processes:
-                process = _chat_processes[chat_id]
+            process = _chat_processes.pop(chat_id, None)
+            if process:
                 _terminate_process_safely(process, chat_id)
-                del _chat_processes[chat_id]
-            if chat_id in _chat_process_connections:
-                conn = _chat_process_connections[chat_id]
+            conn = _chat_process_connections.pop(chat_id, None)
+            if conn:
                 _close_connection_safely(conn, chat_id)
-                del _chat_process_connections[chat_id]
             _chat_process_status.pop(chat_id, None)
             cancellation_manager.cleanup_chat(chat_id)
-            logger.info(f"Cleaned up completed process for chat {chat_id}")
+
+    for chat_id in completed_chats:
+        _fail_pending_command_queues(chat_id, "Chat worker stopped")
+        logger.info(f"Cleaned up completed process for chat {chat_id}")
 
 def cancel_chat_process(chat_id: str) -> bool:
-    """Cancel a running background process for a chat"""
-    with _chat_processes_lock:
-        if chat_id in _chat_process_connections:
-            logger.info(f"Cancelling background process for chat {chat_id}")
-            try:
-                conn = _chat_process_connections[chat_id]
-                conn.send({'command': 'cancel'})
-                
-                if conn.poll(CANCEL_RESPONSE_TIMEOUT):
-                    response = conn.recv()
-                    logger.info(f"Cancel response for {chat_id}: {response}")
-                
-                _chat_process_status[chat_id] = 'cancelled'
-                cancellation_manager.cancel_chat(chat_id)
-                return True
-            except (OSError, BrokenPipeError) as e:
-                logger.warning(f"Connection error sending cancel command to {chat_id}: {e}")
-                if chat_id in _chat_processes:
-                    process = _chat_processes[chat_id]
-                    _terminate_process_safely(process, chat_id)
-                return True
-            except Exception as e:
-                logger.error(f"Unexpected error sending cancel command to {chat_id}: {e}")
-                if chat_id in _chat_processes:
-                    process = _chat_processes[chat_id]
-                    _terminate_process_safely(process, chat_id)
-                return True
+    """Cancel a running background process for a chat."""
+
+    response, error, _ = _issue_worker_command(
+        chat_id,
+        {'command': 'cancel', 'chat_id': chat_id},
+        timeout=CANCEL_RESPONSE_TIMEOUT,
+    )
+
+    if response and response.get('success'):
+        with _chat_processes_lock:
+            _chat_process_status[chat_id] = 'cancelled'
+        cancellation_manager.cancel_chat(chat_id)
+        return True
+
+    if error == 'Chat worker is not active':
+        logger.info(f"[CANCEL] Cancel requested for {chat_id} but worker not active")
         return False
+
+    logger.warning(f"[CANCEL] Falling back to process termination for {chat_id}: {error}")
+    force_cleanup_chat_process(chat_id)
+    cancellation_manager.cancel_chat(chat_id)
+    return True
 
 
 
@@ -127,19 +212,7 @@ def cancel_chat_process(chat_id: str) -> bool:
 def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision: str,
                               assistant_message_id: Optional[int] = None) -> Dict[str, Any]:
     """Send a tool decision command to the chat worker for single-domain execution."""
-    with _chat_processes_lock:
-        conn = _chat_process_connections.get(chat_id)
-        process = _chat_processes.get(chat_id)
-
-    if not conn or not process or not process.is_alive():
-        logger.error(f"[DOMAIN-DECISION] No active worker for chat {chat_id}")
-        return {
-            'success': False,
-            'error': 'Chat worker is not active',
-            'chat_id': chat_id
-        }
-
-    command = {
+    payload = {
         'command': 'domain_tool_decision',
         'chat_id': chat_id,
         'task_id': task_id,
@@ -147,91 +220,77 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
         'decision': decision
     }
     if assistant_message_id is not None:
-        command['assistant_message_id'] = assistant_message_id
+        payload['assistant_message_id'] = assistant_message_id
 
-    try:
-        conn.send(command)
-        if conn.poll(INIT_RESPONSE_TIMEOUT):
-            response = conn.recv()
-            return response if isinstance(response, dict) else {'success': True, 'chat_id': chat_id}
-        logger.warning(f"[DOMAIN-DECISION] Worker response timeout for chat {chat_id}")
-        return {
-            'success': False,
-            'error': 'Worker did not respond in time',
-            'chat_id': chat_id
-        }
-    except (OSError, BrokenPipeError) as comm_error:
-        logger.error(f"[DOMAIN-DECISION] Communication error for chat {chat_id}: {comm_error}")
-        return {
-            'success': False,
-            'error': str(comm_error),
-            'chat_id': chat_id
-        }
+    response, error, command_id = _issue_worker_command(
+        chat_id,
+        payload,
+        timeout=INIT_RESPONSE_TIMEOUT,
+    )
+
+    if response:
+        return response
+
+    if error and error not in {'Chat worker is not active', 'Worker did not respond in time'}:
+        logger.error(f"[DOMAIN-DECISION] Fatal communication error for {chat_id}: {error}")
+        force_cleanup_chat_process(chat_id)
+
+    failure_payload: Dict[str, Any] = {
+        'success': False,
+        'error': error or 'Worker did not respond in time',
+        'chat_id': chat_id,
+        'task_id': task_id,
+    }
+    if command_id:
+        failure_payload['command_id'] = command_id
+    return failure_payload
 
 
 def send_workspace_selected(chat_id: str) -> Dict[str, Any]:
     """Notify the chat worker that workspace has been selected."""
-    with _chat_processes_lock:
-        conn = _chat_process_connections.get(chat_id)
-        process = _chat_processes.get(chat_id)
+    response, error, command_id = _issue_worker_command(
+        chat_id,
+        {'command': 'workspace_selected', 'chat_id': chat_id},
+        timeout=INIT_RESPONSE_TIMEOUT,
+    )
 
-    if not conn or not process or not process.is_alive():
-        logger.error(f"[WORKSPACE_SELECTED] No active worker for chat {chat_id}")
-        return {
-            'success': False,
-            'error': 'Chat worker is not active',
-            'chat_id': chat_id
-        }
+    if response:
+        return response
 
-    command = {
-        'command': 'workspace_selected',
-        'chat_id': chat_id
+    if error and error not in {'Chat worker is not active', 'Worker did not respond in time'}:
+        logger.error(f"[WORKSPACE_SELECTED] Fatal communication error for {chat_id}: {error}")
+        force_cleanup_chat_process(chat_id)
+
+    failure_payload: Dict[str, Any] = {
+        'success': False,
+        'error': error or 'Worker did not respond in time',
+        'chat_id': chat_id,
     }
-
-    try:
-        conn.send(command)
-        if conn.poll(INIT_RESPONSE_TIMEOUT):
-            response = conn.recv()
-            return response if isinstance(response, dict) else {'success': True, 'chat_id': chat_id}
-        logger.warning(f"[WORKSPACE_SELECTED] Worker response timeout for chat {chat_id}")
-        return {
-            'success': False,
-            'error': 'Worker did not respond in time',
-            'chat_id': chat_id
-        }
-    except (OSError, BrokenPipeError) as comm_error:
-        logger.error(f"[WORKSPACE_SELECTED] Communication error for chat {chat_id}: {comm_error}")
-        return {
-            'success': False,
-            'error': str(comm_error),
-            'chat_id': chat_id
-        }
+    if command_id:
+        failure_payload['command_id'] = command_id
+    return failure_payload
 
 def stop_chat_process(chat_id: str) -> bool:
     """Stop a running background process for a chat and finalize the stream."""
     with _chat_processes_lock:
         process = _chat_processes.get(chat_id)
-        conn = _chat_process_connections.get(chat_id)
-        if not process or not conn:
+        has_conn = chat_id in _chat_process_connections
+        if not process or not has_conn:
             logger.info(f"Stop requested for chat {chat_id} but no active process found")
             return False
         _chat_process_status[chat_id] = 'stopping'
 
     logger.info(f"Stopping background process for chat {chat_id}")
-    stop_ack_received = False
-
-    try:
-        conn.send({'command': 'stop'})
-        if conn.poll(CANCEL_RESPONSE_TIMEOUT):
-            response = conn.recv()
-            stop_ack_received = True
-            logger.info(f"Stop response for {chat_id}: {response}")
-        else:
-            logger.debug(f"No stop acknowledgement received for chat {chat_id} within timeout")
-    except (OSError, BrokenPipeError) as e:
-        logger.warning(f"Connection error sending stop command to {chat_id}: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error sending stop command to {chat_id}: {e}")
+    stop_response, stop_error, _ = _issue_worker_command(
+        chat_id,
+        {'command': 'stop', 'chat_id': chat_id},
+        timeout=CANCEL_RESPONSE_TIMEOUT,
+    )
+    stop_ack_received = bool(stop_response and stop_response.get('success'))
+    if stop_ack_received:
+        logger.info(f"[STOP] Received acknowledgement from {chat_id}: {stop_response}")
+    elif stop_error and stop_error != 'Chat worker is not active':
+        logger.warning(f"[STOP] No acknowledgement from {chat_id}: {stop_error}")
 
     try:
         process.join(PROCESS_TERMINATE_TIMEOUT)
@@ -261,7 +320,7 @@ def stop_chat_process(chat_id: str) -> bool:
 
     with _chat_processes_lock:
         _chat_processes.pop(chat_id, None)
-        _chat_process_connections.pop(chat_id, None)
+        conn = _chat_process_connections.pop(chat_id, None)
         _chat_process_status.pop(chat_id, None)
 
     _close_connection_safely(conn, chat_id)
@@ -287,7 +346,8 @@ def force_cleanup_chat_process(chat_id: str):
             del _chat_process_connections[chat_id]
         _chat_process_status.pop(chat_id, None)
         cancellation_manager.cleanup_chat(chat_id)
-        logger.info(f"Force cleaned up process for chat {chat_id}")
+    _fail_pending_command_queues(chat_id, "Chat worker force cleaned")
+    logger.info(f"Force cleaned up process for chat {chat_id}")
 
 def _prepare_background_process(chat_id: str) -> bool:
     """Check if background process can be started for chat"""
@@ -426,13 +486,31 @@ def _relay_worker_messages(chat_id: str, conn):
 
         queue_drained = False
         pending_terminal_chunk = None
+        relay_failure_reason: Optional[str] = None
         while True:
             try:
                 if conn.poll(POLL_INTERVAL):
                     message = conn.recv()
+                    if not isinstance(message, dict):
+                        continue
+
                     message_type = message.get('type')
 
                     if not message_type:
+                        command_id = message.get('command_id')
+                        if command_id:
+                            queue_ref = None
+                            with _chat_processes_lock:
+                                command_map = _chat_command_queues.get(chat_id)
+                                if command_map:
+                                    queue_ref = command_map.get(command_id)
+                            if queue_ref:
+                                try:
+                                    queue_ref.put_nowait(message)
+                                except Exception as put_error:
+                                    logger.warning(f"[RELAY] Failed to deliver command response for {chat_id} ({command_id}): {put_error}")
+                            else:
+                                logger.debug(f"[RELAY] Dropped command response for {chat_id} ({command_id}) - no waiting listeners")
                         continue
 
                     if message_type == 'state_update':
@@ -442,6 +520,7 @@ def _relay_worker_messages(chat_id: str, conn):
                             logger.debug(f"[RELAY] Published state update for {chat_id}: {state}")
 
                     elif message_type == 'router_decision':
+                        router_error = message.get('error')
                         publish_router_decision(
                             chat_id,
                             message.get('selected_route'),
@@ -449,9 +528,13 @@ def _relay_worker_messages(chat_id: str, conn):
                             message.get('selected_model'),
                             message.get('tools_needed'),
                             message.get('execution_type'),
-                            message.get('fastpath_params')
+                            message.get('fastpath_params'),
+                            router_error
                         )
-                        logger.debug(f"[RELAY] Published router decision for {chat_id}: {message.get('selected_route')}")
+                        if router_error:
+                            logger.debug(f"[RELAY] Published router decision with error for {chat_id}: {router_error}")
+                        else:
+                            logger.debug(f"[RELAY] Published router decision for {chat_id}: {message.get('selected_route')}")
 
                     elif message_type == 'content':
                         content_type = message.get('content_type')
@@ -508,10 +591,12 @@ def _relay_worker_messages(chat_id: str, conn):
                         break
                         
             except (OSError, EOFError) as relay_error:
-                logger.warning(f"[RELAY] Connection error relaying message for {chat_id}: {str(relay_error)}")
+                relay_failure_reason = str(relay_error)
+                logger.warning(f"[RELAY] Connection error relaying message for {chat_id}: {relay_failure_reason}")
                 break
             except Exception as relay_error:
                 import traceback
+                relay_failure_reason = str(relay_error)
                 logger.error(f"[RELAY] Unexpected error relaying message for {chat_id}: {str(relay_error)}")
                 logger.error(f"[RELAY] Traceback: {traceback.format_exc()}")
                 break
@@ -539,6 +624,11 @@ def _relay_worker_messages(chat_id: str, conn):
                 logger.warning(f"[RELAY] Failed to publish deferred terminal chunk for {chat_id}: {publish_error}")
         else:
             threading.Thread(target=cleanup_completed_processes, daemon=True).start()
+
+        if relay_failure_reason:
+            _fail_pending_command_queues(chat_id, f"Worker connection lost: {relay_failure_reason}")
+        else:
+            _fail_pending_command_queues(chat_id, "Worker connection closed")
 
 class Chat:
     """

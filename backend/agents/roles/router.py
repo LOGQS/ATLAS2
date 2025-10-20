@@ -97,14 +97,16 @@ class Router:
             }
 
         except Exception as e:
-            logger.error(f"Router error, falling back to default model: {str(e)}")
+            error_message = str(e)
+            logger.error(f"Router error, falling back to default model: {error_message}")
             default_model = Config.get_default_model()
             default_provider = infer_provider_from_model(default_model)
             return {
                 'model': default_model,
                 'provider': default_provider,
                 'route': None,
-                'available_routes': available_routes
+                'available_routes': available_routes,
+                'error': error_message
             }
 
     def _build_router_prompt(self, context: str) -> str:

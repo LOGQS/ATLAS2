@@ -231,9 +231,20 @@ class SingleDomainExecutor:
             return {"error": error_msg, "task_id": task_id}
 
         if not state.pending_tool or state.pending_tool.call_id != call_id:
-            error_msg = "No matching pending tool call found for decision"
-            self.logger.warning("Pending tool mismatch for %s", task_id)
-            return {"error": error_msg, "task_id": task_id}
+            # This is a normal timing issue - tool was already approved/executed
+            self.logger.info(
+                "[STALE-APPROVAL] Decision for call %s arrived after task %s moved on - ignoring gracefully",
+                call_id,
+                task_id,
+            )
+            serialized_state = self._serialize_state(state)
+            serialized_state.update(
+                {
+                    "success": True,
+                    "warning": "Tool decision arrived after execution completed",
+                }
+            )
+            return serialized_state
 
         decision_lower = decision.lower()
         if decision_lower not in {"accept", "reject"}:
@@ -247,11 +258,14 @@ class SingleDomainExecutor:
             return self._serialize_state(state)
 
         # Accept path
+        # Note: Tool execution errors are now caught in _execute_tool_call and returned
+        # as ToolResults to the agent. This try-catch only handles unexpected system errors
+        # during result processing, event emission, or iteration management.
         try:
             self._handle_acceptance(state)
         except Exception as exc:
-            self.logger.exception("Tool execution failed: %s", exc)
-            self._mark_failure(state, f"Tool execution error: {exc}")
+            self.logger.exception("Unexpected error during tool acceptance handling: %s", exc)
+            self._mark_failure(state, f"System error during execution: {exc}")
             self._active_tasks.pop(task_id, None)
             return self._serialize_state(state)
 
@@ -275,6 +289,32 @@ class SingleDomainExecutor:
             status="failed",
         )
         return self._serialize_state(state)
+
+    def continue_task(self, task_id: str) -> Dict[str, Any]:
+        """Continue execution after a tool execution, running the next agent iteration."""
+
+        state = self._active_tasks.get(task_id)
+        if not state:
+            error_msg = f"Task {task_id} is no longer active"
+            self.logger.error(error_msg)
+            return {"error": error_msg, "task_id": task_id}
+
+        if state.status != "await_continuation":
+            error_msg = f"Task {task_id} is not awaiting continuation (current status: {state.status})"
+            self.logger.warning(error_msg)
+            return {"error": error_msg, "task_id": task_id, "status": state.status}
+
+        try:
+            self.logger.info(f"[CONTINUE] Resuming task {task_id} with next agent iteration")
+            result = self._run_agent_iteration(state)
+            if state.status in TERMINAL_STATES:
+                self._active_tasks.pop(task_id, None)
+            return result
+        except Exception as exc:
+            self.logger.exception("Error continuing task: %s", exc)
+            self._mark_failure(state, f"Error during continuation: {exc}")
+            self._active_tasks.pop(task_id, None)
+            return self._serialize_state(state)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -517,7 +557,7 @@ class SingleDomainExecutor:
             },
         )
 
-        # Continue with next iteration
+        # Continue with next iteration - agent needs tool output for next decision
         self._run_agent_iteration(state)
 
     def _execute_tool_call(
@@ -525,16 +565,30 @@ class SingleDomainExecutor:
         state: DomainTaskState,
         proposal: ToolCallProposal,
     ) -> ToolResult:
-        tool_spec = tool_registry.get(proposal.tool_name)
-        ctx = ToolExecutionContext(
-            chat_id=state.context.chat_id,
-            plan_id=state.context.task_id,
-            task_id=state.context.task_id,
-            ctx_id=f"ctx_{uuid.uuid4().hex[:10]}",
-            workspace_path=state.context.workspace_path,
-        )
-        params = proposal.params
-        return tool_spec.fn(params, ctx)
+        """Execute a tool call and return the result.
+
+        If the tool execution fails, returns a ToolResult with error information
+        so the agent can see what went wrong and make corrected calls.
+        """
+        try:
+            tool_spec = tool_registry.get(proposal.tool_name)
+            ctx = ToolExecutionContext(
+                chat_id=state.context.chat_id,
+                plan_id=state.context.task_id,
+                task_id=state.context.task_id,
+                ctx_id=f"ctx_{uuid.uuid4().hex[:10]}",
+                workspace_path=state.context.workspace_path,
+            )
+            params = proposal.params
+            return tool_spec.fn(params, ctx)
+        except Exception as exc:
+            # Return error as a ToolResult so the agent can see it and retry
+            error_msg = f"Tool execution failed: {str(exc)}"
+            self.logger.warning(f"{error_msg} (returning to agent for correction)")
+            return ToolResult(
+                output={"error": error_msg, "suggestion": "Review the error and try again with corrected parameters"},
+                metadata={"status": "error", "error_type": type(exc).__name__}
+            )
 
     def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time

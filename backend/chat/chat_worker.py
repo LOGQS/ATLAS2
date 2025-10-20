@@ -97,7 +97,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                 if child_conn.poll(0.1):
                     try:
                         command = child_conn.recv()
-                        command_type = command.get('command')
+                        command_type = command.get('command') if isinstance(command, dict) else None
+                        command_id = command.get('command_id') if isinstance(command, dict) else None
                         
                         worker_logger.info(f"[CHAT-WORKER] Received command {command_type} for {chat_id}")
                         
@@ -117,7 +118,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
                                 except Exception as save_error:
                                     worker_logger.error(f"[CHAT-WORKER] Error saving partial content on stop: {save_error}")
-                            child_conn.send({'success': True, 'chat_id': chat_id})
+                            child_conn.send({'success': True, 'chat_id': chat_id, 'command_id': command_id})
                             break
                         
                         elif command_type == 'cancel':
@@ -127,14 +128,14 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 db.update_chat_state(chat_id, "static")
                                 child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
                                 
-                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id})
+                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': command_id})
                                 worker_logger.info(f"[CHAT-WORKER] Cancelled processing for {chat_id}")
                             else:
-                                child_conn.send({'success': True, 'cancelled': False, 'chat_id': chat_id})
+                                child_conn.send({'success': True, 'cancelled': False, 'chat_id': chat_id, 'command_id': command_id})
                         
                         elif command_type == 'process':
                             if processing_active:
-                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id})
+                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id, 'command_id': command_id})
                                 continue
 
                             try:
@@ -168,6 +169,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     router_result = router.route_request(message, chat_history, providers, actual_chat_id, attached_files)  # type: ignore
                                     model = router_result['model']
                                     provider = router_result['provider']
+                                    router_error = router_result.get('error')
 
                                     child_conn.send({
                                         'type': 'router_decision',
@@ -179,10 +181,14 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'tools_needed': router_result.get('tools_needed'),
                                         'execution_type': router_result.get('execution_type'),
                                         'domain_id': router_result.get('domain_id'),
-                                        'fastpath_params': router_result.get('fastpath_params')
+                                        'fastpath_params': router_result.get('fastpath_params'),
+                                        'error': router_error
                                     })
 
-                                    worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
+                                    if router_error:
+                                        worker_logger.warning(f"[CHAT-WORKER] Router error, falling back to default: {router_error} -> model: {model} -> provider: {provider}")
+                                    else:
+                                        worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
                                 elif router_already_called and router_result:
                                     worker_logger.info(f"[CHAT-WORKER] Using router result from route handler: {router_result.get('route')} with tools_needed={router_result.get('tools_needed')}, fastpath_params={'present' if router_result.get('fastpath_params') else 'absent'}")
                                     worker_logger.info(f"[CHAT-WORKER] Router decision already broadcasted by route handler, skipping duplicate broadcast")
@@ -229,11 +235,11 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     current_content['full_thoughts'] = ''
                                     current_content['last_db_update'] = 0.0
                                 
-                                child_conn.send({'success': False, 'error': error_msg, 'chat_id': chat_id})
+                                child_conn.send({'success': False, 'error': error_msg, 'chat_id': chat_id, 'command_id': command_id})
                             
                         elif command_type == 'domain_tool_decision':
                             if processing_active:
-                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id})
+                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id, 'command_id': command_id})
                                 continue
 
                             task_id = command.get('task_id')
@@ -246,7 +252,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 child_conn.send({
                                     'success': False,
                                     'chat_id': decision_chat_id,
-                                    'error': 'Missing task_id, call_id, or decision for domain tool decision'
+                                    'error': 'Missing task_id, call_id, or decision for domain tool decision',
+                                    'command_id': command_id
                                 })
                                 continue
 
@@ -258,7 +265,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 child_conn.send({'type': 'state_update', 'chat_id': decision_chat_id, 'state': 'responding'})
 
                                 # Send immediate acknowledgement before processing
-                                child_conn.send({'success': True, 'chat_id': decision_chat_id})
+                                child_conn.send({'success': True, 'chat_id': decision_chat_id, 'command_id': command_id})
 
                                 worker_logger.info(f"[DOMAIN-DECISION] Handling decision '{decision}' for task {task_id}, call {call_id}")
                                 result = single_domain_executor.handle_tool_decision(task_id, call_id, decision)
@@ -272,7 +279,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'success': False,
                                         'chat_id': decision_chat_id,
                                         'task_id': task_id,
-                                        'error': error_msg
+                                        'error': error_msg,
+                                        'command_id': command_id
                                     })
                                 else:
                                     assistant_for_update = result.get('assistant_message_id') or assistant_override or current_content.get('assistant_message_id')
@@ -289,7 +297,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'success': True,
                                         'chat_id': decision_chat_id,
                                         'task_id': task_id,
-                                        'status': result.get('status')
+                                        'status': result.get('status'),
+                                        'command_id': command_id
                                     })
 
                                 processing_active = False
@@ -303,12 +312,13 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     'success': False,
                                     'chat_id': decision_chat_id,
                                     'task_id': task_id,
-                                    'error': str(decision_error)
+                                    'error': str(decision_error),
+                                    'command_id': command_id
                                 })
                             
                     except Exception as cmd_error:
                         worker_logger.error(f"[CHAT-WORKER] Command processing error for {chat_id}: {str(cmd_error)}")
-                        child_conn.send({'success': False, 'error': f'Command processing failed: {str(cmd_error)}', 'chat_id': chat_id})
+                        child_conn.send({'success': False, 'error': f'Command processing failed: {str(cmd_error)}', 'chat_id': chat_id, 'command_id': command_id})
                 
             except Exception as loop_error:
                 worker_logger.error(f"[CHAT-WORKER] Main loop error for {chat_id}: {str(loop_error)}")
@@ -381,7 +391,8 @@ def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, work
 
     except Exception as e:
         worker_logger.error(f"[FASTPATH] Tool execution failed: {str(e)}")
-        return None
+        # Return error message so LLM can inform user about the failure
+        return f"[TOOL EXECUTION ERROR] The {tool_name} tool failed with error: {str(e)}"
 
 
 def _get_coder_workspace_path(db, chat_id: str, worker_logger) -> Optional[str]:
@@ -493,19 +504,21 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                     if child_conn.poll(timeout=0.5):
                         cmd = child_conn.recv()
                         if isinstance(cmd, dict):
+                            cmd_id = cmd.get('command_id')
                             if cmd.get('command') == 'workspace_selected':
                                 worker_logger.info(f"[CODER_WORKSPACE] Received workspace_selected command for chat {chat_id}")
                                 workspace_path = _get_coder_workspace_path(db, chat_id, worker_logger)
                                 if workspace_path:
                                     workspace_selected = True
-                                    child_conn.send({'success': True, 'workspace_path': workspace_path})
+                                    child_conn.send({'success': True, 'workspace_path': workspace_path, 'command_id': cmd_id})
                                 else:
-                                    child_conn.send({'success': False, 'error': 'Workspace not found after selection'})
+                                    child_conn.send({'success': False, 'error': 'Workspace not found after selection', 'command_id': cmd_id})
                             elif cmd.get('command') == 'cancel':
                                 worker_logger.info(f"[CODER_WORKSPACE] Received cancel during workspace wait for chat {chat_id}")
                                 db.update_chat_state(chat_id, "static")
                                 child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
                                 child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
                                 return
 
                 if not workspace_path:
@@ -796,7 +809,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             'tools_needed': router_result.get('tools_needed'),
             'execution_type': router_result.get('execution_type'),
             'domain_id': router_result.get('domain_id'),
-            'fastpath_params': router_result.get('fastpath_params')
+            'fastpath_params': router_result.get('fastpath_params'),
+            'error': router_result.get('error')
         })
 
     assistant_message_id = db.save_message(
@@ -882,10 +896,16 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             if child_conn.poll(0):
                 try:
                     cmd_data = child_conn.recv()
-                    if cmd_data.get('command') == 'cancel':
+                    if isinstance(cmd_data, dict):
+                        cmd_id = cmd_data.get('command_id')
+                    else:
+                        cmd_id = None
+
+                    if isinstance(cmd_data, dict) and cmd_data.get('command') == 'cancel':
                         worker_logger.info(f"[CHAT-WORKER] Processing cancelled for {chat_id}")
+                        child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
                         return
-                    elif cmd_data.get('command') == 'stop':
+                    elif isinstance(cmd_data, dict) and cmd_data.get('command') == 'stop':
                         worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
                         if assistant_message_id and (full_text or full_thoughts):
                             current_content['full_text'] = full_text
@@ -900,7 +920,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                         db.update_chat_state(chat_id, "static")
                         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
                         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
-                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True})
+                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True, 'command_id': cmd_id})
                         return
                 except:
                     pass

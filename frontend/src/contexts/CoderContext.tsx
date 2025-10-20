@@ -363,11 +363,26 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
               headers: { 'Content-Type': 'application/json' }
             });
 
-            const result = await response.json();
-            if (result.success) {
+            let result: any = null;
+            let parseError: unknown = null;
+            try {
+              result = await response.json();
+            } catch (error) {
+              parseError = error;
+            }
+
+            if (parseError) {
+              logger.debug('[CODER_CTX] workspace_selected response was not JSON', parseError);
+            }
+
+            const workerInactive = response.status === 400 && result?.error === 'Chat worker is not active';
+
+            if (response.ok && result?.success) {
               logger.info('[CODER_CTX] Successfully notified worker of workspace selection');
+            } else if (workerInactive) {
+              logger.info('[CODER_CTX] Worker inactive; skipping workspace notification');
             } else {
-              logger.warn('[CODER_CTX] Failed to notify worker:', result.error);
+              logger.warn('[CODER_CTX] Failed to notify worker', { status: response.status, error: result?.error });
             }
           } catch (notifyError) {
             logger.error('[CODER_CTX] Failed to notify worker of workspace selection:', notifyError);

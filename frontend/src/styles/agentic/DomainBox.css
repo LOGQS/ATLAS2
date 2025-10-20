@@ -806,14 +806,16 @@
 }
 
 .domain-tool-approval {
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: rgba(30, 41, 59, 0.1);
-  border-radius: 10px;
-  padding: 16px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(251, 191, 36, 0.08) 100%);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+  padding: 18px;
   margin-bottom: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.15);
 }
 
 .domain-tool-approval-header {
@@ -824,71 +826,80 @@
 }
 
 .tool-approval-heading {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 0.95rem;
-  color: #0f172a;
+  color: rgba(254, 243, 199, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .tool-approval-subheading {
   font-size: 0.8rem;
-  color: #475569;
+  font-weight: 500;
+  color: rgba(253, 224, 71, 0.85);
 }
 
 .tool-approval-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .tool-approval-name {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 0.9rem;
-  color: #1e293b;
+  color: rgba(254, 243, 199, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
 .tool-approval-description {
   font-size: 0.85rem;
-  color: #475569;
+  color: rgba(253, 224, 71, 0.85);
+  line-height: 1.5;
 }
 
 .tool-approval-message,
 .tool-approval-reason {
   font-size: 0.85rem;
-  color: #334155;
+  color: rgba(254, 243, 199, 0.9);
   display: flex;
   gap: 6px;
+  line-height: 1.5;
 }
 
 .tool-approval-message .label,
 .tool-approval-reason .label,
 .tool-approval-params .label {
-  font-weight: 600;
-  color: #0f172a;
+  font-weight: 700;
+  color: rgba(254, 243, 199, 0.95);
 }
 
 .tool-approval-params ul {
   margin: 4px 0 0 0;
-  padding-left: 16px;
+  padding-left: 20px;
   list-style: disc;
-  color: #1f2937;
+  color: rgba(253, 224, 71, 0.9);
 }
 
 .tool-approval-params li {
   font-size: 0.85rem;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
+  color: rgba(254, 243, 199, 0.9);
 }
 
 .tool-approval-params .param-name {
-  font-weight: 600;
+  font-weight: 700;
   margin-right: 6px;
+  color: rgba(254, 243, 199, 0.95);
 }
 
 .tool-approval-params .param-value {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 0.8rem;
-  background: rgba(15, 23, 42, 0.08);
-  padding: 2px 6px;
-  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.2);
+  color: rgba(254, 243, 199, 0.95);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .domain-tool-approval-actions {
@@ -923,6 +934,60 @@
 .approval-button:not(:disabled):hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 12px rgba(15, 23, 42, 0.15);
+}
+
+.approval-button.approve.confirmed {
+  background: #15803d;
+  box-shadow:
+    0 0 20px rgba(22, 163, 74, 0.6),
+    0 0 40px rgba(22, 163, 74, 0.4),
+    0 4px 12px rgba(22, 163, 74, 0.3);
+  animation: confirm-glow-green 0.65s ease-out;
+}
+
+.approval-button.reject.confirmed {
+  background: #b91c1c;
+  box-shadow:
+    0 0 20px rgba(239, 68, 68, 0.6),
+    0 0 40px rgba(239, 68, 68, 0.4),
+    0 4px 12px rgba(239, 68, 68, 0.3);
+  animation: confirm-glow-red 0.65s ease-out;
+}
+
+@keyframes confirm-glow-green {
+  0% {
+    box-shadow: 0 0 0 rgba(22, 163, 74, 0);
+  }
+  50% {
+    box-shadow:
+      0 0 30px rgba(22, 163, 74, 0.8),
+      0 0 60px rgba(22, 163, 74, 0.5),
+      0 6px 16px rgba(22, 163, 74, 0.4);
+  }
+  100% {
+    box-shadow:
+      0 0 20px rgba(22, 163, 74, 0.6),
+      0 0 40px rgba(22, 163, 74, 0.4),
+      0 4px 12px rgba(22, 163, 74, 0.3);
+  }
+}
+
+@keyframes confirm-glow-red {
+  0% {
+    box-shadow: 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    box-shadow:
+      0 0 30px rgba(239, 68, 68, 0.8),
+      0 0 60px rgba(239, 68, 68, 0.5),
+      0 6px 16px rgba(239, 68, 68, 0.4);
+  }
+  100% {
+    box-shadow:
+      0 0 20px rgba(239, 68, 68, 0.6),
+      0 0 40px rgba(239, 68, 68, 0.4),
+      0 4px 12px rgba(239, 68, 68, 0.3);
+  }
 }
 
 .domain-tool-approval-error {

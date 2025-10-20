@@ -185,7 +185,10 @@ class Config:
 
     WORKER_POOL_SIZE = 4
     WORKER_MAX_PARALLEL_SPAWN = 5
-    WORKER_INIT_TIMEOUT = 20.0
+    WORKER_INIT_TIMEOUT = 40.0
+    WORKER_SPAWN_RETRY_DELAY = 1.0
+    WORKER_SPAWN_RETRY_DELAY_MAX = 8.0
+    WORKER_SLOW_START_THRESHOLD = 12.0
 
 
     TOKEN_COUNTING_METHODS = {
@@ -286,6 +289,21 @@ class Config:
     def get_worker_init_timeout(cls) -> float:
         """Get worker initialization timeout."""
         return cls.WORKER_INIT_TIMEOUT
+
+    @classmethod
+    def get_worker_spawn_retry_delay(cls) -> float:
+        """Get base delay before retrying a failed worker spawn."""
+        return cls.WORKER_SPAWN_RETRY_DELAY
+
+    @classmethod
+    def get_worker_spawn_retry_delay_max(cls) -> float:
+        """Get maximum delay before retrying a failed worker spawn."""
+        return cls.WORKER_SPAWN_RETRY_DELAY_MAX
+
+    @classmethod
+    def get_worker_slow_start_threshold(cls) -> float:
+        """Get threshold (seconds) for logging slow worker startups."""
+        return cls.WORKER_SLOW_START_THRESHOLD
 
     @classmethod
     def get_token_counting_method(cls, provider: str) -> str:

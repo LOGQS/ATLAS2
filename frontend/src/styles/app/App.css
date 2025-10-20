@@ -170,16 +170,26 @@ body.chat-active .main-content {
 
 /* Container for the whole bottom input area including attached files */
 .bottom-input-area {
+  --bottom-input-x-offset: -50%;
   position: fixed;
   bottom: 40px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(var(--bottom-input-x-offset, -50%));
   width: 100%;
   max-width: 900px;
   display: flex;
   flex-direction: column;
   align-items: center;
   z-index: 100;
+}
+
+/* Reposition input area when coder is docked */
+.app.coder-docked .bottom-input-area {
+  left: 24px;
+  --bottom-input-x-offset: 0;
+  transform: translateX(var(--bottom-input-x-offset, 0));
+  width: min(calc(38vw - 24px), 460px);
+  max-width: min(calc(38vw - 24px), 460px);
 }
 
 .bottom-input-container {
@@ -193,11 +203,11 @@ body.chat-active .main-content {
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(20px);
+    transform: translateX(var(--bottom-input-x-offset, -50%)) translateY(20px);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(var(--bottom-input-x-offset, -50%)) translateY(0);
   }
 }
 
@@ -499,11 +509,11 @@ body.chat-active .main-content {
 @keyframes fadeOutDown {
   from {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(var(--bottom-input-x-offset, -50%)) translateY(0);
   }
   to {
     opacity: 0;
-    transform: translateX(-50%) translateY(20px);
+    transform: translateX(var(--bottom-input-x-offset, -50%)) translateY(20px);
   }
 }
 
@@ -516,6 +526,13 @@ body.chat-active .main-content {
   height: 80px;
   z-index: 99;
   pointer-events: all;
+}
+
+/* Constrain hover zone to chat area when coder is docked */
+.app.coder-docked .bottom-hover-zone {
+  left: 24px;
+  right: auto;
+  width: min(calc(38vw - 24px), 496px);
 }
 
 /* Re-enable text selection for inputs */

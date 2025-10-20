@@ -1206,6 +1206,7 @@ class CoderWorkspaceRoute:
         self.app.route("/api/coder-workspace/workspace/changes", methods=["GET"], endpoint="coder_workspace_changes")(self.get_workspace_changes)
         self.app.route("/api/coder-workspace/file/diff-stats", methods=["GET"], endpoint="coder_file_diff_stats")(self.get_file_diff_stats)
         self.app.route("/api/coder-workspace/search", methods=["POST"], endpoint="coder_search_workspace")(self.search_workspace)
+        self.app.route("/api/coder-workspace/reveal-in-explorer", methods=["POST"], endpoint="coder_reveal_in_explorer")(self.reveal_in_explorer)
 
     def set_workspace(self):
         """Set the workspace path for a chat."""
@@ -2089,6 +2090,50 @@ class CoderWorkspaceRoute:
 
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to get file diff stats: %s", err)
+            return jsonify({"success": False, "error": str(err)}), 500
+
+    def reveal_in_explorer(self):
+        """Reveal a file in Windows Explorer."""
+        try:
+            data = request.get_json(force=True)
+            chat_id = data.get("chat_id")
+            file_path = data.get("file_path", "").strip()
+
+            if not chat_id:
+                return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+            if not file_path:
+                return jsonify({"success": False, "error": "file_path is required"}), 400
+
+            # Get workspace path
+            workspace_path = self._get_workspace_path(chat_id)
+            if not workspace_path:
+                return jsonify({"success": False, "error": "No workspace set for this chat"}), 404
+
+            # Resolve full path
+            full_path = Path(workspace_path) / file_path
+
+            # Validate path exists
+            if not full_path.exists():
+                return jsonify({"success": False, "error": "File does not exist"}), 404
+
+            # Validate path is within workspace
+            try:
+                full_path.resolve().relative_to(Path(workspace_path).resolve())
+            except ValueError:
+                return jsonify({"success": False, "error": "Path is outside workspace"}), 403
+
+            # Use Windows explorer.exe to reveal the file
+            if os.name == 'nt':  # Windows
+                # The /select parameter must be combined with the path: /select,"path"
+                subprocess.run(f'explorer /select,"{full_path.resolve()}"', shell=True, check=False)
+                logger.info(f"[CODER_WORKSPACE] Revealed file in explorer: {full_path}")
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "This feature is only available on Windows"}), 400
+
+        except Exception as err:
+            logger.error("[CODER_WORKSPACE] Failed to reveal file in explorer: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
 
 

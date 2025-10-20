@@ -33,6 +33,8 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   const [expandedContext, setExpandedContext] = useState(false);
   const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
   const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [showApprovalUI, setShowApprovalUI] = useState(true);
+  const [confirmedDecision, setConfirmedDecision] = useState<'accept' | 'reject' | null>(null);
 
   const domainBoxContentRef = useRef<HTMLDivElement | null>(null);
   const actionsEndRef = useRef<HTMLDivElement>(null);
@@ -108,8 +110,13 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     if (!isWaitingForUser) {
       setDecisionState('idle');
       setDecisionError(null);
+      setShowApprovalUI(true);
+      setConfirmedDecision(null);
     } else {
+      // Reset UI when a new tool appears (different call_id)
       setDecisionError(null);
+      setShowApprovalUI(true);
+      setConfirmedDecision(null);
     }
   }, [isWaitingForUser, pendingTool?.call_id]);
 
@@ -143,6 +150,11 @@ const DomainBox: React.FC<DomainBoxProps> = ({
       }
 
       logger.info(`[DOMAINBOX] Submitted tool decision '${decision}' for ${pendingTool.tool}`, { chatId, taskId: domainExecution.task_id });
+
+      // Show confirmed state for 650ms before hiding UI
+      setConfirmedDecision(decision);
+      await new Promise(resolve => setTimeout(resolve, 650));
+      setShowApprovalUI(false);
     } catch (error) {
       logger.error('[DOMAINBOX] Tool decision failed', error);
       setDecisionError(error instanceof Error ? error.message : String(error));
@@ -204,67 +216,6 @@ const DomainBox: React.FC<DomainBoxProps> = ({
           <div className="task-label">Task:</div>
           <div className="task-text">{taskDescription}</div>
         </div>
-
-        {pendingTool && isWaitingForUser && (
-          <div className="domain-tool-approval">
-            <div className="domain-tool-approval-header">
-              <div className="tool-approval-heading">Tool Approval Required</div>
-              <div className="tool-approval-subheading">Call ID: {pendingTool.call_id}</div>
-            </div>
-            <div className="tool-approval-body">
-              <div className="tool-approval-name">{pendingTool.tool}</div>
-              {pendingTool.tool_description && (
-                <div className="tool-approval-description">{pendingTool.tool_description}</div>
-              )}
-              {domainExecution?.agent_message && (
-                <div className="tool-approval-message">
-                  <span className="label">Agent:</span>
-                  <span>{domainExecution.agent_message}</span>
-                </div>
-              )}
-              <div className="tool-approval-reason">
-                <span className="label">Reason:</span>
-                <span>{pendingTool.reason || 'No reason provided'}</span>
-              </div>
-              <div className="tool-approval-params">
-                <span className="label">Parameters:</span>
-                <ul>
-                  {pendingTool.params.map(([name, value]) => (
-                    <li key={name}>
-                      <span className="param-name">{name}</span>
-                      <span className="param-value">
-                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-            {decisionError && (
-              <div className="domain-tool-approval-error" role="alert">
-                {decisionError}
-              </div>
-            )}
-            <div className="domain-tool-approval-actions">
-              <button
-                type="button"
-                className="approval-button approve"
-                onClick={() => handleToolDecision('accept')}
-                disabled={decisionState !== 'idle'}
-              >
-                {decisionState === 'accepting' ? 'Accepting…' : 'Accept'}
-              </button>
-              <button
-                type="button"
-                className="approval-button reject"
-                onClick={() => handleToolDecision('reject')}
-                disabled={decisionState !== 'idle'}
-              >
-                {decisionState === 'rejecting' ? 'Rejecting…' : 'Reject'}
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Active Context Display */}
         {currentContext && (
@@ -398,6 +349,68 @@ const DomainBox: React.FC<DomainBoxProps> = ({
             <div ref={actionsEndRef} />
           </div>
         </div>
+
+        {/* Tool Approval - appears after action flow */}
+        {pendingTool && isWaitingForUser && showApprovalUI && (
+          <div className="domain-tool-approval">
+            <div className="domain-tool-approval-header">
+              <div className="tool-approval-heading">Tool Approval Required</div>
+              <div className="tool-approval-subheading">Call ID: {pendingTool.call_id}</div>
+            </div>
+            <div className="tool-approval-body">
+              <div className="tool-approval-name">{pendingTool.tool}</div>
+              {pendingTool.tool_description && (
+                <div className="tool-approval-description">{pendingTool.tool_description}</div>
+              )}
+              {domainExecution?.agent_message && (
+                <div className="tool-approval-message">
+                  <span className="label">Agent:</span>
+                  <span>{domainExecution.agent_message}</span>
+                </div>
+              )}
+              <div className="tool-approval-reason">
+                <span className="label">Reason:</span>
+                <span>{pendingTool.reason || 'No reason provided'}</span>
+              </div>
+              <div className="tool-approval-params">
+                <span className="label">Parameters:</span>
+                <ul>
+                  {pendingTool.params.map(([name, value]) => (
+                    <li key={name}>
+                      <span className="param-name">{name}</span>
+                      <span className="param-value">
+                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            {decisionError && (
+              <div className="domain-tool-approval-error" role="alert">
+                {decisionError}
+              </div>
+            )}
+            <div className="domain-tool-approval-actions">
+              <button
+                type="button"
+                className={`approval-button approve ${confirmedDecision === 'accept' ? 'confirmed' : ''}`}
+                onClick={() => handleToolDecision('accept')}
+                disabled={decisionState !== 'idle'}
+              >
+                {decisionState === 'accepting' ? 'Accepting…' : 'Accept'}
+              </button>
+              <button
+                type="button"
+                className={`approval-button reject ${confirmedDecision === 'reject' ? 'confirmed' : ''}`}
+                onClick={() => handleToolDecision('reject')}
+                disabled={decisionState !== 'idle'}
+              >
+                {decisionState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

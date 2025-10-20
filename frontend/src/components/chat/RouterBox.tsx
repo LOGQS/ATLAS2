@@ -37,6 +37,7 @@ const RouterBox: React.FC<RouterBoxProps> = ({
   const selectedRoute = routerDecision?.selectedRoute || null;
   const availableRoutes = routerDecision?.availableRoutes || [];
   const toolsNeeded = routerDecision?.toolsNeeded;
+  const routerError = routerDecision?.error || null;
 
   const allRoutes = availableRoutes;
 
@@ -175,12 +176,17 @@ const RouterBox: React.FC<RouterBoxProps> = ({
         <div className="router-box-title">
           <div className="router-icon"></div>
           <span className="router-label">
-            {isProcessing && !selectedRoute ? 'Routing...' : 'Routed'}
+            {isProcessing && !selectedRoute ? 'Routing...' : routerError ? 'Router Error' : 'Routed'}
           </span>
-          {selectedRoute && (
+          {selectedRoute && !routerError && (
             <div className="selected-route-badge">
               <div className="route-badge-glow"></div>
               <span className="route-badge-text">{selectedRoute}</span>
+            </div>
+          )}
+          {routerError && (
+            <div className="selected-route-badge error">
+              <span className="route-badge-text">Fallback</span>
             </div>
           )}
           {isProcessing && !selectedRoute && (
@@ -200,28 +206,39 @@ const RouterBox: React.FC<RouterBoxProps> = ({
         className={`router-box-content ${isCollapsed ? 'collapsed' : ''} ${animationPhase}`}
         ref={routerContentRef}
       >
-        <div
-          className="router-box-routes"
-          style={{
-            transform: `translateY(-${scrollPosition}px)`,
-            transition: animationPhase === 'scrolling' ? 'transform 0.35s linear' : 'none'
-          }}
-        >
-          {allRoutes.map((route) => (
-            <div
-              key={route.route_name}
-              className={`route-item ${getRouteStatus(route.route_name)}`}
-            >
-              <div className={`route-indicator ${getRouteStatus(route.route_name)}`}>
-                <div className="indicator-inner"></div>
-              </div>
-              <div className="route-info">
-                <div className="route-name">{route.route_name}</div>
-                <div className="route-model">{route.model || 'default'}</div>
-              </div>
+        {routerError && (
+          <div className="router-error-message">
+            <div className="error-icon">⚠</div>
+            <div className="error-text">
+              <div className="error-title">{routerError}</div>
+              <div className="error-detail">Routed to default model: {routerDecision?.selectedModel || 'unknown'}</div>
             </div>
-          ))}
-        </div>
+          </div>
+        )}
+        {!routerError && (
+          <div
+            className="router-box-routes"
+            style={{
+              transform: `translateY(-${scrollPosition}px)`,
+              transition: animationPhase === 'scrolling' ? 'transform 0.35s linear' : 'none'
+            }}
+          >
+            {allRoutes.map((route) => (
+              <div
+                key={route.route_name}
+                className={`route-item ${getRouteStatus(route.route_name)}`}
+              >
+                <div className={`route-indicator ${getRouteStatus(route.route_name)}`}>
+                  <div className="indicator-inner"></div>
+                </div>
+                <div className="route-info">
+                  <div className="route-name">{route.route_name}</div>
+                  <div className="route-model">{route.model || 'default'}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
