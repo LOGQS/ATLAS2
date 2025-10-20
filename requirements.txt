@@ -15,3 +15,4 @@ sentence-transformers
 torch
 tree-sitter
 tree_sitter_language_pack
+pytest
