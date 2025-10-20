@@ -17,6 +17,24 @@ from .file_utils import (
 _logger = get_logger(__name__)
 
 
+def _format_content_with_line_numbers(content: str) -> str:
+    """Format file content with line numbers for agent visibility (cat -n style)."""
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return content
+
+    # Calculate padding for line numbers
+    max_line_num = len(lines)
+    padding = len(str(max_line_num))
+
+    formatted_lines = []
+    for i, line in enumerate(lines, start=1):
+        # Format: "     1\t" + line content (spaces + line number + tab)
+        formatted_lines.append(f"{i:>{padding}}\t{line}")
+
+    return ''.join(formatted_lines)
+
+
 def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     """
     Read a textual file and return its contents.
@@ -26,6 +44,7 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     - Checks if the file is textual (not binary)
     - Tracks read files in context to detect duplicates
     - Returns file content with metadata
+    - Provides line-numbered format for agent use
     """
     file_path = params.get("file_path")
     max_size_mb = params.get("max_size_mb", 10)
@@ -104,12 +123,16 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
 
         _logger.info(f"Successfully read file '{file_path}' ({format_file_size(file_size)}, {line_count} lines)")
 
+        # Format content with line numbers for agent use
+        content_with_line_numbers = _format_content_with_line_numbers(content)
+
         result_output = {
             "status": "success",
             "file_path": file_path,
             "resolved_path": str(resolved_path),
             "workspace_path": workspace_relative_path(resolved_path, ctx.workspace_path),
             "content": content,
+            "content_with_line_numbers": content_with_line_numbers,
             "metadata": {
                 "file_size": format_file_size(file_size),
                 "file_size_bytes": file_size,

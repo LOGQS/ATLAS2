@@ -789,15 +789,62 @@ class SingleDomainExecutor:
         return "\n".join(lines)
 
     def _format_tool_history(self, history: List[ToolExecutionRecord]) -> str:
+        """
+        Format tool history with full context for file operations.
+        Shows complete file content with line numbers so agent can reference specific lines.
+        """
         if not history:
             return ""
         lines = ["## TOOL HISTORY:"]
+
+        # Show last 5 tool calls with smart formatting
         for record in history[-5:]:
-            params_preview = ", ".join(f"{k}={v}" for k, v in record.param_entries)
+            params_preview = ", ".join(f"{k}={v!r}" for k, v in record.param_entries[:3])
+            if len(record.param_entries) > 3:
+                params_preview += ", ..."
             status = "ACCEPTED" if record.accepted else "REJECTED"
-            lines.append(
-                f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}"
-            )
+
+            # For file.read, show the full content with line numbers
+            if record.tool_name == "file.read" and record.accepted and record.raw_result:
+                output = record.raw_result.get("output", {})
+                if isinstance(output, dict):
+                    file_path = output.get("file_path", "unknown")
+                    line_count = output.get("metadata", {}).get("line_count", 0)
+                    content_with_lines = output.get("content_with_line_numbers")
+
+                    lines.append(f"\n[{status}] {record.tool_name}({params_preview})")
+                    lines.append(f"  File: {file_path} ({line_count} lines)")
+
+                    if content_with_lines:
+                        # Show full content with line numbers
+                        lines.append(f"  Content:\n{content_with_lines}")
+                    else:
+                        # Fallback if line-numbered content not available
+                        content = output.get("content", "")
+                        if content:
+                            lines.append(f"  Content:\n{content}")
+                        else:
+                            lines.append(f"  Result: {record.result_summary}")
+                else:
+                    lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
+
+            # For file.edit, show what was changed
+            elif record.tool_name == "file.edit" and record.accepted and record.raw_result:
+                output = record.raw_result.get("output", {})
+                if isinstance(output, dict):
+                    file_path = output.get("file_path", "unknown")
+                    edit_mode = output.get("edit_mode", "unknown")
+                    lines_affected = output.get("lines_affected") or output.get("replacements_made", "N/A")
+
+                    lines.append(f"- [{status}] {record.tool_name}({params_preview})")
+                    lines.append(f"    → Edited {file_path} ({edit_mode} mode, affected: {lines_affected})")
+                else:
+                    lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
+
+            # For other tools, show compact summary
+            else:
+                lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
+
         return "\n".join(lines)
 
     def _format_task_notes(self, state: DomainTaskState) -> str:
@@ -1018,15 +1065,49 @@ class SingleDomainExecutor:
             return stripped
 
     def _summarize_tool_output(self, output: Any) -> str:
+        """
+        Create smart summaries for tool outputs.
+        For file operations, show metadata instead of truncated content.
+        """
         if output is None:
             return "Tool returned no output."
-        if isinstance(output, (dict, list)):
+
+        # Smart summarization for file operations
+        if isinstance(output, dict):
+            status = output.get("status")
+
+            # file.read summary
+            if "content" in output and "file_path" in output:
+                file_path = output.get("file_path", "unknown")
+                metadata = output.get("metadata", {})
+                line_count = metadata.get("line_count", 0)
+                file_size = metadata.get("file_size", "unknown")
+                return f"Successfully read {file_path} ({line_count} lines, {file_size})"
+
+            # file.edit summary
+            if "edit_mode" in output:
+                file_path = output.get("file_path", "unknown")
+                edit_mode = output.get("edit_mode", "unknown")
+                lines_affected = output.get("lines_affected") or output.get("replacements_made", "N/A")
+                return f"Successfully edited {file_path} ({edit_mode} mode, affected: {lines_affected})"
+
+            # file.write summary
+            if "file_path" in output and status == "success" and "content" not in output:
+                file_path = output.get("file_path", "unknown")
+                return f"Successfully wrote to {file_path}"
+
+            # Generic dict/list fallback
             try:
                 serialized = json.dumps(output)
             except TypeError:
                 serialized = str(output)
-        else:
-            serialized = str(output)
+
+            if len(serialized) > 400:
+                return serialized[:400] + "..."
+            return serialized
+
+        # Non-dict output
+        serialized = str(output)
         if len(serialized) > 400:
             return serialized[:400] + "..."
         return serialized
