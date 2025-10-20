@@ -58,6 +58,7 @@ Create `.env` file in root dir:
 GEMINI_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
 REACT_APP_API_BASE_URL=http://localhost:5000
+REACT_APP_TERMINAL_API_BASE_URL=http://localhost:5051
 ```
 
 Run it:
