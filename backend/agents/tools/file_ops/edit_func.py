@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from utils.logger import get_logger
 from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
@@ -10,7 +10,8 @@ from .file_utils import (
     validate_file_path,
     is_likely_binary,
     format_file_size,
-    create_backup
+    create_backup,
+    workspace_relative_path,
 )
 
 _logger = get_logger(__name__)
@@ -45,7 +46,12 @@ def _tool_edit_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             "Must be 'line_range' or 'find_replace'."
         )
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot edit file: {error_msg}")
 
@@ -80,22 +86,33 @@ def _tool_edit_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             _logger.warning(f"Failed to create backup for {file_path}, continuing anyway")
 
     if edit_mode == "line_range":
-        result = _edit_line_range(
+        result, updated_content = _edit_line_range(
             resolved_path, original_lines, params, original_line_count
         )
     else:  # find_replace
-        result = _edit_find_replace(
+        result, updated_content = _edit_find_replace(
             resolved_path, content, params
         )
 
     result["backup_path"] = str(backup_path) if backup_path else None
+    ops = [
+        {
+            "type": "file_edit",
+            "path": workspace_relative_path(resolved_path, ctx.workspace_path),
+            "absolute_path": str(resolved_path),
+            "before": content,
+            "after": updated_content,
+            "mode": edit_mode,
+        }
+    ]
     return ToolResult(
         output=result,
         metadata={
             "file_path": str(resolved_path),
             "edit_mode": edit_mode,
             "backup_created": backup_path is not None
-        }
+        },
+        ops=ops,
     )
 
 
@@ -104,7 +121,7 @@ def _edit_line_range(
     original_lines: list,
     params: Dict[str, Any],
     original_line_count: int
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], str]:
     """Edit specific line ranges in a file."""
     start_line = params.get("start_line")
     end_line = params.get("end_line")
@@ -170,7 +187,7 @@ def _edit_line_range(
                 "file_size": format_file_size(file_size),
                 "file_size_bytes": file_size
             }
-        }
+        }, new_file_content
 
     except PermissionError:
         raise ValueError(
@@ -185,7 +202,7 @@ def _edit_find_replace(
     resolved_path: Path,
     original_content: str,
     params: Dict[str, Any]
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], str]:
     """Find and replace text patterns in a file."""
     find_text = params.get("find_text")
     replace_text = params.get("replace_text")
@@ -201,7 +218,6 @@ def _edit_find_replace(
     if not isinstance(find_text, str) or not isinstance(replace_text, str):
         raise ValueError("find_text and replace_text must be strings")
 
-    # Reject empty find_text as it would match everything
     if not find_text:
         raise ValueError(
             "find_text cannot be empty. "
@@ -269,7 +285,7 @@ def _edit_find_replace(
         if warnings:
             result["warnings"] = warnings
 
-        return result
+        return result, new_content
 
     except PermissionError:
         raise ValueError(

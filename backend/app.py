@@ -38,6 +38,21 @@ from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 
 logger = get_logger(__name__)
 
+_DEBUG_TRUE_VALUES = {"1", "true", "t", "yes", "on"}
+
+
+def _get_debug_mode() -> bool:
+    """Resolve whether the backend should run in debug mode."""
+    debug_env = os.getenv("FLASK_DEBUG")
+    if debug_env is None:
+        inferred = "0" if os.getenv("FLASK_ENV", "").lower() == "production" else "1"
+        os.environ["FLASK_DEBUG"] = inferred
+        debug_env = inferred
+    return debug_env.strip().lower() in _DEBUG_TRUE_VALUES
+
+
+DEBUG_ENABLED = _get_debug_mode()
+
 _shutdown_handled = False
 _startup_lock = threading.Lock()
 _startup_housekeeping_done = False
@@ -173,6 +188,8 @@ def handle_shutdown(signum=None, frame=None):
 def create_app():
     """Create and configure the Flask application"""
     app = Flask(__name__)
+    app.config["DEBUG"] = DEBUG_ENABLED
+    app.debug = DEBUG_ENABLED
     
     cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
     CORS(app, origins=[origin.strip() for origin in cors_origins])
@@ -245,7 +262,11 @@ def create_app():
     return app
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError as e:
+        if "context has already been set" not in str(e):
+            raise
 
     logs_dir = Path("..") / "logs"
     logs_dir.mkdir(exist_ok=True)
@@ -258,8 +279,12 @@ if __name__ == '__main__':
 
     app = create_app()
 
-    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+    is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+    is_production = not DEBUG_ENABLED
+
+    if is_reloader_child or is_production:
         logger.info("[POOL-INIT] Starting worker pool initialization in background...")
+        logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
 
         def init_pool_background():
             try:
@@ -267,6 +292,10 @@ if __name__ == '__main__':
                 pool_size = Config.get_worker_pool_size()
                 logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
                 pool = initialize_pool(pool_size=pool_size)
+
+                if pool is None:
+                    logger.warning("[POOL-INIT] Pool initialization returned None - likely blocked in reloader parent")
+                    return
 
                 stats = pool.get_stats()
                 logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
@@ -286,6 +315,7 @@ if __name__ == '__main__':
         pool_thread.start()
     else:
         logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
+        logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
 
     logger.info("Registering shutdown handlers...")
 
@@ -307,7 +337,7 @@ if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
         port=5000,
-        debug=True,
+        debug=DEBUG_ENABLED,
         threaded=True,
         reloader_type='stat',
         exclude_patterns=reloader_exclude_patterns

@@ -5,53 +5,34 @@ to ensure consistent, parseable responses.
 """
 
 AGENT_RESPONSE_FORMAT = """
-## RESPONSE FORMAT (Required Structure):
+Respond using the following XML-like structure (no extra text before or after):
 
-You must respond in the following structured XML-like format:
+<AGENT_DECISION>
+<MESSAGE>
+Short message for the user describing what you will do next or summarising the outcome.
+</MESSAGE>
 
-<AGENT_RESPONSE>
-<THINKING>
-Your reasoning about the task, what you understand, what needs to be done.
-</THINKING>
-
-<PLAN>
-<STEP id="1" status="pending">High-level conceptual step 1 (e.g., "Design overall structure")</STEP>
-<STEP id="2" status="pending">High-level conceptual step 2 (e.g., "Create core components")</STEP>
-<STEP id="3" status="pending">High-level conceptual step 3 (e.g., "Add styling and interactivity")</STEP>
-... (3-7 HIGH-LEVEL steps - NOT individual tool calls, but conceptual phases)
-</PLAN>
-
-<ACTIONS>
-<ACTION type="tool_call" tool="tool.name">
-  <PARAM name="param1">value1</PARAM>
-  <PARAM name="param2">value2</PARAM>
-  <REASON>Why this tool call is needed</REASON>
-</ACTION>
-<ACTION type="analysis">
-  <CONTENT>Your analysis or reasoning here</CONTENT>
-</ACTION>
-... (as many actions as needed for this iteration)
-</ACTIONS>
-
-<OUTPUT>
-The actual response/output for the user. This is what they will see.
-Can be multi-line, contains the final deliverable.
-</OUTPUT>
+<TOOL_CALL>
+<TOOL>tool.name</TOOL>
+<REASON>Why this tool is required right now.</REASON>
+<PARAM name="parameter_name">parameter value</PARAM>
+<PARAM name="another_param">another value</PARAM>
+</TOOL_CALL>
 
 <STATUS>
-CONTINUE if more work needed, COMPLETE if task is fully done
+AWAIT_TOOL if the tool must be approved and executed before you continue.
+COMPLETE if the task is fully finished and no tool call is needed.
 </STATUS>
-</AGENT_RESPONSE>
+</AGENT_DECISION>
 
-IMPORTANT:
-- Always include ALL sections even if empty
-- PLAN must be HIGH-LEVEL conceptual phases (3-7 steps max)
-  * Good: "Design website structure", "Create HTML framework", "Add CSS styling"
-  * Bad: "Call file.write for index.html", "Call file.write for styles.css"
-- ACTIONS describe what you WOULD do if tools were available (they're not yet implemented)
-  * These CAN be specific tool calls, but PLAN steps should remain high-level
-- OUTPUT is what the user sees - make it helpful even without tool execution
-- STATUS determines if execution continues or stops
+Rules:
+- MESSAGE must always be present and concise (1-3 sentences).
+- When STATUS is AWAIT_TOOL you MUST provide TOOL, REASON, and every required PARAM tag.
+- Use absolute/explicit parameter values; never leave placeholders.
+- Only reference tools from the allowlist. One tool per decision turn.
+- When STATUS is COMPLETE, leave the TOOL_CALL section empty (no TOOL/REASON/PARAM tags).
+- Never execute tools yourself�?"you only propose them for approval.
+- Do not add any text outside the <AGENT_DECISION> block.
 """
 
 
@@ -59,16 +40,17 @@ BASE_AGENT_PROMPT = """You are a specialized domain agent in the ATLAS2 agentic 
 
 {domain_specific_instructions}
 
-## YOUR CAPABILITIES:
+## YOUR CAPABILITIES
 {tool_descriptions}
 
-## EXECUTION CONTEXT:
+## EXECUTION CONTEXT
 - Domain: {domain_id}
 - Agent: {agent_id}
 - Execution Mode: {execution_mode}
 - Budget: {budget_info}
+- Iteration: {iteration}
 
-## USER REQUEST:
+## USER REQUEST
 {user_request}
 
 {chat_history_section}
@@ -76,6 +58,10 @@ BASE_AGENT_PROMPT = """You are a specialized domain agent in the ATLAS2 agentic 
 {attached_files_section}
 
 {procedures_section}
+
+{tool_history_section}
+
+{task_notes_section}
 
 {response_format}
 """

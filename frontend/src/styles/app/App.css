@@ -26,6 +26,79 @@ body.chat-active .main-content {
   background: linear-gradient(135deg, #141414 0%, #1a1a1a 100%);
 }
 
+.main-area {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+
+.app.coder-docked .main-content {
+  flex: 0 0 38%;
+  max-width: 520px;
+  padding-right: 28px;
+}
+
+.app.coder-docked .chat-container {
+  left: 0;
+  transform: translateY(-50%);
+  padding-left: 24px;
+  max-width: 520px;
+}
+
+.coder-dock {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(18, 18, 18, 0.95);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+}
+
+.coder-dock__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(30, 30, 30, 0.95) 0%, rgba(22, 22, 22, 0.85) 100%);
+}
+
+.coder-dock__title {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.coder-dock__close {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 6px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.coder-dock__close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.coder-dock__close-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.coder-dock .coder-window-v2 {
+  flex: 1;
+  height: 100%;
+}
+
 .main-content {
   flex: 1;
   display: flex;

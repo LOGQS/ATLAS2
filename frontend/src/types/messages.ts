@@ -45,11 +45,37 @@ export interface DomainExecution {
   task_id: string;
   domain_id: string;
   agent_id: string;
-  status: 'starting' | 'running' | 'completed' | 'failed';
+  status: 'starting' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'aborted';
   actions: ActionNode[];
   plan?: ExecutionPlan | null;
   context_snapshots: ContextSnapshot[];
   output?: string;
+  agent_message?: string;
+  pending_tool?: {
+    call_id: string;
+    tool: string;
+    params: Array<[string, any]>;
+    reason: string;
+    message: string;
+    created_at: string;
+    tool_description?: string;
+  } | null;
+  tool_history?: Array<{
+    call_id: string;
+    tool: string;
+    params: Array<[string, any]>;
+    accepted: boolean;
+    executed_at: string;
+    result_summary: string;
+    raw_result?: any;
+    error?: string | null;
+  }>;
+  metadata?: {
+    iterations?: number;
+    tool_calls?: number;
+    elapsed_seconds?: number;
+  };
+  assistant_message_id?: string | number | null;
 }
 
 export interface RouterDecision {

@@ -102,7 +102,37 @@ interface DomainExecutionEvent extends BaseSSEEvent {
   content?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | TaskflowPlanEvent | PlanPendingApprovalEvent | ErrorEvent | DomainExecutionEvent;
+interface DomainExecutionUpdateEvent extends BaseSSEEvent {
+  type: 'domain_execution_update';
+  content?: string;
+  task_id?: string;
+}
+
+interface CoderOperationEvent extends BaseSSEEvent {
+  type: 'coder_operation';
+  content?: string;
+}
+
+interface CoderWorkspacePromptEvent extends BaseSSEEvent {
+  type: 'coder_workspace_prompt';
+  content?: string;
+}
+
+type SSEEvent =
+  | ChatStateEvent
+  | ContentEvent
+  | CompleteEvent
+  | MessageIdsEvent
+  | FileStateEvent
+  | FileSystemEvent
+  | RouterDecisionEvent
+  | TaskflowPlanEvent
+  | PlanPendingApprovalEvent
+  | ErrorEvent
+  | DomainExecutionEvent
+  | DomainExecutionUpdateEvent
+  | CoderOperationEvent
+  | CoderWorkspacePromptEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -315,7 +345,7 @@ class LiveStore {
     return next;
   }
 
-  private handleDomainExecutionEvent(chatId: string, ev: DomainExecutionEvent, cur: ChatLive): ChatLive {
+  private handleDomainExecutionEvent(chatId: string, ev: DomainExecutionEvent | DomainExecutionUpdateEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     logger.info(`[DOMAIN-EXEC-LIVESTORE] handleDomainExecutionEvent called for ${chatId}`);
     logger.info(`[DOMAIN-EXEC-LIVESTORE] Event content length: ${ev.content?.length || 0} chars`);
@@ -379,6 +409,32 @@ class LiveStore {
 
         if (ev.type === 'filesystem') {
           this.handleFilesystemEvent(ev as FileSystemEvent);
+          return;
+        }
+
+        if (ev.type === 'coder_workspace_prompt') {
+          try {
+            const detail = ev.content ? JSON.parse(ev.content) : {};
+            detail.chatId = ev.chat_id || null;
+            window.dispatchEvent(new CustomEvent('coderWorkspacePrompt', { detail }));
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse coder_workspace_prompt payload', err);
+          }
+          return;
+        }
+
+        if (ev.type === 'coder_operation') {
+          if (!ev.content) {
+            logger.warn('[LiveStore] coder_operation event missing content payload');
+            return;
+          }
+          try {
+            const detail = JSON.parse(ev.content);
+            detail.chatId = ev.chat_id || null;
+            window.dispatchEvent(new CustomEvent('coderOperation', { detail }));
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse coder_operation payload', err);
+          }
           return;
         }
 
@@ -446,6 +502,9 @@ class LiveStore {
             break;
           case 'domain_execution':
             next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionEvent, cur);
+            break;
+          case 'domain_execution_update':
+            next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionUpdateEvent, cur);
             break;
           case 'complete':
             next = this.handleCompleteEvent(chatId, cur);

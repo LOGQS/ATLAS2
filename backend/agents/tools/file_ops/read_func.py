@@ -10,7 +10,8 @@ from .file_utils import (
     is_likely_binary,
     format_file_size,
     load_context_manifest,
-    save_context_manifest
+    save_context_manifest,
+    workspace_relative_path,
 )
 
 _logger = get_logger(__name__)
@@ -33,7 +34,12 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     if not file_path:
         raise ValueError("file_path is required")
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot read file: {error_msg}")
 
@@ -101,6 +107,8 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
         result_output = {
             "status": "success",
             "file_path": file_path,
+            "resolved_path": str(resolved_path),
+            "workspace_path": workspace_relative_path(resolved_path, ctx.workspace_path),
             "content": content,
             "metadata": {
                 "file_size": format_file_size(file_size),

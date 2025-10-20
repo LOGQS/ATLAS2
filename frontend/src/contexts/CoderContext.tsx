@@ -22,6 +22,18 @@ interface EditorDocument {
   isBinary: boolean;
 }
 
+export interface LiveFileOperation {
+  id: string;
+  timestamp: number;
+  chatId?: string | null;
+  tool: string;
+  action: string;
+  filePath: string;
+  absolutePath?: string;
+  before?: string | null;
+  after?: string | null;
+}
+
 interface FileHistory {
   path: string;
   versions: Array<{ content: string; timestamp: number }>;
@@ -78,6 +90,7 @@ interface CoderState {
   // Git integration
   isGitRepo: boolean;
   gitStatus: Record<string, GitFileStatus>;
+  liveOperations: LiveFileOperation[];
 }
 
 const findNodeByPath = (root: FileNode | null, targetPath: string): FileNode | null => {
@@ -154,6 +167,7 @@ interface CoderActions {
   closeSplit: () => void;
   switchPane: (paneId: PaneId) => void;
   openTabInPane: (path: string, paneId: PaneId) => Promise<void>;
+  clearLiveOperations: () => void;
 }
 
 const CoderContext = createContext<(CoderState & CoderActions) | undefined>(undefined);
@@ -212,6 +226,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     // Git integration state
     isGitRepo: false,
     gitStatus: {},
+    liveOperations: [],
   });
   const stateRef = React.useRef(state);
   React.useEffect(() => {
@@ -219,6 +234,10 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
   }, [state]);
 
   const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
+
+  const clearLiveOperations = useCallback(() => {
+    setState(prev => ({ ...prev, liveOperations: [] }));
+  }, []);
 
   const setError = useCallback((error: string) => {
     setState(prev => ({ ...prev, error }));
@@ -335,6 +354,25 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
           hasWorkspace: true,
         }));
         await loadFileTree();
+
+        // Notify the worker that workspace has been selected so it can continue
+        if (chatId) {
+          try {
+            const response = await fetch(apiUrl(`/api/chats/${chatId}/workspace_selected`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+
+            const result = await response.json();
+            if (result.success) {
+              logger.info('[CODER_CTX] Successfully notified worker of workspace selection');
+            } else {
+              logger.warn('[CODER_CTX] Failed to notify worker:', result.error);
+            }
+          } catch (notifyError) {
+            logger.error('[CODER_CTX] Failed to notify worker of workspace selection:', notifyError);
+          }
+        }
       } else {
         logger.warn('[CODER_CTX] setWorkspace failed', { error: data.error });
         setState(prev => ({ ...prev, error: data.error || 'Failed to set workspace', isLoading: false }));
@@ -1357,6 +1395,61 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     }
   }, [chatId, state.tabDocuments, state.workspacePath]);
 
+  useEffect(() => {
+    const handleCoderOperation = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail;
+      if (!detail) {
+        return;
+      }
+
+      const eventChatId: string | null | undefined = detail.chatId ?? null;
+      if (chatId && eventChatId && eventChatId !== chatId) {
+        return;
+      }
+
+      const operation = detail.operation;
+      const resultOps = operation?.result?.ops;
+      if (!Array.isArray(resultOps) || resultOps.length === 0) {
+        return;
+      }
+
+      const timestamp = Date.now();
+      const toolName: string = operation.tool || 'tool';
+      const callId: string = operation.call_id || `op-${timestamp}`;
+
+      const transformed: LiveFileOperation[] = resultOps
+        .filter((op: any) => !!op)
+        .map((op: any, index: number): LiveFileOperation => ({
+          id: `${callId}-${index}-${timestamp}`,
+          timestamp,
+          chatId: eventChatId ?? null,
+          tool: toolName,
+          action: op.type || toolName,
+          filePath: op.path || op.absolute_path || '',
+          absolutePath: op.absolute_path,
+          before: typeof op.before === 'string' ? op.before : op.before ?? null,
+          after: typeof op.after === 'string' ? op.after : op.after ?? null,
+        }))
+        .filter(op => op.filePath);
+
+      if (!transformed.length) {
+        return;
+      }
+
+      setState(prev => ({
+        ...prev,
+        liveOperations: [...transformed, ...prev.liveOperations].slice(0, 20),
+      }));
+    };
+
+    window.addEventListener('coderOperation', handleCoderOperation as EventListener);
+    return () => window.removeEventListener('coderOperation', handleCoderOperation as EventListener);
+  }, [chatId]);
+
+  useEffect(() => {
+    setState(prev => ({ ...prev, liveOperations: [] }));
+  }, [chatId]);
+
   // Load workspace on mount
   useEffect(() => {
     if (chatId) {
@@ -1422,6 +1515,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     closeSplit,
     switchPane,
     openTabInPane,
+    clearLiveOperations,
   };
 
   return <CoderContext.Provider value={value}>{children}</CoderContext.Provider>;

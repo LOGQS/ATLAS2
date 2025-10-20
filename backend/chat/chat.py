@@ -122,6 +122,91 @@ def cancel_chat_process(chat_id: str) -> bool:
         return False
 
 
+
+
+def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision: str,
+                              assistant_message_id: Optional[int] = None) -> Dict[str, Any]:
+    """Send a tool decision command to the chat worker for single-domain execution."""
+    with _chat_processes_lock:
+        conn = _chat_process_connections.get(chat_id)
+        process = _chat_processes.get(chat_id)
+
+    if not conn or not process or not process.is_alive():
+        logger.error(f"[DOMAIN-DECISION] No active worker for chat {chat_id}")
+        return {
+            'success': False,
+            'error': 'Chat worker is not active',
+            'chat_id': chat_id
+        }
+
+    command = {
+        'command': 'domain_tool_decision',
+        'chat_id': chat_id,
+        'task_id': task_id,
+        'call_id': call_id,
+        'decision': decision
+    }
+    if assistant_message_id is not None:
+        command['assistant_message_id'] = assistant_message_id
+
+    try:
+        conn.send(command)
+        if conn.poll(INIT_RESPONSE_TIMEOUT):
+            response = conn.recv()
+            return response if isinstance(response, dict) else {'success': True, 'chat_id': chat_id}
+        logger.warning(f"[DOMAIN-DECISION] Worker response timeout for chat {chat_id}")
+        return {
+            'success': False,
+            'error': 'Worker did not respond in time',
+            'chat_id': chat_id
+        }
+    except (OSError, BrokenPipeError) as comm_error:
+        logger.error(f"[DOMAIN-DECISION] Communication error for chat {chat_id}: {comm_error}")
+        return {
+            'success': False,
+            'error': str(comm_error),
+            'chat_id': chat_id
+        }
+
+
+def send_workspace_selected(chat_id: str) -> Dict[str, Any]:
+    """Notify the chat worker that workspace has been selected."""
+    with _chat_processes_lock:
+        conn = _chat_process_connections.get(chat_id)
+        process = _chat_processes.get(chat_id)
+
+    if not conn or not process or not process.is_alive():
+        logger.error(f"[WORKSPACE_SELECTED] No active worker for chat {chat_id}")
+        return {
+            'success': False,
+            'error': 'Chat worker is not active',
+            'chat_id': chat_id
+        }
+
+    command = {
+        'command': 'workspace_selected',
+        'chat_id': chat_id
+    }
+
+    try:
+        conn.send(command)
+        if conn.poll(INIT_RESPONSE_TIMEOUT):
+            response = conn.recv()
+            return response if isinstance(response, dict) else {'success': True, 'chat_id': chat_id}
+        logger.warning(f"[WORKSPACE_SELECTED] Worker response timeout for chat {chat_id}")
+        return {
+            'success': False,
+            'error': 'Worker did not respond in time',
+            'chat_id': chat_id
+        }
+    except (OSError, BrokenPipeError) as comm_error:
+        logger.error(f"[WORKSPACE_SELECTED] Communication error for chat {chat_id}: {comm_error}")
+        return {
+            'success': False,
+            'error': str(comm_error),
+            'chat_id': chat_id
+        }
+
 def stop_chat_process(chat_id: str) -> bool:
     """Stop a running background process for a chat and finalize the stream."""
     with _chat_processes_lock:
@@ -426,11 +511,15 @@ def _relay_worker_messages(chat_id: str, conn):
                 logger.warning(f"[RELAY] Connection error relaying message for {chat_id}: {str(relay_error)}")
                 break
             except Exception as relay_error:
+                import traceback
                 logger.error(f"[RELAY] Unexpected error relaying message for {chat_id}: {str(relay_error)}")
+                logger.error(f"[RELAY] Traceback: {traceback.format_exc()}")
                 break
                 
     except Exception as e:
+        import traceback
         logger.error(f"[RELAY] Fatal error in message relay for {chat_id}: {str(e)}")
+        logger.error(f"[RELAY] Fatal traceback: {traceback.format_exc()}")
     finally:
         logger.info(f"[RELAY] Message relay stopped for {chat_id}")
         if not queue_drained:

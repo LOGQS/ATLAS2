@@ -7,7 +7,7 @@ import time
 import threading
 from threading import Lock
 from collections import deque
-from chat.chat import Chat, is_chat_processing, stop_chat_process
+from chat.chat import Chat, is_chat_processing, stop_chat_process, send_domain_tool_decision, send_workspace_selected
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
@@ -758,10 +758,46 @@ def register_chat_routes(app: Flask):
             event_payload['reason'] = reason
 
         _emit_plan_event(chat_id, plan_id, 'plan_denied', event_payload)
-        _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='DENIED', extra={'reason': reason} if reason else None)
+        _broadcast_taskflow_plan(
+            chat_id, plan_id, fingerprint, plan_summary,
+            status='DENIED', extra={'reason': reason} if reason else None
+        )
 
         publish_state(chat_id, 'static')
         return jsonify({'plan_id': plan_id, 'status': 'DENIED'})
+
+    @app.route('/api/chats/<chat_id>/domain/<task_id>/tool/<call_id>/decision', methods=['POST'])
+    def domain_tool_decision(chat_id: str, task_id: str, call_id: str):
+        """Handle user accept/reject decisions for domain tool calls."""
+        try:
+            payload = request.get_json() or {}
+            decision = (payload.get('decision') or '').lower()
+            assistant_message_id = payload.get('assistant_message_id')
+
+            if decision not in {'accept', 'reject'}:
+                return jsonify({'success': False, 'error': "decision must be 'accept' or 'reject'"}), 400
+
+            response = send_domain_tool_decision(
+                chat_id=chat_id,
+                task_id=task_id,
+                call_id=call_id,
+                decision=decision,
+                assistant_message_id=assistant_message_id
+            )
+            status_code = 200 if response.get('success') else 400
+            return jsonify(response), status_code
+        except Exception as e:
+            import traceback
+            logger.error(f"[DOMAIN_TOOL_DECISION] Error processing decision for {chat_id}/{task_id}/{call_id}: {str(e)}")
+            logger.error(f"[DOMAIN_TOOL_DECISION] Traceback: {traceback.format_exc()}")
+            return jsonify({'success': False, 'error': f'Internal server error: {str(e)}'}), 500
+
+    @app.route('/api/chats/<chat_id>/workspace_selected', methods=['POST'])
+    def workspace_selected_notification(chat_id: str):
+        """Notify worker that workspace has been selected."""
+        response = send_workspace_selected(chat_id=chat_id)
+        status_code = 200 if response.get('success') else 400
+        return jsonify(response), status_code
 
     @app.route('/api/chats/<chat_id>/plan', methods=['POST'])
     def create_agentic_plan(chat_id: str):

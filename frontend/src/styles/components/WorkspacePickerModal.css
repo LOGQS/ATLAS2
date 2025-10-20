@@ -61,6 +61,13 @@
   margin: 0;
 }
 
+.workspace-modal-subtitle {
+  font-size: 13px;
+  color: var(--bolt-elements-textSecondary);
+  margin: 4px 0 0 0;
+  opacity: 0.8;
+}
+
 .workspace-modal-close {
   background: transparent;
   border: none;

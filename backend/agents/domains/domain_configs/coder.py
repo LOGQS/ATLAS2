@@ -37,7 +37,7 @@ Always test changes and maintain backwards compatibility.""",
                     max_time_seconds=300,
                     max_context_tokens=25000,
                 ),
-                model_preference="gemini-2.5-pro",
+                model_preference="gemini-2.5-flash",
             )
         ],
         tool_allowlist=[

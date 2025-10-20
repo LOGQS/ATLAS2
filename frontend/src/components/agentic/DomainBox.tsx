@@ -4,6 +4,7 @@ import '../../styles/agentic/DomainBox.css';
 import logger from '../../utils/core/logger';
 import useScrollControl from '../../hooks/ui/useScrollControl';
 import type { DomainExecution, ContextSnapshot } from '../../types/messages';
+import { apiUrl } from '../../config/api';
 
 interface DomainBoxProps {
   domainExecution: DomainExecution | null;
@@ -30,6 +31,8 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   const [selectedAction, setSelectedAction] = useState<string | null>(null);
   const [showRawContext, setShowRawContext] = useState(false);
   const [expandedContext, setExpandedContext] = useState(false);
+  const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
+  const [decisionError, setDecisionError] = useState<string | null>(null);
 
   const domainBoxContentRef = useRef<HTMLDivElement | null>(null);
   const actionsEndRef = useRef<HTMLDivElement>(null);
@@ -94,15 +97,63 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     }
     return domainExecution.context_snapshots[domainExecution.context_snapshots.length - 1];
   };
+  const currentContext = getCurrentContext();
+  const actions = domainExecution?.actions || [];
+  const pendingTool = domainExecution?.pending_tool || null;
+  const isWaitingForUser = domainExecution?.status === 'waiting_user';
+  const plan = domainExecution?.plan;
+  const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';
+
+  useEffect(() => {
+    if (!isWaitingForUser) {
+      setDecisionState('idle');
+      setDecisionError(null);
+    } else {
+      setDecisionError(null);
+    }
+  }, [isWaitingForUser, pendingTool?.call_id]);
+
+
+
+  const handleToolDecision = async (decision: 'accept' | 'reject') => {
+    if (!pendingTool || !chatId || !domainExecution) {
+      return;
+    }
+
+    const pendingState = decision === 'accept' ? 'accepting' : 'rejecting';
+    setDecisionState(pendingState);
+    setDecisionError(null);
+
+    try {
+      const endpoint = apiUrl(`/api/chats/${chatId}/domain/${domainExecution.task_id}/tool/${pendingTool.call_id}/decision`);
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          decision,
+          assistant_message_id: messageId ?? null
+        })
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || data?.success === false) {
+        const errorMsg = data?.error || `Failed to ${decision} tool call`;
+        throw new Error(errorMsg);
+      }
+
+      logger.info(`[DOMAINBOX] Submitted tool decision '${decision}' for ${pendingTool.tool}`, { chatId, taskId: domainExecution.task_id });
+    } catch (error) {
+      logger.error('[DOMAINBOX] Tool decision failed', error);
+      setDecisionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDecisionState('idle');
+    }
+  };
 
   if (!isVisible || (!domainExecution && !isProcessing)) {
     return null;
   }
-
-  const currentContext = getCurrentContext();
-  const actions = domainExecution?.actions || [];
-  const plan = domainExecution?.plan;
-  const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';
 
   return (
     <div className="domain-box">
@@ -153,6 +204,67 @@ const DomainBox: React.FC<DomainBoxProps> = ({
           <div className="task-label">Task:</div>
           <div className="task-text">{taskDescription}</div>
         </div>
+
+        {pendingTool && isWaitingForUser && (
+          <div className="domain-tool-approval">
+            <div className="domain-tool-approval-header">
+              <div className="tool-approval-heading">Tool Approval Required</div>
+              <div className="tool-approval-subheading">Call ID: {pendingTool.call_id}</div>
+            </div>
+            <div className="tool-approval-body">
+              <div className="tool-approval-name">{pendingTool.tool}</div>
+              {pendingTool.tool_description && (
+                <div className="tool-approval-description">{pendingTool.tool_description}</div>
+              )}
+              {domainExecution?.agent_message && (
+                <div className="tool-approval-message">
+                  <span className="label">Agent:</span>
+                  <span>{domainExecution.agent_message}</span>
+                </div>
+              )}
+              <div className="tool-approval-reason">
+                <span className="label">Reason:</span>
+                <span>{pendingTool.reason || 'No reason provided'}</span>
+              </div>
+              <div className="tool-approval-params">
+                <span className="label">Parameters:</span>
+                <ul>
+                  {pendingTool.params.map(([name, value]) => (
+                    <li key={name}>
+                      <span className="param-name">{name}</span>
+                      <span className="param-value">
+                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            {decisionError && (
+              <div className="domain-tool-approval-error" role="alert">
+                {decisionError}
+              </div>
+            )}
+            <div className="domain-tool-approval-actions">
+              <button
+                type="button"
+                className="approval-button approve"
+                onClick={() => handleToolDecision('accept')}
+                disabled={decisionState !== 'idle'}
+              >
+                {decisionState === 'accepting' ? 'Accepting…' : 'Accept'}
+              </button>
+              <button
+                type="button"
+                className="approval-button reject"
+                onClick={() => handleToolDecision('reject')}
+                disabled={decisionState !== 'idle'}
+              >
+                {decisionState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Active Context Display */}
         {currentContext && (
@@ -292,3 +404,4 @@ const DomainBox: React.FC<DomainBoxProps> = ({
 };
 
 export default DomainBox;
+

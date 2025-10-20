@@ -17,6 +17,7 @@ from typing import Optional, Tuple, Any
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import os
 
 backend_dir = Path(__file__).parent.parent
 if str(backend_dir) not in sys.path:
@@ -297,8 +298,15 @@ def initialize_pool(pool_size: Optional[int] = None) -> WorkerPool:
             if pool_size is None:
                 pool_size = Config.get_worker_pool_size()
 
+            is_reloader_parent = os.environ.get('WERKZEUG_RUN_MAIN') != 'true' and os.environ.get('FLASK_DEBUG') == '1'
+            if is_reloader_parent:
+                logger.warning("Attempting to initialize pool in reloader parent process - aborting")
+                return None
+
             _worker_pool = WorkerPool(pool_size=pool_size)
             logger.info(f"Initialized global worker pool with size {pool_size}")
+        else:
+            logger.info(f"Worker pool already initialized, returning existing pool")
 
         return _worker_pool
 

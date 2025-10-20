@@ -9,7 +9,8 @@ from .file_utils import (
     validate_file_path,
     is_likely_binary,
     create_backup,
-    check_paths_same
+    check_paths_same,
+    workspace_relative_path,
 )
 
 _logger = get_logger(__name__)
@@ -46,7 +47,10 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
         end_line = start_line
 
     is_valid, error_msg, source_resolved = validate_file_path(
-        source_path, must_exist=True, must_be_file=True
+        source_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
     )
     if not is_valid:
         raise ValueError(f"Cannot read source file: {error_msg}")
@@ -58,7 +62,14 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "This tool is for textual files only."
         )
 
-    dest_resolved = Path(destination_path).resolve()
+    dest_valid, dest_error, dest_resolved = validate_file_path(
+        destination_path,
+        must_exist=False,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
+    if not dest_valid:
+        raise ValueError(f"Cannot prepare destination file: {dest_error}")
     dest_exists = dest_resolved.exists()
 
     if check_paths_same(source_resolved, dest_resolved):
@@ -83,6 +94,7 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     try:
         with open(source_resolved, 'r', encoding='utf-8') as f:
             source_lines = f.readlines()
+        source_content_before = ''.join(source_lines)
     except UnicodeDecodeError:
         raise ValueError(
             f"Cannot read '{source_path}': file contains invalid UTF-8 data."
@@ -120,6 +132,7 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
         try:
             with open(dest_resolved, 'r', encoding='utf-8') as f:
                 dest_lines = f.readlines()
+            dest_content_before = ''.join(dest_lines)
         except UnicodeDecodeError:
             raise ValueError(
                 f"Cannot read '{destination_path}': file contains invalid UTF-8 data."
@@ -130,6 +143,7 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             )
     else:
         dest_lines = []
+        dest_content_before = ''
 
     dest_line_count = len(dest_lines)
 
@@ -156,6 +170,7 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
         dest_backup = None
 
     new_dest_lines = dest_lines[:insert_idx] + lines_to_move + dest_lines[insert_idx:]
+    dest_content_after = ''.join(new_dest_lines)
 
     try:
         dest_resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +208,7 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     else:
         source_action = "copied (kept in source)"
         new_source_line_count = source_line_count
+        new_source_lines = source_lines
 
     _logger.info(
         f"Successfully moved {lines_moved_count} lines from '{source_path}' "
@@ -222,6 +238,30 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     if warnings:
         result_output["warnings"] = warnings
 
+    source_content_after = ''.join(new_source_lines)
+    ops = [
+        {
+            "type": "file_edit",
+            "path": workspace_relative_path(dest_resolved, ctx.workspace_path),
+            "absolute_path": str(dest_resolved),
+            "before": dest_content_before,
+            "after": dest_content_after,
+            "mode": "move_lines_destination",
+        }
+    ]
+
+    if remove_from_source:
+        ops.append(
+            {
+                "type": "file_edit",
+                "path": workspace_relative_path(source_resolved, ctx.workspace_path),
+                "absolute_path": str(source_resolved),
+                "before": source_content_before,
+                "after": source_content_after,
+                "mode": "move_lines_source",
+            }
+        )
+
     return ToolResult(
         output=result_output,
         metadata={
@@ -230,7 +270,8 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "lines_moved": lines_moved_count,
             "removed_from_source": remove_from_source,
             "has_warnings": bool(warnings)
-        }
+        },
+        ops=ops,
     )
 
 

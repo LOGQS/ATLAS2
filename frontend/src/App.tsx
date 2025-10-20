@@ -10,6 +10,7 @@ import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import ContextWindow from './components/chat/ContextWindow';
+import { Icons } from './components/ui/Icons';
 import SendButton from './components/input/SendButton';
 import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
@@ -264,6 +265,7 @@ function App() {
   }, [activeChatId]);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
+  const isCoderVisible = activeModal === 'coder';
   const {
     attachedFiles,
     fileInputRef,
@@ -686,7 +688,7 @@ function App() {
     }
   };
 
-  const handleChatSelect = useCallback(async (chatId: string) => {
+  const handleChatSelect = useCallback(async (chatId: string, metadata?: { trigger?: string; reason?: string }) => {
     if (activeChatId === chatId) return;
 
     const switchToken = chatSwitchTokenRef.current + 1;
@@ -772,6 +774,40 @@ function App() {
 
     logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
   }, [activeChatId, hasMessageBeenSent, chats, syncActiveChat, loadChatsFromDatabase]);
+
+  useEffect(() => {
+    const handleCoderPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      const targetChatId: string | undefined = detail.chatId ?? undefined;
+
+      if (targetChatId && targetChatId !== 'none' && targetChatId !== activeChatId) {
+        void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-workspace-prompt' });
+      }
+
+      handleOpenModal('coder');
+    };
+
+    window.addEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
+    return () => window.removeEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
+  }, [activeChatId, handleChatSelect, handleOpenModal]);
+
+  useEffect(() => {
+    const handleCoderOperationEvent = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      const targetChatId: string | undefined = detail.chatId ?? undefined;
+
+      if (targetChatId && targetChatId !== 'none' && targetChatId !== activeChatId) {
+        void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-operation' });
+      }
+
+      if (!isCoderVisible) {
+        handleOpenModal('coder');
+      }
+    };
+
+    window.addEventListener('coderOperation', handleCoderOperationEvent as EventListener);
+    return () => window.removeEventListener('coderOperation', handleCoderOperationEvent as EventListener);
+  }, [activeChatId, handleChatSelect, handleOpenModal, isCoderVisible]);
 
   const handleChatSwitch = useCallback(async (newChatId: string) => {
     const switchToken = chatSwitchTokenRef.current + 1;
@@ -1165,7 +1201,7 @@ function App() {
   // END_TEST_FRAMEWORK_CONDITIONAL
 
   return (
-    <div className="app">
+    <div className={`app ${isCoderVisible ? 'coder-docked' : ''}`}>
       <LeftSidebar 
         chats={chats}
         activeChat={activeChatId}
@@ -1185,7 +1221,8 @@ function App() {
       {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
       {DEBUG_TOOLS_CONFIG.showTriggerLog && <TriggerLog activeChatId={activeChatId} />}
 
-      <div className="main-content">
+      <div className="main-area">
+        <div className="main-content">
         <div className="chat-container">
           <h1 className={`title ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             How can I help you?
@@ -1375,6 +1412,25 @@ function App() {
             )}
           </>
         )}
+        </div>
+        {isCoderVisible && (
+          <aside className="coder-dock">
+            <div className="coder-dock__header">
+              <span className="coder-dock__title">Coder</span>
+              <button
+                className="coder-dock__close"
+                onClick={handleCloseModal}
+                aria-label="Close coder workspace"
+              >
+                <Icons.Close className="coder-dock__close-icon" />
+              </button>
+            </div>
+            <CoderWindow
+              isOpen={true}
+              chatId={activeChatId !== 'none' ? activeChatId : undefined}
+            />
+          </aside>
+        )}
       </div>
       <RightSidebar 
         onOpenModal={handleOpenModal} 
@@ -1389,14 +1445,13 @@ function App() {
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
         { id: 'workspace', className: 'workspace-modal', render: (isOpen: boolean) => <WorkspaceWindow isOpen={isOpen} /> },
         { id: 'sources', className: 'sources-modal', render: () => <SourcesWindow /> },
-        { id: 'coder', className: 'coder-modal', closeOnBackdropClick: false, render: (isOpen: boolean) => <CoderWindow isOpen={isOpen} chatId={activeChatId !== 'none' ? activeChatId : undefined} /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}
           isOpen={activeModal === modal.id}
           onClose={handleCloseModal}
           className={modal.className}
-          closeOnBackdropClick={modal.closeOnBackdropClick}
+          closeOnBackdropClick={'closeOnBackdropClick' in modal ? (modal as any).closeOnBackdropClick : undefined}
         >
           {modal.render(activeModal === modal.id)}
         </ModalWindow>

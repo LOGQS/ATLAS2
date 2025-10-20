@@ -804,3 +804,131 @@
 .domain-box-header:focus:not(:focus-visible) {
   outline: none;
 }
+
+.domain-tool-approval {
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(30, 41, 59, 0.1);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.domain-tool-approval-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.tool-approval-heading {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.tool-approval-subheading {
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+.tool-approval-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-approval-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #1e293b;
+}
+
+.tool-approval-description {
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.tool-approval-message,
+.tool-approval-reason {
+  font-size: 0.85rem;
+  color: #334155;
+  display: flex;
+  gap: 6px;
+}
+
+.tool-approval-message .label,
+.tool-approval-reason .label,
+.tool-approval-params .label {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.tool-approval-params ul {
+  margin: 4px 0 0 0;
+  padding-left: 16px;
+  list-style: disc;
+  color: #1f2937;
+}
+
+.tool-approval-params li {
+  font-size: 0.85rem;
+  margin-bottom: 2px;
+}
+
+.tool-approval-params .param-name {
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.tool-approval-params .param-value {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  background: rgba(15, 23, 42, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.domain-tool-approval-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.approval-button {
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.approval-button.approve {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.approval-button.reject {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.approval-button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.approval-button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.15);
+}
+
+.domain-tool-approval-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #b91c1c;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}

@@ -138,7 +138,12 @@ def _tool_notebook_edit(params: Dict[str, Any], ctx: ToolExecutionContext) -> To
             "Must be 'replace', 'insert', or 'delete'."
         )
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot edit notebook: {error_msg}")
 

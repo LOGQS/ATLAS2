@@ -1,7 +1,7 @@
 import React, { useEffect, useCallback, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { CoderProvider, useCoderContext } from '../contexts/CoderContext';
+import { CoderProvider, useCoderContext, LiveFileOperation } from '../contexts/CoderContext';
 import { TabbedSidebar } from '../components/coder/TabbedSidebar';
 import { TabBar } from '../components/coder/TabBar';
 import { TerminalPanel } from '../components/coder/TerminalPanel';
@@ -13,6 +13,7 @@ import { CommandPalette } from '../components/coder/CommandPalette';
 import { EditorPane } from '../components/coder/EditorPane';
 import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
+import { DiffViewer } from '../components/coder/DiffViewer';
 import { configureMonaco } from '../config/monaco';
 import '../styles/sections/CoderWindow.css';
 import logger from '../utils/core/logger';
@@ -35,6 +36,72 @@ const sliderOptions: SliderOptions<ViewType> = {
   },
 };
 
+interface LiveOperationFeedProps {
+  operations: LiveFileOperation[];
+  onClear: () => void;
+}
+
+const LiveOperationFeed: React.FC<LiveOperationFeedProps> = ({ operations, onClear }) => {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!operations.length) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(prev => {
+      if (prev && operations.some(op => op.id === prev)) {
+        return prev;
+      }
+      return operations[0].id;
+    });
+  }, [operations]);
+
+  if (!operations.length) {
+    return null;
+  }
+
+  return (
+    <div className="coder-live-ops">
+      <div className="coder-live-ops__header">
+        <div className="coder-live-ops__header-left">
+          <span className="coder-live-ops__title">Live Changes</span>
+          <span className="coder-live-ops__count">{operations.length}</span>
+        </div>
+        <button className="coder-live-ops__clear" onClick={onClear}>
+          Clear
+        </button>
+      </div>
+      <div className="coder-live-ops__list">
+        {operations.map(op => {
+          const isExpanded = expandedId === op.id;
+          const timestamp = new Date(op.timestamp).toLocaleTimeString();
+          return (
+            <div key={op.id} className={`coder-live-ops__item ${isExpanded ? 'expanded' : ''}`}>
+              <button
+                className="coder-live-ops__item-toggle"
+                onClick={() => setExpandedId(isExpanded ? null : op.id)}
+              >
+                <span className="coder-live-ops__item-action">{op.action}</span>
+                <span className="coder-live-ops__item-path">{op.filePath}</span>
+                <span className="coder-live-ops__item-meta">
+                  {op.tool} · {timestamp}
+                </span>
+                <Icons.ChevronDown className="coder-live-ops__item-chevron" />
+              </button>
+              {isExpanded && (
+                <div className="coder-live-ops__diff">
+                  <DiffViewer original={op.before ?? ''} modified={op.after ?? ''} defaultMode="split" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 const CoderWindowContent: React.FC = () => {
   const {
     chatId,
@@ -55,6 +122,8 @@ const CoderWindowContent: React.FC = () => {
     toggleTerminal,
     closeTab,
     setError,
+    liveOperations,
+    clearLiveOperations,
     splitEditorHorizontal,
     splitEditorVertical,
     closeSplit,
@@ -202,6 +271,10 @@ const CoderWindowContent: React.FC = () => {
 
       {hasWorkspace && (
         <div className="coder-workbench-container">
+          {liveOperations.length > 0 && (
+            <LiveOperationFeed operations={liveOperations} onClear={clearLiveOperations} />
+          )}
+
           <div className="coder-workbench-wrapper">
             {/* Top Toolbar */}
             <div className="flex items-center px-3 py-2 border-b border-bolt-elements-borderColor gap-1.5">

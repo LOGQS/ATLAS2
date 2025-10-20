@@ -1,48 +1,61 @@
-"""Single Domain Executor.
+﻿"""Single Domain Executor.
 
-This module handles execution of single domain tasks with agents.
-Agents iterate autonomously, manage their own context, and execute tools based on domain configuration.
+This module coordinates iterative execution for a single specialized domain.
+An agent produces structured tool proposals that require explicit user approval.
+Upon approval the executor runs the tool, feeds results back to the agent, and
+continues until the agent declares completion or the user aborts.
 """
 
-from typing import Any, Dict, List, Optional
-import uuid
-import time
-from dataclasses import dataclass
+from __future__ import annotations
 
-from agents.domains.domain_registry import domain_registry, AgentSpec, DomainSpec
-from agents.tools.tool_registry import tool_registry
+import datetime
+import json
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from agents.domains.domain_registry import AgentSpec, DomainSpec, domain_registry
+from agents.prompts.agent_prompt_templates import (
+    AGENT_RESPONSE_FORMAT,
+    BASE_AGENT_PROMPT,
+    get_domain_instructions,
+)
+from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
 
 
 logger = get_logger(__name__)
 
+TERMINAL_STATES = {"completed", "failed", "aborted"}
+
 
 @dataclass
 class DomainExecutionContext:
     """Context for single domain execution."""
+
     chat_id: str
     domain_id: str
     agent_id: str
     task_id: str
     user_request: str
     global_context: Dict[str, Any]
-    task_budget: Optional[Dict[str, int]] = None  
+    assistant_message_id: Optional[int] = None
+    task_budget: Optional[Dict[str, int]] = None
+    workspace_path: Optional[str] = None
 
 
 @dataclass
 class ActionRecord:
     """Record of an action taken during execution."""
+
     action_id: str
-    action_type: str  
+    action_type: str
     timestamp: str
     description: str
-    status: str  
+    status: str
     result: Optional[Any] = None
-    metadata: Dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.metadata is None:
-            self.metadata = {}
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -56,13 +69,69 @@ class ActionRecord:
         }
 
 
+@dataclass
+class ToolCallProposal:
+    """Pending tool call awaiting user approval."""
+
+    call_id: str
+    tool_name: str
+    params: Dict[str, Any]
+    param_entries: List[Tuple[str, Any]]
+    reason: str
+    message: str
+    created_at: str
+    tool_description: str
+
+
+@dataclass
+class ToolExecutionRecord:
+    """Executed tool call result."""
+
+    call_id: str
+    tool_name: str
+    params: Dict[str, Any]
+    param_entries: List[Tuple[str, Any]]
+    accepted: bool
+    executed_at: str
+    result_summary: str
+    raw_result: Any
+    error: Optional[str] = None
+
+
+@dataclass
+class DomainTaskState:
+    """Mutable state for an in-flight single domain execution."""
+
+    context: DomainExecutionContext
+    domain: DomainSpec
+    agent: AgentSpec
+    actions: List[ActionRecord] = field(default_factory=list)
+    context_snapshots: List[Dict[str, Any]] = field(default_factory=list)
+    plan: Optional[Dict[str, Any]] = None
+    thinking: str = ""
+    output: str = ""
+    status: str = "running"
+    pending_tool: Optional[ToolCallProposal] = None
+    tool_history: List[ToolExecutionRecord] = field(default_factory=list)
+    agent_message: str = ""
+    last_agent_response: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    last_updated: str = field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    event_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+
+
 class SingleDomainExecutor:
-    """Executes single domain tasks with agent iteration."""
+    """Executes single domain tasks with agent-controlled tool iterations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = get_logger(__name__)
-        self._active_contexts: Dict[str, List[Any]] = {}  
+        self._active_tasks: Dict[str, DomainTaskState] = {}
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     def execute_domain_task(
         self,
         domain_id: str,
@@ -71,26 +140,18 @@ class SingleDomainExecutor:
         chat_history: Optional[List[Dict]] = None,
         attached_files: Optional[List[Dict]] = None,
         task_budget: Optional[Dict[str, int]] = None,
+        assistant_message_id: Optional[int] = None,
+        workspace_path: Optional[str] = None,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        """Execute a task in a specific domain.
+        """Start executing a task within a specific domain."""
 
-        Args:
-            domain_id: The domain to execute in
-            user_request: The user's request
-            chat_id: Chat ID for tracking
-            chat_history: Optional chat history
-            attached_files: Optional attached files
-            task_budget: Optional soft budget constraints from user
-
-        Returns:
-            Execution result with actions, context, and output
-        """
-        self.logger.info(f"Executing domain task: {domain_id}")
+        self.logger.info("Executing domain task for %s", domain_id)
 
         try:
             domain = domain_registry.get(domain_id)
         except KeyError:
-            error_msg = f"Domain {domain_id} not found in registry"
+            error_msg = f"Domain {domain_id} is not registered"
             self.logger.error(error_msg)
             return {"error": error_msg, "domain_id": domain_id}
 
@@ -109,14 +170,751 @@ class SingleDomainExecutor:
             task_id=task_id,
             user_request=user_request,
             global_context=self._build_global_context(
-                domain, user_request, chat_history, attached_files
+                domain, user_request, chat_history, attached_files, workspace_path
             ),
+            assistant_message_id=assistant_message_id,
             task_budget=task_budget,
+            workspace_path=workspace_path,
         )
 
-        result = self._execute_with_agent(domain, agent, exec_context)
+        state = DomainTaskState(
+            context=exec_context,
+            domain=domain,
+            agent=agent,
+            metadata={
+                "start_time": time.time(),
+                "iterations": 0,
+                "tool_calls": 0,
+            },
+            event_callback=event_callback,
+        )
 
+        self._append_action(
+            state,
+            action_type="domain_start",
+            description=f"Executing in {domain.name} domain with agent {agent.name}",
+            status="completed",
+            metadata={
+                "domain_id": domain.domain_id,
+                "agent_id": agent.agent_id,
+                "task_id": task_id,
+            },
+        )
+        self._append_snapshot(
+            state,
+            summary="Initial context prepared",
+            full_context={
+                "user_request": exec_context.user_request,
+                "global_context": exec_context.global_context,
+            },
+        )
+
+        self._active_tasks[task_id] = state
+
+        result = self._run_agent_iteration(state, is_initial=True)
+        if state.status in TERMINAL_STATES:
+            self._active_tasks.pop(task_id, None)
         return result
+
+    def handle_tool_decision(
+        self,
+        task_id: str,
+        call_id: str,
+        decision: str,
+    ) -> Dict[str, Any]:
+        """Process a user decision for a pending tool call."""
+
+        state = self._active_tasks.get(task_id)
+        if not state:
+            error_msg = f"Task {task_id} is no longer active"
+            self.logger.error(error_msg)
+            return {"error": error_msg, "task_id": task_id}
+
+        if not state.pending_tool or state.pending_tool.call_id != call_id:
+            error_msg = "No matching pending tool call found for decision"
+            self.logger.warning("Pending tool mismatch for %s", task_id)
+            return {"error": error_msg, "task_id": task_id}
+
+        decision_lower = decision.lower()
+        if decision_lower not in {"accept", "reject"}:
+            error_msg = f"Unsupported decision: {decision}"
+            self.logger.error(error_msg)
+            return {"error": error_msg, "task_id": task_id}
+
+        if decision_lower == "reject":
+            self._handle_rejection(state)
+            self._active_tasks.pop(task_id, None)
+            return self._serialize_state(state)
+
+        # Accept path
+        try:
+            self._handle_acceptance(state)
+        except Exception as exc:
+            self.logger.exception("Tool execution failed: %s", exc)
+            self._mark_failure(state, f"Tool execution error: {exc}")
+            self._active_tasks.pop(task_id, None)
+            return self._serialize_state(state)
+
+        if state.status in TERMINAL_STATES:
+            self._active_tasks.pop(task_id, None)
+        return self._serialize_state(state)
+
+    def abort_task(self, task_id: str, reason: str) -> Optional[Dict[str, Any]]:
+        """Abort an active task (used when chat is cancelled)."""
+
+        state = self._active_tasks.pop(task_id, None)
+        if not state:
+            return None
+
+        state.status = "aborted"
+        state.output = reason
+        self._append_action(
+            state,
+            action_type="domain_abort",
+            description=reason,
+            status="failed",
+        )
+        return self._serialize_state(state)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _run_agent_iteration(
+        self,
+        state: DomainTaskState,
+        is_initial: bool = False,
+    ) -> Dict[str, Any]:
+        """Run a single agent iteration and update task state."""
+
+        state.metadata["iterations"] = state.metadata.get("iterations", 0) + 1
+        state.status = "running"
+
+        prompt = self._build_agent_prompt(state)
+
+        self.logger.info("=" * 80)
+        self.logger.info(
+            "[DOMAIN-AGENT-PROMPT] %s/%s iteration %s",
+            state.context.domain_id,
+            state.context.agent_id,
+            state.metadata["iterations"],
+        )
+        self.logger.info("=" * 80)
+        self.logger.info(prompt)
+
+        response_text = self._call_agent(state.agent, prompt)
+
+        self.logger.info("=" * 80)
+        self.logger.info(
+            "[DOMAIN-AGENT-RESPONSE] %s/%s iteration %s",
+            state.context.domain_id,
+            state.context.agent_id,
+            state.metadata["iterations"],
+        )
+        self.logger.info("=" * 80)
+        self.logger.info(response_text)
+
+        parsed = self._parse_agent_response(response_text)
+        state.last_agent_response = response_text
+        state.agent_message = parsed.get("message", "").strip() or parsed.get("raw", "").strip()
+        state.pending_tool = None
+        state.last_updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        self._append_action(
+            state,
+            action_type="agent_response",
+            description=state.agent_message[:400],
+            status="completed",
+            metadata={
+                "iteration": state.metadata["iterations"],
+                "status": parsed.get("status"),
+            },
+        )
+
+        pending_tool = parsed.get("tool_call")
+        status = parsed.get("status", "COMPLETE").upper()
+
+        if status == "AWAIT_TOOL" and pending_tool:
+            self._register_pending_tool(state, pending_tool)
+        elif status == "COMPLETE":
+            state.status = "completed"
+            state.output = state.agent_message
+            self._append_action(
+                state,
+                action_type="domain_complete",
+                description="Agent reported task complete",
+                status="completed",
+                metadata={"iteration": state.metadata["iterations"]},
+            )
+        else:
+            # Unexpected status fallback
+            state.status = "completed"
+            state.output = state.agent_message
+            self.logger.warning(
+                "Agent returned unexpected status '%s'; treating as completion.",
+                status,
+            )
+            self._append_action(
+                state,
+                action_type="domain_complete",
+                description=f"Completed with fallback from status '{status}'",
+                status="completed",
+                metadata={"iteration": state.metadata["iterations"]},
+            )
+
+        self._append_snapshot(
+            state,
+            summary=f"Iteration {state.metadata['iterations']} -> {state.status.upper()}",
+            full_context={
+                "agent_message": state.agent_message,
+                "pending_tool": self._serialize_tool_proposal(state.pending_tool),
+                "status": state.status,
+            },
+        )
+
+        serialized_state = self._serialize_state(state)
+        self._emit_event(state, "state", serialized_state)
+        return serialized_state
+
+    def _register_pending_tool(self, state: DomainTaskState, parsed_tool: Dict[str, Any]) -> None:
+        tool_name = parsed_tool["tool"]
+        reason = parsed_tool.get("reason", "")
+        param_entries = parsed_tool.get("param_entries", [])
+
+        if tool_name not in state.domain.tool_allowlist:
+            msg = f"Tool '{tool_name}' is not allowed for domain {state.domain.domain_id}"
+            self._mark_failure(state, msg)
+            return
+
+        try:
+            tool_spec = tool_registry.get(tool_name)
+            tool_description = tool_spec.description
+        except KeyError:
+            msg = f"Tool '{tool_name}' not found in registry"
+            self._mark_failure(state, msg)
+            return
+
+        params = {name: value for name, value in param_entries}
+        call_id = f"call_{uuid.uuid4().hex[:10]}"
+        proposal = ToolCallProposal(
+            call_id=call_id,
+            tool_name=tool_name,
+            params=params,
+            param_entries=param_entries,
+            reason=reason,
+            message=state.agent_message,
+            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            tool_description=tool_description,
+        )
+        state.pending_tool = proposal
+        state.status = "waiting_user"
+        self._append_action(
+            state,
+            action_type="tool_proposal",
+            description=reason or f"Proposed call to {tool_name}",
+            status="pending",
+            metadata={
+                "call_id": call_id,
+                "tool": tool_name,
+                "params": param_entries,
+            },
+        )
+
+    def _handle_rejection(self, state: DomainTaskState) -> None:
+        proposal = state.pending_tool
+        if not proposal:
+            return
+
+        action = self._find_action_by_call_id(state, proposal.call_id)
+        if action:
+            action.status = "failed"
+            action.result = "User rejected tool call"
+
+        state.tool_history.append(
+            ToolExecutionRecord(
+                call_id=proposal.call_id,
+                tool_name=proposal.tool_name,
+                params=proposal.params,
+                param_entries=proposal.param_entries,
+                accepted=False,
+                executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                result_summary="User rejected tool call",
+                raw_result=None,
+                error="rejected",
+            )
+        )
+        state.pending_tool = None
+        state.status = "aborted"
+        state.output = "Tool call rejected by user. Execution aborted."
+        self._append_action(
+            state,
+            action_type="domain_abort",
+            description="Execution aborted after user rejected tool call",
+            status="failed",
+        )
+        serialized_state = self._serialize_state(state)
+        self._emit_event(state, "state", serialized_state)
+
+    def _handle_acceptance(self, state: DomainTaskState) -> None:
+        proposal = state.pending_tool
+        if not proposal:
+            return
+
+        action = self._find_action_by_call_id(state, proposal.call_id)
+        if action:
+            action.status = "in_progress"
+
+        self.logger.info(
+            "Executing tool %s for task %s",
+            proposal.tool_name,
+            state.context.task_id,
+        )
+
+        tool_result = self._execute_tool_call(state, proposal)
+        result_payload = {
+            "output": self._ensure_serializable(tool_result.output),
+            "metadata": self._ensure_serializable(tool_result.metadata),
+            "ops": self._ensure_serializable(tool_result.ops),
+        }
+
+        summary = self._summarize_tool_output(result_payload["output"])
+        executed_record = ToolExecutionRecord(
+            call_id=proposal.call_id,
+            tool_name=proposal.tool_name,
+            params=proposal.params,
+            param_entries=proposal.param_entries,
+            accepted=True,
+            executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            result_summary=summary,
+            raw_result=result_payload,
+        )
+        state.tool_history.append(executed_record)
+        state.metadata["tool_calls"] = state.metadata.get("tool_calls", 0) + 1
+
+        if action:
+            action.status = "completed"
+            action.result = result_payload
+
+        state.pending_tool = None
+
+        self._emit_event(
+            state,
+            "tool_execution",
+            {
+                "call_id": executed_record.call_id,
+                "tool": executed_record.tool_name,
+                "params": executed_record.param_entries,
+                "result": executed_record.raw_result,
+            },
+        )
+
+        self._append_snapshot(
+            state,
+            summary=f"Executed tool {proposal.tool_name}",
+            full_context={
+                "tool": proposal.tool_name,
+                "params": proposal.param_entries,
+                "result_summary": summary,
+            },
+        )
+
+        # Continue with next iteration
+        self._run_agent_iteration(state)
+
+    def _execute_tool_call(
+        self,
+        state: DomainTaskState,
+        proposal: ToolCallProposal,
+    ) -> ToolResult:
+        tool_spec = tool_registry.get(proposal.tool_name)
+        ctx = ToolExecutionContext(
+            chat_id=state.context.chat_id,
+            plan_id=state.context.task_id,
+            task_id=state.context.task_id,
+            ctx_id=f"ctx_{uuid.uuid4().hex[:10]}",
+            workspace_path=state.context.workspace_path,
+        )
+        params = proposal.params
+        return tool_spec.fn(params, ctx)
+
+    def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
+        from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
+
+        temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
+        response = temp_chat.generate_text(
+            message=prompt,
+            provider="gemini",
+            model=agent.model_preference or "gemini-2.5-flash",
+            include_reasoning=False,
+            use_router=False,
+        )
+
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+
+        text = response.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices:
+            alt_text = choices[0].get("text")
+            if isinstance(alt_text, str):
+                return alt_text
+
+        return ""
+
+    def _build_agent_prompt(self, state: DomainTaskState) -> str:
+        domain = state.domain
+        agent = state.agent
+        exec_context = state.context
+
+        domain_instructions = get_domain_instructions(domain.domain_id)
+
+        tool_descriptions = self._format_tool_allowlist(domain.tool_allowlist)
+
+        budget_info = (
+            f"Max tool calls: {agent.default_budget.max_tool_calls}, "
+            f"Max iterations: {agent.default_budget.max_iterations}, "
+            f"Max time: {agent.default_budget.max_time_seconds}s"
+        )
+
+        chat_history_section = self._format_chat_history(
+            exec_context.global_context.get("chat_history")
+        )
+        attached_files_section = self._format_attached_files(
+            exec_context.global_context.get("attached_files")
+        )
+        procedures_section = self._format_procedures(domain)
+        tool_history_section = self._format_tool_history(state.tool_history)
+        task_notes_section = self._format_task_notes(state)
+
+        return BASE_AGENT_PROMPT.format(
+            domain_specific_instructions=domain_instructions,
+            tool_descriptions=tool_descriptions,
+            domain_id=domain.domain_id,
+            agent_id=agent.agent_id,
+            execution_mode=agent.execution_mode.value,
+            budget_info=budget_info,
+            iteration=state.metadata.get("iterations", 0) + 1,
+            user_request=exec_context.user_request,
+            chat_history_section=chat_history_section,
+            attached_files_section=attached_files_section,
+            procedures_section=procedures_section,
+            tool_history_section=tool_history_section,
+            task_notes_section=task_notes_section,
+            response_format=AGENT_RESPONSE_FORMAT,
+        )
+
+    # ------------------------------------------------------------------
+    # Formatting helpers
+    # ------------------------------------------------------------------
+    def _format_tool_allowlist(self, tool_names: List[str]) -> str:
+        if not tool_names:
+            return "No tools available."
+
+        lines: List[str] = []
+        for name in tool_names:
+            try:
+                spec = tool_registry.get(name)
+                required = spec.in_schema.get("required", []) if spec.in_schema else []
+                required_str = f" (required params: {', '.join(required)})" if required else ""
+                lines.append(f"- {spec.name}: {spec.description}{required_str}")
+            except KeyError:
+                lines.append(f"- {name}: [unregistered tool]")
+        return "\n".join(lines)
+
+    def _format_chat_history(self, chat_history: Optional[List[Dict]]) -> str:
+        if not chat_history:
+            return ""
+        recent = chat_history[-3:]
+        lines = ["## RECENT CHAT HISTORY:"]
+        for msg in recent:
+            role = msg.get("role", "unknown")
+            content = str(msg.get("content", ""))[:200]
+            if len(str(msg.get("content", ""))) > 200:
+                content += "..."
+            lines.append(f"{role.upper()}: {content}")
+        return "\n".join(lines)
+
+    def _format_attached_files(self, attached_files: Optional[List[Dict]]) -> str:
+        if not attached_files:
+            return ""
+        lines = ["## ATTACHED FILES:"]
+        for file_info in attached_files:
+            name = file_info.get("name") or file_info.get("id") or "unnamed"
+            lines.append(f"- {name}")
+        return "\n".join(lines)
+
+    def _format_procedures(self, domain: DomainSpec) -> str:
+        if not domain.procedures:
+            return ""
+        lines = ["## AVAILABLE PROCEDURES:"]
+        for proc in domain.procedures[:5]:
+            lines.append(f"- {proc.name}: {proc.description}")
+        return "\n".join(lines)
+
+    def _format_tool_history(self, history: List[ToolExecutionRecord]) -> str:
+        if not history:
+            return ""
+        lines = ["## TOOL HISTORY:"]
+        for record in history[-5:]:
+            params_preview = ", ".join(f"{k}={v}" for k, v in record.param_entries)
+            status = "ACCEPTED" if record.accepted else "REJECTED"
+            lines.append(
+                f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}"
+            )
+        return "\n".join(lines)
+
+    def _format_task_notes(self, state: DomainTaskState) -> str:
+        notes: List[str] = []
+        if state.pending_tool:
+            params_preview = ", ".join(
+                f"{name}={value}" for name, value in state.pending_tool.param_entries
+            )
+            notes.append(
+                "## PENDING APPROVAL:\n"
+                f"- Tool: {state.pending_tool.tool_name}\n"
+                f"- Reason: {state.pending_tool.reason}\n"
+                f"- Params: {params_preview}"
+            )
+        return "\n".join(notes)
+
+    # ------------------------------------------------------------------
+    # Utility helpers
+    # ------------------------------------------------------------------
+    def _parse_agent_response(self, response_text: str) -> Dict[str, Any]:
+        import re
+
+        parsed: Dict[str, Any] = {
+            "message": response_text.strip(),
+            "raw": response_text,
+            "status": "COMPLETE",
+            "tool_call": None,
+        }
+        try:
+            decision_match = re.search(
+                r"<AGENT_DECISION>(.*?)</AGENT_DECISION>",
+                response_text,
+                re.DOTALL | re.IGNORECASE,
+            )
+            body = decision_match.group(1) if decision_match else response_text
+
+            message_match = re.search(
+                r"<MESSAGE>(.*?)</MESSAGE>", body, re.DOTALL | re.IGNORECASE
+            )
+            if message_match:
+                parsed["message"] = message_match.group(1).strip()
+
+            status_match = re.search(
+                r"<STATUS>(.*?)</STATUS>", body, re.DOTALL | re.IGNORECASE
+            )
+            if status_match:
+                parsed["status"] = status_match.group(1).strip().upper()
+
+            tool_section_match = re.search(
+                r"<TOOL_CALL>(.*?)</TOOL_CALL>", body, re.DOTALL | re.IGNORECASE
+            )
+            tool_section = tool_section_match.group(1) if tool_section_match else ""
+
+            tool_name_match = re.search(
+                r"<TOOL>(.*?)</TOOL>", tool_section, re.DOTALL | re.IGNORECASE
+            )
+            reason_match = re.search(
+                r"<REASON>(.*?)</REASON>", tool_section, re.DOTALL | re.IGNORECASE
+            )
+            param_matches = re.findall(
+                r"<PARAM\s+name=\"([^\"]+)\">(.*?)</PARAM>",
+                tool_section,
+                re.DOTALL | re.IGNORECASE,
+            )
+
+            if tool_name_match:
+                param_entries: List[Tuple[str, Any]] = []
+                for param_name, raw_value in param_matches:
+                    cleaned = raw_value.strip()
+                    param_entries.append((param_name, self._normalise_param_value(cleaned)))
+
+                parsed["tool_call"] = {
+                    "tool": tool_name_match.group(1).strip(),
+                    "reason": reason_match.group(1).strip() if reason_match else "",
+                    "param_entries": param_entries,
+                }
+        except Exception as exc:
+            self.logger.warning("Failed to parse agent response: %s", exc)
+
+        return parsed
+
+    def _append_action(
+        self,
+        state: DomainTaskState,
+        action_type: str,
+        description: str,
+        status: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        result: Any = None,
+    ) -> ActionRecord:
+        action = ActionRecord(
+            action_id=f"action_{uuid.uuid4().hex[:10]}",
+            action_type=action_type,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            description=description,
+            status=status,
+            metadata=metadata or {},
+            result=result,
+        )
+        state.actions.append(action)
+        return action
+
+    def _append_snapshot(
+        self,
+        state: DomainTaskState,
+        summary: str,
+        full_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        snapshot = {
+            "snapshot_id": f"ctx_{uuid.uuid4().hex[:10]}",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "context_size": len(state.last_agent_response),
+            "summary": summary,
+            "full_context": full_context or {},
+        }
+        state.context_snapshots.append(snapshot)
+        if len(state.context_snapshots) > 20:
+            state.context_snapshots = state.context_snapshots[-20:]
+
+    def _emit_event(
+        self,
+        state: DomainTaskState,
+        event: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        if not state.event_callback:
+            return
+
+        try:
+            state.event_callback(
+                {
+                    "event": event,
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                    "payload": payload,
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:  
+            self.logger.error(
+                "Failed to emit %s event for task %s: %s",
+                event,
+                state.context.task_id,
+                exc,
+            )
+
+    def _serialize_state(self, state: DomainTaskState) -> Dict[str, Any]:
+        elapsed = time.time() - state.metadata.get("start_time", time.time())
+        return {
+            "task_id": state.context.task_id,
+            "domain_id": state.context.domain_id,
+            "agent_id": state.context.agent_id,
+            "status": state.status,
+            "agent_message": state.agent_message,
+            "output": state.output,
+            "pending_tool": self._serialize_tool_proposal(state.pending_tool),
+            "actions": [action.to_dict() for action in state.actions],
+            "context_snapshots": state.context_snapshots,
+            "plan": state.plan,
+            "tool_history": [
+                {
+                    "call_id": record.call_id,
+                    "tool": record.tool_name,
+                    "params": record.param_entries,
+                    "accepted": record.accepted,
+                    "executed_at": record.executed_at,
+                    "result_summary": record.result_summary,
+                    "raw_result": record.raw_result,
+                    "error": record.error,
+                }
+                for record in state.tool_history
+            ],
+            "metadata": {
+                "iterations": state.metadata.get("iterations", 0),
+                "tool_calls": state.metadata.get("tool_calls", 0),
+                "elapsed_seconds": elapsed,
+            },
+            "assistant_message_id": state.context.assistant_message_id,
+        }
+
+    def _serialize_tool_proposal(
+        self, proposal: Optional[ToolCallProposal]
+    ) -> Optional[Dict[str, Any]]:
+        if not proposal:
+            return None
+        return {
+            "call_id": proposal.call_id,
+            "tool": proposal.tool_name,
+            "params": proposal.param_entries,
+            "reason": proposal.reason,
+            "message": proposal.message,
+            "created_at": proposal.created_at,
+            "tool_description": proposal.tool_description,
+        }
+
+    def _ensure_serializable(self, value: Any) -> Any:
+        if value is None:
+            return None
+        try:
+            json.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            if isinstance(value, dict):
+                return {self._ensure_serializable(k): self._ensure_serializable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [self._ensure_serializable(v) for v in value]
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value)
+
+    def _normalise_param_value(self, value: str) -> Any:
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            return json.loads(stripped)
+        except (json.JSONDecodeError, TypeError):
+            return stripped
+
+    def _summarize_tool_output(self, output: Any) -> str:
+        if output is None:
+            return "Tool returned no output."
+        if isinstance(output, (dict, list)):
+            try:
+                serialized = json.dumps(output)
+            except TypeError:
+                serialized = str(output)
+        else:
+            serialized = str(output)
+        if len(serialized) > 400:
+            return serialized[:400] + "..."
+        return serialized
+
+    def _mark_failure(self, state: DomainTaskState, message: str) -> None:
+        self.logger.error("Domain execution failure: %s", message)
+        state.status = "failed"
+        state.output = message
+        self._append_action(
+            state,
+            action_type="domain_failure",
+            description=message,
+            status="failed",
+        )
+        state.pending_tool = None
+
+    def _find_action_by_call_id(
+        self, state: DomainTaskState, call_id: str
+    ) -> Optional[ActionRecord]:
+        for action in reversed(state.actions):
+            if action.metadata.get("call_id") == call_id:
+                return action
+        return None
 
     def _build_global_context(
         self,
@@ -124,9 +922,9 @@ class SingleDomainExecutor:
         user_request: str,
         chat_history: Optional[List[Dict]],
         attached_files: Optional[List[Dict]],
+        workspace_path: Optional[str],
     ) -> Dict[str, Any]:
-        """Build global context based on domain's allowlist."""
-        context = {}
+        context: Dict[str, Any] = {}
 
         if "user_request" in domain.global_context_allowlist:
             context["user_request"] = user_request
@@ -137,359 +935,17 @@ class SingleDomainExecutor:
         if "attached_files" in domain.global_context_allowlist and attached_files:
             context["attached_files"] = attached_files
 
+        if (
+            "workspace_path" in domain.global_context_allowlist
+            and workspace_path
+        ):
+            context["workspace_path"] = workspace_path
+
         return context
 
-    def _execute_with_agent(
-        self,
-        domain: DomainSpec,
-        agent: AgentSpec,
-        exec_context: DomainExecutionContext,
-    ) -> Dict[str, Any]:
-        """Execute task with a specific agent."""
-        import datetime
-
-        self.logger.info(
-            f"Executing with agent {agent.agent_id} in domain {domain.domain_id}"
-        )
-
-        actions: List[ActionRecord] = []
-        context_snapshots: List[Dict[str, Any]] = []
-        start_time = time.time()
-
-        start_action = ActionRecord(
-            action_id=f"action_{uuid.uuid4().hex[:8]}",
-            action_type="domain_start",
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            description=f"Starting execution in {domain.name} domain",
-            status="completed",
-            metadata={
-                "domain_id": domain.domain_id,
-                "agent_id": agent.agent_id,
-                "task_id": exec_context.task_id,
-            },
-        )
-        actions.append(start_action)
-
-        agent_prompt = self._build_agent_prompt(domain, agent, exec_context)
-
-        self.logger.info("=" * 80)
-        self.logger.info(f"[DOMAIN-AGENT-PROMPT] Full prompt for {domain.domain_id}/{agent.agent_id}:")
-        self.logger.info("=" * 80)
-        self.logger.info(agent_prompt)
-        self.logger.info("=" * 80)
-
-        initial_context = {
-            "snapshot_id": f"ctx_{uuid.uuid4().hex[:8]}",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "context_size": len(agent_prompt),
-            "summary": f"Initial context for {domain.name} domain",
-            "full_context": {
-                "user_request": exec_context.user_request,
-                "domain_id": domain.domain_id,
-                "agent_id": agent.agent_id,
-            }
-        }
-        context_snapshots.append(initial_context)
-
-        try:
-            response_action = ActionRecord(
-                action_id=f"action_{uuid.uuid4().hex[:8]}",
-                action_type="llm_generate",
-                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                description=f"Generating response with {agent.model_preference or 'default model'}",
-                status="in_progress",
-            )
-            actions.append(response_action)
-
-            from chat.chat import Chat
-            temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
-
-            full_text = ""
-            full_thoughts = ""
-
-            for chunk in temp_chat.generate_text_stream(
-                message=agent_prompt,
-                provider="gemini",
-                model=agent.model_preference or "gemini-2.5-flash",
-                include_reasoning=False,
-                use_router=False,
-            ):
-                if chunk.get("type") == "thoughts":
-                    full_thoughts += chunk.get("content", "")
-                elif chunk.get("type") == "answer":
-                    full_text += chunk.get("content", "")
-
-            output_text = full_text
-
-            self.logger.info("=" * 80)
-            self.logger.info(f"[DOMAIN-AGENT-RESPONSE] Full response from {domain.domain_id}/{agent.agent_id}:")
-            self.logger.info("=" * 80)
-            self.logger.info(output_text)
-            self.logger.info("=" * 80)
-
-            parsed = self._parse_agent_response(output_text)
-
-            for parsed_action in parsed.get("actions", []):
-                action_record = ActionRecord(
-                    action_id=f"action_{uuid.uuid4().hex[:8]}",
-                    action_type=parsed_action["type"],
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    description=parsed_action.get("reason", f"{parsed_action['type']} action"),
-                    status="simulated",  
-                    metadata={
-                        "tool": parsed_action.get("tool"),
-                        "params": parsed_action.get("params"),
-                        "content": parsed_action.get("content"),
-                    }
-                )
-                actions.append(action_record)
-
-            response_action.status = "completed"
-            response_action.result = parsed.get("output", output_text)[:500] 
-
-            complete_action = ActionRecord(
-                action_id=f"action_{uuid.uuid4().hex[:8]}",
-                action_type="domain_complete",
-                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                description="Domain execution completed",
-                status="completed",
-                metadata={
-                    "output_length": len(parsed.get("output", output_text)),
-                    "actions_count": len(actions),
-                    "thinking_present": bool(parsed.get("thinking")),
-                    "plan_steps": len(parsed.get("plan", [])),
-                },
-            )
-            actions.append(complete_action)
-
-            plan_data = None
-            if parsed.get("plan"):
-                plan_data = {
-                    "plan_id": f"plan_{exec_context.task_id}",
-                    "task_description": exec_context.user_request,
-                    "steps": parsed["plan"],
-                    "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                }
-
-            response = {
-                "task_id": exec_context.task_id,
-                "domain_id": domain.domain_id,
-                "agent_id": agent.agent_id,
-                "status": "completed",
-                "execution_time": time.time() - start_time,
-                "actions": [action.to_dict() for action in actions],
-                "context_snapshots": context_snapshots,
-                "plan": plan_data,
-                "thinking": parsed.get("thinking", ""), 
-                "output": parsed.get("output", output_text),
-                "metadata": {
-                    "tool_calls": 0,  
-                    "iterations": 1,
-                    "budget_used": {
-                        "tool_calls": 0,
-                        "iterations": 1,
-                        "time_seconds": time.time() - start_time,
-                    },
-                    "budget_limits": {
-                        "max_tool_calls": agent.default_budget.max_tool_calls,
-                        "max_iterations": agent.default_budget.max_iterations,
-                        "max_time_seconds": agent.default_budget.max_time_seconds,
-                    },
-                },
-            }
-
-            return response
-
-        except Exception as e:
-            self.logger.error(f"Agent execution failed: {str(e)}")
-
-            if actions:
-                actions[-1].status = "failed"
-                actions[-1].result = str(e)
-
-            return {
-                "task_id": exec_context.task_id,
-                "domain_id": domain.domain_id,
-                "agent_id": agent.agent_id,
-                "status": "failed",
-                "execution_time": time.time() - start_time,
-                "actions": [action.to_dict() for action in actions],
-                "context_snapshots": context_snapshots,
-                "plan": None,
-                "error": str(e),
-                "output": f"Execution failed: {str(e)}",
-            }
-
-    def _build_agent_prompt(
-        self,
-        domain: DomainSpec,
-        agent: AgentSpec,
-        exec_context: DomainExecutionContext,
-    ) -> str:
-        """Build structured prompt for the agent using templates."""
-        from agents.prompts.agent_prompt_templates import (
-            BASE_AGENT_PROMPT,
-            AGENT_RESPONSE_FORMAT,
-            get_domain_instructions,
-        )
-
-        domain_instructions = get_domain_instructions(domain.domain_id)
-
-        available_tools = self.get_available_tools_for_domain(domain.domain_id)
-        if available_tools:
-            tool_desc_lines = [f"Available tools ({len(available_tools)}):"]
-            for tool_name in available_tools[:10]:  # Limit to first 10 for brevity
-                tool_desc_lines.append(f"  - {tool_name}")
-            if len(available_tools) > 10:
-                tool_desc_lines.append(f"  ... and {len(available_tools) - 10} more")
-            tool_descriptions = "\n".join(tool_desc_lines)
-        else:
-            tool_descriptions = "No tools currently available (implementation in progress)"
-
-        budget_info = (
-            f"Max tool calls: {agent.default_budget.max_tool_calls}, "
-            f"Max iterations: {agent.default_budget.max_iterations}, "
-            f"Max time: {agent.default_budget.max_time_seconds}s"
-        )
-
-        chat_history = exec_context.global_context.get("chat_history", [])
-        if chat_history:
-            history_lines = ["## CHAT HISTORY:"]
-            for msg in chat_history[-3:]: 
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")[:150]
-                history_lines.append(f"{role}: {content}...")
-            chat_history_section = "\n".join(history_lines)
-        else:
-            chat_history_section = ""
-
-        attached_files = exec_context.global_context.get("attached_files", [])
-        if attached_files:
-            files_section = f"## ATTACHED FILES:\n{len(attached_files)} file(s) attached"
-        else:
-            files_section = ""
-
-        if domain.procedures:
-            proc_lines = ["## AVAILABLE PROCEDURES:"]
-            for proc in domain.procedures[:3]:  
-                proc_lines.append(f"- {proc.name}: {proc.description}")
-            procedures_section = "\n".join(proc_lines)
-        else:
-            procedures_section = ""
-
-        prompt = BASE_AGENT_PROMPT.format(
-            domain_specific_instructions=domain_instructions,
-            tool_descriptions=tool_descriptions,
-            domain_id=domain.domain_id,
-            agent_id=agent.agent_id,
-            execution_mode=agent.execution_mode.value,
-            budget_info=budget_info,
-            user_request=exec_context.user_request,
-            chat_history_section=chat_history_section,
-            attached_files_section=files_section,
-            procedures_section=procedures_section,
-            response_format=AGENT_RESPONSE_FORMAT,
-        )
-
-        return prompt
-
-    def _parse_agent_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse structured agent response.
-
-        Extracts THINKING, PLAN, ACTIONS, OUTPUT, and STATUS from the response.
-        Falls back to raw text if parsing fails.
-        """
-        import re
-
-        parsed = {
-            "thinking": "",
-            "plan": [],
-            "actions": [],
-            "output": response_text,  
-            "status": "COMPLETE",  
-        }
-
-        try:
-            thinking_match = re.search(
-                r'<THINKING>(.*?)</THINKING>',
-                response_text,
-                re.DOTALL
-            )
-            if thinking_match:
-                parsed["thinking"] = thinking_match.group(1).strip()
-
-            plan_match = re.search(
-                r'<PLAN>(.*?)</PLAN>',
-                response_text,
-                re.DOTALL
-            )
-            if plan_match:
-                plan_section = plan_match.group(1)
-                step_pattern = r'<STEP\s+id="(\d+)"\s+status="(\w+)">(.*?)</STEP>'
-                for step_match in re.finditer(step_pattern, plan_section):
-                    parsed["plan"].append({
-                        "step_id": step_match.group(1),
-                        "status": step_match.group(2),
-                        "description": step_match.group(3).strip(),
-                    })
-
-            actions_match = re.search(
-                r'<ACTIONS>(.*?)</ACTIONS>',
-                response_text,
-                re.DOTALL
-            )
-            if actions_match:
-                actions_section = actions_match.group(1)
-                action_pattern = r'<ACTION\s+type="([^"]+)"(?:\s+tool="([^"]+)")?>(.*?)</ACTION>'
-                for action_match in re.finditer(action_pattern, actions_section, re.DOTALL):
-                    action_type = action_match.group(1)
-                    tool_name = action_match.group(2) or None
-                    action_content = action_match.group(3)
-
-                    action = {
-                        "type": action_type,
-                        "tool": tool_name,
-                        "params": {},
-                        "reason": "",
-                        "content": "",
-                    }
-
-                    param_pattern = r'<PARAM\s+name="([^"]+)">(.*?)</PARAM>'
-                    for param_match in re.finditer(param_pattern, action_content):
-                        action["params"][param_match.group(1)] = param_match.group(2).strip()
-
-                    reason_match = re.search(r'<REASON>(.*?)</REASON>', action_content, re.DOTALL)
-                    if reason_match:
-                        action["reason"] = reason_match.group(1).strip()
-
-                    content_match = re.search(r'<CONTENT>(.*?)</CONTENT>', action_content, re.DOTALL)
-                    if content_match:
-                        action["content"] = content_match.group(1).strip()
-
-                    parsed["actions"].append(action)
-
-            output_match = re.search(
-                r'<OUTPUT>(.*?)</OUTPUT>',
-                response_text,
-                re.DOTALL
-            )
-            if output_match:
-                parsed["output"] = output_match.group(1).strip()
-
-            status_match = re.search(
-                r'<STATUS>(.*?)</STATUS>',
-                response_text,
-                re.DOTALL
-            )
-            if status_match:
-                parsed["status"] = status_match.group(1).strip().upper()
-
-        except Exception as e:
-            self.logger.warning(f"Failed to parse agent response: {e}")
-
-        return parsed
-
+    # ------------------------------------------------------------------
+    # Domain metadata helpers
+    # ------------------------------------------------------------------
     def get_available_tools_for_domain(self, domain_id: str) -> List[str]:
         """Get list of available tools for a domain."""
         try:
@@ -501,7 +957,9 @@ class SingleDomainExecutor:
                     available_tools.append(tool_name)
                 except KeyError:
                     self.logger.warning(
-                        f"Tool {tool_name} in domain {domain_id} allowlist not found in registry"
+                        "Tool %s in domain %s allowlist not found in registry",
+                        tool_name,
+                        domain_id,
                     )
             return available_tools
         except KeyError:

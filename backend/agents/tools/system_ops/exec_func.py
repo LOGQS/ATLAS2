@@ -82,6 +82,7 @@ def _tool_exec_command(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
     - Returns exit code and output
     """
     command = params.get("command")
+    workspace_root = ctx.workspace_path
     working_dir = params.get("working_dir", ".")
     env_vars = params.get("env", {})
     timeout_seconds = params.get("timeout", 30)
@@ -113,7 +114,9 @@ def _tool_exec_command(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
         )
 
     is_valid_dir, error_msg, working_dir_resolved = validate_directory_path(
-        working_dir, must_exist=True
+        working_dir,
+        must_exist=True,
+        workspace_root=workspace_root,
     )
     if not is_valid_dir:
         raise ValueError(f"Invalid working_dir: {error_msg}")
