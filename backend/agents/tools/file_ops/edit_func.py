@@ -320,33 +320,33 @@ edit_file_spec = ToolSpec(
             },
             "start_line": {
                 "type": "integer",
-                "description": "Start line number (1-indexed, for line_range mode)"
+                "description": "Start line number (1-indexed). REQUIRED when edit_mode='line_range'"
             },
             "end_line": {
                 "type": "integer",
-                "description": "End line number (1-indexed, for line_range mode, defaults to start_line)"
+                "description": "End line number (1-indexed, defaults to start_line). Used when edit_mode='line_range'"
             },
             "new_content": {
                 "type": "string",
-                "description": "New content to replace the line range (for line_range mode)"
+                "description": "New content to replace the line range. REQUIRED when edit_mode='line_range'"
             },
             "find_text": {
                 "type": "string",
-                "description": "Text or pattern to find (for find_replace mode)"
+                "description": "Text or pattern to find. REQUIRED when edit_mode='find_replace'"
             },
             "replace_text": {
                 "type": "string",
-                "description": "Replacement text (for find_replace mode)"
+                "description": "Replacement text. REQUIRED when edit_mode='find_replace'"
             },
             "use_regex": {
                 "type": "boolean",
                 "default": False,
-                "description": "Use regex for find_text (for find_replace mode)"
+                "description": "Use regex for find_text. Only valid when edit_mode='find_replace'"
             },
             "replace_all": {
                 "type": "boolean",
                 "default": True,
-                "description": "Replace all occurrences (for find_replace mode)"
+                "description": "Replace all occurrences or just first. Only valid when edit_mode='find_replace'"
             }
         },
         "required": ["file_path", "edit_mode"]

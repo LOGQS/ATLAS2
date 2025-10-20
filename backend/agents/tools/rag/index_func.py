@@ -504,23 +504,23 @@ def _index_file_mode(
 rag_index_spec = ToolSpec(
     name="rag.index",
     version="1.0",
-    description="Index content or files with vector embeddings for semantic search",
+    description="Index content or files with vector embeddings for semantic search. Supports two modes: content mode (index a string) or file mode (index files/directories). Provide either 'content' OR 'file_paths', not both.",
     effects=["disk", "context"],
     in_schema={
         "type": "object",
         "properties": {
             "content": {
                 "type": "string",
-                "description": "Content to index (content mode)"
+                "description": "Content string to index (content mode). REQUIRED if file_paths is not provided. Use this OR file_paths, not both."
             },
             "file_paths": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "File or directory paths to index (file mode)"
+                "description": "File or directory paths to index (file mode). REQUIRED if content is not provided. Use this OR content, not both."
             },
             "index_name": {
                 "type": "string",
-                "description": "Index identifier"
+                "description": "Index identifier (optional, defaults to task-based name)"
             },
             "persist_dir": {
                 "type": "string",

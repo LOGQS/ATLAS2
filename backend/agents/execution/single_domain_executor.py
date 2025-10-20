@@ -663,6 +663,10 @@ class SingleDomainExecutor:
     # Formatting helpers
     # ------------------------------------------------------------------
     def _format_tool_allowlist(self, tool_names: List[str]) -> str:
+        """
+        Format tool allowlist with comprehensive parameter information.
+        Shows complete schema including types, defaults, descriptions, and enums.
+        """
         if not tool_names:
             return "No tools available."
 
@@ -670,12 +674,89 @@ class SingleDomainExecutor:
         for name in tool_names:
             try:
                 spec = tool_registry.get(name)
-                required = spec.in_schema.get("required", []) if spec.in_schema else []
-                required_str = f" (required params: {', '.join(required)})" if required else ""
-                lines.append(f"- {spec.name}: {spec.description}{required_str}")
+                lines.append(f"\n{spec.name}:")
+                lines.append(f"  Description: {spec.description}")
+
+                # Format parameters if schema exists
+                if spec.in_schema and "properties" in spec.in_schema:
+                    required_params = spec.in_schema.get("required", [])
+                    properties = spec.in_schema.get("properties", {})
+
+                    if not properties:
+                        lines.append("  Parameters: None")
+                    else:
+                        # Separate required and optional params
+                        req_props = {k: v for k, v in properties.items() if k in required_params}
+                        opt_props = {k: v for k, v in properties.items() if k not in required_params}
+
+                        # Format required parameters
+                        if req_props:
+                            lines.append("  Required Parameters:")
+                            for param_name, param_spec in req_props.items():
+                                param_line = self._format_parameter(param_name, param_spec, required=True)
+                                lines.append(f"    {param_line}")
+
+                        # Format optional parameters
+                        if opt_props:
+                            lines.append("  Optional Parameters:")
+                            for param_name, param_spec in opt_props.items():
+                                param_line = self._format_parameter(param_name, param_spec, required=False)
+                                lines.append(f"    {param_line}")
+                else:
+                    lines.append("  Parameters: No schema defined")
+
             except KeyError:
                 lines.append(f"- {name}: [unregistered tool]")
+
         return "\n".join(lines)
+
+    def _format_parameter(self, name: str, spec: Dict[str, Any], required: bool) -> str:
+        """
+        Format a single parameter with type, default, description, and enum values.
+
+        Examples:
+        - file_path (string, required): Path to file
+        - timeout (integer, default: 30): Maximum execution time in seconds
+        - edit_mode (string, required, enum: find_replace|insert|delete): Edit operation type
+        """
+        parts = [name]
+
+        # Extract type information
+        param_type = spec.get("type")
+        if isinstance(param_type, list):
+            # Handle type arrays like ["string", "array"]
+            param_type = "|".join(str(t) for t in param_type)
+        elif not param_type:
+            param_type = "any"
+
+        type_str = str(param_type)
+
+        # Check for enums
+        enum_values = spec.get("enum")
+        if enum_values:
+            enum_str = "|".join(str(v) for v in enum_values)
+            type_str = f"{type_str}, enum: {enum_str}"
+
+        # Check for default value
+        default = spec.get("default")
+        if default is not None:
+            if isinstance(default, str):
+                default_str = f'"{default}"'
+            else:
+                default_str = str(default)
+            type_str = f"{type_str}, default: {default_str}"
+        elif not required:
+            type_str = f"{type_str}, optional"
+
+        parts.append(f"({type_str})")
+
+        # Add description
+        description = spec.get("description", "")
+        if description:
+            parts.append(f": {description}")
+
+        return " ".join(parts)
+
 
     def _format_chat_history(self, chat_history: Optional[List[Dict]]) -> str:
         if not chat_history:
