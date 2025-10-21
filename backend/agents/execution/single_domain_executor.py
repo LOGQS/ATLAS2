@@ -24,6 +24,11 @@ from agents.prompts.agent_prompt_templates import (
 from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
 from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from utils.coder_session_logger import (
+    create_coder_session_logger,
+    get_coder_session_logger,
+    close_coder_session_logger,
+)
 
 
 logger = get_logger(__name__)
@@ -212,9 +217,22 @@ class SingleDomainExecutor:
 
         self._active_tasks[task_id] = state
 
+        # Create coder session logger if this is a coder domain task
+        if domain_id == "coder":
+            coder_logger = create_coder_session_logger(
+                task_id=task_id,
+                chat_id=chat_id,
+                user_request=user_request,
+                workspace_path=workspace_path
+            )
+            coder_logger.log_session_start(domain_id=domain_id, agent_id=agent.agent_id)
+
         result = self._run_agent_iteration(state, is_initial=True)
         if state.status in TERMINAL_STATES:
             self._active_tasks.pop(task_id, None)
+            # Log session end for coder tasks
+            if domain_id == "coder":
+                self._log_coder_session_end(state)
         return result
 
     def handle_tool_decision(
@@ -256,6 +274,9 @@ class SingleDomainExecutor:
         if decision_lower == "reject":
             self._handle_rejection(state)
             self._active_tasks.pop(task_id, None)
+            # Log session end for coder tasks
+            if state.context.domain_id == "coder":
+                self._log_coder_session_end(state)
             return self._serialize_state(state)
 
         # Accept path
@@ -268,10 +289,16 @@ class SingleDomainExecutor:
             self.logger.exception("Unexpected error during tool acceptance handling: %s", exc)
             self._mark_failure(state, f"System error during execution: {exc}")
             self._active_tasks.pop(task_id, None)
+            # Log session end for coder tasks
+            if state.context.domain_id == "coder":
+                self._log_coder_session_end(state)
             return self._serialize_state(state)
 
         if state.status in TERMINAL_STATES:
             self._active_tasks.pop(task_id, None)
+            # Log session end for coder tasks
+            if state.context.domain_id == "coder":
+                self._log_coder_session_end(state)
         return self._serialize_state(state)
 
     def abort_task(self, task_id: str, reason: str) -> Optional[Dict[str, Any]]:
@@ -289,6 +316,11 @@ class SingleDomainExecutor:
             description=reason,
             status="failed",
         )
+
+        # Log session end for coder tasks
+        if state.context.domain_id == "coder":
+            self._log_coder_session_end(state)
+
         return self._serialize_state(state)
 
     def continue_task(self, task_id: str) -> Dict[str, Any]:
@@ -310,11 +342,17 @@ class SingleDomainExecutor:
             result = self._run_agent_iteration(state)
             if state.status in TERMINAL_STATES:
                 self._active_tasks.pop(task_id, None)
+                # Log session end for coder tasks
+                if state.context.domain_id == "coder":
+                    self._log_coder_session_end(state)
             return result
         except Exception as exc:
             self.logger.exception("Error continuing task: %s", exc)
             self._mark_failure(state, f"Error during continuation: {exc}")
             self._active_tasks.pop(task_id, None)
+            # Log session end for coder tasks
+            if state.context.domain_id == "coder":
+                self._log_coder_session_end(state)
             return self._serialize_state(state)
 
     # ------------------------------------------------------------------
@@ -329,6 +367,12 @@ class SingleDomainExecutor:
 
         state.metadata["iterations"] = state.metadata.get("iterations", 0) + 1
         state.status = "running"
+
+        # Log iteration start for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_iteration_start(state.metadata["iterations"])
 
         prompt = self._build_agent_prompt(state)
 
@@ -359,6 +403,12 @@ class SingleDomainExecutor:
         state.agent_message = parsed.get("message", "").strip() or parsed.get("raw", "").strip()
         state.pending_tool = None
         state.last_updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # Log agent message for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_agent_message(state.agent_message)
 
         self._append_action(
             state,
@@ -412,6 +462,12 @@ class SingleDomainExecutor:
             },
         )
 
+        # Log iteration end for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_iteration_end(state.metadata["iterations"], state.status)
+
         serialized_state = self._serialize_state(state)
         self._emit_event(state, "state", serialized_state)
         return serialized_state
@@ -448,6 +504,13 @@ class SingleDomainExecutor:
         )
         state.pending_tool = proposal
         state.status = "waiting_user"
+
+        # Log tool proposal for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_tool_proposal(tool_name, param_entries, reason)
+
         self._append_action(
             state,
             action_type="tool_proposal",
@@ -469,6 +532,12 @@ class SingleDomainExecutor:
         if action:
             action.status = "failed"
             action.result = "User rejected tool call"
+
+        # Log tool rejection for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_tool_execution(proposal.tool_name, False, "User rejected tool call")
 
         state.tool_history.append(
             ToolExecutionRecord(
@@ -521,6 +590,12 @@ class SingleDomainExecutor:
         self._create_checkpoints_from_ops(state, tool_result.ops, proposal.tool_name)
 
         summary = self._summarize_tool_output(result_payload["output"])
+
+        # Check if there was an error in the tool result
+        error = None
+        if isinstance(result_payload["output"], dict) and "error" in result_payload["output"]:
+            error = result_payload["output"]["error"]
+
         executed_record = ToolExecutionRecord(
             call_id=proposal.call_id,
             tool_name=proposal.tool_name,
@@ -530,9 +605,16 @@ class SingleDomainExecutor:
             executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             result_summary=summary,
             raw_result=result_payload,
+            error=error,
         )
         state.tool_history.append(executed_record)
         state.metadata["tool_calls"] = state.metadata.get("tool_calls", 0) + 1
+
+        # Log tool execution for coder tasks
+        if state.context.domain_id == "coder":
+            coder_logger = get_coder_session_logger(state.context.task_id)
+            if coder_logger:
+                coder_logger.log_tool_execution(proposal.tool_name, True, summary, error)
 
         if action:
             action.status = "completed"
@@ -1245,6 +1327,19 @@ class SingleDomainExecutor:
             context["workspace_path"] = workspace_path
 
         return context
+
+    def _log_coder_session_end(self, state: DomainTaskState) -> None:
+        """Log the end of a coder session with summary statistics."""
+        coder_logger = get_coder_session_logger(state.context.task_id)
+        if coder_logger:
+            coder_logger.log_session_end(
+                final_status=state.status,
+                total_iterations=state.metadata.get("iterations", 0),
+                total_tool_calls=state.metadata.get("tool_calls", 0),
+                output_message=state.output or state.agent_message
+            )
+            # Close the logger after session ends
+            close_coder_session_logger(state.context.task_id)
 
     # ------------------------------------------------------------------
     # Domain metadata helpers
