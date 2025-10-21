@@ -10,7 +10,7 @@ import sys
 import time
 import json
 from pathlib import Path
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 
 
 DB_UPDATE_THROTTLE_SECONDS = 0.25
@@ -528,6 +528,66 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
                     return
 
+        def _derive_file_change_events(operation_detail: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            events: List[Dict[str, Any]] = []
+            if not isinstance(operation_detail, dict):
+                return events
+
+            # Prefer explicit workspace events when tools provide them
+            metadata = operation_detail.get("metadata")
+            if isinstance(metadata, dict):
+                workspace_events = metadata.get("workspace_events")
+                if isinstance(workspace_events, list):
+                    for raw in workspace_events:
+                        if isinstance(raw, dict):
+                            events.append(dict(raw))
+
+            ops_list = operation_detail.get("ops")
+            if isinstance(ops_list, list):
+                for op in ops_list:
+                    if not isinstance(op, dict):
+                        continue
+                    op_type = op.get("type")
+                    if op_type == "file_write":
+                        file_path = op.get("path") or op.get("destination_path")
+                        if not file_path:
+                            continue
+                        content = op.get("after") if isinstance(op.get("after"), str) else None
+                        events.append({
+                            "operation": "write",
+                            "file_path": file_path,
+                            "content": content,
+                        })
+                    elif op_type == "file_edit":
+                        file_path = op.get("path")
+                        if not file_path:
+                            continue
+                        content = op.get("after") if isinstance(op.get("after"), str) else None
+                        events.append({
+                            "operation": "edit",
+                            "file_path": file_path,
+                            "content": content,
+                        })
+                    elif op_type == "file_move":
+                        dest_path = op.get("destination_path") or op.get("path")
+                        if not dest_path:
+                            continue
+                        events.append({
+                            "operation": "move",
+                            "file_path": dest_path,
+                            "previous_path": op.get("source_path"),
+                        })
+
+            deduped: List[Dict[str, Any]] = []
+            seen = set()
+            for event in events:
+                key = (event.get("operation"), event.get("file_path"), event.get("previous_path"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(event)
+            return deduped
+
         def _domain_event_callback(event: Dict[str, Any]) -> None:
             try:
                 event_type = event.get("event")
@@ -555,7 +615,35 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                         'content_type': 'coder_operation',
                         'content': json.dumps(operation_payload),
                     })
-            except Exception as callback_error: 
+
+                    try:
+                        file_events = _derive_file_change_events(payload)
+                        if file_events:
+                            for raw_event in file_events:
+                                file_path = raw_event.get("file_path")
+                                if not file_path:
+                                    continue
+                                event_detail = {
+                                    "chat_id": chat_id,
+                                    "workspace_path": workspace_path,
+                                    "file_path": file_path,
+                                    "operation": raw_event.get("operation", "edit"),
+                                    "content": raw_event.get("content"),
+                                    "previous_path": raw_event.get("previous_path"),
+                                }
+                                child_conn.send({
+                                    'type': 'content',
+                                    'chat_id': chat_id,
+                                    'content_type': 'coder_file_change',
+                                    'content': json.dumps(event_detail),
+                                })
+                    except Exception as file_event_error:
+                        worker_logger.warning(
+                            "[DOMAIN-EXEC] Failed to derive file change events for chat %s: %s",
+                            chat_id,
+                            file_event_error,
+                        )
+            except Exception as callback_error:
                 worker_logger.error(
                     "[DOMAIN-EXEC] Failed to dispatch domain event for chat %s: %s",
                     chat_id,

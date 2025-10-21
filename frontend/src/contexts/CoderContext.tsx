@@ -1391,6 +1391,142 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     }
   }, [chatId, state.tabDocuments, state.workspacePath]);
 
+  // Listen for file changes from coder agent
+  useEffect(() => {
+    if (!chatId) return;
+
+    let refreshDebounceTimer: NodeJS.Timeout | null = null;
+
+    const scheduleFileTreeRefresh = () => {
+      // Debounce file tree refresh to avoid excessive API calls
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+
+      refreshDebounceTimer = setTimeout(() => {
+        logger.info('[CODER_CTX] Refreshing file tree after coder agent file operations');
+        loadFileTree();
+        refreshDebounceTimer = null;
+      }, 500); // 500ms debounce
+    };
+
+    const handleCoderFileChange = (event: CustomEvent) => {
+      const detail = event.detail;
+
+      // Only handle events for this chat's workspace
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      const filePath = detail.filePath;
+      const operation = detail.operation;
+      const newContent = detail.content;
+
+      logger.info(`[CODER_CTX] File change detected: ${operation} -> ${filePath}`);
+
+      // Always refresh file tree for any file operation
+      scheduleFileTreeRefresh();
+
+      setState(prev => {
+        // Handle file move/rename
+        if (operation === 'move' && detail.previousPath) {
+          const oldPath = detail.previousPath;
+          const newPath = filePath;
+
+          // Update open tabs
+          const updatedTabs = prev.openTabs.map(tab => tab === oldPath ? newPath : tab);
+          const updatedTabDocs = { ...prev.tabDocuments };
+
+          if (updatedTabDocs[oldPath]) {
+            updatedTabDocs[newPath] = {
+              ...updatedTabDocs[oldPath],
+              filePath: newPath,
+            };
+            delete updatedTabDocs[oldPath];
+          }
+
+          // Update active tab and current document if needed
+          const newActiveTabPath = prev.activeTabPath === oldPath ? newPath : prev.activeTabPath;
+          const newCurrentDocument = prev.activeTabPath === oldPath && updatedTabDocs[newPath]
+            ? updatedTabDocs[newPath]
+            : prev.currentDocument;
+
+          logger.info(`[CODER_CTX] File moved: ${oldPath} -> ${newPath}`);
+
+          return {
+            ...prev,
+            openTabs: updatedTabs,
+            tabDocuments: updatedTabDocs,
+            activeTabPath: newActiveTabPath,
+            currentDocument: newCurrentDocument,
+          };
+        }
+
+        // Handle file write/edit - update content if file is open
+        if ((operation === 'write' || operation === 'edit') && newContent !== null) {
+          const isFileOpen = prev.openTabs.includes(filePath);
+
+          if (!isFileOpen) {
+            // File not open in editor, just refresh file tree (already scheduled above)
+            return prev;
+          }
+
+          const existingDoc = prev.tabDocuments[filePath];
+          if (!existingDoc) {
+            return prev;
+          }
+
+          // Check if user has unsaved changes
+          const hasUnsavedChanges = prev.unsavedFiles.has(filePath);
+
+          if (hasUnsavedChanges) {
+            // Don't overwrite user's unsaved changes, but log it
+            logger.warn(`[CODER_CTX] File ${filePath} was modified by coder agent, but user has unsaved changes`);
+            return prev;
+          }
+
+          // Update the document with new content from coder agent
+          const updatedDoc: EditorDocument = {
+            ...existingDoc,
+            content: newContent,
+            originalContent: newContent,
+          };
+
+          const updatedTabDocs = {
+            ...prev.tabDocuments,
+            [filePath]: updatedDoc,
+          };
+
+          // Update current document if it's the active one
+          const newCurrentDocument = prev.activeTabPath === filePath
+            ? updatedDoc
+            : prev.currentDocument;
+
+          logger.info(`[CODER_CTX] Updated file content live: ${filePath} (${newContent.length} chars)`);
+
+          return {
+            ...prev,
+            tabDocuments: updatedTabDocs,
+            currentDocument: newCurrentDocument,
+          };
+        }
+
+        return prev;
+      });
+    };
+
+    window.addEventListener('coderFileChange', handleCoderFileChange as EventListener);
+    logger.info('[CODER_CTX] Listening for coder file changes');
+
+    return () => {
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+      window.removeEventListener('coderFileChange', handleCoderFileChange as EventListener);
+      logger.info('[CODER_CTX] Stopped listening for coder file changes');
+    };
+  }, [chatId, loadFileTree]);
+
   // Load workspace on mount
   useEffect(() => {
     if (chatId) {

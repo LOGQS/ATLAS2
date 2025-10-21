@@ -82,10 +82,11 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             dest_parent.mkdir(parents=True, exist_ok=True)
 
         file_size = source_resolved.stat().st_size
+        dest_existed_before = dest_resolved.exists()
 
         shutil.move(str(source_resolved), str(dest_resolved))
 
-        action = "moved and overwritten" if overwrite and dest_resolved.exists() else "moved"
+        action = "moved and overwritten" if overwrite and dest_existed_before else "moved"
         _logger.info(
             f"Successfully {action} '{source_path}' to '{destination_path}' "
             f"({format_file_size(file_size)})"
@@ -98,7 +99,7 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
                 "destination_path": workspace_relative_path(dest_resolved, ctx.workspace_path),
                 "absolute_source_path": str(source_resolved),
                 "absolute_destination_path": str(dest_resolved),
-                "overwrite": bool(overwrite and dest_exists),
+                "overwrite": bool(overwrite and dest_existed_before),
             }
         ]
 

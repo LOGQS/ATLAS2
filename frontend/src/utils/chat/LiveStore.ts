@@ -119,6 +119,15 @@ interface CoderWorkspacePromptEvent extends BaseSSEEvent {
   content?: string;
 }
 
+interface CoderFileChangeEvent extends BaseSSEEvent {
+  type: 'coder_file_change';
+  workspace_path?: string;
+  file_path?: string;
+  operation?: 'write' | 'edit' | 'move';
+  content?: string;
+  previous_path?: string;
+}
+
 type SSEEvent =
   | ChatStateEvent
   | ContentEvent
@@ -133,7 +142,8 @@ type SSEEvent =
   | DomainExecutionEvent
   | DomainExecutionUpdateEvent
   | CoderOperationEvent
-  | CoderWorkspacePromptEvent;
+  | CoderWorkspacePromptEvent
+  | CoderFileChangeEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -198,6 +208,21 @@ class LiveStore {
         path: ev.path || '',
         previousPath: ev.previous_path || null,
         isDirectory: Boolean(ev.is_directory)
+      }
+    }));
+  }
+
+  private handleCoderFileChangeEvent(ev: CoderFileChangeEvent): void {
+    const operation = ev.operation || 'edit';
+    logger.info(`[LiveStore] Coder file change: ${operation} -> ${ev.file_path} (chat: ${ev.chat_id})`);
+    window.dispatchEvent(new CustomEvent('coderFileChange', {
+      detail: {
+        chatId: ev.chat_id || null,
+        workspacePath: ev.workspace_path || null,
+        filePath: ev.file_path || '',
+        operation,
+        content: ev.content || null,
+        previousPath: ev.previous_path || null,
       }
     }));
   }
@@ -415,6 +440,11 @@ class LiveStore {
 
         if (ev.type === 'filesystem') {
           this.handleFilesystemEvent(ev as FileSystemEvent);
+          return;
+        }
+
+        if (ev.type === 'coder_file_change') {
+          this.handleCoderFileChangeEvent(ev as CoderFileChangeEvent);
           return;
         }
 
