@@ -662,7 +662,7 @@ class SingleDomainExecutor:
                 chat_id=state.context.chat_id,
                 plan_id=state.context.task_id,
                 task_id=state.context.task_id,
-                ctx_id=f"ctx_{uuid.uuid4().hex[:10]}",
+                ctx_id=state.context.task_id,  # Use task_id for persistent context across iterations
                 workspace_path=state.context.workspace_path,
             )
             params = proposal.params
@@ -959,12 +959,15 @@ class SingleDomainExecutor:
 
     def _format_tool_history(self, history: List[ToolExecutionRecord]) -> str:
         """
-        Format tool history with full context for file operations.
-        Shows complete file content with line numbers so agent can reference specific lines.
+        Format tool history with smart duplicate detection for file operations.
+        Shows file content only when it's new or changed (based on content hash).
         """
         if not history:
             return ""
         lines = ["## TOOL HISTORY:"]
+
+        # Track content hashes we've already shown in this history section
+        shown_hashes = set()
 
         # Show last 5 tool calls with smart formatting
         for record in history[-5:]:
@@ -973,27 +976,45 @@ class SingleDomainExecutor:
                 params_preview += ", ..."
             status = "ACCEPTED" if record.accepted else "REJECTED"
 
-            # For file.read, show the full content with line numbers
+            # For file.read, use smart duplicate detection based on content hash
             if record.tool_name == "file.read" and record.accepted and record.raw_result:
                 output = record.raw_result.get("output", {})
                 if isinstance(output, dict):
                     file_path = output.get("file_path", "unknown")
                     line_count = output.get("metadata", {}).get("line_count", 0)
+                    file_size = output.get("metadata", {}).get("file_size", "unknown")
+                    content_hash = output.get("content_hash", "")
                     content_with_lines = output.get("content_with_line_numbers")
 
                     lines.append(f"\n[{status}] {record.tool_name}({params_preview})")
-                    lines.append(f"  File: {file_path} ({line_count} lines)")
+                    lines.append(f"  File: {file_path} ({line_count} lines, {file_size})")
 
-                    if content_with_lines:
-                        # Show full content with line numbers
-                        lines.append(f"  Content:\n{content_with_lines}")
-                    else:
-                        # Fallback if line-numbered content not available
-                        content = output.get("content", "")
-                        if content:
-                            lines.append(f"  Content:\n{content}")
+                    # Only show content if hash is new (not shown before in this history)
+                    if content_hash and content_hash in shown_hashes:
+                        # Same content already shown - just reference it
+                        lines.append(f"  → File content unchanged from previous read (hash: {content_hash})")
+                        lines.append(f"  → File content is already available in the context above")
+                    elif content_hash:
+                        # New or changed content - show it
+                        shown_hashes.add(content_hash)
+                        if content_with_lines:
+                            lines.append(f"  Content:\n{content_with_lines}")
                         else:
-                            lines.append(f"  Result: {record.result_summary}")
+                            content = output.get("content", "")
+                            if content:
+                                lines.append(f"  Content:\n{content}")
+                            else:
+                                lines.append(f"  Result: {record.result_summary}")
+                    else:
+                        # No hash available (old format) - show content as before
+                        if content_with_lines:
+                            lines.append(f"  Content:\n{content_with_lines}")
+                        else:
+                            content = output.get("content", "")
+                            if content:
+                                lines.append(f"  Content:\n{content}")
+                            else:
+                                lines.append(f"  Result: {record.result_summary}")
                 else:
                     lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
 
