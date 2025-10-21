@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Dict, Optional
 
 from utils.db_utils import db
 from utils.logger import get_logger
@@ -23,7 +24,7 @@ def save_file_checkpoint(
     file_path: str,
     content: str,
     edit_type: str = 'checkpoint'
-) -> bool:
+) -> Optional[Dict[str, object]]:
     """
     Save a checkpoint of file content to history.
 
@@ -34,7 +35,12 @@ def save_file_checkpoint(
         edit_type: The type of edit (default: 'checkpoint')
 
     Returns:
-        bool: True if checkpoint was saved successfully, False otherwise
+        Optional[Dict[str, object]]: Details about the checkpoint that was saved or reused.
+            The dictionary includes:
+              - 'id': int checkpoint identifier
+              - 'created': bool indicating whether a new checkpoint row was inserted
+              - 'content_hash': str SHA-256 hash of the content
+            Returns None if the checkpoint could not be recorded (e.g. content too large or DB error).
     """
     try:
         content_size = len(content.encode('utf-8'))
@@ -42,14 +48,14 @@ def save_file_checkpoint(
             logger.warning(
                 f"[CHECKPOINT] Checkpoint too large ({content_size} bytes) for {file_path}, skipping"
             )
-            return False
+            return None
 
         content_hash = compute_content_hash(content)
 
         def query(conn, cursor):
             cursor.execute(
                 """
-                SELECT content_hash
+                SELECT id, content_hash
                 FROM file_edit_history
                 WHERE workspace_path = ? AND file_path = ?
                 ORDER BY timestamp DESC, id DESC
@@ -58,13 +64,17 @@ def save_file_checkpoint(
                 (workspace_path, file_path)
             )
             row = cursor.fetchone()
-            if row and row[0] == content_hash:
+            if row and row[1] == content_hash:
                 logger.debug(
                     "[CHECKPOINT] Skipping duplicate checkpoint for %s (hash=%s)",
                     file_path,
                     content_hash[:8],
                 )
-                return False
+                return {
+                    "id": row[0],
+                    "created": False,
+                    "content_hash": content_hash,
+                }
 
             cursor.execute(
                 """
@@ -75,12 +85,16 @@ def save_file_checkpoint(
             )
             conn.commit()
             logger.info(f"[CHECKPOINT] Saved checkpoint for {file_path}")
-            return True
+            return {
+                "id": cursor.lastrowid,
+                "created": True,
+                "content_hash": content_hash,
+            }
 
-        return db._execute_with_connection("save file checkpoint", query, return_on_error=False)
+        return db._execute_with_connection("save file checkpoint", query, return_on_error=None)
     except Exception as e:
         logger.error(f"[CHECKPOINT] Failed to save checkpoint for {file_path}: {e}")
-        return False
+        return None
 
 
 def cleanup_old_checkpoints(workspace_path: str, file_path: str, keep_count: int = 100) -> bool:

@@ -1562,3 +1562,235 @@
   border-radius: 6px;
   font-size: 0.85rem;
 }
+
+/* Coder domain specific file operation summary */
+.coder-ops-card {
+  margin: 12px 16px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.coder-ops-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.coder-ops-icon {
+  width: 20px;
+  height: 20px;
+  color: rgba(236, 233, 254, 0.92);
+  flex-shrink: 0;
+}
+
+.coder-ops-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.coder-ops-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: rgba(248, 244, 255, 0.96);
+}
+
+.coder-ops-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: rgba(226, 214, 254, 0.8);
+}
+
+.coder-ops-subtitle-diff {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.coder-ops-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.coder-ops-entry {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.14);
+  border: 1px solid rgba(129, 140, 248, 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.coder-ops-entry-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.coder-ops-path {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', monospace;
+  font-size: 0.8rem;
+  color: rgba(242, 240, 255, 0.95);
+  word-break: break-word;
+  flex: 1;
+}
+
+.coder-ops-diff {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.coder-ops-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: rgba(226, 214, 254, 0.78);
+}
+
+.coder-ops-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.coder-ops-checkpoints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diff-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+}
+
+.diff-pill.added {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: rgba(34, 197, 94, 0.95);
+}
+
+.diff-pill.removed {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: rgba(239, 68, 68, 0.9);
+}
+
+.diff-pill.neutral {
+  background: rgba(148, 163, 184, 0.18);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.checkpoint-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(167, 139, 250, 0.32);
+  background: rgba(167, 139, 250, 0.18);
+  color: rgba(236, 233, 254, 0.92);
+}
+
+.checkpoint-chip.before {
+  background: rgba(124, 58, 237, 0.22);
+  border-color: rgba(124, 58, 237, 0.38);
+}
+
+.checkpoint-chip.after {
+  background: rgba(34, 197, 94, 0.22);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: rgba(236, 253, 245, 0.95);
+}
+
+.checkpoint-chip.reused {
+  opacity: 0.75;
+  border-style: dashed;
+}
+
+.checkpoint-chip.missing {
+  background: rgba(148, 163, 184, 0.2);
+  border-color: rgba(148, 163, 184, 0.32);
+  color: rgba(203, 213, 225, 0.85);
+}
+
+.tool-history-ops {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-history-op {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(76, 29, 149, 0.18);
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-history-op-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tool-history-op-path {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', monospace;
+  font-size: 0.74rem;
+  color: rgba(236, 233, 254, 0.9);
+  word-break: break-word;
+}
+
+.tool-history-op-diff {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tool-history-op-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.68rem;
+  color: rgba(210, 200, 255, 0.76);
+}
+
+.tool-history-op-kind {
+  font-weight: 600;
+}
+
+.tool-history-op-checkpoints {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

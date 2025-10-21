@@ -9,6 +9,7 @@ continues until the agent declares completion or the user aborts.
 from __future__ import annotations
 
 import datetime
+import difflib
 import json
 import time
 import uuid
@@ -101,6 +102,7 @@ class ToolExecutionRecord:
     executed_at: str
     result_summary: str
     raw_result: Any
+    ops: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
 
 
@@ -358,6 +360,23 @@ class SingleDomainExecutor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _calculate_line_diff(before_text: str, after_text: str) -> Tuple[int, int]:
+        """
+        Calculate the number of lines added and removed between two text blobs.
+        """
+        before_lines = before_text.splitlines()
+        after_lines = after_text.splitlines()
+        matcher = difflib.SequenceMatcher(None, before_lines, after_lines)
+        lines_added = 0
+        lines_removed = 0
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag in ('replace', 'insert'):
+                lines_added += j2 - j1
+            if tag in ('replace', 'delete'):
+                lines_removed += i2 - i1
+        return lines_added, lines_removed
+
     def _run_agent_iteration(
         self,
         state: DomainTaskState,
@@ -580,10 +599,11 @@ class SingleDomainExecutor:
         )
 
         tool_result = self._execute_tool_call(state, proposal)
+        ops_payload = self._ensure_serializable(tool_result.ops)
         result_payload = {
             "output": self._ensure_serializable(tool_result.output),
             "metadata": self._ensure_serializable(tool_result.metadata),
-            "ops": self._ensure_serializable(tool_result.ops),
+            "ops": ops_payload,
         }
 
         # Create checkpoints for file operations
@@ -605,6 +625,7 @@ class SingleDomainExecutor:
             executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             result_summary=summary,
             raw_result=result_payload,
+            ops=ops_payload,
             error=error,
         )
         state.tool_history.append(executed_record)
@@ -630,6 +651,7 @@ class SingleDomainExecutor:
                 "tool": executed_record.tool_name,
                 "params": executed_record.param_entries,
                 "result": executed_record.raw_result,
+                "ops": executed_record.ops,
             },
         )
 
@@ -731,33 +753,99 @@ class SingleDomainExecutor:
                 )
                 continue
 
+            before_checkpoint: Optional[Dict[str, object]] = None
+            after_checkpoint: Optional[Dict[str, object]] = None
             saved_any = False
 
+            if before_is_str or after_is_str:
+                lines_added, lines_removed = self._calculate_line_diff(
+                    before_content if before_is_str else "",
+                    after_content if after_is_str else "",
+                )
+                op['lines_added'] = lines_added
+                op['lines_removed'] = lines_removed
+                op['linesAdded'] = lines_added
+                op['linesRemoved'] = lines_removed
+            else:
+                op['lines_added'] = 0
+                op['lines_removed'] = 0
+                op['linesAdded'] = 0
+                op['linesRemoved'] = 0
+
             try:
-                if before_is_str:
-                    if save_file_checkpoint(
+                if after_is_str:
+                    before_checkpoint = save_file_checkpoint(
                         workspace_path=workspace_path,
                         file_path=file_path,
-                        content=before_content,
+                        content=before_content if before_is_str else "",
                         edit_type='checkpoint',
-                    ):
-                        saved_any = True
-                        self.logger.debug("[CHECKPOINT] Captured pre-change snapshot for %s", file_path)
+                    )
+                    if before_checkpoint:
+                        if before_checkpoint.get('created'):
+                            saved_any = True
+                            if before_is_str:
+                                self.logger.debug(
+                                    "[CHECKPOINT] Captured pre-change snapshot for %s (id=%s)",
+                                    file_path,
+                                    before_checkpoint.get('id'),
+                                )
+                            else:
+                                self.logger.debug(
+                                    "[CHECKPOINT] Captured empty pre-change snapshot for new file %s (id=%s)",
+                                    file_path,
+                                    before_checkpoint.get('id'),
+                                )
+                        else:
+                            self.logger.debug(
+                                "[CHECKPOINT] Reused existing pre-change snapshot for %s (id=%s)",
+                                file_path,
+                                before_checkpoint.get('id'),
+                            )
 
                 if after_is_str:
-                    if save_file_checkpoint(
+                    after_checkpoint = save_file_checkpoint(
                         workspace_path=workspace_path,
                         file_path=file_path,
                         content=after_content,
                         edit_type='checkpoint',
-                    ):
-                        saved_any = True
-                        self.logger.debug("[CHECKPOINT] Captured post-change snapshot for %s", file_path)
+                    )
+                    if after_checkpoint:
+                        if after_checkpoint.get('created'):
+                            saved_any = True
+                            self.logger.debug(
+                                "[CHECKPOINT] Captured post-change snapshot for %s (id=%s)",
+                                file_path,
+                                after_checkpoint.get('id'),
+                            )
+                        else:
+                            self.logger.debug(
+                                "[CHECKPOINT] Reused existing post-change snapshot for %s (id=%s)",
+                                file_path,
+                                after_checkpoint.get('id'),
+                            )
 
                 if saved_any:
                     cleanup_old_checkpoints(workspace_path, file_path, keep_count=100)
             except Exception as e:
                 self.logger.error(f"[CHECKPOINT] Error creating checkpoint for {file_path}: {e}")
+                continue
+
+            if before_checkpoint:
+                op['before_checkpoint_id'] = before_checkpoint.get('id')
+                op['before_checkpoint_created'] = bool(before_checkpoint.get('created'))
+            if after_checkpoint:
+                op['after_checkpoint_id'] = after_checkpoint.get('id')
+                op['after_checkpoint_created'] = bool(after_checkpoint.get('created'))
+
+            if before_checkpoint or after_checkpoint:
+                op['checkpoint_created'] = {
+                    "before": bool(before_checkpoint and before_checkpoint.get('created')),
+                    "after": bool(after_checkpoint and after_checkpoint.get('created')),
+                }
+                op['checkpoint_ids'] = {
+                    "before": before_checkpoint.get('id') if before_checkpoint else None,
+                    "after": after_checkpoint.get('id') if after_checkpoint else None,
+                }
 
     def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
@@ -1203,6 +1291,7 @@ class SingleDomainExecutor:
                     "executed_at": record.executed_at,
                     "result_summary": record.result_summary,
                     "raw_result": record.raw_result,
+                    "ops": record.ops,
                     "error": record.error,
                 }
                 for record in state.tool_history

@@ -41,6 +41,29 @@ export interface ContextSnapshot {
   full_context?: Record<string, any>;
 }
 
+export interface ToolOperation {
+  type: string;
+  path?: string;
+  absolute_path?: string;
+  before_checkpoint_id?: number | null;
+  before_checkpoint_created?: boolean;
+  after_checkpoint_id?: number | null;
+  after_checkpoint_created?: boolean;
+  checkpoint_created?: {
+    before: boolean;
+    after: boolean;
+  };
+  checkpoint_ids?: {
+    before: number | null;
+    after: number | null;
+  };
+  lines_added?: number;
+  lines_removed?: number;
+  linesAdded?: number;
+  linesRemoved?: number;
+  [key: string]: any;
+}
+
 export interface DomainExecution {
   task_id: string;
   domain_id: string;
@@ -69,6 +92,7 @@ export interface DomainExecution {
     result_summary: string;
     raw_result?: any;
     error?: string | null;
+    ops?: ToolOperation[];
   }>;
   metadata?: {
     iterations?: number;

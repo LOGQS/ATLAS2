@@ -1,9 +1,9 @@
 // Domain Execution Visualization Component
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import '../../styles/agentic/DomainBox.css';
 import logger from '../../utils/core/logger';
 import useScrollControl from '../../hooks/ui/useScrollControl';
-import type { DomainExecution, ContextSnapshot } from '../../types/messages';
+import type { DomainExecution, ContextSnapshot, ToolOperation } from '../../types/messages';
 import { apiUrl } from '../../config/api';
 import { Icons } from '../ui/Icons';
 
@@ -376,6 +376,163 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   const plan = domainExecution?.plan;
   const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';
   const toolHistory = domainExecution?.tool_history || [];
+  const isCoderDomain = domainExecution?.domain_id === 'coder';
+
+  const getLinesAdded = (operation: Partial<ToolOperation> | undefined): number => {
+    if (!operation) return 0;
+    if (typeof operation.linesAdded === 'number') return operation.linesAdded;
+    if (typeof (operation as any).lines_added === 'number') return (operation as any).lines_added;
+    return 0;
+  };
+
+  const getLinesRemoved = (operation: Partial<ToolOperation> | undefined): number => {
+    if (!operation) return 0;
+    if (typeof operation.linesRemoved === 'number') return operation.linesRemoved;
+    if (typeof (operation as any).lines_removed === 'number') return (operation as any).lines_removed;
+    return 0;
+  };
+
+  const getCheckpointId = (
+    operation: Partial<ToolOperation> | undefined,
+    position: 'before' | 'after'
+  ): number | null => {
+    if (!operation) return null;
+    const directKey = position === 'before' ? 'before_checkpoint_id' : 'after_checkpoint_id';
+    if (typeof (operation as any)[directKey] === 'number') {
+      return (operation as any)[directKey] as number;
+    }
+    const checkpointIds = operation.checkpoint_ids;
+    if (checkpointIds && typeof checkpointIds[position] === 'number') {
+      return checkpointIds[position] as number;
+    }
+    return null;
+  };
+
+  const getCheckpointCreated = (
+    operation: Partial<ToolOperation> | undefined,
+    position: 'before' | 'after'
+  ): boolean | undefined => {
+    if (!operation) return undefined;
+    const directKey = position === 'before' ? 'before_checkpoint_created' : 'after_checkpoint_created';
+    if ((operation as any)[directKey] !== undefined) {
+      return Boolean((operation as any)[directKey]);
+    }
+    const checkpointCreated = operation.checkpoint_created;
+    if (checkpointCreated && typeof checkpointCreated[position] !== 'undefined') {
+      return Boolean(checkpointCreated[position]);
+    }
+    return undefined;
+  };
+
+  const checkpointChipClassName = (position: 'before' | 'after', created?: boolean) => {
+    const classes = ['checkpoint-chip', position];
+    if (created === false) {
+      classes.push('reused');
+    }
+    return classes.join(' ');
+  };
+
+  const renderCheckpointChip = (
+    position: 'before' | 'after',
+    operation: Partial<ToolOperation> | undefined
+  ) => {
+    const id = getCheckpointId(operation, position);
+    const created = getCheckpointCreated(operation, position);
+    const classNames = [checkpointChipClassName(position, created)];
+    let label: string;
+    let title: string | undefined;
+
+    if (id == null) {
+      classNames.push('missing');
+      label = position === 'before' ? 'No pre-checkpoint' : 'No post-checkpoint';
+    } else {
+      label = `${position === 'before' ? 'Before' : 'After'} · #${id}${created === false ? ' (reused)' : ''}`;
+      title = created === false ? 'Reused existing checkpoint' : 'New checkpoint created';
+    }
+
+    return (
+      <span className={classNames.join(' ')} title={title}>
+        {label}
+      </span>
+    );
+  };
+
+  const formatOperationType = (type?: string): string => {
+    if (!type) return 'Operation';
+    return type
+      .split('_')
+      .filter(Boolean)
+      .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(' ');
+  };
+
+  const formatCallId = (callId?: string): string => {
+    if (!callId) return '—';
+    const trimmed = callId.trim();
+    if (trimmed.length <= 8) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
+  };
+
+  const formatTimestampCompact = (iso?: string): string => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return iso;
+    }
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  type DisplayOperation = ToolOperation & {
+    callId: string;
+    tool: string;
+    executedAt: string;
+  };
+
+  const coderFileOperations = useMemo<DisplayOperation[]>(() => {
+    if (!isCoderDomain) {
+      return [];
+    }
+    return toolHistory.flatMap(entry => {
+      const ops = Array.isArray(entry.ops) ? entry.ops : [];
+      return ops
+        .filter(op => op && typeof op === 'object')
+        .filter(op => {
+          const opType = String((op as any).type || '');
+          return opType === 'file_write' || opType === 'file_edit' || opType === 'notebook_edit';
+        })
+        .map(op => ({
+          ...op,
+          callId: entry.call_id,
+          tool: entry.tool,
+          executedAt: entry.executed_at,
+        }));
+    });
+  }, [isCoderDomain, toolHistory]);
+
+  const coderOpsByCallId = useMemo(() => {
+    const map = new Map<string, DisplayOperation[]>();
+    coderFileOperations.forEach(op => {
+      if (!map.has(op.callId)) {
+        map.set(op.callId, []);
+      }
+      map.get(op.callId)!.push(op);
+    });
+    return map;
+  }, [coderFileOperations]);
+
+  const coderFileOperationTotals = useMemo(() => {
+    return coderFileOperations.reduce(
+      (acc, op) => {
+        acc.added += getLinesAdded(op);
+        acc.removed += getLinesRemoved(op);
+        return acc;
+      },
+      { added: 0, removed: 0 }
+    );
+  }, [coderFileOperations]);
+
   const executionMetadata = domainExecution?.metadata;
   const pendingToolSummary = buildParamChips(pendingTool?.params, 1);
   const pendingToolPrimaryParam = pendingToolSummary.chips[0];
@@ -828,6 +985,65 @@ const DomainBox: React.FC<DomainBoxProps> = ({
           </div>
         </div>
 
+        {isCoderDomain && coderFileOperations.length > 0 && (
+          <div className="coder-ops-card">
+            <div className="coder-ops-header">
+              <Icons.FileCode className="coder-ops-icon" />
+              <div className="coder-ops-header-copy">
+                <div className="coder-ops-title">File Operations</div>
+                <div className="coder-ops-subtitle">
+                  {coderFileOperations.length} change{coderFileOperations.length !== 1 ? 's' : ''}
+                  {(coderFileOperationTotals.added > 0 || coderFileOperationTotals.removed > 0) && (
+                    <span className="coder-ops-subtitle-diff">
+                      {coderFileOperationTotals.added > 0 && (
+                        <span className="diff-pill added">+{coderFileOperationTotals.added}</span>
+                      )}
+                      {coderFileOperationTotals.removed > 0 && (
+                        <span className="diff-pill removed">-{coderFileOperationTotals.removed}</span>
+                      )}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <ul className="coder-ops-list">
+              {coderFileOperations.map((operation, index) => {
+                const linesAdded = getLinesAdded(operation);
+                const linesRemoved = getLinesRemoved(operation);
+                const operationPath = operation.path || operation.absolute_path || 'Unknown path';
+
+                return (
+                  <li key={`${operation.callId}-${operationPath}-${index}`} className="coder-ops-entry">
+                    <div className="coder-ops-entry-main">
+                      <span className="coder-ops-path" title={operationPath}>
+                        {operationPath}
+                      </span>
+                      <div className="coder-ops-diff">
+                        {linesAdded > 0 && <span className="diff-pill added">+{linesAdded}</span>}
+                        {linesRemoved > 0 && <span className="diff-pill removed">-{linesRemoved}</span>}
+                        {linesAdded === 0 && linesRemoved === 0 && (
+                          <span className="diff-pill neutral">No delta</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="coder-ops-meta">
+                      <span className="coder-ops-meta-item">
+                        {formatOperationType(operation.type)} via {operation.tool}
+                      </span>
+                      <span className="coder-ops-meta-item">Call {formatCallId(operation.callId)}</span>
+                      <span className="coder-ops-meta-item">{formatTimestampCompact(operation.executedAt)}</span>
+                    </div>
+                    <div className="coder-ops-checkpoints">
+                      {renderCheckpointChip('before', operation)}
+                      {renderCheckpointChip('after', operation)}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
         {toolHistory.length > 0 && (
           <div className="tool-history">
             <div
@@ -861,6 +1077,7 @@ const DomainBox: React.FC<DomainBoxProps> = ({
                   const date = new Date(entry.executed_at);
                   return Number.isNaN(date.getTime()) ? entry.executed_at : date.toLocaleString();
                 })();
+                const operationsForEntry = coderOpsByCallId.get(entry.call_id) ?? [];
 
                 return (
                   <div key={entry.call_id} className={`tool-history-item ${statusClass}`}>
@@ -907,6 +1124,39 @@ const DomainBox: React.FC<DomainBoxProps> = ({
                       {resultSummary && (
                         <div className="tool-history-result" title={resultSummary.full}>
                           {resultSummary.short}
+                        </div>
+                      )}
+                      {isCoderDomain && operationsForEntry.length > 0 && (
+                        <div className="tool-history-ops">
+                          {operationsForEntry.map((operation, opIndex) => {
+                            const linesAddedOp = getLinesAdded(operation);
+                            const linesRemovedOp = getLinesRemoved(operation);
+                            const operationPath = operation.path || operation.absolute_path || 'Unknown path';
+
+                            return (
+                              <div key={`${entry.call_id}-file-op-${opIndex}`} className="tool-history-op">
+                                <div className="tool-history-op-header">
+                                  <span className="tool-history-op-path" title={operationPath}>
+                                    {operationPath}
+                                  </span>
+                                  <div className="tool-history-op-diff">
+                                    {linesAddedOp > 0 && <span className="diff-pill added">+{linesAddedOp}</span>}
+                                    {linesRemovedOp > 0 && <span className="diff-pill removed">-{linesRemovedOp}</span>}
+                                    {linesAddedOp === 0 && linesRemovedOp === 0 && (
+                                      <span className="diff-pill neutral">No delta</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="tool-history-op-footnote">
+                                  <span className="tool-history-op-kind">{formatOperationType(operation.type)}</span>
+                                  <div className="tool-history-op-checkpoints">
+                                    {renderCheckpointChip('before', operation)}
+                                    {renderCheckpointChip('after', operation)}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -984,4 +1234,3 @@ const DomainBox: React.FC<DomainBoxProps> = ({
 };
 
 export default DomainBox;
-
