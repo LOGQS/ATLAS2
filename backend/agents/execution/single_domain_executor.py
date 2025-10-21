@@ -395,6 +395,9 @@ class SingleDomainExecutor:
 
         prompt = self._build_agent_prompt(state)
 
+        # Store prompt for context dumping when tool is proposed
+        state.metadata["last_agent_prompt"] = prompt
+
         self.logger.info("=" * 80)
         self.logger.info(
             "[DOMAIN-AGENT-PROMPT] %s/%s iteration %s",
@@ -529,6 +532,11 @@ class SingleDomainExecutor:
             coder_logger = get_coder_session_logger(state.context.task_id)
             if coder_logger:
                 coder_logger.log_tool_proposal(tool_name, param_entries, reason)
+
+                # Dump full agent context for this tool call
+                agent_prompt = state.metadata.get("last_agent_prompt", "")
+                if agent_prompt:
+                    coder_logger.dump_agent_context(agent_prompt, tool_name, param_entries)
 
         self._append_action(
             state,
@@ -907,7 +915,8 @@ class SingleDomainExecutor:
         attached_files_section = self._format_attached_files(
             exec_context.global_context.get("attached_files")
         )
-        procedures_section = self._format_procedures(domain)
+        # Procedures disabled - to implement later
+        procedures_section = ""
         tool_history_section = self._format_tool_history(state.tool_history)
         task_notes_section = self._format_task_notes(state)
 
@@ -1030,13 +1039,11 @@ class SingleDomainExecutor:
     def _format_chat_history(self, chat_history: Optional[List[Dict]]) -> str:
         if not chat_history:
             return ""
-        recent = chat_history[-3:]
-        lines = ["## RECENT CHAT HISTORY:"]
-        for msg in recent:
+        # Show all chat history (no limit on messages or content length)
+        lines = ["## CHAT HISTORY:"]
+        for msg in chat_history:
             role = msg.get("role", "unknown")
-            content = str(msg.get("content", ""))[:200]
-            if len(str(msg.get("content", ""))) > 200:
-                content += "..."
+            content = str(msg.get("content", ""))
             lines.append(f"{role.upper()}: {content}")
         return "\n".join(lines)
 
@@ -1069,11 +1076,10 @@ class SingleDomainExecutor:
         # Track content hashes we've already shown in this history section
         shown_hashes = set()
 
-        # Show last 5 tool calls with smart formatting
-        for record in history[-5:]:
-            params_preview = ", ".join(f"{k}={v!r}" for k, v in record.param_entries[:3])
-            if len(record.param_entries) > 3:
-                params_preview += ", ..."
+        # Show ALL tool calls with smart formatting (no limit)
+        for record in history:
+            # Show all parameters (no limit)
+            params_preview = ", ".join(f"{k}={v!r}" for k, v in record.param_entries)
             status = "ACCEPTED" if record.accepted else "REJECTED"
 
             # For file.read, use smart duplicate detection based on content hash
@@ -1393,14 +1399,11 @@ class SingleDomainExecutor:
             except TypeError:
                 serialized = str(output)
 
-            if len(serialized) > 400:
-                return serialized[:400] + "..."
+            # Return full serialized output (no truncation)
             return serialized
 
-        # Non-dict output
+        # Non-dict output - return full output (no truncation)
         serialized = str(output)
-        if len(serialized) > 400:
-            return serialized[:400] + "..."
         return serialized
 
     def _mark_failure(self, state: DomainTaskState, message: str) -> None:

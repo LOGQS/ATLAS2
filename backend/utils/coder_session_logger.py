@@ -43,6 +43,14 @@ class CoderSessionLogger:
         log_filename = f"coder_session_{task_id}_{timestamp}.log"
         self.log_file = self.log_dir / log_filename
 
+        # Create context dump folder for this session
+        # Folder name matches log file: coder_session_{task_id}_{timestamp}/
+        self.context_dump_dir = self.log_dir / f"coder_session_{task_id}_{timestamp}"
+        self.context_dump_dir.mkdir(parents=True, exist_ok=True)
+
+        # Track tool call numbers for context dumps
+        self.tool_call_counter = 0
+
         # Create a session-specific logger
         self.logger = logging.getLogger(f"coder_session.{task_id}")
         self.logger.setLevel(logging.DEBUG)
@@ -174,6 +182,65 @@ class CoderSessionLogger:
     def log_warning(self, message: str) -> None:
         """Log a warning."""
         self.logger.warning(message)
+
+    def dump_agent_context(
+        self,
+        agent_prompt: str,
+        tool_name: str,
+        params: List[Tuple[str, Any]]
+    ) -> None:
+        """
+        Dump the full agent context (prompt) to a file before each tool call.
+
+        Creates numbered files like:
+        - 01_tool_file.write_index.html.txt
+        - 02_tool_file.read_style.css.txt
+        - etc.
+
+        Args:
+            agent_prompt: The complete prompt sent to the agent
+            tool_name: Name of the tool being called
+            params: Tool parameters
+        """
+        self.tool_call_counter += 1
+
+        # Build a descriptive filename
+        # Extract key parameter for filename (usually file_path, command, or query)
+        key_param = ""
+        for param_name, param_value in params:
+            if param_name in ["file_path", "path", "command", "query", "index_name"]:
+                # Sanitize path for filename (remove invalid chars, limit length)
+                key_param = str(param_value).replace("\\", "_").replace("/", "_").replace(":", "_")
+                # Limit length and remove spaces
+                key_param = key_param.replace(" ", "_")[:50]
+                break
+
+        # Format: 01_tool_file.write_index.html.txt
+        if key_param:
+            filename = f"{self.tool_call_counter:02d}_tool_{tool_name}_{key_param}.txt"
+        else:
+            filename = f"{self.tool_call_counter:02d}_tool_{tool_name}.txt"
+
+        context_file = self.context_dump_dir / filename
+
+        try:
+            with open(context_file, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write(f"AGENT CONTEXT DUMP - Tool Call #{self.tool_call_counter}\n")
+                f.write("=" * 80 + "\n")
+                f.write(f"Tool: {tool_name}\n")
+                f.write(f"Parameters:\n")
+                for param_name, param_value in params:
+                    f.write(f"  {param_name}: {param_value!r}\n")
+                f.write("=" * 80 + "\n\n")
+                f.write("FULL AGENT PROMPT:\n")
+                f.write("=" * 80 + "\n")
+                f.write(agent_prompt)
+                f.write("\n" + "=" * 80 + "\n")
+
+            self.logger.debug(f"Context dumped to: {filename}")
+        except Exception as e:
+            self.logger.error(f"Failed to dump context: {e}")
 
 
 # Session registry to track active coder sessions
