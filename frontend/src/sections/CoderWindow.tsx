@@ -1,7 +1,7 @@
 import React, { useEffect, useCallback, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { CoderProvider, useCoderContext, LiveFileOperation } from '../contexts/CoderContext';
+import { CoderProvider, useCoderContext } from '../contexts/CoderContext';
 import { TabbedSidebar } from '../components/coder/TabbedSidebar';
 import { TabBar } from '../components/coder/TabBar';
 import { TerminalPanel } from '../components/coder/TerminalPanel';
@@ -36,100 +36,6 @@ const sliderOptions: SliderOptions<ViewType> = {
   },
 };
 
-interface LiveOperationFeedProps {
-  operations: LiveFileOperation[];
-  onClear: () => void;
-}
-
-const LiveOperationFeed: React.FC<LiveOperationFeedProps> = ({ operations, onClear }) => {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [isCollapsed, setIsCollapsed] = useState(false);
-
-  useEffect(() => {
-    if (!operations.length) {
-      setExpandedId(null);
-      return;
-    }
-    setExpandedId(prev => {
-      if (prev && operations.some(op => op.id === prev)) {
-        return prev;
-      }
-      return operations[0].id;
-    });
-  }, [operations]);
-
-  if (!operations.length) {
-    return null;
-  }
-
-  return (
-    <motion.div
-      className={`coder-live-ops ${isCollapsed ? 'collapsed' : 'expanded'}`}
-      initial={false}
-      animate={{
-        height: isCollapsed ? 'auto' : 'auto',
-        opacity: 1
-      }}
-      transition={{
-        duration: 0.3,
-        ease: [0.4, 0.0, 0.2, 1] // iOS-like easing
-      }}
-    >
-      <div className="coder-live-ops__header">
-        <button
-          className="coder-live-ops__toggle"
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          title={isCollapsed ? 'Expand live changes' : 'Collapse live changes'}
-        >
-          <Icons.ChevronDown className={`coder-live-ops__toggle-icon ${isCollapsed ? 'collapsed' : ''}`} />
-        </button>
-        <div className="coder-live-ops__header-content">
-          <span className="coder-live-ops__title">Live Changes</span>
-          <span className="coder-live-ops__count">{operations.length}</span>
-        </div>
-        <button className="coder-live-ops__clear" onClick={onClear} title="Clear all changes">
-          Clear
-        </button>
-      </div>
-      <AnimatePresence>
-        {!isCollapsed && (
-          <motion.div
-            className="coder-live-ops__list"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3, ease: [0.4, 0.0, 0.2, 1] }}
-          >
-            {operations.map(op => {
-              const isExpanded = expandedId === op.id;
-              const timestamp = new Date(op.timestamp).toLocaleTimeString();
-              return (
-                <div key={op.id} className={`coder-live-ops__item ${isExpanded ? 'expanded' : ''}`}>
-                  <button
-                    className="coder-live-ops__item-toggle"
-                    onClick={() => setExpandedId(isExpanded ? null : op.id)}
-                  >
-                    <span className="coder-live-ops__item-action">{op.action}</span>
-                    <span className="coder-live-ops__item-path">{op.filePath}</span>
-                    <span className="coder-live-ops__item-meta">
-                      {op.tool} · {timestamp}
-                    </span>
-                    <Icons.ChevronDown className="coder-live-ops__item-chevron" />
-                  </button>
-                  {isExpanded && (
-                    <div className="coder-live-ops__diff">
-                      <DiffViewer original={op.before ?? ''} modified={op.after ?? ''} defaultMode="split" />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
-};
 
 const CoderWindowContent: React.FC = () => {
   const {
@@ -151,8 +57,6 @@ const CoderWindowContent: React.FC = () => {
     toggleTerminal,
     closeTab,
     setError,
-    liveOperations,
-    clearLiveOperations,
     splitEditorHorizontal,
     splitEditorVertical,
     closeSplit,
@@ -165,14 +69,28 @@ const CoderWindowContent: React.FC = () => {
   const [isWorkspaceHistoryOpen, setIsWorkspaceHistoryOpen] = useState(false);
   const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [autoAcceptTools, setAutoAcceptTools] = useState(() => {
+    return localStorage.getItem('coder-auto-accept') === 'true';
+  });
   const monacoConfigured = useRef(false);
-  const hasLiveOperations = liveOperations.length > 0;
   const sidebarDefaultSize = 22;
-  const liveOperationsDefaultSize = 20;
-  const editorDefaultSize = hasLiveOperations
-    ? 100 - sidebarDefaultSize - liveOperationsDefaultSize
-    : 100 - sidebarDefaultSize;
-  const panelGroupKey = hasLiveOperations ? 'coder-horizontal-with-live' : 'coder-horizontal-without-live';
+  const editorDefaultSize = 100 - sidebarDefaultSize;
+  const panelGroupKey = 'coder-horizontal';
+
+  // Handle auto-accept toggle
+  const handleAutoAcceptToggle = useCallback(() => {
+    const newValue = !autoAcceptTools;
+    setAutoAcceptTools(newValue);
+    localStorage.setItem('coder-auto-accept', String(newValue));
+
+    // Dispatch storage event for other components (like DomainBox) to pick up
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'coder-auto-accept',
+      newValue: String(newValue),
+      oldValue: String(!newValue),
+      storageArea: localStorage,
+    }));
+  }, [autoAcceptTools]);
 
   // Open modal when workspace is not set (only on mount or when hasWorkspace becomes false)
   useEffect(() => {
@@ -326,6 +244,18 @@ const CoderWindowContent: React.FC = () => {
                 >
                   <Icons.History className="w-3.5 h-3.5" />
                   <span>Workspace History</span>
+                </button>
+              </div>
+
+              <div className="coder-toolbar__section">
+                <button
+                  onClick={handleAutoAcceptToggle}
+                  className={`coder-toolbar__button ${autoAcceptTools ? 'coder-toolbar__button--active coder-toolbar__button--auto-accept' : ''}`}
+                  title={autoAcceptTools ? 'Disable auto-accept (tools will require manual approval)' : 'Enable auto-accept (tools will execute automatically)'}
+                >
+                  <Icons.Zap className="w-3.5 h-3.5" />
+                  <span>Auto-Accept</span>
+                  {autoAcceptTools && <span className="coder-toolbar__badge">ON</span>}
                 </button>
               </div>
 
@@ -492,26 +422,6 @@ const CoderWindowContent: React.FC = () => {
                         </div>
                       </div>
                     </Panel>
-
-                    {/* Live Operations Panel - RIGHT SIDE */}
-                    {hasLiveOperations && (
-                      <>
-                        <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
-                        <Panel
-                          id="live-operations"
-                          order={3}
-                          defaultSize={liveOperationsDefaultSize}
-                          minSize={15}
-                          maxSize={40}
-                          collapsible
-                          className="border-l border-bolt-elements-borderColor"
-                        >
-                          <div className="h-full flex flex-col bg-bolt-elements-background-depth-2">
-                            <LiveOperationFeed operations={liveOperations} onClear={clearLiveOperations} />
-                          </div>
-                        </Panel>
-                      </>
-                    )}
                   </PanelGroup>
                 </Panel>
 

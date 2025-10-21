@@ -23,6 +23,7 @@ from agents.prompts.agent_prompt_templates import (
 )
 from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
+from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
 
 
 logger = get_logger(__name__)
@@ -516,6 +517,9 @@ class SingleDomainExecutor:
             "ops": self._ensure_serializable(tool_result.ops),
         }
 
+        # Create checkpoints for file operations
+        self._create_checkpoints_from_ops(state, tool_result.ops, proposal.tool_name)
+
         summary = self._summarize_tool_output(result_payload["output"])
         executed_record = ToolExecutionRecord(
             call_id=proposal.call_id,
@@ -589,6 +593,89 @@ class SingleDomainExecutor:
                 output={"error": error_msg, "suggestion": "Review the error and try again with corrected parameters"},
                 metadata={"status": "error", "error_type": type(exc).__name__}
             )
+
+    def _create_checkpoints_from_ops(
+        self,
+        state: DomainTaskState,
+        ops: Optional[List[Dict[str, Any]]],
+        tool_name: str,
+    ) -> None:
+        """
+        Create file checkpoints for file operations.
+
+        Checkpoints are created for:
+        - file.write: Saves 'before' content if file was overwritten
+        - file.edit: Saves 'before' content before edits
+        - notebook.edit: Saves 'before' content before notebook edits
+        """
+        if not ops or not isinstance(ops, list):
+            return
+
+        if not state.context.workspace_path:
+            self.logger.warning("[CHECKPOINT] No workspace path available, skipping checkpoint creation")
+            return
+
+        # Only create checkpoints for specific file operation tools
+        checkpoint_tools = {'file.write', 'file.edit', 'notebook.edit'}
+        if tool_name not in checkpoint_tools:
+            return
+
+        workspace_path = state.context.workspace_path
+
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+
+            op_type = op.get('type', '')
+            file_path = op.get('path', '')
+
+            if not file_path:
+                continue
+
+            # Only checkpoint operations that modify files
+            if op_type not in ('file_write', 'file_edit', 'notebook_edit'):
+                continue
+
+            before_content = op.get('before')
+            after_content = op.get('after')
+
+            before_is_str = isinstance(before_content, str)
+            after_is_str = isinstance(after_content, str)
+
+            if before_is_str and after_is_str and before_content == after_content:
+                self.logger.debug(
+                    "[CHECKPOINT] Skipping checkpoint for %s (no content change detected)",
+                    file_path,
+                )
+                continue
+
+            saved_any = False
+
+            try:
+                if before_is_str:
+                    if save_file_checkpoint(
+                        workspace_path=workspace_path,
+                        file_path=file_path,
+                        content=before_content,
+                        edit_type='checkpoint',
+                    ):
+                        saved_any = True
+                        self.logger.debug("[CHECKPOINT] Captured pre-change snapshot for %s", file_path)
+
+                if after_is_str:
+                    if save_file_checkpoint(
+                        workspace_path=workspace_path,
+                        file_path=file_path,
+                        content=after_content,
+                        edit_type='checkpoint',
+                    ):
+                        saved_any = True
+                        self.logger.debug("[CHECKPOINT] Captured post-change snapshot for %s", file_path)
+
+                if saved_any:
+                    cleanup_old_checkpoints(workspace_path, file_path, keep_count=100)
+            except Exception as e:
+                self.logger.error(f"[CHECKPOINT] Error creating checkpoint for {file_path}: {e}")
 
     def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time

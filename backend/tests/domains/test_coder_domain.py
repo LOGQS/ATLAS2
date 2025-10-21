@@ -20,6 +20,7 @@ from agents.domains.domain_configs import (  # pylint: disable=import-error
 from agents.execution.single_domain_executor import (  # pylint: disable=import-error
     SingleDomainExecutor,
 )
+from utils.db_utils import db  # pylint: disable=import-error
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -82,6 +83,33 @@ def _patch_agent_responses(
         _fake_call_agent,
         raising=False,
     )
+
+
+def _clear_file_history(workspace_path: str) -> None:
+    """Remove prior history entries for a workspace to keep tests isolated."""
+    def query(conn, cursor):
+        cursor.execute(
+            "DELETE FROM file_edit_history WHERE workspace_path = ?",
+            (workspace_path,)
+        )
+        conn.commit()
+    db._execute_with_connection("test clear file history", query, return_on_error=False)
+
+
+def _fetch_file_history_contents(workspace_path: str, file_path: str) -> List[str]:
+    """Fetch checkpoint contents (newest first) for assertions."""
+    def query(conn, cursor):
+        cursor.execute(
+            """
+            SELECT content
+            FROM file_edit_history
+            WHERE workspace_path = ? AND file_path = ?
+            ORDER BY timestamp DESC, id DESC
+            """,
+            (workspace_path, file_path)
+        )
+        return [row[0] for row in cursor.fetchall()]
+    return db._execute_with_connection("test fetch file history", query, return_on_error=[])
 
 
 def test_coder_pipeline_creates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -293,3 +321,86 @@ def test_coder_pipeline_multiple_steps(tmp_path: Path, monkeypatch: pytest.Monke
     resulting_file = workspace / target_rel_path
     assert resulting_file.exists()
     assert resulting_file.read_text(encoding="utf-8") == updated_content
+
+
+def test_file_tool_call_creates_checkpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace_path = str(workspace)
+
+    target_rel_path = Path("src") / "demo.txt"
+    file_param = target_rel_path.as_posix()
+    initial_content = "alpha line\n"
+    updated_content = "beta line\n"
+
+    _clear_file_history(workspace_path)
+
+    _patch_agent_responses(
+        monkeypatch,
+        responses=[
+            _await_tool_response(
+                message="Creating the demo file.",
+                tool="file.write",
+                params=[
+                    ("file_path", file_param),
+                    ("content", initial_content),
+                    ("create_dirs", True),
+                ],
+                reason="Initialize the file with starting content",
+            ),
+            _await_tool_response(
+                message="Updating the first line.",
+                tool="file.edit",
+                params=[
+                    ("file_path", file_param),
+                    ("edit_mode", "line_range"),
+                    ("start_line", 1),
+                    ("end_line", 1),
+                    ("new_content", updated_content),
+                ],
+                reason="Replace the first line with updated text",
+            ),
+            _complete_response("File updated successfully."),
+        ],
+    )
+
+    executor = SingleDomainExecutor()
+
+    state = executor.execute_domain_task(
+        domain_id="coder",
+        user_request="Create a file then update its first line.",
+        chat_id="chat-checkpoints",
+        workspace_path=workspace_path,
+    )
+
+    assert state["status"] == "waiting_user"
+    first_tool = state["pending_tool"]
+    assert first_tool is not None
+    assert first_tool["tool"] == "file.write"
+
+    mid_state = executor.handle_tool_decision(
+        task_id=state["task_id"],
+        call_id=first_tool["call_id"],
+        decision="accept",
+    )
+
+    history_after_write = _fetch_file_history_contents(workspace_path, file_param)
+    assert history_after_write == [initial_content]
+
+    assert mid_state["status"] == "waiting_user"
+    second_tool = mid_state["pending_tool"]
+    assert second_tool is not None
+    assert second_tool["tool"] == "file.edit"
+
+    final_state = executor.handle_tool_decision(
+        task_id=mid_state["task_id"],
+        call_id=second_tool["call_id"],
+        decision="accept",
+    )
+
+    assert final_state["status"] == "completed"
+    history_after_edit = _fetch_file_history_contents(workspace_path, file_param)
+    assert history_after_edit[:2] == [updated_content, initial_content]
+    assert len(history_after_edit) == 2
+
+    _clear_file_history(workspace_path)

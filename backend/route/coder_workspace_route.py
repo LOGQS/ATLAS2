@@ -744,7 +744,7 @@ class CoderWorkspaceRoute:
                         SELECT id, content, timestamp, edit_type, content_hash
                         FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         """,
                         (workspace_path, file_path)
                     )
@@ -754,7 +754,7 @@ class CoderWorkspaceRoute:
                         SELECT id, content, timestamp, edit_type, content_hash
                         FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         LIMIT ?
                         """,
                         (workspace_path, file_path, limit)
@@ -798,7 +798,7 @@ class CoderWorkspaceRoute:
                     SELECT content
                     FROM file_edit_history
                     WHERE workspace_path = ? AND file_path = ?
-                    ORDER BY timestamp DESC
+                    ORDER BY timestamp DESC, id DESC
                     LIMIT 1
                     """,
                     (workspace_path, file_path)
@@ -821,7 +821,7 @@ class CoderWorkspaceRoute:
                     WHERE id IN (
                         SELECT id FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         LIMIT -1 OFFSET ?
                     )
                     """,
@@ -1978,7 +1978,7 @@ class CoderWorkspaceRoute:
                 cursor.execute(
                     """
                     SELECT file_path,
-                           COUNT(*) as checkpoint_count,
+                           COUNT(DISTINCT content_hash) as checkpoint_count,
                            MAX(timestamp) as last_checkpoint
                     FROM file_edit_history
                     WHERE workspace_path = ?

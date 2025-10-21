@@ -1,5 +1,5 @@
 // Domain Execution Visualization Component
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import '../../styles/agentic/DomainBox.css';
 import logger from '../../utils/core/logger';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -35,9 +35,13 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [showApprovalUI, setShowApprovalUI] = useState(true);
   const [confirmedDecision, setConfirmedDecision] = useState<'accept' | 'reject' | null>(null);
+  const [autoAcceptEnabled, setAutoAcceptEnabled] = useState(() => {
+    return localStorage.getItem('coder-auto-accept') === 'true';
+  });
 
   const domainBoxContentRef = useRef<HTMLDivElement | null>(null);
   const actionsEndRef = useRef<HTMLDivElement>(null);
+  const autoAcceptTriggered = useRef<string | null>(null); // Track which tool was auto-accepted
 
   const domainBoxScrollControl = useScrollControl({
     chatId: `domainbox-${chatId}-${messageId}`,
@@ -120,9 +124,8 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     }
   }, [isWaitingForUser, pendingTool?.call_id]);
 
-
-
-  const handleToolDecision = async (decision: 'accept' | 'reject') => {
+  // Tool decision handler - defined early so it can be used in useEffects below
+  const handleToolDecision = useCallback(async (decision: 'accept' | 'reject') => {
     if (!pendingTool || !chatId || !domainExecution) {
       return;
     }
@@ -161,7 +164,58 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     } finally {
       setDecisionState('idle');
     }
-  };
+  }, [pendingTool, chatId, domainExecution, messageId]);
+
+  // Listen for auto-accept setting changes
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'coder-auto-accept') {
+        setAutoAcceptEnabled(e.newValue === 'true');
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // Auto-accept logic
+  useEffect(() => {
+    if (!autoAcceptEnabled || !isWaitingForUser || !pendingTool || !chatId || !domainExecution) {
+      return;
+    }
+
+    // Guard against double-triggering
+    if (autoAcceptTriggered.current === pendingTool.call_id) {
+      return;
+    }
+
+    // Guard against already processing decision
+    if (decisionState !== 'idle') {
+      return;
+    }
+
+    logger.info(`[DOMAINBOX] Auto-accepting tool: ${pendingTool.tool}`, {
+      chatId,
+      taskId: domainExecution.task_id,
+      callId: pendingTool.call_id
+    });
+
+    // Mark this tool as auto-accepted to prevent re-triggering
+    autoAcceptTriggered.current = pendingTool.call_id;
+
+    // Hide the approval UI immediately
+    setShowApprovalUI(false);
+
+    // Automatically accept the tool
+    handleToolDecision('accept');
+  }, [autoAcceptEnabled, isWaitingForUser, pendingTool, chatId, domainExecution, decisionState, handleToolDecision]);
+
+  // Reset auto-accept trigger when tool changes
+  useEffect(() => {
+    if (!pendingTool) {
+      autoAcceptTriggered.current = null;
+    }
+  }, [pendingTool?.call_id]);
 
   if (!isVisible || (!domainExecution && !isProcessing)) {
     return null;
