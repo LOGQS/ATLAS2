@@ -615,7 +615,7 @@ class DatabaseManager:
                     thoughts: Optional[str] = None, provider: Optional[str] = None,
                     model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None,
                     router_enabled: bool = False, router_decision: Optional[str] = None,
-                    plan_id: Optional[str] = None) -> Optional[str]:
+                    plan_id: Optional[str] = None, domain_execution: Optional[Any] = None) -> Optional[str]:
         """
         Save message to chat history with optional file attachments and router metadata.
 
@@ -637,14 +637,17 @@ class DatabaseManager:
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
+                domain_execution_json = None
+                if domain_execution is not None:
+                    domain_execution_json = self._ensure_json_text(domain_execution, 'message domain execution save')
 
                 message_id = self._generate_message_id(chat_id)
 
                 cursor.execute("""
-                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision, plan_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision, domain_execution, plan_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (message_id, chat_id, role, content, thoughts, provider, model,
-                      1 if router_enabled else 0, router_decision, plan_id))
+                      1 if router_enabled else 0, router_decision, domain_execution_json, plan_id))
                 
                 if attached_file_ids:
                     for file_id in attached_file_ids:
