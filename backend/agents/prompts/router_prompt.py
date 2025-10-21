@@ -57,16 +57,21 @@ Why tools are/aren't needed for this request.
 Why the selected route is the best match from available routes.
 </EXECUTION_REASONING>
 <EXECUTION_TYPE>
-The execution type from the selected route.
+The execution type from the selected route (text_generation, direct, single_domain, multi_domain, or iterative).
 </EXECUTION_TYPE>
 <DOMAIN>
-For tool-based routes EXCEPT 'direct', specify which domain from the list above. Leave empty if tools not needed OR if using 'direct' route (direct uses FastPath instead).
+CRITICAL RULES:
+- If EXECUTION_TYPE is "direct": MUST be empty (direct execution uses FastPath, not domain agents)
+- If EXECUTION_TYPE is "single_domain", "multi_domain", or "iterative": MUST specify domain from list above
+- If EXECUTION_TYPE is "text_generation": MUST be empty (no tools needed)
 </DOMAIN>
 <FASTPATH_PARAMS>
-<TOOL>tool_name</TOOL>
-<PARAM name="param_name">param_value</PARAM>
-(Write values literally - NO escaping of < > & " characters)
-OR leave empty if not applicable
+CRITICAL RULES:
+- ONLY fill this if EXECUTION_TYPE is "direct" AND parameters are unambiguous
+- MUST be empty if EXECUTION_TYPE is "single_domain", "multi_domain", or "iterative"
+- Format: <TOOL>tool_name</TOOL> followed by <PARAM name="param_name">param_value</PARAM> tags
+- Write values literally - NO escaping of < > & " characters
+- Leave empty if uncertain or not applicable
 </FASTPATH_PARAMS>
 <CHOICE>
 route_name
@@ -108,13 +113,26 @@ Request: "Read the file at /home/user/config.json"
 <TOOL_REASONING>Request requires reading a specific file from the filesystem. The file path is explicitly provided and unambiguous.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
 <EXECUTION_REASONING>This is a single, straightforward tool operation with all parameters explicitly provided. The 'direct' route with FastPath is optimal - the tool will be executed immediately and the result returned to the model.</EXECUTION_REASONING>
-<EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
+<EXECUTION_TYPE>direct</EXECUTION_TYPE>
 <DOMAIN></DOMAIN>
 <FASTPATH_PARAMS>
 <TOOL>file.read</TOOL>
 <PARAM name="file_path">/home/user/config.json</PARAM>
 </FASTPATH_PARAMS>
 <CHOICE>direct</CHOICE>
+</ROUTE>
+
+**Example 4: Single domain execution (NO FastPath)**
+Request: "Fix the bug in main.py where the authentication function fails on empty passwords"
+
+<ROUTE>
+<TOOL_REASONING>Request requires reading code, analyzing the bug, and making modifications. This involves file system operations and code understanding that cannot be done natively.</TOOL_REASONING>
+<TOOLS_NEEDED>YES</TOOLS_NEEDED>
+<EXECUTION_REASONING>This task requires multiple steps: reading the file, analyzing the code logic, identifying the bug, implementing a fix, and potentially testing. The coder domain is needed for iterative development. NOT a simple direct call - the agent needs to reason about code behavior and make appropriate fixes.</EXECUTION_REASONING>
+<EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
+<DOMAIN>coder</DOMAIN>
+<FASTPATH_PARAMS></FASTPATH_PARAMS>
+<CHOICE>file_operations_route</CHOICE>
 </ROUTE>
 
 ## YOUR TASK:
