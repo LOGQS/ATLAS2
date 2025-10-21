@@ -906,8 +906,9 @@ class Chat:
             provider = router_response['provider']
             logger.info(f"Router selected for streaming: {model} with provider {provider}")
 
-        db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
-        
+        if not is_internal_call:
+            db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids or [])
+
         config_params['include_reasoning'] = include_reasoning
         if attached_file_ids:
             config_params['attached_file_ids'] = attached_file_ids
@@ -915,22 +916,24 @@ class Chat:
         if error:
             yield {"type": "error", "content": error}
             return
-        
+
         provider = context['provider']
         model = context['model']
         use_reasoning = context['use_reasoning']
         chat_history = context['chat_history']
         file_attachments = context['file_attachments']
         config_params = context['config_params']
- 
-        assistant_message_id = db.save_message(
-            self.chat_id,
-            "assistant", 
-            "",
-            thoughts=None,
-            provider=provider,
-            model=model
-        )
+
+        assistant_message_id = None
+        if not is_internal_call:
+            assistant_message_id = db.save_message(
+                self.chat_id,
+                "assistant",
+                "",
+                thoughts=None,
+                provider=provider,
+                model=model
+            )
         
         full_text = ""
         full_thoughts = ""
@@ -950,14 +953,16 @@ class Chat:
         )
         logger.debug(f"Estimated tokens for streaming request: {token_estimate['estimated_tokens']['total']}")
 
-        if use_reasoning:
-            db.update_chat_state(self.chat_id, "thinking")
-            publish_state(self.chat_id, "thinking")
-            current_state = "thinking"
-        else:
-            db.update_chat_state(self.chat_id, "responding")
-            publish_state(self.chat_id, "responding")
-            current_state = "responding"
+        current_state = None
+        if not is_internal_call:
+            if use_reasoning:
+                db.update_chat_state(self.chat_id, "thinking")
+                publish_state(self.chat_id, "thinking")
+                current_state = "thinking"
+            else:
+                db.update_chat_state(self.chat_id, "responding")
+                publish_state(self.chat_id, "responding")
+                current_state = "responding"
 
         for chunk in self.providers[provider].generate_text_stream(
             message, model=model, include_thoughts=use_reasoning,
@@ -968,11 +973,11 @@ class Chat:
                 full_thoughts += chunk.get("content", "")
             elif chunk.get("type") == "answer":
                 full_text += chunk.get("content", "")
-                if current_state == "thinking":
+                if not is_internal_call and current_state == "thinking":
                     db.update_chat_state(self.chat_id, "responding")
                     publish_state(self.chat_id, "responding")
                     current_state = "responding"
-            
+
 
             if assistant_message_id and (full_text or full_thoughts):
                 db.update_message(
@@ -980,11 +985,12 @@ class Chat:
                     full_text,
                     thoughts=full_thoughts if full_thoughts else None
                 )
-            
+
             yield chunk
 
-        db.update_chat_state(self.chat_id, "static")
-        publish_state(self.chat_id, "static")
+        if not is_internal_call:
+            db.update_chat_state(self.chat_id, "static")
+            publish_state(self.chat_id, "static")
     
     
     

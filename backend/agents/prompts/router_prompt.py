@@ -74,7 +74,9 @@ CRITICAL RULES:
 - Leave empty if uncertain or not applicable
 </FASTPATH_PARAMS>
 <CHOICE>
-route_name
+CRITICAL: Must be EXACTLY one of the route names from AVAILABLE ROUTES above.
+DO NOT make up descriptive names - use the exact route_name value.
+Examples: "coder", "direct", "web_researcher", "general_conversation"
 </CHOICE>
 </ROUTE>
 
@@ -86,11 +88,11 @@ Request: "Modify the config file at /app/settings.conf to enable debug mode"
 <ROUTE>
 <TOOL_REASONING>Request requires file system access to read and modify a configuration file. Native model cannot directly access or modify files on the file system.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
-<EXECUTION_REASONING>Based on the need for file operations and modification, selecting the route from available routes that handles file manipulation tasks.</EXECUTION_REASONING>
+<EXECUTION_REASONING>Based on the need for file operations and modification, selecting the coder route which handles file manipulation tasks.</EXECUTION_REASONING>
 <EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
 <DOMAIN>coder</DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
-<CHOICE>file_operations_route</CHOICE>
+<CHOICE>coder</CHOICE>
 </ROUTE>
 
 **Example 2: Native capability task**
@@ -103,7 +105,7 @@ Request: "Explain the concept of quantum entanglement in simple terms"
 <EXECUTION_TYPE>text_generation</EXECUTION_TYPE>
 <DOMAIN></DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
-<CHOICE>explanation_route</CHOICE>
+<CHOICE>general_conversation</CHOICE>
 </ROUTE>
 
 **Example 3: Direct route with FastPath**
@@ -132,7 +134,7 @@ Request: "Fix the bug in main.py where the authentication function fails on empt
 <EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
 <DOMAIN>coder</DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
-<CHOICE>file_operations_route</CHOICE>
+<CHOICE>coder</CHOICE>
 </ROUTE>
 
 ## YOUR TASK:

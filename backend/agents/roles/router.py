@@ -158,8 +158,8 @@ class Router:
         estimated_tokens = token_estimate['estimated_tokens']['total']
         logger.debug(f"Router estimated tokens: {estimated_tokens}")
 
-        if providers and "gemini" in providers and providers["gemini"].is_available():
-            response = providers["gemini"].generate_text(
+        if providers and router_provider in providers and providers[router_provider].is_available():
+            response = providers[router_provider].generate_text(
                 prompt=prompt,
                 model=self.router_model,
                 include_thoughts=False,
@@ -175,7 +175,7 @@ class Router:
 
             response = chat.generate_text(
                 message=prompt,
-                provider="gemini",
+                provider=router_provider,
                 model=self.router_model,
                 include_reasoning=False,
                 use_router=False

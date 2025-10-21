@@ -849,28 +849,40 @@ class SingleDomainExecutor:
 
     def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
+        from utils.config import infer_provider_from_model
+
+        model = agent.model_preference or "gemini-2.5-flash"
+        provider = infer_provider_from_model(model)
 
         temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
-        response = temp_chat.generate_text(
-            message=prompt,
-            provider="gemini",
-            model=agent.model_preference or "gemini-2.5-flash",
-            include_reasoning=False,
-            use_router=False,
-        )
 
-        if response.get("error"):
-            raise RuntimeError(response["error"])
+        # Use streaming to prevent connection timeouts with slow models
+        full_text = ""
+        error_message = None
 
-        text = response.get("text")
-        if isinstance(text, str) and text.strip():
-            return text
+        try:
+            for chunk in temp_chat.generate_text_stream(
+                message=prompt,
+                provider=provider,
+                model=model,
+                include_reasoning=False,
+                use_router=False,
+            ):
+                chunk_type = chunk.get("type")
+                if chunk_type == "error":
+                    error_message = chunk.get("content", "Unknown error")
+                    break
+                elif chunk_type == "answer":
+                    full_text += chunk.get("content", "")
+                # Ignore other chunk types like "thoughts" since include_reasoning=False
+        except Exception as e:
+            raise RuntimeError(f"Error during streaming text generation: {e}")
 
-        choices = response.get("choices")
-        if isinstance(choices, list) and choices:
-            alt_text = choices[0].get("text")
-            if isinstance(alt_text, str):
-                return alt_text
+        if error_message:
+            raise RuntimeError(error_message)
+
+        if full_text.strip():
+            return full_text
 
         return ""
 
