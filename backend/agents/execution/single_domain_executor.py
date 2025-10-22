@@ -1,4 +1,4 @@
-﻿"""Single Domain Executor.
+"""Single Domain Executor.
 
 This module coordinates iterative execution for a single specialized domain.
 An agent produces structured tool proposals that require explicit user approval.
@@ -12,6 +12,7 @@ import datetime
 import difflib
 import json
 import time
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -920,7 +921,7 @@ class SingleDomainExecutor:
         tool_history_section = self._format_tool_history(state.tool_history)
         task_notes_section = self._format_task_notes(state)
 
-        return BASE_AGENT_PROMPT.format(
+        prompt = BASE_AGENT_PROMPT.format(
             domain_specific_instructions=domain_instructions,
             tool_descriptions=tool_descriptions,
             domain_id=domain.domain_id,
@@ -936,6 +937,10 @@ class SingleDomainExecutor:
             task_notes_section=task_notes_section,
             response_format=AGENT_RESPONSE_FORMAT,
         )
+
+        prompt = re.sub(r'\n{3,}', '\n\n', prompt)
+
+        return prompt
 
     # ------------------------------------------------------------------
     # Formatting helpers

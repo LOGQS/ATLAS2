@@ -34,9 +34,7 @@ Rules:
 - Never execute tools yourself—you only propose them for approval.
 - Do not add any text outside the <AGENT_DECISION> block.
 
-═══════════════════════════════════════════════════════════════════════════════
 CRITICAL - PARAMETER VALUE FORMATTING (READ THIS CAREFULLY):
-═══════════════════════════════════════════════════════════════════════════════
 
 Tags are DELIMITERS for regex extraction - NOT XML. Write parameter values LITERALLY.
 
@@ -56,7 +54,6 @@ Rules for parameter values:
 • Tags are regex delimiters - content is extracted literally
 • Multi-line values are allowed - write them naturally
 
-═══════════════════════════════════════════════════════════════════════════════
 """
 
 
