@@ -1,6 +1,6 @@
 # status: complete
 
-from typing import Dict, Any, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 import json
@@ -79,13 +79,42 @@ class OpenRouter:
             logger.warning(f"OpenRouter tiktoken counting failed: {e}, using fallback")
             return max(1, len(text) // 4)
 
-    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
+    @staticmethod
+    def _usage_from_response(response: Any) -> Optional[int]:
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        total = usage.get("total_tokens")
+        return int(total) if isinstance(total, int) else None
+
+    def _execute_with_rate_limit(
+        self,
+        operation_name: str,
+        method,
+        *args,
+        estimated_tokens: Optional[int] = None,
+        usage_getter: Optional[Callable[[Any], Optional[int]]] = None,
+        **kwargs,
+    ):
         """Common rate limiting wrapper for all API calls"""
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
+        json_payload = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else {}
+        model_name = json_payload.get("model") or kwargs.get("model")
+        rate_config = Config.get_rate_limit_config(provider="openrouter", model=model_name)
+        limiter = get_rate_limiter()
+        return limiter.execute(
+            method,
+            operation_name,
+            *args,
+            limit_config=rate_config,
+            usage_getter=usage_getter or self._usage_from_response,
+            estimated_tokens=estimated_tokens,
+            **kwargs,
         )
-        return limiter.execute(method, operation_name, *args, **kwargs)
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to OpenRouter/OpenAI format"""
@@ -109,6 +138,8 @@ class OpenRouter:
         """Generate text response with chat history context"""
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -148,7 +179,8 @@ class OpenRouter:
                 self.BASE_URL,
                 headers=headers,
                 json=data,
-                timeout=30
+                timeout=30,
+                estimated_tokens=estimated_tokens
             )
 
             response.raise_for_status()
@@ -211,6 +243,8 @@ class OpenRouter:
             yield {"type": "error", "content": "Provider not available"}
             return
 
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+
         messages = []
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
@@ -251,7 +285,9 @@ class OpenRouter:
                 headers=headers,
                 json=data,
                 stream=True,
-                timeout=30
+                timeout=30,
+                estimated_tokens=estimated_tokens,
+                usage_getter=None,
             )
 
             response.raise_for_status()

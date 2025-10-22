@@ -832,9 +832,15 @@ class Chat:
         )
         logger.debug(f"Estimated tokens for request: {token_estimate['estimated_tokens']['total']}")
 
+        estimated_total_tokens = token_estimate['estimated_tokens']['total']
         response = self.providers[provider].generate_text(
-            message, model=model, include_thoughts=use_reasoning,
-            chat_history=chat_history, file_attachments=file_attachments, **config_params
+            message,
+            model=model,
+            include_thoughts=use_reasoning,
+            chat_history=chat_history,
+            file_attachments=file_attachments,
+            rate_limit_estimated_tokens=estimated_total_tokens,
+            **config_params,
         )
 
         actual_tokens = context_manager.extract_actual_tokens_from_response(response, provider)
@@ -964,9 +970,16 @@ class Chat:
                 publish_state(self.chat_id, "responding")
                 current_state = "responding"
 
+        estimated_total_tokens = token_estimate['estimated_tokens']['total']
+
         for chunk in self.providers[provider].generate_text_stream(
-            message, model=model, include_thoughts=use_reasoning,
-            chat_history=chat_history, file_attachments=file_attachments, **config_params
+            message,
+            model=model,
+            include_thoughts=use_reasoning,
+            chat_history=chat_history,
+            file_attachments=file_attachments,
+            rate_limit_estimated_tokens=estimated_total_tokens,
+            **config_params,
         ):
 
             if chunk.get("type") == "thoughts":
@@ -1070,4 +1083,3 @@ class Chat:
             attached_file_ids, user_message_id, config_params.get('is_retry', False),
             router_result_to_pass
         )
-

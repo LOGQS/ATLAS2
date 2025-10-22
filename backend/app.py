@@ -28,6 +28,7 @@ from route.folder_picker_route import register_folder_picker_routes
 from route.coder_git_route import coder_git_bp
 from route.stt_route import register_stt_routes
 from route.image_route import image_bp
+from route.rate_limit_route import register_rate_limit_routes
 from route.token_route import register_token_routes
 from utils.config import Config
 from utils.logger import get_logger
@@ -35,6 +36,7 @@ from file_utils.file_handler import setup_filespace, sync_files_with_database
 from file_utils.filesystem_watcher import start_filesystem_monitor, stop_filesystem_monitor
 from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
+from utils.rate_limit_store import load_rate_limit_overrides
 
 logger = get_logger(__name__)
 
@@ -194,6 +196,7 @@ def create_app():
     cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
     CORS(app, origins=[origin.strip() for origin in cors_origins])
     
+    load_rate_limit_overrides()
     _run_startup_housekeeping()
 
     register_chat_routes(app)
@@ -209,6 +212,7 @@ def create_app():
     app.register_blueprint(coder_git_bp)
     register_stt_routes(app)
     register_token_routes(app)
+    register_rate_limit_routes(app)
     app.register_blueprint(image_bp)
 
     try:

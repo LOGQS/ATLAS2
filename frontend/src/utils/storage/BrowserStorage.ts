@@ -34,6 +34,24 @@ export interface AttachedFile {
 
 export type MessageStatsSource = 'performance-tracker' | 'manual';
 
+
+export type RateLimitFieldAlias = 'rpm' | 'rph' | 'rpd' | 'tpm' | 'tph' | 'tpd';
+
+export interface RateLimitDraftValues {
+  rpm?: string;
+  rph?: string;
+  rpd?: string;
+  tpm?: string;
+  tph?: string;
+  tpd?: string;
+}
+
+export interface RateLimitDrafts {
+  global?: RateLimitDraftValues;
+  providers?: Record<string, RateLimitDraftValues>;
+  models?: Record<string, Record<string, RateLimitDraftValues>>;
+}
+
 export interface MessageGenerationStats {
   messageId: string;
   totalTimeMs: number | null;
@@ -82,6 +100,7 @@ export class BrowserStorage {
   private static readonly ATTACHED_FILES_KEY = 'atlas_attached_files';
   private static readonly SOURCE_PREFS_KEY = 'atlas_source_preferences';
   private static readonly MESSAGE_STATS_KEY = 'atlas_message_stats_v1';
+  private static readonly RATE_LIMIT_DRAFTS_KEY = 'atlas_rate_limit_drafts';
   private static readonly MESSAGE_STATS_LIMIT = 200;
 
   static getUISettings(): UISettings {
@@ -112,6 +131,44 @@ export class BrowserStorage {
     const currentSettings = this.getUISettings();
     const updatedSettings = { ...currentSettings, [key]: value };
     this.setUISettings(updatedSettings);
+  }
+
+
+  static getRateLimitDrafts(): RateLimitDrafts {
+    try {
+      const stored = localStorage.getItem(this.RATE_LIMIT_DRAFTS_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return {
+          global: parsed.global || undefined,
+          providers: parsed.providers || undefined,
+          models: parsed.models || undefined,
+        };
+      }
+    } catch (error) {
+      console.warn('Failed to load rate limit drafts from localStorage:', error);
+    }
+    return {};
+  }
+
+  static setRateLimitDrafts(drafts: RateLimitDrafts): void {
+    try {
+      if (!drafts.global && !drafts.providers && !drafts.models) {
+        localStorage.removeItem(this.RATE_LIMIT_DRAFTS_KEY);
+        return;
+      }
+      localStorage.setItem(this.RATE_LIMIT_DRAFTS_KEY, JSON.stringify(drafts));
+    } catch (error) {
+      console.warn('Failed to persist rate limit drafts to localStorage:', error);
+    }
+  }
+
+  static clearRateLimitDrafts(): void {
+    try {
+      localStorage.removeItem(this.RATE_LIMIT_DRAFTS_KEY);
+    } catch (error) {
+      console.warn('Failed to clear rate limit drafts from localStorage:', error);
+    }
   }
 
   static getAttachedFiles(): AttachedFile[] {

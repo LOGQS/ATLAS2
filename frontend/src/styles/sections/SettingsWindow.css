@@ -132,3 +132,145 @@
   background: rgba(220, 53, 69, 0.3);
   border-color: rgba(220, 53, 69, 0.6);
 }
+
+.rate-limits-group {
+  margin-top: 32px;
+}
+
+.rate-limit-intro {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  margin: 0 0 16px 0;
+}
+
+.rate-limit-feedback {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.rate-limit-feedback-error {
+  color: #ff6b7d;
+  border-color: rgba(220, 53, 69, 0.4);
+  background: rgba(220, 53, 69, 0.12);
+}
+
+.rate-limit-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.rate-limit-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rate-limit-card-provider {
+  border-color: rgba(74, 144, 226, 0.25);
+}
+
+.rate-limit-card-model {
+  margin-left: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.rate-limit-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.rate-limit-card-title h6 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.rate-limit-card-title p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.rate-limit-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.rate-limit-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.rate-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rate-limit-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.rate-limit-field input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #ffffff;
+  padding: 8px 10px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.rate-limit-field input:focus {
+  border-color: rgba(74, 144, 226, 0.5);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rate-limit-field-description {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.rate-limit-status {
+  font-size: 11px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+
+.rate-limit-status-success {
+  color: #4fd1a1;
+  border-color: rgba(79, 209, 161, 0.4);
+  background: rgba(79, 209, 161, 0.12);
+}
+
+.rate-limit-status-error {
+  color: #ff6b7d;
+  border-color: rgba(220, 53, 69, 0.4);
+  background: rgba(220, 53, 69, 0.12);
+}
+
+.rate-limit-models {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

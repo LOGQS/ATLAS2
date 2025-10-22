@@ -1,7 +1,14 @@
 # status: complete
 
-from typing import Dict, Any
+import copy
+import json
+import os
 import threading
+from typing import Any, Dict, Optional
+
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 _provider_cache = None
@@ -176,8 +183,25 @@ class Config:
 
     DEFAULT_STREAMING = True
 
-    RATE_LIMIT_REQUESTS_PER_MINUTE = 60
-    RATE_LIMIT_BURST_SIZE = 10
+    RATE_LIMIT_REQUESTS_PER_MINUTE = 10
+    RATE_LIMIT_REQUESTS_PER_HOUR: Optional[int] = None
+    RATE_LIMIT_REQUESTS_PER_DAY: Optional[int] = None
+    RATE_LIMIT_TOKENS_PER_MINUTE: Optional[int] = None
+    RATE_LIMIT_TOKENS_PER_HOUR: Optional[int] = None
+    RATE_LIMIT_TOKENS_PER_DAY: Optional[int] = None
+    RATE_LIMIT_BURST_SIZE: Optional[int] = 10
+    PROVIDER_DEFAULT_OPTIONS: Dict[str, Dict[str, Any]] = {}
+    MODEL_DEFAULT_OPTIONS: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    _RATE_LIMIT_FIELDS = (
+        "requests_per_minute",
+        "requests_per_hour",
+        "requests_per_day",
+        "tokens_per_minute",
+        "tokens_per_hour",
+        "tokens_per_day",
+        "burst_size",
+    )
+    _rate_limit_lock = threading.RLock()
 
     STT_USE_CLOUD = True
     STT_PROVIDER = "groq"
@@ -232,14 +256,280 @@ class Config:
         return cls.DEFAULT_STREAMING
     
     @classmethod
-    def get_rate_limit_requests_per_minute(cls) -> int:
+    def _env_slug(cls, value: str) -> str:
+        """Transform provider/model ids into env-safe tokens."""
+        return "".join(ch if ch.isalnum() else "_" for ch in value.upper())
+
+    @classmethod
+    def _load_json_env(cls, env_key: str) -> Dict[str, Any]:
+        """Parse JSON options from environment variables."""
+        raw = os.getenv(env_key)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+            logger.warning("Ignoring non-dict options for %s", env_key)
+        except json.JSONDecodeError:
+            logger.warning("Failed to decode JSON for %s", env_key, exc_info=True)
+        return {}
+
+    @staticmethod
+    def _coerce_positive_int(value: Any) -> Optional[int]:
+        """Convert value to positive int, returning None on failure."""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    @staticmethod
+    def _coerce_non_negative_int(value: Any) -> Optional[int]:
+        """Convert value to non-negative int, returning None on failure."""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None
+
+    @classmethod
+    def _deep_merge(cls, base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge dictionaries without mutating inputs."""
+        merged = copy.deepcopy(base)
+        for key, value in (override or {}).items():
+            if (
+                key in merged
+                and isinstance(merged[key], dict)
+                and isinstance(value, dict)
+            ):
+                merged[key] = cls._deep_merge(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
+    @classmethod
+    def _sanitize_rate_limit_dict(cls, limits: Dict[str, Any]) -> Dict[str, Optional[int]]:
+        """Return sanitized rate limit dictionary containing only known fields."""
+        sanitized: Dict[str, Optional[int]] = {}
+        for field in cls._RATE_LIMIT_FIELDS:
+            raw_value = limits.get(field)
+            if raw_value is None or raw_value == "":
+                sanitized[field] = None
+                continue
+
+            if field == "burst_size":
+                coerced = cls._coerce_non_negative_int(raw_value)
+            else:
+                coerced = cls._coerce_positive_int(raw_value)
+
+            sanitized[field] = coerced
+
+        rpm = sanitized.get("requests_per_minute")
+        burst = sanitized.get("burst_size")
+        if rpm is not None and burst is not None:
+            sanitized["burst_size"] = min(burst, rpm)
+        return sanitized
+
+    @classmethod
+    def _get_global_rate_limit_config(cls) -> Dict[str, Optional[int]]:
+        """Return global rate limit settings with environment overrides."""
+        raw_limits = {
+            "requests_per_minute": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_MINUTE")
+            ) or cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
+            "requests_per_hour": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_HOUR")
+            ) or cls.RATE_LIMIT_REQUESTS_PER_HOUR,
+            "requests_per_day": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_DAY")
+            ) or cls.RATE_LIMIT_REQUESTS_PER_DAY,
+            "tokens_per_minute": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_MINUTE")
+            ) or cls.RATE_LIMIT_TOKENS_PER_MINUTE,
+            "tokens_per_hour": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_HOUR")
+            ) or cls.RATE_LIMIT_TOKENS_PER_HOUR,
+            "tokens_per_day": cls._coerce_positive_int(
+                os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_DAY")
+            ) or cls.RATE_LIMIT_TOKENS_PER_DAY,
+            "burst_size": cls._coerce_non_negative_int(
+                os.getenv("ATLAS_RATE_LIMIT_BURST_SIZE")
+            ),
+        }
+
+        if raw_limits["burst_size"] is None:
+            raw_limits["burst_size"] = cls.RATE_LIMIT_BURST_SIZE
+
+        return cls._sanitize_rate_limit_dict(raw_limits)
+
+    @classmethod
+    def _get_global_options(cls) -> Dict[str, Any]:
+        """Base options that apply to every provider/model."""
+        return {
+            "rate_limit": cls._get_global_rate_limit_config()
+        }
+
+    @classmethod
+    def _get_provider_specific_options(cls, provider: str) -> Dict[str, Any]:
+        """Default and environment options for a provider."""
+        if not provider:
+            return {}
+
+        defaults = cls.PROVIDER_DEFAULT_OPTIONS.get(provider, {})
+        env_key = f"ATLAS_PROVIDER_OPTIONS_{cls._env_slug(provider)}"
+        env_options = cls._load_json_env(env_key)
+        merged = cls._deep_merge(defaults, env_options)
+        if "rate_limit" in merged:
+            merged["rate_limit"] = cls._sanitize_rate_limit_dict(merged["rate_limit"])
+        return merged
+
+    @classmethod
+    def _get_model_specific_options(cls, provider: Optional[str], model: str) -> Dict[str, Any]:
+        """Default and environment options for a model."""
+        if not model:
+            return {}
+
+        defaults: Dict[str, Any] = {}
+        if provider:
+            defaults = cls.MODEL_DEFAULT_OPTIONS.get(provider, {}).get(model, {})
+        else:
+            for provider_models in cls.MODEL_DEFAULT_OPTIONS.values():
+                if model in provider_models:
+                    defaults = provider_models[model]
+                    break
+
+        env_parts = ["ATLAS_MODEL_OPTIONS"]
+        if provider:
+            env_parts.append(cls._env_slug(provider))
+        env_parts.append(cls._env_slug(model))
+        env_key = "_".join(env_parts)
+        env_options = cls._load_json_env(env_key)
+        merged = cls._deep_merge(defaults, env_options)
+        if "rate_limit" in merged:
+            merged["rate_limit"] = cls._sanitize_rate_limit_dict(merged["rate_limit"])
+        return merged
+
+    @classmethod
+    def get_options(cls, provider: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
+        """Return merged options for the given provider/model hierarchy."""
+        options = copy.deepcopy(cls._get_global_options())
+
+        if provider:
+            provider_options = cls._get_provider_specific_options(provider)
+            options = cls._deep_merge(options, provider_options)
+
+        if model:
+            model_options = cls._get_model_specific_options(provider, model)
+            options = cls._deep_merge(options, model_options)
+
+        options["rate_limit"] = cls._sanitize_rate_limit_dict(options.get("rate_limit", {}))
+        return options
+
+    @classmethod
+    def get_provider_options(cls, provider: str) -> Dict[str, Any]:
+        """Options effective for the given provider."""
+        return cls.get_options(provider=provider)
+
+    @classmethod
+    def get_model_options(cls, provider: str, model: str) -> Dict[str, Any]:
+        """Options effective for the given provider/model combination."""
+        return cls.get_options(provider=provider, model=model)
+
+    @classmethod
+    def set_rate_limit_override(
+        cls,
+        provider: Optional[str],
+        model: Optional[str],
+        limits: Optional[Dict[str, Any]],
+    ) -> Dict[str, Optional[int]]:
+        """
+        Set or clear rate limit overrides for a provider/model combination.
+
+        Passing a limits dict with all values set to None removes the override.
+        """
+        sanitized = cls._sanitize_rate_limit_dict(limits or {})
+        has_limit = any(value is not None for value in sanitized.values())
+
+        with cls._rate_limit_lock:
+            if provider and model:
+                provider_models = cls.MODEL_DEFAULT_OPTIONS.setdefault(provider, {})
+                if not has_limit:
+                    existing = provider_models.get(model)
+                    if existing and "rate_limit" in existing:
+                        existing.pop("rate_limit", None)
+                    if existing is not None and not existing:
+                        provider_models.pop(model, None)
+                    if not provider_models:
+                        cls.MODEL_DEFAULT_OPTIONS.pop(provider, None)
+                else:
+                    entry = provider_models.setdefault(model, {})
+                    entry["rate_limit"] = sanitized
+            elif provider:
+                if not has_limit:
+                    existing = cls.PROVIDER_DEFAULT_OPTIONS.get(provider)
+                    if existing and "rate_limit" in existing:
+                        existing.pop("rate_limit", None)
+                    if existing is not None and not existing:
+                        cls.PROVIDER_DEFAULT_OPTIONS.pop(provider, None)
+                else:
+                    entry = cls.PROVIDER_DEFAULT_OPTIONS.setdefault(provider, {})
+                    entry["rate_limit"] = sanitized
+            else:
+                # Update global defaults
+                if not has_limit:
+                    # Reset to class defaults
+                    cls.RATE_LIMIT_REQUESTS_PER_MINUTE = 10
+                    cls.RATE_LIMIT_REQUESTS_PER_HOUR = None
+                    cls.RATE_LIMIT_REQUESTS_PER_DAY = None
+                    cls.RATE_LIMIT_TOKENS_PER_MINUTE = None
+                    cls.RATE_LIMIT_TOKENS_PER_HOUR = None
+                    cls.RATE_LIMIT_TOKENS_PER_DAY = None
+                    cls.RATE_LIMIT_BURST_SIZE = 10
+                else:
+                    cls.RATE_LIMIT_REQUESTS_PER_MINUTE = sanitized.get("requests_per_minute") or cls.RATE_LIMIT_REQUESTS_PER_MINUTE
+                    cls.RATE_LIMIT_REQUESTS_PER_HOUR = sanitized.get("requests_per_hour")
+                    cls.RATE_LIMIT_REQUESTS_PER_DAY = sanitized.get("requests_per_day")
+                    cls.RATE_LIMIT_TOKENS_PER_MINUTE = sanitized.get("tokens_per_minute")
+                    cls.RATE_LIMIT_TOKENS_PER_HOUR = sanitized.get("tokens_per_hour")
+                    cls.RATE_LIMIT_TOKENS_PER_DAY = sanitized.get("tokens_per_day")
+                    cls.RATE_LIMIT_BURST_SIZE = sanitized.get("burst_size") or cls.RATE_LIMIT_BURST_SIZE
+
+        return cls.get_rate_limit_config(provider=provider, model=model)
+
+    @classmethod
+    def get_rate_limit_config(cls, provider: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Optional[int]]:
+        """Return the effective rate limit configuration."""
+        options = cls.get_options(provider=provider, model=model)
+        rate_options = options.get("rate_limit", {}) if isinstance(options.get("rate_limit"), dict) else {}
+
+        merged = dict(cls._get_global_rate_limit_config())
+        for field in cls._RATE_LIMIT_FIELDS:
+            if field in rate_options:
+                merged[field] = rate_options[field]
+
+        return cls._sanitize_rate_limit_dict(merged)
+
+    @classmethod
+    def get_rate_limit_requests_per_minute(cls, provider: Optional[str] = None, model: Optional[str] = None) -> int:
         """Get rate limit requests per minute."""
-        return cls.RATE_LIMIT_REQUESTS_PER_MINUTE
+        config = cls.get_rate_limit_config(provider=provider, model=model)
+        rpm = config.get("requests_per_minute")
+        if rpm is None:
+            return cls.RATE_LIMIT_REQUESTS_PER_MINUTE or 0
+        return rpm
     
     @classmethod
-    def get_rate_limit_burst_size(cls) -> int:
+    def get_rate_limit_burst_size(cls, provider: Optional[str] = None, model: Optional[str] = None) -> int:
         """Get rate limit burst size."""
-        return cls.RATE_LIMIT_BURST_SIZE
+        config = cls.get_rate_limit_config(provider=provider, model=model)
+        burst = config.get("burst_size")
+        if burst is None:
+            fallback = cls.RATE_LIMIT_BURST_SIZE
+            if isinstance(fallback, int):
+                return fallback
+            return config.get("requests_per_minute") or 0
+        return burst
 
     @classmethod
     def get_stt_use_cloud(cls) -> bool:
@@ -259,12 +549,18 @@ class Config:
     @classmethod
     def get_defaults(cls) -> dict:
         """Get all default configurations."""
+        rate_limit_defaults = cls.get_rate_limit_config()
         return {
             "provider": cls.get_default_provider(),
             "model": cls.DEFAULT_MODEL,
             "streaming": cls.DEFAULT_STREAMING,
-            "rate_limit_requests_per_minute": cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
-            "rate_limit_burst_size": cls.RATE_LIMIT_BURST_SIZE,
+            "rate_limit_requests_per_minute": rate_limit_defaults["requests_per_minute"],
+            "rate_limit_requests_per_hour": rate_limit_defaults["requests_per_hour"],
+            "rate_limit_requests_per_day": rate_limit_defaults["requests_per_day"],
+            "rate_limit_tokens_per_minute": rate_limit_defaults["tokens_per_minute"],
+            "rate_limit_tokens_per_hour": rate_limit_defaults["tokens_per_hour"],
+            "rate_limit_tokens_per_day": rate_limit_defaults["tokens_per_day"],
+            "rate_limit_burst_size": rate_limit_defaults["burst_size"],
             "stt_use_cloud": cls.STT_USE_CLOUD,
             "stt_provider": cls.STT_PROVIDER,
             "stt_model": cls.STT_MODEL

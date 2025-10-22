@@ -1,6 +1,6 @@
 # status: complete
 
-from typing import Dict, Any, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 import json
@@ -79,13 +79,38 @@ class Gemini:
         """Check if specific model supports reasoning"""
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
     
-    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
+    @staticmethod
+    def _usage_from_response(response: Any) -> Optional[int]:
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata is None:
+            return None
+        total_tokens = getattr(usage_metadata, "total_token_count", None)
+        if total_tokens is None:
+            return None
+        return int(total_tokens)
+
+    def _execute_with_rate_limit(
+        self,
+        operation_name: str,
+        method,
+        *args,
+        estimated_tokens: Optional[int] = None,
+        usage_getter: Optional[Callable[[Any], Optional[int]]] = None,
+        **kwargs,
+    ):
         """Common rate limiting wrapper for all API calls"""
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
+        model_name = kwargs.get("model")
+        rate_config = Config.get_rate_limit_config(provider="gemini", model=model_name)
+        limiter = get_rate_limiter()
+        return limiter.execute(
+            method,
+            operation_name,
+            *args,
+            limit_config=rate_config,
+            usage_getter=usage_getter or self._usage_from_response,
+            estimated_tokens=estimated_tokens,
+            **kwargs,
         )
-        return limiter.execute(method, operation_name, *args, **kwargs)
     
     def _validate_historical_files(self, attached_files: List[Dict[str, Any]]) -> List[str]:
         """Validate historical files and return list of available API file names"""
@@ -240,6 +265,8 @@ class Gemini:
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
         
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
         config = types.GenerateContentConfig(**config_params)
         if include_thoughts:
             config.thinking_config = types.ThinkingConfig(include_thoughts=True)
@@ -263,7 +290,8 @@ class Gemini:
                 self.client.models.generate_content,
                 model=model,
                 contents=contents,
-                config=config
+                config=config,
+                estimated_tokens=estimated_tokens
             )
         except Exception as e:
             error_message = self._extract_error_message(e)
@@ -351,7 +379,9 @@ class Gemini:
                 self.client.models.generate_content_stream,
                 model=model,
                 contents=contents,
-                config=config
+                config=config,
+                estimated_tokens=estimated_tokens,
+                usage_getter=None,
             )
         except Exception as e:
             error_message = self._extract_error_message(e)

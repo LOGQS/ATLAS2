@@ -3,234 +3,111 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import MagicMock, patch
 
 backend_dir = Path(__file__).resolve().parents[2]
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
-import utils.rate_limiter as rate_limiter_module
-from utils.rate_limiter import RateLimiter, get_rate_limiter
+import utils.rate_limiter as rate_limiter_module  # noqa: E402
+from utils.rate_limiter import RateLimiterManager, get_rate_limiter  # noqa: E402
 
 
-class TestRateLimiterBurstBehavior(unittest.TestCase):
-    """Test burst allowance behavior."""
+class RateLimiterManagerTests(unittest.TestCase):
+    """Tests for the rate limiter manager covering request and token limits."""
 
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
+    def setUp(self) -> None:
+        patcher_sleep = patch("utils.rate_limiter.time.sleep")
+        self.addCleanup(patcher_sleep.stop)
+        self.mock_sleep = patcher_sleep.start()
 
-    def test_allows_burst_requests_without_delay(self):
-        """Burst-size requests should execute immediately without waiting."""
-        limiter = RateLimiter(requests_per_minute=5, burst_size=2)
-        calls = []
+        self.manager = RateLimiterManager()
 
-        def callback(value):
-            calls.append(value)
-            return value * 2
+    def test_execute_without_limits_runs_immediately(self):
+        """When no limits are configured the callback should run without waiting."""
+        callback = MagicMock(return_value="done")
+        result = self.manager.execute(callback, "no_limits", limit_config={})
 
-        result_one = limiter.execute(callback, "burst_test", 21)
-        result_two = limiter.execute(callback, "burst_test", 3)
-
-        self.assertEqual(result_one, 42)
-        self.assertEqual(result_two, 6)
-        self.assertEqual(calls, [21, 3])
-
-        tracker, _ = limiter._get_tracker("burst_test")
-        self.assertEqual(len(tracker), 2)
-
-    def test_burst_size_of_zero_enforces_strict_limiting(self):
-        """Burst size of 0 should enforce rate limit on first request."""
-        limiter = RateLimiter(requests_per_minute=60, burst_size=0)
-
-        with patch("utils.rate_limiter.time.time", return_value=100.0):
-            tracker, lock = limiter._get_tracker("strict")
-            with lock:
-                tracker.append(100.0)
-
-        callback = Mock(return_value="done")
-
-        with patch("utils.rate_limiter.time.time", return_value=100.5), \
-                patch("utils.rate_limiter.time.sleep") as mock_sleep:
-            result = limiter.execute(callback, "strict")
-
-        mock_sleep.assert_called_once()
-        self.assertGreater(mock_sleep.call_args[0][0], 0)
-
-
-class TestRateLimiterWaitCalculation(unittest.TestCase):
-    """Test wait time calculation and enforcement."""
-
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
-
-    def test_calculates_correct_wait_time_after_burst(self):
-        """After burst is exhausted, wait time should be calculated correctly."""
-        limiter = RateLimiter(requests_per_minute=2, burst_size=1)
-        tracker, lock = limiter._get_tracker("wait_calc")
-
-        with lock:
-            tracker.append(0.0)
-
-        callback = Mock(return_value="done")
-
-        with patch("utils.rate_limiter.time.time", return_value=0.0), \
-                patch("utils.rate_limiter.time.sleep") as mock_sleep:
-            result = limiter.execute(callback, "wait_calc")
-
-        mock_sleep.assert_called_once()
-        wait_time = mock_sleep.call_args[0][0]
-        expected_wait = 30.0  
-        self.assertAlmostEqual(wait_time, expected_wait, places=1)
         callback.assert_called_once_with()
+        self.mock_sleep.assert_not_called()
         self.assertEqual(result, "done")
 
-    def test_validates_wait_time_calculation(self):
-        """Wait time should be correctly bounded by 60 second window."""
-        limiter = RateLimiter(requests_per_minute=2, burst_size=0)
-        tracker, lock = limiter._get_tracker("bounded")
+    def test_request_rate_limit_enforced(self):
+        """Requests should be delayed when exceeding the configured per-minute limit."""
+        with patch.dict(rate_limiter_module.WINDOW_SECONDS, {"minute": 0.1, "hour": 1.0, "day": 1.0}, clear=False):
+            config = {"requests_per_minute": 1, "burst_size": 1}
 
-        with lock:
-            tracker.extend([0.0, 30.0])
+            self.manager.execute(lambda: None, "req", limit_config=config)
+            self.mock_sleep.assert_not_called()
 
-        with patch("utils.rate_limiter.time.time", return_value=31.0):
-            wait_time = limiter._calculate_wait_time(tracker, 31.0)
-            self.assertAlmostEqual(wait_time, 29.0, places=1)
+            self.manager.execute(lambda: None, "req", limit_config=config)
+            self.assertTrue(self.mock_sleep.called)
+            waited = self.mock_sleep.call_args[0][0]
+            self.assertGreater(waited, 0)
 
+    def test_token_rate_limit_enforced(self):
+        """Token limits should trigger waits once the configured capacity is exceeded."""
+        with patch.dict(
+            rate_limiter_module.WINDOW_SECONDS,
+            {"minute": 0.1, "hour": 0.2, "day": 0.3},
+            clear=False,
+        ):
+            config = {
+                "requests_per_minute": 100,
+                "tokens_per_minute": 100,
+                "burst_size": 100,
+            }
 
-class TestRateLimiterTrackerManagement(unittest.TestCase):
-    """Test tracker creation and cleanup."""
+            self.manager.execute(lambda: None, "tokens", limit_config=config, estimated_tokens=80)
+            self.mock_sleep.assert_not_called()
 
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
+            self.manager.execute(lambda: None, "tokens", limit_config=config, estimated_tokens=30)
+            self.assertTrue(self.mock_sleep.called)
 
-    def test_creates_separate_trackers_for_different_keys(self):
-        """Each unique key should have its own tracker."""
-        limiter = RateLimiter(requests_per_minute=5, burst_size=2)
+    def test_usage_getter_updates_token_reservation(self):
+        """Actual usage reported by usage_getter should replace estimated tokens."""
+        with patch.dict(
+            rate_limiter_module.WINDOW_SECONDS,
+            {"minute": 0.5, "hour": 1.0, "day": 1.0},
+            clear=False,
+        ):
+            config = {
+                "requests_per_minute": 10,
+                "tokens_per_minute": 100,
+                "burst_size": 10,
+            }
 
-        limiter.execute(lambda: "a", "key_a")
-        limiter.execute(lambda: "b", "key_b")
+            def callback():
+                return "response"
 
-        tracker_a, _ = limiter._get_tracker("key_a")
-        tracker_b, _ = limiter._get_tracker("key_b")
+            def usage_getter(_response):
+                return 40
 
-        self.assertEqual(len(tracker_a), 1)
-        self.assertEqual(len(tracker_b), 1)
-        self.assertIsNot(tracker_a, tracker_b)
+            self.manager.execute(
+                callback,
+                "usage-key",
+                limit_config=config,
+                estimated_tokens=80,
+                usage_getter=usage_getter,
+            )
 
-    def test_cleanup_removes_old_requests(self):
-        """Requests older than 60 seconds should be removed from tracker."""
-        limiter = RateLimiter(requests_per_minute=10, burst_size=5)
-        tracker, lock = limiter._get_tracker("cleanup_test")
-
-        with lock:
-            tracker.extend([0.0, 30.0, 65.0, 100.0])
-
-        current_time = 125.0  
-        limiter._cleanup_old(tracker, current_time)
-
-        self.assertEqual(len(tracker), 2)
-        self.assertEqual(list(tracker), [65.0, 100.0])
-
-
-class TestRateLimiterStatusCheck(unittest.TestCase):
-    """Test status reporting functionality."""
-
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
-
-    def test_check_status_reports_accurate_state(self):
-        """Status should accurately reflect current limiter state."""
-        limiter = RateLimiter(requests_per_minute=5, burst_size=2)
-        tracker, lock = limiter._get_tracker("status_check")
-
-        with lock:
-            tracker.extend([10.0, 50.0])
-
-        with patch("utils.rate_limiter.time.time", return_value=55.0):
-            status = limiter.check_status("status_check")
-
-        self.assertEqual(status["requests_in_window"], 2)
-        self.assertEqual(status["requests_per_minute"], 5)
-        self.assertEqual(status["burst_size"], 2)
-        self.assertAlmostEqual(status["next_available"], 62.0, places=1)
-
-    def test_check_status_for_new_key(self):
-        """Status for a new key should show empty state."""
-        limiter = RateLimiter(requests_per_minute=10, burst_size=5)
-
-        status = limiter.check_status("new_key")
-
-        self.assertEqual(status["requests_in_window"], 0)
-        self.assertEqual(status["requests_per_minute"], 10)
+            state = self.manager._get_state("usage-key")  # type: ignore[attr-defined]
+            minute_log = list(state.token_logs["minute"])  # type: ignore[attr-defined]
+            self.assertEqual(len(minute_log), 1)
+            self.assertEqual(minute_log[0].value, 40)
 
 
-class TestRateLimiterSingleton(unittest.TestCase):
-    """Test singleton pattern for global rate limiter."""
+class GlobalRateLimiterHelperTests(unittest.TestCase):
+    """Tests covering the global get_rate_limiter helper."""
 
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
+    def tearDown(self) -> None:
+        rate_limiter_module._rate_limiter_manager = None
 
     def test_get_rate_limiter_returns_singleton(self):
-        """Multiple calls should return the same instance."""
-        rate_limiter_module._rate_limiter = None
-
-        limiter_one = get_rate_limiter(requests_per_minute=7, burst_size=3)
-        limiter_two = get_rate_limiter()
-
-        self.assertIs(limiter_one, limiter_two)
-        self.assertEqual(limiter_two.requests_per_minute, 7)
-        self.assertEqual(limiter_two.burst_size, 3)
-
-    def test_singleton_ignores_subsequent_parameters(self):
-        """After initialization, new parameters should be ignored."""
-        rate_limiter_module._rate_limiter = None
-
-        limiter_one = get_rate_limiter(requests_per_minute=10, burst_size=5)
-        limiter_two = get_rate_limiter(requests_per_minute=999, burst_size=999)
-
-        self.assertIs(limiter_one, limiter_two)
-        self.assertEqual(limiter_two.requests_per_minute, 10)
-        self.assertEqual(limiter_two.burst_size, 5)
+        first = get_rate_limiter()
+        second = get_rate_limiter()
+        self.assertIs(first, second)
 
 
-class TestRateLimiterEdgeCases(unittest.TestCase):
-    """Test edge cases and error handling."""
-
-    def tearDown(self):
-        """Reset global rate limiter after each test."""
-        rate_limiter_module._rate_limiter = None
-
-    def test_handles_callback_exceptions(self):
-        """Exceptions in callbacks should propagate correctly."""
-        limiter = RateLimiter(requests_per_minute=10, burst_size=5)
-
-        def failing_callback():
-            raise ValueError("Test error")
-
-        with self.assertRaises(ValueError) as ctx:
-            limiter.execute(failing_callback, "error_test")
-
-        self.assertEqual(str(ctx.exception), "Test error")
-
-        tracker, _ = limiter._get_tracker("error_test")
-        self.assertEqual(len(tracker), 1)
-
-    def test_passes_arguments_to_callback(self):
-        """Callback should receive all args and kwargs correctly."""
-        limiter = RateLimiter(requests_per_minute=10, burst_size=5)
-
-        def callback_with_args(a, b, c=None):
-            return f"{a}-{b}-{c}"
-
-        result = limiter.execute(callback_with_args, "args_test", "x", "y", c="z")
-
-        self.assertEqual(result, "x-y-z")
-
-
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

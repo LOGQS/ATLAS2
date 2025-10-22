@@ -38,7 +38,11 @@ class Pollinations:
             requests_per_minute = 4  
             logger.info("[POLLINATIONS-PROVIDER] No API key found - using anonymous tier (15s rate limit)")
 
-        self.rate_limiter = get_rate_limiter(requests_per_minute=requests_per_minute, burst_size=1)
+        self.rate_limiter = get_rate_limiter()
+        self.rate_limit_config = {
+            "requests_per_minute": requests_per_minute,
+            "burst_size": 1,
+        }
 
         self.images_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -167,7 +171,11 @@ class Pollinations:
             }
 
         try:
-            return self.rate_limiter.execute(_generate, "pollinations:image")
+            return self.rate_limiter.execute(
+                _generate,
+                "pollinations:image",
+                limit_config=self.rate_limit_config,
+            )
         except requests.RequestException as e:
             logger.error(f"[POLLINATIONS-PROVIDER] Request failed: {str(e)}")
             return {"success": False, "error": f"Request failed: {str(e)}"}

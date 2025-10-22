@@ -1,6 +1,6 @@
 # status: complete
 
-from typing import Dict, Any, Generator, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 from utils.logger import get_logger
@@ -85,13 +85,37 @@ class Groq:
             logger.warning(f"Groq tiktoken counting failed: {e}, using fallback")
             return max(1, len(text) // 4)
 
-    def _execute_with_rate_limit(self, operation_name: str, method, *args, **kwargs):
+    @staticmethod
+    def _usage_from_response(response: Any) -> Optional[int]:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+        total = getattr(usage, "total_tokens", None)
+        return int(total) if total is not None else None
+
+    def _execute_with_rate_limit(
+        self,
+        operation_name: str,
+        method,
+        *args,
+        estimated_tokens: Optional[int] = None,
+        usage_getter: Optional[Callable[[Any], Optional[int]]] = None,
+        **kwargs,
+    ):
         """Common rate limiting wrapper for all API calls"""
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
+        json_payload = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else {}
+        model_name = json_payload.get("model") or kwargs.get("model")
+        rate_config = Config.get_rate_limit_config(provider="groq", model=model_name)
+        limiter = get_rate_limiter()
+        return limiter.execute(
+            method,
+            operation_name,
+            *args,
+            limit_config=rate_config,
+            usage_getter=usage_getter or self._usage_from_response,
+            estimated_tokens=estimated_tokens,
+            **kwargs,
         )
-        return limiter.execute(method, operation_name, *args, **kwargs)
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Groq/OpenAI format"""
@@ -115,6 +139,8 @@ class Groq:
         """Generate text response with chat history context"""
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -143,6 +169,8 @@ class Groq:
             response = self._execute_with_rate_limit(
                 f"groq:{model}",
                 self.client.chat.completions.create,
+                usage_getter=None,
+                estimated_tokens=estimated_tokens,
                 **request_params
             )
 
@@ -191,6 +219,8 @@ class Groq:
             yield {"type": "error", "content": "Provider not available"}
             return
 
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+
         messages = []
         if chat_history:
             formatted_history = self._format_chat_history(chat_history)
@@ -219,6 +249,7 @@ class Groq:
             response = self._execute_with_rate_limit(
                 f"groq:{model}",
                 self.client.chat.completions.create,
+                estimated_tokens=estimated_tokens,
                 **request_params
             )
 
@@ -257,4 +288,3 @@ class Groq:
         except Exception as e:
             logger.error(f"Groq streaming API request failed: {str(e)}")
             yield {"type": "error", "content": str(e)}
-
