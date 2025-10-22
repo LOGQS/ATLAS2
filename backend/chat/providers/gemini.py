@@ -257,15 +257,14 @@ class Gemini:
                 sleep = min(sleep * self.POLLING_MULTIPLIER, self.POLLING_MAX_SLEEP)
         return len(remaining) == 0
     
-    def generate_text(self, prompt: str, model: str = "", 
+    def generate_text(self, prompt: str, model: str = "",
                      include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                      file_attachments: List[str] = None,
                      **config_params) -> Dict[str, Any]:
         """Generate text response with chat history context"""
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
-        
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+
         estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
         config = types.GenerateContentConfig(**config_params)
         if include_thoughts:
@@ -344,7 +343,7 @@ class Gemini:
             "usage_metadata": usage_metadata
         }
     
-    def generate_text_stream(self, prompt: str, model: str = "", 
+    def generate_text_stream(self, prompt: str, model: str = "",
                            include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                            file_attachments: List[str] = None,
                            **config_params) -> Generator[Dict[str, Any], None, None]:
@@ -352,7 +351,8 @@ class Gemini:
         if not self.is_available():
             yield {"type": "error", "content": "Provider not available"}
             return
-            
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
         config = types.GenerateContentConfig(**config_params)
         if include_thoughts:
             config.thinking_config = types.ThinkingConfig(include_thoughts=True)
