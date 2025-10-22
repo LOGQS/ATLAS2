@@ -3,6 +3,44 @@
   padding: 0;
 }
 
+/* Tab Navigation */
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 16px 20px 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-wrap: wrap;
+}
+
+.settings-tab {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px 8px 0 0;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+  border-bottom: none;
+  position: relative;
+  bottom: -1px;
+}
+
+.settings-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.settings-tab.active {
+  background: linear-gradient(135deg, rgba(255, 146, 79, 0.15) 0%, rgba(74, 144, 226, 0.15) 100%);
+  border-color: rgba(255, 146, 79, 0.4);
+  color: #ffffff;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+
 .settings-group {
   margin-bottom: 24px;
 }
@@ -189,6 +227,38 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  transition: background 0.2s ease;
+}
+
+.rate-limit-card-header.collapsible {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 6px;
+}
+
+.rate-limit-card-header.collapsible:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.rate-limit-card-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-right: 10px;
+  transition: transform 0.2s ease;
+  transform-origin: center;
+}
+
+.rate-limit-card-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.rate-limit-card-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 .rate-limit-card-title h6 {

@@ -12,6 +12,8 @@ type RateLimitScope = 'global' | 'provider' | 'model';
 
 type RateLimitField = keyof RateLimitResponseLimits;
 
+type SettingsSection = 'appearance' | 'behavior' | 'rate-limits' | 'storage' | 'advanced';
+
 interface RateLimitResponseLimits {
   requests_per_minute: number | null;
   requests_per_hour: number | null;
@@ -124,6 +126,9 @@ interface RateLimitCardProps {
   onSave: () => void;
   onReset: () => void;
   children?: React.ReactNode;
+  collapsible?: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
 }
 
 const RateLimitCard: React.FC<RateLimitCardProps> = ({
@@ -139,56 +144,89 @@ const RateLimitCard: React.FC<RateLimitCardProps> = ({
   onSave,
   onReset,
   children,
-}) => (
-  <div className={`rate-limit-card rate-limit-card-${scope}`}>
-    <div className="rate-limit-card-header">
-      <div className="rate-limit-card-title">
-        <h6>{title}</h6>
-        {subtitle ? <p>{subtitle}</p> : null}
+  collapsible = false,
+  isExpanded = true,
+  onToggleExpand,
+}) => {
+  const handleHeaderClick = () => {
+    if (collapsible && onToggleExpand) {
+      onToggleExpand();
+    }
+  };
+
+  return (
+    <div className={`rate-limit-card rate-limit-card-${scope}`}>
+      <div
+        className={`rate-limit-card-header ${collapsible ? 'collapsible' : ''}`}
+        onClick={collapsible ? handleHeaderClick : undefined}
+      >
+        <div className="rate-limit-card-title">
+          {collapsible && (
+            <span className={`rate-limit-card-chevron ${isExpanded ? 'expanded' : ''}`}>
+              â–¶
+            </span>
+          )}
+          <div>
+            <h6>{title}</h6>
+            {subtitle ? <p>{subtitle}</p> : null}
+          </div>
+        </div>
+        {isExpanded && (
+          <div className="rate-limit-card-actions">
+            <button
+              className="section-button primary"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSave();
+              }}
+              disabled={!hasChanges || saving}
+            >
+              {saving ? 'Savingï¿½' : 'Save'}
+            </button>
+            <button
+              className="section-button secondary"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onReset();
+              }}
+              disabled={!canReset || saving}
+            >
+              Reset
+            </button>
+          </div>
+        )}
       </div>
-      <div className="rate-limit-card-actions">
-        <button
-          className="section-button primary"
-          type="button"
-          onClick={onSave}
-          disabled={!hasChanges || saving}
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
-        <button
-          className="section-button secondary"
-          type="button"
-          onClick={onReset}
-          disabled={!canReset || saving}
-        >
-          Reset
-        </button>
-      </div>
+      {isExpanded && (
+        <>
+          <div className="rate-limit-fields">
+            {fields.map((field) => (
+              <label key={field.alias} className="rate-limit-field">
+                <span className="rate-limit-field-label">{field.label}</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={field.value}
+                  placeholder={field.placeholder || 'Default'}
+                  onChange={(event) => onChange(field.alias, event.target.value)}
+                />
+                <span className="rate-limit-field-description">{field.description}</span>
+              </label>
+            ))}
+          </div>
+          {status ? (
+            <div className={`rate-limit-status rate-limit-status-${status.type}`}>
+              {status.message}
+            </div>
+          ) : null}
+          {children}
+        </>
+      )}
     </div>
-    <div className="rate-limit-fields">
-      {fields.map((field) => (
-        <label key={field.alias} className="rate-limit-field">
-          <span className="rate-limit-field-label">{field.label}</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={field.value}
-            placeholder={field.placeholder || 'Default'}
-            onChange={(event) => onChange(field.alias, event.target.value)}
-          />
-          <span className="rate-limit-field-description">{field.description}</span>
-        </label>
-      ))}
-    </div>
-    {status ? (
-      <div className={`rate-limit-status rate-limit-status-${status.type}`}>
-        {status.message}
-      </div>
-    ) : null}
-    {children}
-  </div>
-);
+  );
+};
 
 function toAliasStringsFromLimits(limits: RateLimitResponseLimits): Record<RateLimitFieldAlias, string> {
   const result = {} as Record<RateLimitFieldAlias, string>;
@@ -387,6 +425,10 @@ function buildPayloadFromAlias(values: RateLimitDraftValues): Record<string, num
 }
 
 const SettingsWindow: React.FC = () => {
+  const [activeSection, setActiveSection] = useState<SettingsSection>('appearance');
+  const [expandedGlobal, setExpandedGlobal] = useState(true);
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
+
   const [theme, setTheme] = useState('dark');
   const [autoSave, setAutoSave] = useState(true);
   const [notifications, setNotifications] = useState(true);
@@ -598,6 +640,17 @@ const SettingsWindow: React.FC = () => {
     [clearDraftEntry, fetchRateLimits],
   );
 
+  const toggleGlobal = useCallback(() => {
+    setExpandedGlobal((prev) => !prev);
+  }, []);
+
+  const toggleProvider = useCallback((providerId: string) => {
+    setExpandedProviders((prev) => ({
+      ...prev,
+      [providerId]: !prev[providerId],
+    }));
+  }, []);
+
   const renderRateLimitCard = (
     scope: RateLimitScope,
     title: string,
@@ -606,6 +659,9 @@ const SettingsWindow: React.FC = () => {
     modelId?: string,
     subtitle?: string,
     childContent?: React.ReactNode,
+    collapsible?: boolean,
+    isExpanded?: boolean,
+    onToggleExpand?: () => void,
   ) => {
     const overrideAlias = toAliasStringsFromOverrides(data.overrides);
     const effectiveAlias = toAliasStringsFromLimits(data.limits);
@@ -675,20 +731,43 @@ const SettingsWindow: React.FC = () => {
         onChange={handleFieldChange}
         onSave={onSave}
         onReset={onReset}
+        collapsible={collapsible}
+        isExpanded={isExpanded}
+        onToggleExpand={onToggleExpand}
       >
         {childContent}
       </RateLimitCard>
     );
   };
 
+  const sections: { id: SettingsSection; label: string }[] = [
+    { id: 'appearance', label: 'Appearance' },
+    { id: 'behavior', label: 'Behavior' },
+    { id: 'rate-limits', label: 'Rate Limits' },
+    { id: 'storage', label: 'Storage' },
+    { id: 'advanced', label: 'Advanced' },
+  ];
+
   return (
     <div className="section-content">
       <div className="section-header">
         <h4>Settings</h4>
       </div>
+      <div className="settings-tabs">
+        {sections.map((section) => (
+          <button
+            key={section.id}
+            className={`settings-tab ${activeSection === section.id ? 'active' : ''}`}
+            onClick={() => setActiveSection(section.id)}
+          >
+            {section.label}
+          </button>
+        ))}
+      </div>
       <div className="section-body settings-body">
-        <div className="settings-group">
-          <h5>Appearance</h5>
+        {activeSection === 'appearance' && (
+          <div className="settings-group">
+            <h5>Appearance</h5>
           <div className="setting-item">
             <div className="setting-label">
               <span>Theme</span>
@@ -719,9 +798,11 @@ const SettingsWindow: React.FC = () => {
             </select>
           </div>
         </div>
+        )}
 
-        <div className="settings-group">
-          <h5>Behavior</h5>
+        {activeSection === 'behavior' && (
+          <div className="settings-group">
+            <h5>Behavior</h5>
           <div className="setting-item">
             <div className="setting-label">
               <span>Auto-save</span>
@@ -753,32 +834,48 @@ const SettingsWindow: React.FC = () => {
             </div>
           </div>
         </div>
+        )}
 
-        <div className="settings-group rate-limits-group">
-          <h5>Rate Limits</h5>
+        {activeSection === 'rate-limits' && (
+          <div className="settings-group rate-limits-group">
+            <h5>Rate Limits</h5>
           <p className="rate-limit-intro">
             Configure request and token limits for the backend providers. Leave a field blank to use
             the inherited defaults. Tokens represent total usage across prompt and completion.
           </p>
           {rateLimitLoading ? (
-            <div className="rate-limit-feedback">Loading rate limits…</div>
+            <div className="rate-limit-feedback">Loading rate limitsï¿½</div>
           ) : null}
           {rateLimitError ? (
             <div className="rate-limit-feedback rate-limit-feedback-error">{rateLimitError}</div>
           ) : null}
           {!rateLimitLoading && !rateLimitError && rateLimitData ? (
             <div className="rate-limit-grid">
-              {renderRateLimitCard('global', 'Global Defaults', rateLimitData.global, undefined, undefined)}
+              {renderRateLimitCard(
+                'global',
+                'Global Defaults',
+                rateLimitData.global,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                true,
+                expandedGlobal,
+                toggleGlobal,
+              )}
               {rateLimitData.providers.map((provider) => {
-                const modelCards = provider.models.map((model) =>
-                  renderRateLimitCard(
-                    'model',
-                    `Model: ${model.display_name}`,
-                    model,
-                    provider.id,
-                    model.id,
-                  ),
-                );
+                const isProviderExpanded = expandedProviders[provider.id] ?? false;
+                const modelCards = isProviderExpanded
+                  ? provider.models.map((model) =>
+                      renderRateLimitCard(
+                        'model',
+                        `Model: ${model.display_name}`,
+                        model,
+                        provider.id,
+                        model.id,
+                      ),
+                    )
+                  : [];
 
                 return renderRateLimitCard(
                   'provider',
@@ -790,6 +887,9 @@ const SettingsWindow: React.FC = () => {
                   modelCards.length > 0 ? (
                     <div className="rate-limit-models">{modelCards}</div>
                   ) : null,
+                  true,
+                  isProviderExpanded,
+                  () => toggleProvider(provider.id),
                 );
               })}
               {rateLimitData.providers.length === 0 ? (
@@ -798,9 +898,11 @@ const SettingsWindow: React.FC = () => {
             </div>
           ) : null}
         </div>
+        )}
 
-        <div className="settings-group">
-          <h5>Storage</h5>
+        {activeSection === 'storage' && (
+          <div className="settings-group">
+            <h5>Storage</h5>
           <div className="setting-item">
             <div className="setting-label">
               <span>Storage Usage</span>
@@ -815,13 +917,16 @@ const SettingsWindow: React.FC = () => {
             <button className="section-button secondary" type="button">Export Data</button>
           </div>
         </div>
+        )}
 
-        <div className="settings-group">
-          <h5>Advanced</h5>
+        {activeSection === 'advanced' && (
+          <div className="settings-group">
+            <h5>Advanced</h5>
           <div className="setting-item">
             <button className="section-button danger" type="button">Reset All Settings</button>
           </div>
         </div>
+        )}
       </div>
     </div>
   );
