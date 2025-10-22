@@ -96,14 +96,6 @@ const RATE_LIMIT_FIELDS: ReadonlyArray<RateLimitFieldConfig> = [
   },
 ];
 
-const aliasToField: Record<RateLimitFieldAlias, RateLimitField> = RATE_LIMIT_FIELDS.reduce(
-  (acc, { alias, field }) => {
-    acc[alias] = field;
-    return acc;
-  },
-  {} as Record<RateLimitFieldAlias, RateLimitField>,
-);
-
 interface RateLimitFieldState {
   alias: RateLimitFieldAlias;
   label: string;

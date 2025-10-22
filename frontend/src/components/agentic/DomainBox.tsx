@@ -375,7 +375,7 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   const isWaitingForUser = domainExecution?.status === 'waiting_user';
   const plan = domainExecution?.plan;
   const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';
-  const toolHistory = domainExecution?.tool_history || [];
+  const toolHistory = useMemo(() => domainExecution?.tool_history || [], [domainExecution?.tool_history]);
   const isCoderDomain = domainExecution?.domain_id === 'coder';
 
   const getLinesAdded = (operation: Partial<ToolOperation> | undefined): number => {

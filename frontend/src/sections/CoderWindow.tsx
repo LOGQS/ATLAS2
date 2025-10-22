@@ -13,7 +13,6 @@ import { CommandPalette } from '../components/coder/CommandPalette';
 import { EditorPane } from '../components/coder/EditorPane';
 import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
-import { DiffViewer } from '../components/coder/DiffViewer';
 import { configureMonaco } from '../config/monaco';
 import '../styles/sections/CoderWindow.css';
 import logger from '../utils/core/logger';
