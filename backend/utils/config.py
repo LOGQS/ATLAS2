@@ -133,24 +133,24 @@ ROUTE_MODEL_MAP = {
     "creative_writing": "moonshotai/kimi-k2-instruct-0905",  # Creative tasks benefit from stronger model
     "math_reasoning": "gemini-2.5-pro",     # Math requires strong reasoning
     "code_reasoning": "gemini-2.5-pro",     # Code analysis needs strong model
-    "visual_reasoning": "gemini-2.5-flash", # Vision tasks, flash supports multimodal
-    "general_conversation": "gemini-2.5-flash", # General queries can use fast model
+    "visual_reasoning": "gemini-2.5-flash-preview-09-2025", # Vision tasks, flash supports multimodal
+    "general_conversation": "gemini-2.5-flash-preview-09-2025", # General queries can use fast model
 
     # Execution modes (tools needed)
-    "direct": "gemini-2.5-flash",           # FastPath optimization, quick execution
+    "direct": "gemini-2.5-flash-preview-09-2025",           # FastPath optimization, quick execution
 
     # Single domains
-    "web_researcher": "gemini-2.5-flash",   # Research with iteration
-    "coder": "gemini-2.5-flash",              # Code generation needs strong model
-    "web_controller": "gemini-2.5-flash",   # Browser automation
-    "data_processor": "gemini-2.5-flash",   # Data operations can use fast model
-    "memory": "gemini-2.5-flash",           # Memory operations are straightforward
-    "system_manager": "gemini-2.5-flash",   # System operations
+    "web_researcher": "gemini-2.5-flash-preview-09-2025",   # Research with iteration
+    "coder": "gemini-2.5-flash-preview-09-2025",              # Code generation needs strong model
+    "web_controller": "gemini-2.5-flash-preview-09-2025",   # Browser automation
+    "data_processor": "gemini-2.5-flash-preview-09-2025",   # Data operations can use fast model
+    "memory": "gemini-2.5-flash-preview-09-2025",           # Memory operations are straightforward
+    "system_manager": "gemini-2.5-flash-preview-09-2025",   # System operations
     "teacher": "gemini-2.5-pro",            # Educational content needs quality
-    "gui_control": "gemini-2.5-flash",      # GUI automation
+    "gui_control": "gemini-2.5-flash-preview-09-2025",      # GUI automation
 
     # Multi-agent orchestration
-    "multi_domain": "gemini-2.5-flash",     # Planning uses fast model, agents use their own
+    "multi_domain": "gemini-2.5-flash-preview-09-2025",     # Planning uses fast model, agents use their own
     "iterative": "gemini-2.5-pro"           # Refinement benefits from strong evaluation
 }
 
@@ -176,7 +176,7 @@ class Config:
 
     DEFAULT_PROVIDER = "gemini"
 
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-2.5-flash-preview-09-2025"
 
     DEFAULT_ROUTER_ENABLED = True
     DEFAULT_ROUTER_MODEL = "gemini-2.5-flash-lite"

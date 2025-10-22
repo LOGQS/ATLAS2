@@ -860,7 +860,7 @@ class SingleDomainExecutor:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
         from utils.config import infer_provider_from_model
 
-        model = agent.model_preference or "gemini-2.5-flash"
+        model = agent.model_preference or "gemini-2.5-flash-preview-09-2025"
         provider = infer_provider_from_model(model)
 
         temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")

@@ -25,7 +25,7 @@ class Gemini:
     """
     
     AVAILABLE_MODELS = {
-        "gemini-2.5-flash": {
+        "gemini-2.5-flash-preview-09-2025": {
             "name": "Gemini 2.5 Flash",
             "supports_reasoning": True
         },

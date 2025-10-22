@@ -36,7 +36,7 @@ Always cite sources and evaluate information quality.""",
                     max_time_seconds=180,
                     max_context_tokens=15000,
                 ),
-                model_preference="gemini-2.5-flash",
+                model_preference="gemini-2.5-flash-preview-09-2025",
             )
         ],
         tool_allowlist=[
