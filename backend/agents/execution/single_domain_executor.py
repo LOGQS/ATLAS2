@@ -1582,7 +1582,11 @@ class SingleDomainExecutor:
             )
 
             if not decision_match:
-                self.logger.warning("[PARSE-ERROR] Missing AGENT_DECISION block")
+                self.logger.warning("[PARSE-ERROR] Missing AGENT_DECISION block - attempting fallback parsing")
+                fallback_result = self._fallback_parse_response(response_text)
+                if fallback_result["format_valid"]:
+                    self.logger.info("[PARSE-RECOVERY] Successfully recovered parsing using fallback logic")
+                    return fallback_result
                 return parsed
 
             body = decision_match.group(1)
@@ -1644,6 +1648,125 @@ class SingleDomainExecutor:
 
         except Exception as exc:
             self.logger.warning(f"Parse exception: {exc}")
+
+        return parsed
+
+    def _fallback_parse_response(self, response_text: str) -> Dict[str, Any]:
+        """
+        Fallback parser for malformed responses missing AGENT_DECISION wrapper.
+
+        Attempts to extract:
+        1. Plain text message (before first tag)
+        2. TOOL_CALL sections directly from response
+        3. AGENT_STATUS tag if present
+
+        This provides resilience against LLM formatting errors while maintaining
+        functional extraction of the core information needed for execution.
+        """
+        import re
+
+        parsed: Dict[str, Any] = {
+            "message": "",
+            "raw": response_text,
+            "status": "PARSE_ERROR",
+            "tool_call": None,
+            "format_valid": False,
+        }
+
+        try:
+            # Try to extract AGENT_STATUS directly
+            status_match = re.search(
+                r"<AGENT_STATUS>(.*?)</AGENT_STATUS>",
+                response_text,
+                re.DOTALL | re.IGNORECASE
+            )
+
+            # Try to extract TOOL_CALL sections directly
+            tool_section_matches = re.findall(
+                r"<TOOL_CALL>(.*?)</TOOL_CALL>",
+                response_text,
+                re.DOTALL | re.IGNORECASE
+            )
+
+            # Extract MESSAGE or use text before first tag as message
+            message_match = re.search(
+                r"<MESSAGE>(.*?)</MESSAGE>",
+                response_text,
+                re.DOTALL | re.IGNORECASE
+            )
+
+            if message_match:
+                parsed["message"] = message_match.group(1).strip()
+            else:
+                # Extract text before first XML-like tag as message
+                first_tag_match = re.search(r"<\w+", response_text)
+                if first_tag_match:
+                    plain_text = response_text[:first_tag_match.start()].strip()
+                    if plain_text:
+                        parsed["message"] = plain_text
+                else:
+                    parsed["message"] = response_text.strip()
+
+            # Parse TOOL_CALL sections
+            tool_calls = []
+            for tool_section in tool_section_matches:
+                tool_name_match = re.search(
+                    r"<TOOL>(.*?)</TOOL>",
+                    tool_section,
+                    re.DOTALL | re.IGNORECASE
+                )
+                reason_match = re.search(
+                    r"<REASON>(.*?)</REASON>",
+                    tool_section,
+                    re.DOTALL | re.IGNORECASE
+                )
+                param_matches = re.findall(
+                    r"<PARAM\s+name=\"([^\"]+)\">(.*?)</PARAM>",
+                    tool_section,
+                    re.DOTALL | re.IGNORECASE
+                )
+
+                if tool_name_match:
+                    tool_name = tool_name_match.group(1).strip()
+                    param_entries: List[Tuple[str, Any]] = []
+                    for param_name, raw_value in param_matches:
+                        cleaned = raw_value.strip()
+                        param_entries.append((param_name, self._normalise_param_value(cleaned, tool_name, param_name)))
+
+                    tool_calls.append({
+                        "tool": tool_name,
+                        "reason": reason_match.group(1).strip() if reason_match else "",
+                        "param_entries": param_entries,
+                    })
+
+            # Determine status
+            if status_match:
+                # Explicit status found
+                parsed["status"] = status_match.group(1).strip().upper()
+                parsed["format_valid"] = True
+            elif tool_calls:
+                # Tool calls found but no status - infer AWAIT_TOOL
+                self.logger.info("[PARSE-RECOVERY] Found tool calls without status - inferring AWAIT_TOOL")
+                parsed["status"] = "AWAIT_TOOL"
+                parsed["format_valid"] = True
+            else:
+                # No status and no tool calls - cannot recover
+                self.logger.warning("[PARSE-RECOVERY] Cannot recover - no status or tool calls found")
+                return parsed
+
+            parsed["tool_calls"] = tool_calls
+            parsed["tool_call"] = tool_calls[0] if tool_calls else None
+
+            # Log what we recovered
+            self.logger.info(
+                "[PARSE-RECOVERY] Extracted: status=%s, tool_calls=%d, message_length=%d",
+                parsed["status"],
+                len(tool_calls),
+                len(parsed["message"])
+            )
+
+        except Exception as exc:
+            self.logger.warning(f"[PARSE-RECOVERY] Fallback parsing failed: {exc}")
 
         return parsed
 

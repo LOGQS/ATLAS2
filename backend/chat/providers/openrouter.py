@@ -36,6 +36,10 @@ class OpenRouter:
         "alibaba/tongyi-deepresearch-30b-a3b:free": {
             "name": "Tongyi Deep Research",
             "supports_reasoning": True
+        },
+        "minimax/minimax-m2:free": {
+            "name": "MiniMax M2",
+            "supports_reasoning": True
         }
     }
 
