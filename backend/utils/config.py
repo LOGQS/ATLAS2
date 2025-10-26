@@ -154,6 +154,12 @@ ROUTE_MODEL_MAP = {
     "iterative": "gemini-2.5-pro"           # Refinement benefits from strong evaluation
 }
 
+# Embedding model mapping for RAG tools
+EMBEDDING_MODEL_MAP = {
+    "fast": "intfloat/e5-small-v2",           # ~33MB, 384-dim, faster inference
+    "slow": "Alibaba-NLP/gte-multilingual-base",  # ~305MB, 768-dim, SOTA multilingual, 8192 ctx
+}
+
 def get_router_map():
     """Get map of all available routes and their descriptions."""
     return ROUTE_MODEL_MAP
@@ -183,13 +189,13 @@ class Config:
 
     DEFAULT_STREAMING = True
 
-    RATE_LIMIT_REQUESTS_PER_MINUTE = 10
+    RATE_LIMIT_REQUESTS_PER_MINUTE: Optional[int] = None
     RATE_LIMIT_REQUESTS_PER_HOUR: Optional[int] = None
     RATE_LIMIT_REQUESTS_PER_DAY: Optional[int] = None
     RATE_LIMIT_TOKENS_PER_MINUTE: Optional[int] = None
     RATE_LIMIT_TOKENS_PER_HOUR: Optional[int] = None
     RATE_LIMIT_TOKENS_PER_DAY: Optional[int] = None
-    RATE_LIMIT_BURST_SIZE: Optional[int] = 10
+    RATE_LIMIT_BURST_SIZE: Optional[int] = None
     PROVIDER_DEFAULT_OPTIONS: Dict[str, Dict[str, Any]] = {}
     MODEL_DEFAULT_OPTIONS: Dict[str, Dict[str, Dict[str, Any]]] = {}
     _RATE_LIMIT_FIELDS = (
@@ -202,6 +208,7 @@ class Config:
         "burst_size",
     )
     _rate_limit_lock = threading.RLock()
+    _rate_limit_sources: Dict[str, Dict[str, str]] = {}  # Maps scope_key -> {field -> source}
 
     STT_USE_CLOUD = True
     STT_PROVIDER = "groq"
@@ -275,6 +282,42 @@ class Config:
             logger.warning("Failed to decode JSON for %s", env_key, exc_info=True)
         return {}
 
+    @classmethod
+    def _get_scope_key(cls, provider: Optional[str] = None, model: Optional[str] = None) -> str:
+        """Generate a unique key for tracking rate limit sources."""
+        if provider and model:
+            return f"model:{provider}:{model}"
+        elif provider:
+            return f"provider:{provider}"
+        return "global"
+
+    @classmethod
+    def _record_rate_limit_source(
+        cls,
+        provider: Optional[str],
+        model: Optional[str],
+        field: str,
+        source: str
+    ) -> None:
+        """Record the source of a rate limit value."""
+        scope_key = cls._get_scope_key(provider, model)
+        if scope_key not in cls._rate_limit_sources:
+            cls._rate_limit_sources[scope_key] = {}
+        cls._rate_limit_sources[scope_key][field] = source
+
+    @classmethod
+    def get_rate_limit_sources(
+        cls,
+        provider: Optional[str] = None,
+        model: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Get the source information for rate limit values.
+        Returns a dict mapping field names to their sources ('env', 'file', 'default').
+        """
+        scope_key = cls._get_scope_key(provider, model)
+        return cls._rate_limit_sources.get(scope_key, {}).copy()
+
     @staticmethod
     def _coerce_positive_int(value: Any) -> Optional[int]:
         """Convert value to positive int, returning None on failure."""
@@ -334,32 +377,47 @@ class Config:
     @classmethod
     def _get_global_rate_limit_config(cls) -> Dict[str, Optional[int]]:
         """Return global rate limit settings with environment overrides."""
-        raw_limits = {
+        # Track which fields come from .env
+        env_values = {
             "requests_per_minute": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_MINUTE")
-            ) or cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
+            ),
             "requests_per_hour": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_HOUR")
-            ) or cls.RATE_LIMIT_REQUESTS_PER_HOUR,
+            ),
             "requests_per_day": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_REQUESTS_PER_DAY")
-            ) or cls.RATE_LIMIT_REQUESTS_PER_DAY,
+            ),
             "tokens_per_minute": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_MINUTE")
-            ) or cls.RATE_LIMIT_TOKENS_PER_MINUTE,
+            ),
             "tokens_per_hour": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_HOUR")
-            ) or cls.RATE_LIMIT_TOKENS_PER_HOUR,
+            ),
             "tokens_per_day": cls._coerce_positive_int(
                 os.getenv("ATLAS_RATE_LIMIT_TOKENS_PER_DAY")
-            ) or cls.RATE_LIMIT_TOKENS_PER_DAY,
+            ),
             "burst_size": cls._coerce_non_negative_int(
                 os.getenv("ATLAS_RATE_LIMIT_BURST_SIZE")
             ),
         }
 
-        if raw_limits["burst_size"] is None:
-            raw_limits["burst_size"] = cls.RATE_LIMIT_BURST_SIZE
+        raw_limits = {
+            "requests_per_minute": env_values["requests_per_minute"] or cls.RATE_LIMIT_REQUESTS_PER_MINUTE,
+            "requests_per_hour": env_values["requests_per_hour"] or cls.RATE_LIMIT_REQUESTS_PER_HOUR,
+            "requests_per_day": env_values["requests_per_day"] or cls.RATE_LIMIT_REQUESTS_PER_DAY,
+            "tokens_per_minute": env_values["tokens_per_minute"] or cls.RATE_LIMIT_TOKENS_PER_MINUTE,
+            "tokens_per_hour": env_values["tokens_per_hour"] or cls.RATE_LIMIT_TOKENS_PER_HOUR,
+            "tokens_per_day": env_values["tokens_per_day"] or cls.RATE_LIMIT_TOKENS_PER_DAY,
+            "burst_size": env_values["burst_size"] if env_values["burst_size"] is not None else cls.RATE_LIMIT_BURST_SIZE,
+        }
+
+        # Record sources for each field
+        for field in cls._RATE_LIMIT_FIELDS:
+            if env_values.get(field) is not None:
+                cls._record_rate_limit_source(None, None, field, "env")
+            else:
+                cls._record_rate_limit_source(None, None, field, "default")
 
         return cls._sanitize_rate_limit_dict(raw_limits)
 
@@ -380,6 +438,14 @@ class Config:
         env_key = f"ATLAS_PROVIDER_OPTIONS_{cls._env_slug(provider)}"
         env_options = cls._load_json_env(env_key)
         merged = cls._deep_merge(defaults, env_options)
+
+        # Track sources for provider rate limits
+        if "rate_limit" in env_options:
+            env_rate_limits = env_options["rate_limit"]
+            for field in cls._RATE_LIMIT_FIELDS:
+                if field in env_rate_limits:
+                    cls._record_rate_limit_source(provider, None, field, "env")
+
         if "rate_limit" in merged:
             merged["rate_limit"] = cls._sanitize_rate_limit_dict(merged["rate_limit"])
         return merged
@@ -406,6 +472,14 @@ class Config:
         env_key = "_".join(env_parts)
         env_options = cls._load_json_env(env_key)
         merged = cls._deep_merge(defaults, env_options)
+
+        # Track sources for model rate limits
+        if "rate_limit" in env_options:
+            env_rate_limits = env_options["rate_limit"]
+            for field in cls._RATE_LIMIT_FIELDS:
+                if field in env_rate_limits:
+                    cls._record_rate_limit_source(provider, model, field, "env")
+
         if "rate_limit" in merged:
             merged["rate_limit"] = cls._sanitize_rate_limit_dict(merged["rate_limit"])
         return merged
@@ -442,14 +516,28 @@ class Config:
         provider: Optional[str],
         model: Optional[str],
         limits: Optional[Dict[str, Any]],
+        check_env_conflicts: bool = False
     ) -> Dict[str, Optional[int]]:
         """
         Set or clear rate limit overrides for a provider/model combination.
 
         Passing a limits dict with all values set to None removes the override.
+        If check_env_conflicts is True, raises ValueError if trying to override .env values.
         """
         sanitized = cls._sanitize_rate_limit_dict(limits or {})
         has_limit = any(value is not None for value in sanitized.values())
+
+        # Check for conflicts with .env values if requested
+        if check_env_conflicts and has_limit:
+            sources = cls.get_rate_limit_sources(provider, model)
+            env_conflicts = [
+                field for field, source in sources.items()
+                if source == "env" and field in sanitized and sanitized[field] is not None
+            ]
+            if env_conflicts:
+                raise ValueError(
+                    f"Cannot override .env values for fields: {', '.join(env_conflicts)}"
+                )
 
         with cls._rate_limit_lock:
             if provider and model:
@@ -465,6 +553,11 @@ class Config:
                 else:
                     entry = provider_models.setdefault(model, {})
                     entry["rate_limit"] = sanitized
+                    # Record source as 'file' for non-.env fields
+                    sources = cls.get_rate_limit_sources(provider, model)
+                    for field in cls._RATE_LIMIT_FIELDS:
+                        if field in sanitized and sources.get(field) != "env":
+                            cls._record_rate_limit_source(provider, model, field, "file")
             elif provider:
                 if not has_limit:
                     existing = cls.PROVIDER_DEFAULT_OPTIONS.get(provider)
@@ -475,6 +568,11 @@ class Config:
                 else:
                     entry = cls.PROVIDER_DEFAULT_OPTIONS.setdefault(provider, {})
                     entry["rate_limit"] = sanitized
+                    # Record source as 'file' for non-.env fields
+                    sources = cls.get_rate_limit_sources(provider, None)
+                    for field in cls._RATE_LIMIT_FIELDS:
+                        if field in sanitized and sources.get(field) != "env":
+                            cls._record_rate_limit_source(provider, None, field, "file")
             else:
                 # Update global defaults
                 if not has_limit:
@@ -494,6 +592,11 @@ class Config:
                     cls.RATE_LIMIT_TOKENS_PER_HOUR = sanitized.get("tokens_per_hour")
                     cls.RATE_LIMIT_TOKENS_PER_DAY = sanitized.get("tokens_per_day")
                     cls.RATE_LIMIT_BURST_SIZE = sanitized.get("burst_size") or cls.RATE_LIMIT_BURST_SIZE
+                    # Record source as 'file' for non-.env fields
+                    sources = cls.get_rate_limit_sources(None, None)
+                    for field in cls._RATE_LIMIT_FIELDS:
+                        if field in sanitized and sources.get(field) != "env":
+                            cls._record_rate_limit_source(None, None, field, "file")
 
         return cls.get_rate_limit_config(provider=provider, model=model)
 
@@ -509,6 +612,37 @@ class Config:
                 merged[field] = rate_options[field]
 
         return cls._sanitize_rate_limit_dict(merged)
+
+    @classmethod
+    def get_rate_limit_keys_to_check(cls, provider: str, model: str) -> list:
+        """
+        Returns list of (key, config) tuples for all scopes that should be checked.
+        Only includes scopes that have actual limits defined.
+
+        Args:
+            provider: Provider name (e.g., "gemini")
+            model: Model name (e.g., "gemini-2.5-flash")
+
+        Returns:
+            List of (key_string, config_dict) tuples in order of specificity
+        """
+        keys_and_configs = []
+
+        # Always check model-specific limits
+        model_config = cls.get_rate_limit_config(provider=provider, model=model)
+        keys_and_configs.append((f"{provider}:{model}", model_config))
+
+        # Check provider limits if any are defined
+        provider_config = cls.get_rate_limit_config(provider=provider)
+        if any(v is not None for v in provider_config.values()):
+            keys_and_configs.append((provider, provider_config))
+
+        # Check global limits if any are defined
+        global_config = cls.get_rate_limit_config()
+        if any(v is not None for v in global_config.values()):
+            keys_and_configs.append(("global", global_config))
+
+        return keys_and_configs
 
     @classmethod
     def get_rate_limit_requests_per_minute(cls, provider: Optional[str] = None, model: Optional[str] = None) -> int:

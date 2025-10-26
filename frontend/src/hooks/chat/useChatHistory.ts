@@ -64,6 +64,10 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
 
           if (activeChatIdRef.current === targetChatId) {
             setMessagesRef.current(prev => {
+              // Guard against race condition during rapid chat switching
+              if (activeChatIdRef.current !== targetChatId) {
+                return prev;
+              }
               const result = reconcileMessages(prev, freshMessages, targetChatId, false);
               const currentLiveState = liveStore.get(targetChatId);
               if (currentLiveState?.state === 'static') {
@@ -77,6 +81,15 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
               chatHistoryCache.put(targetChatId, freshMessages, 'clean-static');
             }
           }
+
+          // Reconcile LiveStore with DB to clear stale streaming buffers
+          const lastA = [...freshMessages].reverse().find(m => m.role === 'assistant');
+          liveStore.reconcileWithDB(
+            targetChatId,
+            lastA?.id || null,
+            lastA?.content || '',
+            lastA?.thoughts || ''
+          );
         } else {
           logger.info(`[ChatCache] Cache validated successfully for ${targetChatId}`);
         }
@@ -105,11 +118,24 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.info(`[ChatCache] Using cached messages for ${targetChatId} (${cached.messages.length} messages)`);
 
         if (activeChatIdRef.current === targetChatId && loadRequestIdRef.current === requestId) {
-          setMessagesRef.current(() => {
+          setMessagesRef.current(prev => {
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              return prev;
+            }
             logger.info(`[ChatCache] Setting cached messages immediately`);
             return cached.messages;
           });
         }
+
+        // Reconcile LiveStore to clear stale streaming buffers
+        const lastA = [...cached.messages].reverse().find(m => m.role === 'assistant');
+        liveStore.reconcileWithDB(
+          targetChatId,
+          lastA?.id || null,
+          lastA?.content || '',
+          lastA?.thoughts || ''
+        );
 
         if (!silent && loadRequestIdRef.current === requestId) {
           setIsLoading(false);
@@ -179,6 +205,13 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
           currentSetMessages(prev => {
             callbackExecuted.value = true;
             logger.info(`[RECONCILE] ===== SETMESSAGES CALLBACK STARTED =====`);
+
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              logger.warn(`[RECONCILE] Chat switched during callback - aborting state update`);
+              return prev;
+            }
+
             logger.info(`[MESSAGE_STATE] ChatHistory before reconciliation - prev: ${prev.length} messages: ${prev.map(m => `${m.id}(${m.role})`).join(', ')}`);
             prev.forEach((m, i) => {
               const contentPreview = m.content ? m.content.substring(0, 50) : '';
@@ -227,7 +260,13 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
       } else if (res.status === 404) {
         logger.debug(`[ChatHistory] Chat not found (404), handling new chat scenario`);
         if (loadRequestIdRef.current === requestId && activeChatIdRef.current === targetChatId) {
-          setMessagesRef.current(prev => handleNewChatScenario(prev, targetChatId));
+          setMessagesRef.current(prev => {
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              return prev;
+            }
+            return handleNewChatScenario(prev, targetChatId);
+          });
         }
       } else {
         logger.error(`[ChatHistory] Failed to load history for ${targetChatId}:`, data.error);

@@ -120,7 +120,7 @@ class DomainTaskState:
     thinking: str = ""
     output: str = ""
     status: str = "running"
-    pending_tool: Optional[ToolCallProposal] = None
+    pending_tools: List[ToolCallProposal] = field(default_factory=list)
     tool_history: List[ToolExecutionRecord] = field(default_factory=list)
     agent_message: str = ""
     last_agent_response: str = ""
@@ -129,6 +129,7 @@ class DomainTaskState:
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
     event_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    planning_phase_complete: bool = False
 
 
 class SingleDomainExecutor:
@@ -220,7 +221,6 @@ class SingleDomainExecutor:
 
         self._active_tasks[task_id] = state
 
-        # Create coder session logger if this is a coder domain task
         if domain_id == "coder":
             coder_logger = create_coder_session_logger(
                 task_id=task_id,
@@ -243,8 +243,16 @@ class SingleDomainExecutor:
         task_id: str,
         call_id: str,
         decision: str,
+        batch_mode: bool = True,  
     ) -> Dict[str, Any]:
-        """Process a user decision for a pending tool call."""
+        """Process a user decision for pending tool call(s).
+
+        Args:
+            task_id: The task identifier
+            call_id: The call_id being decided on (or special marker "batch_all")
+            decision: "accept" or "reject"
+            batch_mode: If True and multiple tools pending, accept/reject all at once
+        """
 
         state = self._active_tasks.get(task_id)
         if not state:
@@ -252,8 +260,9 @@ class SingleDomainExecutor:
             self.logger.error(error_msg)
             return {"error": error_msg, "task_id": task_id}
 
-        if not state.pending_tool or state.pending_tool.call_id != call_id:
-            # This is a normal timing issue - tool was already approved/executed
+        # Check if there are pending tools
+        if not state.pending_tools:
+            # This is a normal timing issue - tools were already approved/executed
             self.logger.info(
                 "[STALE-APPROVAL] Decision for call %s arrived after task %s moved on - ignoring gracefully",
                 call_id,
@@ -268,6 +277,30 @@ class SingleDomainExecutor:
             )
             return serialized_state
 
+        # Find the tool by call_id (or use batch marker)
+        if call_id == "batch_all" or (batch_mode and len(state.pending_tools) > 1):
+            # Batch mode: accept/reject all pending tools
+            target_tools = state.pending_tools[:]
+            is_batch = True
+        else:
+            # Individual mode: find specific tool
+            target_tools = [t for t in state.pending_tools if t.call_id == call_id]
+            is_batch = False
+
+            if not target_tools:
+                self.logger.info(
+                    "[STALE-APPROVAL] Decision for call %s not found in pending tools - ignoring gracefully",
+                    call_id,
+                )
+                serialized_state = self._serialize_state(state)
+                serialized_state.update(
+                    {
+                        "success": True,
+                        "warning": "Tool decision arrived after tool was removed from pending list",
+                    }
+                )
+                return serialized_state
+
         decision_lower = decision.lower()
         if decision_lower not in {"accept", "reject"}:
             error_msg = f"Unsupported decision: {decision}"
@@ -275,7 +308,7 @@ class SingleDomainExecutor:
             return {"error": error_msg, "task_id": task_id}
 
         if decision_lower == "reject":
-            self._handle_rejection(state)
+            self._handle_rejection(state, target_tools, is_batch)
             self._active_tasks.pop(task_id, None)
             # Log session end for coder tasks
             if state.context.domain_id == "coder":
@@ -287,7 +320,7 @@ class SingleDomainExecutor:
         # as ToolResults to the agent. This try-catch only handles unexpected system errors
         # during result processing, event emission, or iteration management.
         try:
-            self._handle_acceptance(state)
+            self._handle_acceptance(state, target_tools, is_batch)
         except Exception as exc:
             self.logger.exception("Unexpected error during tool acceptance handling: %s", exc)
             self._mark_failure(state, f"System error during execution: {exc}")
@@ -386,7 +419,16 @@ class SingleDomainExecutor:
         """Run a single agent iteration and update task state."""
 
         state.metadata["iterations"] = state.metadata.get("iterations", 0) + 1
+        current_iteration = state.metadata["iterations"]
         state.status = "running"
+
+        # Clean up format errors that have been visible for 1 call already
+        # Parse errors should only persist for 1 call - remove errors from 2+ iterations ago
+        state.tool_history = [
+            record for record in state.tool_history
+            if not (record.error == "format_error" and
+                    self._is_old_format_error(record.call_id, current_iteration))
+        ]
 
         # Log iteration start for coder tasks
         if state.context.domain_id == "coder":
@@ -409,7 +451,7 @@ class SingleDomainExecutor:
         self.logger.info("=" * 80)
         self.logger.info(prompt)
 
-        response_text = self._call_agent(state.agent, prompt)
+        response_text = self._call_agent(state, prompt)
 
         self.logger.info("=" * 80)
         self.logger.info(
@@ -422,9 +464,14 @@ class SingleDomainExecutor:
         self.logger.info(response_text)
 
         parsed = self._parse_agent_response(response_text)
+
+        # Debug logging for parsing results
+        self.logger.info(f"[PARSE-DEBUG] Extracted status: '{parsed.get('status', 'NONE')}'")
+        self.logger.info(f"[PARSE-DEBUG] Tool calls found: {len(parsed.get('tool_calls', []))}")
+
         state.last_agent_response = response_text
         state.agent_message = parsed.get("message", "").strip() or parsed.get("raw", "").strip()
-        state.pending_tool = None
+        state.pending_tools = []  # Clear any previous pending tools
         state.last_updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Log agent message for coder tasks
@@ -444,12 +491,104 @@ class SingleDomainExecutor:
             },
         )
 
-        pending_tool = parsed.get("tool_call")
-        status = parsed.get("status", "COMPLETE").upper()
+        pending_tool_calls = parsed.get("tool_calls", [])
+        status = parsed.get("status", "PARSE_ERROR").upper()
 
-        if status == "AWAIT_TOOL" and pending_tool:
-            self._register_pending_tool(state, pending_tool)
+        # Handle format/parsing errors
+        if status == "PARSE_ERROR":
+            self.logger.error("[FORMAT-ERROR] Regex extraction failed - response format invalid")
+
+            # Add error feedback to tool history for next iteration
+            # Encode the iteration number in call_id so we can track when to clean it up
+            # Error will persist for exactly 1 call (visible in iteration N+1, removed in N+2)
+            format_error_record = ToolExecutionRecord(
+                call_id=f"format_error_iter{state.metadata['iterations']}_{uuid.uuid4().hex[:6]}",
+                tool_name="system.format_validation",
+                params={},
+                param_entries=[],
+                accepted=False,
+                executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                result_summary="Response format error - regex extraction failed. Ensure proper <AGENT_DECISION> structure with <AGENT_STATUS> inside.",
+                raw_result={},
+                error="format_error",
+            )
+            state.tool_history.append(format_error_record)
+
+            # Retry with error context
+            self.logger.info("[FORMAT-ERROR] Running corrective iteration")
+            state.status = "running"
+            result = self._run_agent_iteration(state)
+            return result
+
+        if status == "AWAIT_TOOL":
+            if not pending_tool_calls:
+                # Agent said AWAIT_TOOL but no tools were extracted - this is a parse error!
+                error_msg = (
+                    "Agent set AGENT_STATUS=AWAIT_TOOL but no tool calls were found in response. "
+                    "This indicates a parsing failure or malformed response. "
+                    "Ensure TOOL_CALL sections have proper TOOL/REASON/PARAM tags."
+                )
+                self.logger.error(f"[PARSE-ERROR] {error_msg}")
+                self._mark_failure(state, error_msg)
+                return
+
+            self._register_pending_tools(state, pending_tool_calls)
         elif status == "COMPLETE":
+            # Validate completion is justified before accepting
+            completion_valid, rejection_reason = self._validate_completion(state)
+
+            if not completion_valid:
+                self.logger.warning(
+                    "[COMPLETION-REJECTED] Agent attempted premature completion: %s",
+                    rejection_reason
+                )
+                # Provide feedback to agent via tool history
+                feedback_message = (
+                    f"COMPLETION REJECTED: {rejection_reason}\n\n"
+                    f"You must continue working through your plan. "
+                    f"Review the EXECUTION PLAN section above and propose the next tool call "
+                    f"to advance your work (use AGENT_STATUS=AWAIT_TOOL)."
+                )
+
+                # Remove previous completion rejections to avoid context bloat
+                state.tool_history = [
+                    record for record in state.tool_history
+                    if record.error != "completion_rejected"
+                ]
+
+                # Add rejection to tool history so agent sees it in next iteration
+                rejection_record = ToolExecutionRecord(
+                    call_id=f"reject_{uuid.uuid4().hex[:10]}",
+                    tool_name="system.completion_validation",
+                    params={},
+                    param_entries=[],
+                    accepted=False,
+                    executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    result_summary=feedback_message,
+                    raw_result={"error": rejection_reason, "feedback": feedback_message},
+                    error="completion_rejected",
+                )
+                state.tool_history.append(rejection_record)
+
+                # Log the rejection
+                self._append_action(
+                    state,
+                    action_type="completion_rejected",
+                    description=rejection_reason,
+                    status="completed",
+                    metadata={
+                        "iteration": state.metadata["iterations"],
+                        "rejection_reason": rejection_reason,
+                    },
+                )
+
+                # Force agent to continue with corrected context
+                self.logger.info("[COMPLETION-REJECTED] Running corrective iteration")
+                state.status = "running"
+                result = self._run_agent_iteration(state)
+                return result
+
+            # Completion validated - proceed normally
             state.status = "completed"
             state.output = state.agent_message
             self._append_action(
@@ -480,7 +619,7 @@ class SingleDomainExecutor:
             summary=f"Iteration {state.metadata['iterations']} -> {state.status.upper()}",
             full_context={
                 "agent_message": state.agent_message,
-                "pending_tool": self._serialize_tool_proposal(state.pending_tool),
+                "pending_tools": [self._serialize_tool_proposal(t) for t in state.pending_tools],
                 "status": state.status,
             },
         )
@@ -495,184 +634,228 @@ class SingleDomainExecutor:
         self._emit_event(state, "state", serialized_state)
         return serialized_state
 
-    def _register_pending_tool(self, state: DomainTaskState, parsed_tool: Dict[str, Any]) -> None:
-        tool_name = parsed_tool["tool"]
-        reason = parsed_tool.get("reason", "")
-        param_entries = parsed_tool.get("param_entries", [])
+    def _register_pending_tools(self, state: DomainTaskState, parsed_tools: List[Dict[str, Any]]) -> None:
+        """Register multiple pending tool calls."""
+        for parsed_tool in parsed_tools:
+            tool_name = parsed_tool["tool"]
+            reason = parsed_tool.get("reason", "")
+            param_entries = parsed_tool.get("param_entries", [])
 
-        if tool_name not in state.domain.tool_allowlist:
-            msg = f"Tool '{tool_name}' is not allowed for domain {state.domain.domain_id}"
-            self._mark_failure(state, msg)
-            return
+            if tool_name not in state.domain.tool_allowlist:
+                msg = f"Tool '{tool_name}' is not allowed for domain {state.domain.domain_id}"
+                self._mark_failure(state, msg)
+                return
 
-        try:
-            tool_spec = tool_registry.get(tool_name)
-            tool_description = tool_spec.description
-        except KeyError:
-            msg = f"Tool '{tool_name}' not found in registry"
-            self._mark_failure(state, msg)
-            return
+            try:
+                tool_spec = tool_registry.get(tool_name)
+                tool_description = tool_spec.description
+            except KeyError:
+                msg = f"Tool '{tool_name}' not found in registry"
+                self._mark_failure(state, msg)
+                return
 
-        params = {name: value for name, value in param_entries}
-        call_id = f"call_{uuid.uuid4().hex[:10]}"
-        proposal = ToolCallProposal(
-            call_id=call_id,
-            tool_name=tool_name,
-            params=params,
-            param_entries=param_entries,
-            reason=reason,
-            message=state.agent_message,
-            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            tool_description=tool_description,
-        )
-        state.pending_tool = proposal
-        state.status = "waiting_user"
-
-        # Log tool proposal for coder tasks
-        if state.context.domain_id == "coder":
-            coder_logger = get_coder_session_logger(state.context.task_id)
-            if coder_logger:
-                coder_logger.log_tool_proposal(tool_name, param_entries, reason)
-
-                # Dump full agent context for this tool call
-                agent_prompt = state.metadata.get("last_agent_prompt", "")
-                if agent_prompt:
-                    coder_logger.dump_agent_context(agent_prompt, tool_name, param_entries)
-
-        self._append_action(
-            state,
-            action_type="tool_proposal",
-            description=reason or f"Proposed call to {tool_name}",
-            status="pending",
-            metadata={
-                "call_id": call_id,
-                "tool": tool_name,
-                "params": param_entries,
-            },
-        )
-
-    def _handle_rejection(self, state: DomainTaskState) -> None:
-        proposal = state.pending_tool
-        if not proposal:
-            return
-
-        action = self._find_action_by_call_id(state, proposal.call_id)
-        if action:
-            action.status = "failed"
-            action.result = "User rejected tool call"
-
-        # Log tool rejection for coder tasks
-        if state.context.domain_id == "coder":
-            coder_logger = get_coder_session_logger(state.context.task_id)
-            if coder_logger:
-                coder_logger.log_tool_execution(proposal.tool_name, False, "User rejected tool call")
-
-        state.tool_history.append(
-            ToolExecutionRecord(
-                call_id=proposal.call_id,
-                tool_name=proposal.tool_name,
-                params=proposal.params,
-                param_entries=proposal.param_entries,
-                accepted=False,
-                executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                result_summary="User rejected tool call",
-                raw_result=None,
-                error="rejected",
+            params = {name: value for name, value in param_entries}
+            call_id = f"call_{uuid.uuid4().hex[:10]}"
+            proposal = ToolCallProposal(
+                call_id=call_id,
+                tool_name=tool_name,
+                params=params,
+                param_entries=param_entries,
+                reason=reason,
+                message=state.agent_message,
+                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                tool_description=tool_description,
             )
-        )
-        state.pending_tool = None
+            state.pending_tools.append(proposal)
+
+            # Log tool proposal for coder tasks
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_tool_proposal(tool_name, param_entries, reason)
+
+                    # Dump full agent context for first tool call only (avoid duplication)
+                    if len(state.pending_tools) == 1:
+                        agent_prompt = state.metadata.get("last_agent_prompt", "")
+                        if agent_prompt:
+                            coder_logger.dump_agent_context(agent_prompt, tool_name, param_entries)
+
+            self._append_action(
+                state,
+                action_type="tool_proposal",
+                description=reason or f"Proposed call to {tool_name}",
+                status="pending",
+                metadata={
+                    "call_id": call_id,
+                    "tool": tool_name,
+                    "params": param_entries,
+                },
+            )
+
+        # Set status to waiting_user after all tools are registered
+        if state.pending_tools:
+            state.status = "waiting_user"
+
+    def _handle_rejection(self, state: DomainTaskState, proposals: List[ToolCallProposal], is_batch: bool) -> None:
+        """Handle rejection of tool call(s)."""
+        if not proposals:
+            return
+
+        rejection_desc = f"{'Batch' if is_batch else 'Individual'} rejection of {len(proposals)} tool(s)"
+        self.logger.info(f"[TOOL-REJECTION] {rejection_desc}")
+
+        for proposal in proposals:
+            action = self._find_action_by_call_id(state, proposal.call_id)
+            if action:
+                action.status = "failed"
+                action.result = "User rejected tool call"
+
+            # Log tool rejection for coder tasks
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_tool_execution(proposal.tool_name, False, "User rejected tool call")
+
+            state.tool_history.append(
+                ToolExecutionRecord(
+                    call_id=proposal.call_id,
+                    tool_name=proposal.tool_name,
+                    params=proposal.params,
+                    param_entries=proposal.param_entries,
+                    accepted=False,
+                    executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    result_summary="User rejected tool call",
+                    raw_result=None,
+                    error="rejected",
+                )
+            )
+
+        state.pending_tools = []
         state.status = "aborted"
-        state.output = "Tool call rejected by user. Execution aborted."
+        state.output = f"{rejection_desc}. Execution aborted."
         self._append_action(
             state,
             action_type="domain_abort",
-            description="Execution aborted after user rejected tool call",
+            description=f"Execution aborted after user rejected {len(proposals)} tool call(s)",
             status="failed",
         )
         serialized_state = self._serialize_state(state)
         self._emit_event(state, "state", serialized_state)
 
-    def _handle_acceptance(self, state: DomainTaskState) -> None:
-        proposal = state.pending_tool
-        if not proposal:
+    def _handle_acceptance(self, state: DomainTaskState, proposals: List[ToolCallProposal], is_batch: bool) -> None:
+        """Handle acceptance and execution of tool call(s).
+
+        Executes all approved tools sequentially, then runs next agent iteration.
+        """
+        if not proposals:
             return
 
-        action = self._find_action_by_call_id(state, proposal.call_id)
-        if action:
-            action.status = "in_progress"
+        execution_desc = f"{'Batch' if is_batch else 'Individual'} execution of {len(proposals)} tool(s)"
+        self.logger.info(f"[TOOL-EXECUTION] {execution_desc}")
 
-        self.logger.info(
-            "Executing tool %s for task %s",
-            proposal.tool_name,
-            state.context.task_id,
-        )
+        # Execute all proposals sequentially
+        for idx, proposal in enumerate(proposals):
+            action = self._find_action_by_call_id(state, proposal.call_id)
+            if action:
+                action.status = "in_progress"
 
-        tool_result = self._execute_tool_call(state, proposal)
-        ops_payload = self._ensure_serializable(tool_result.ops)
-        result_payload = {
-            "output": self._ensure_serializable(tool_result.output),
-            "metadata": self._ensure_serializable(tool_result.metadata),
-            "ops": ops_payload,
-        }
+            # Emit state update immediately so frontend sees tool execution starting
+            serialized_state = self._serialize_state(state)
+            self._emit_event(state, "state", serialized_state)
 
-        # Create checkpoints for file operations
-        self._create_checkpoints_from_ops(state, tool_result.ops, proposal.tool_name)
+            self.logger.info(
+                "Executing tool %d/%d: %s for task %s",
+                idx + 1,
+                len(proposals),
+                proposal.tool_name,
+                state.context.task_id,
+            )
 
-        summary = self._summarize_tool_output(result_payload["output"])
+            tool_result = self._execute_tool_call(state, proposal)
+            ops_payload = self._ensure_serializable(tool_result.ops)
+            result_payload = {
+                "output": self._ensure_serializable(tool_result.output),
+                "metadata": self._ensure_serializable(tool_result.metadata),
+                "ops": ops_payload,
+            }
 
-        # Check if there was an error in the tool result
-        error = None
-        if isinstance(result_payload["output"], dict) and "error" in result_payload["output"]:
-            error = result_payload["output"]["error"]
+            # Check if this tool call created a plan (for coder domain planning phase)
+            if proposal.tool_name == "plan.write" and state.context.domain_id == "coder":
+                self.logger.info("[PLANNING] Plan created for coder domain")
+                state.planning_phase_complete = True
+                # Extract plan from metadata
+                if tool_result.metadata and "plan" in tool_result.metadata:
+                    state.plan = tool_result.metadata["plan"]
 
-        executed_record = ToolExecutionRecord(
-            call_id=proposal.call_id,
-            tool_name=proposal.tool_name,
-            params=proposal.params,
-            param_entries=proposal.param_entries,
-            accepted=True,
-            executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            result_summary=summary,
-            raw_result=result_payload,
-            ops=ops_payload,
-            error=error,
-        )
-        state.tool_history.append(executed_record)
-        state.metadata["tool_calls"] = state.metadata.get("tool_calls", 0) + 1
+            # Update plan if plan.update was called
+            if proposal.tool_name == "plan.update" and state.context.domain_id == "coder":
+                # Extract updated plan from metadata
+                if tool_result.metadata and "plan" in tool_result.metadata:
+                    state.plan = tool_result.metadata["plan"]
 
-        # Log tool execution for coder tasks
-        if state.context.domain_id == "coder":
-            coder_logger = get_coder_session_logger(state.context.task_id)
-            if coder_logger:
-                coder_logger.log_tool_execution(proposal.tool_name, True, summary, error)
+            # Create checkpoints for file operations
+            self._create_checkpoints_from_ops(state, tool_result.ops, proposal.tool_name)
 
-        if action:
-            action.status = "completed"
-            action.result = result_payload
+            summary = self._summarize_tool_output(result_payload["output"])
 
-        state.pending_tool = None
+            # Check if there was an error in the tool result
+            error = None
+            if isinstance(result_payload["output"], dict) and "error" in result_payload["output"]:
+                error = result_payload["output"]["error"]
 
-        self._emit_event(
-            state,
-            "tool_execution",
-            {
-                "call_id": executed_record.call_id,
-                "tool": executed_record.tool_name,
-                "params": executed_record.param_entries,
-                "result": executed_record.raw_result,
-                "ops": executed_record.ops,
-            },
-        )
+            executed_record = ToolExecutionRecord(
+                call_id=proposal.call_id,
+                tool_name=proposal.tool_name,
+                params=proposal.params,
+                param_entries=proposal.param_entries,
+                accepted=True,
+                executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                result_summary=summary,
+                raw_result=result_payload,
+                ops=ops_payload,
+                error=error,
+            )
+            state.tool_history.append(executed_record)
+            state.metadata["tool_calls"] = state.metadata.get("tool_calls", 0) + 1
 
-        self._append_snapshot(
-            state,
-            summary=f"Executed tool {proposal.tool_name}",
-            full_context={
-                "tool": proposal.tool_name,
-                "params": proposal.param_entries,
-                "result_summary": summary,
-            },
-        )
+            # Log tool execution for coder tasks
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_tool_execution(proposal.tool_name, True, summary, error)
+
+            if action:
+                action.status = "completed"
+                action.result = result_payload
+
+            # Emit state update immediately so frontend sees tool execution completed
+            serialized_state = self._serialize_state(state)
+            self._emit_event(state, "state", serialized_state)
+
+            self._emit_event(
+                state,
+                "tool_execution",
+                {
+                    "call_id": executed_record.call_id,
+                    "tool": executed_record.tool_name,
+                    "params": executed_record.param_entries,
+                    "result": executed_record.raw_result,
+                    "ops": executed_record.ops,
+                },
+            )
+
+            self._append_snapshot(
+                state,
+                summary=f"Executed tool {proposal.tool_name}",
+                full_context={
+                    "tool": proposal.tool_name,
+                    "params": proposal.param_entries,
+                    "result_summary": summary,
+                },
+            )
+
+        # Clear pending tools after all executed
+        state.pending_tools = []
 
         # Continue with next iteration - agent needs tool output for next decision
         self._run_agent_iteration(state)
@@ -856,51 +1039,175 @@ class SingleDomainExecutor:
                     "after": after_checkpoint.get('id') if after_checkpoint else None,
                 }
 
-    def _call_agent(self, agent: AgentSpec, prompt: str) -> str:
+    def _call_agent(self, state: DomainTaskState, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
         from utils.config import infer_provider_from_model
 
+        agent = state.agent
         model = agent.model_preference or "gemini-2.5-flash-preview-09-2025"
         provider = infer_provider_from_model(model)
 
         temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
 
-        # Use streaming to prevent connection timeouts with slow models
-        full_text = ""
-        error_message = None
+        # Retry limits: max 5 for both, but different delay strategies
+        max_retries = 5
+        retry_delays = [1, 2, 4, 8, 16]  # seconds for overload errors (exponential backoff)
 
-        try:
-            for chunk in temp_chat.generate_text_stream(
-                message=prompt,
-                provider=provider,
-                model=model,
-                include_reasoning=False,
-                use_router=False,
-            ):
-                chunk_type = chunk.get("type")
-                if chunk_type == "error":
-                    error_message = chunk.get("content", "Unknown error")
-                    break
-                elif chunk_type == "answer":
-                    full_text += chunk.get("content", "")
-                # Ignore other chunk types like "thoughts" since include_reasoning=False
-        except Exception as e:
-            raise RuntimeError(f"Error during streaming text generation: {e}")
+        attempt = 0
 
-        if error_message:
-            raise RuntimeError(error_message)
+        while True:
+            full_text = ""
+            error_message = None
+            is_retryable_error = False
+            retry_reason = None
+            api_provided_delay = None
+            is_rate_limit = False
 
-        if full_text.strip():
-            return full_text
+            try:
+                for chunk in temp_chat.generate_text_stream(
+                    message=prompt,
+                    provider=provider,
+                    model=model,
+                    include_reasoning=False,
+                    use_router=False,
+                ):
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "error":
+                        error_message = chunk.get("content", "Unknown error")
+                        break
+                    elif chunk_type == "answer":
+                        full_text += chunk.get("content", "")
+                    # Ignore other chunk types like "thoughts" since include_reasoning=False
 
-        return ""
+                # Success - return result
+                if full_text.strip():
+                    return full_text
+                if error_message:
+                    # Check if it's a rate limit error (highest priority since API gives us delay)
+                    if ("429" in error_message or "RESOURCE_EXHAUSTED" in error_message or
+                        "exceeded your current quota" in error_message.lower() or
+                        "quota exceeded" in error_message.lower()):
+                        is_retryable_error = True
+                        is_rate_limit = True
+                        retry_reason = "Rate limit exceeded"
+                        # Extract retry delay from message: "Please retry in 29.64243146s" or "Please retry in 92.795152ms"
+                        match = re.search(r"retry in ([\d.]+)(m?s)", error_message, re.IGNORECASE)
+                        if match:
+                            delay_value = float(match.group(1))
+                            unit = match.group(2).lower()
+                            # Convert milliseconds to seconds
+                            api_provided_delay = delay_value / 1000.0 if unit == 'ms' else delay_value
+                    # Check if it's an overload error
+                    elif "overloaded" in error_message.lower() or "503" in error_message:
+                        is_retryable_error = True
+                        retry_reason = "Model overloaded"
+                    else:
+                        raise RuntimeError(error_message)
+
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a rate limit error (highest priority since API gives us delay)
+                if ("429" in error_str or "RESOURCE_EXHAUSTED" in error_str or
+                    "exceeded your current quota" in error_str.lower() or
+                    "quota exceeded" in error_str.lower()):
+                    is_retryable_error = True
+                    is_rate_limit = True
+                    retry_reason = "Rate limit exceeded"
+                    error_message = error_str
+                    # Extract retry delay from message: "Please retry in 29.64243146s" or "Please retry in 92.795152ms"
+                    match = re.search(r"retry in ([\d.]+)(m?s)", error_str, re.IGNORECASE)
+                    if match:
+                        delay_value = float(match.group(1))
+                        unit = match.group(2).lower()
+                        # Convert milliseconds to seconds
+                        api_provided_delay = delay_value / 1000.0 if unit == 'ms' else delay_value
+                # Check if it's an overload error
+                elif "overloaded" in error_str.lower() or "503" in error_str or "UNAVAILABLE" in error_str:
+                    is_retryable_error = True
+                    retry_reason = "Model overloaded"
+                    error_message = error_str
+                else:
+                    raise RuntimeError(f"Error during streaming text generation: {e}")
+
+            # Handle retryable error with retry
+            if is_retryable_error:
+                # Check if we've exceeded max retries
+                if attempt >= max_retries:
+                    raise RuntimeError(
+                        f"{retry_reason} persisted after {max_retries} retry attempts. Please try again later."
+                    )
+
+                attempt += 1
+
+                if is_rate_limit:
+                    # Rate limit: Use API-provided delay + tolerance buffer
+                    if api_provided_delay is None:
+                        raise RuntimeError(
+                            f"Rate limit error encountered but could not extract retry delay from API response. Error: {error_message}"
+                        )
+                    # Add 1.5s tolerance buffer to avoid immediate re-trigger
+                    tolerance_buffer = 1.5
+                    delay = api_provided_delay + tolerance_buffer
+                    delay_str = f"{delay:.1f}s (API: {api_provided_delay:.1f}s + {tolerance_buffer}s buffer)"
+
+                    self.logger.warning(
+                        f"[RETRY] {retry_reason}, retrying in {delay_str} (attempt {attempt}/{max_retries})"
+                    )
+                else:
+                    # Overload: Use exponential backoff
+                    delay_idx = min(attempt - 1, len(retry_delays) - 1)
+                    delay = retry_delays[delay_idx]
+                    delay_str = f"{delay}s (exponential backoff)"
+
+                    self.logger.warning(
+                        f"[RETRY] {retry_reason}, retrying in {delay_str} (attempt {attempt}/{max_retries})"
+                    )
+
+                # Emit retry event to frontend
+                if state.event_callback:
+                    retry_event = {
+                        "event": "model_retry",
+                        "payload": {
+                            "attempt": attempt,
+                            "max_attempts": max_retries,
+                            "delay_seconds": delay,
+                            "model": model,
+                            "reason": retry_reason,
+                        },
+                        "task_id": state.context.task_id,
+                        "domain_id": state.context.domain_id,
+                    }
+                    try:
+                        state.event_callback(retry_event)
+                    except Exception as cb_error:
+                        self.logger.warning(f"Failed to emit retry event: {cb_error}")
+
+                time.sleep(delay)
+                continue  # Retry
+
+            # No retryable error and no success - shouldn't happen but handle it
+            if error_message:
+                raise RuntimeError(error_message)
+
+            return ""
 
     def _build_agent_prompt(self, state: DomainTaskState) -> str:
         domain = state.domain
         agent = state.agent
         exec_context = state.context
 
-        domain_instructions = get_domain_instructions(domain.domain_id)
+        # For coder domain, use phase-specific instructions based on plan existence
+        if domain.domain_id == "coder":
+            from agents.prompts.domain_instructions.coder import (
+                get_planning_phase_instructions,
+                get_execution_phase_instructions,
+            )
+            if state.plan:
+                domain_instructions = get_execution_phase_instructions()
+            else:
+                domain_instructions = get_planning_phase_instructions()
+        else:
+            domain_instructions = get_domain_instructions(domain.domain_id)
 
         tool_descriptions = self._format_tool_allowlist(domain.tool_allowlist)
 
@@ -920,6 +1227,7 @@ class SingleDomainExecutor:
         procedures_section = ""
         tool_history_section = self._format_tool_history(state.tool_history)
         task_notes_section = self._format_task_notes(state)
+        plan_status_section = self._format_plan_status(state)
 
         prompt = BASE_AGENT_PROMPT.format(
             domain_specific_instructions=domain_instructions,
@@ -935,6 +1243,7 @@ class SingleDomainExecutor:
             procedures_section=procedures_section,
             tool_history_section=tool_history_section,
             task_notes_section=task_notes_section,
+            plan_status_section=plan_status_section,
             response_format=AGENT_RESPONSE_FORMAT,
         )
 
@@ -1088,8 +1397,16 @@ class SingleDomainExecutor:
             status = "ACCEPTED" if record.accepted else "REJECTED"
 
             # For file.read, use smart duplicate detection based on content hash
-            if record.tool_name == "file.read" and record.accepted and record.raw_result:
-                output = record.raw_result.get("output", {})
+            if record.tool_name == "file.read" and record.accepted:
+                lines.append(f"\n[{status}] {record.tool_name}({params_preview})")
+
+                # Check for error first
+                if record.error:
+                    lines.append(f"  ✗ ERROR: {record.error}")
+                    continue
+
+                # Success path - show file content with deduplication
+                output = record.raw_result.get("output", {}) if record.raw_result else {}
                 if isinstance(output, dict):
                     file_path = output.get("file_path", "unknown")
                     line_count = output.get("metadata", {}).get("line_count", 0)
@@ -1097,7 +1414,6 @@ class SingleDomainExecutor:
                     content_hash = output.get("content_hash", "")
                     content_with_lines = output.get("content_with_line_numbers")
 
-                    lines.append(f"\n[{status}] {record.tool_name}({params_preview})")
                     lines.append(f"  File: {file_path} ({line_count} lines, {file_size})")
 
                     # Only show content if hash is new (not shown before in this history)
@@ -1129,101 +1445,205 @@ class SingleDomainExecutor:
                 else:
                     lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
 
-            # For file.edit, show what was changed
-            elif record.tool_name == "file.edit" and record.accepted and record.raw_result:
-                output = record.raw_result.get("output", {})
-                if isinstance(output, dict):
-                    file_path = output.get("file_path", "unknown")
-                    edit_mode = output.get("edit_mode", "unknown")
-                    lines_affected = output.get("lines_affected") or output.get("replacements_made", "N/A")
+            # For file.edit, show what was changed or error if failed
+            elif record.tool_name == "file.edit" and record.accepted:
+                lines.append(f"- [{status}] {record.tool_name}({params_preview})")
 
+                # Check for error first - this is critical for agent to see failures!
+                if record.error:
+                    lines.append(f"    ✗ ERROR: {record.error}")
+                    lines.append(f"    → Review the error and retry with corrected parameters")
+                elif record.raw_result:
+                    output = record.raw_result.get("output", {})
+                    if isinstance(output, dict):
+                        file_path = output.get("file_path", "unknown")
+                        edit_mode = output.get("edit_mode", "unknown")
+                        lines_affected = output.get("lines_affected") or output.get("replacements_made", "N/A")
+                        lines.append(f"    ✓ Edited {file_path} ({edit_mode} mode, affected: {lines_affected})")
+                    else:
+                        lines.append(f"    → {record.result_summary}")
+                else:
+                    lines.append(f"    → {record.result_summary}")
+
+            # For other tools, show compact summary (with error if present)
+            else:
+                if record.error:
+                    # Tool failed - show error prominently so agent can see and fix it
                     lines.append(f"- [{status}] {record.tool_name}({params_preview})")
-                    lines.append(f"    → Edited {file_path} ({edit_mode} mode, affected: {lines_affected})")
+                    lines.append(f"    ✗ ERROR: {record.error}")
                 else:
                     lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
-
-            # For other tools, show compact summary
-            else:
-                lines.append(f"- [{status}] {record.tool_name}({params_preview}) -> {record.result_summary}")
 
         return "\n".join(lines)
 
     def _format_task_notes(self, state: DomainTaskState) -> str:
         notes: List[str] = []
-        if state.pending_tool:
-            params_preview = ", ".join(
-                f"{name}={value}" for name, value in state.pending_tool.param_entries
-            )
-            notes.append(
-                "## PENDING APPROVAL:\n"
-                f"- Tool: {state.pending_tool.tool_name}\n"
-                f"- Reason: {state.pending_tool.reason}\n"
-                f"- Params: {params_preview}"
-            )
+        if state.pending_tools:
+            notes.append(f"## PENDING APPROVAL ({len(state.pending_tools)} tool(s)):")
+            for idx, tool in enumerate(state.pending_tools, 1):
+                params_preview = ", ".join(
+                    f"{name}={value}" for name, value in tool.param_entries
+                )
+                notes.append(
+                    f"\n{idx}. Tool: {tool.tool_name}\n"
+                    f"   Reason: {tool.reason}\n"
+                    f"   Params: {params_preview}"
+                )
         return "\n".join(notes)
+
+    def _format_plan_status(self, state: DomainTaskState) -> str:
+        """Show plan in XML-like structured format (router style) for robust extraction."""
+        if state.context.domain_id != "coder":
+            return ""
+
+        # No plan yet - show creation instruction
+        if not state.plan:
+            iteration = state.metadata.get("iterations", 0)
+            if iteration == 0:
+                return "\n## PLANNING REQUIRED\nNo execution plan exists. Use plan.write tool to create structured plan."
+            return ""
+
+        plan = state.plan
+        steps = plan.get("steps", [])
+        if not steps:
+            return ""
+
+        # Format plan as XML-like structure
+        lines = ["## EXECUTION PLAN"]
+        lines.append(f"<PLAN_TASK>{plan.get('task_description', 'No description')}</PLAN_TASK>")
+
+        completed = sum(1 for s in steps if s.get("status") == "completed")
+        lines.append(f"<PLAN_PROGRESS>{completed}/{len(steps)}</PLAN_PROGRESS>\n")
+
+        # Show only non-completed steps for efficiency
+        for step in steps:
+            status = step.get("status", "pending")
+            if status == "completed":
+                continue
+
+            step_id = step.get("step_id", "?")
+            desc = step.get("description", "")
+
+            lines.append(f"<STEP id=\"{step_id}\" status=\"{status}\">")
+            lines.append(f"  {desc}")
+            lines.append("</STEP>")
+
+        if completed == len(steps):
+            lines.append("\n<PLAN_STATUS>all_complete</PLAN_STATUS>")
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
+    def _is_old_format_error(self, call_id: str, current_iteration: int) -> bool:
+        """Check if a format_error record is old enough to be cleaned up.
+
+        Format errors should persist for exactly 1 call:
+        - Added in iteration N
+        - Visible in iteration N+1
+        - Removed in iteration N+2
+
+        Args:
+            call_id: The call_id containing encoded iteration number (format: format_error_iterN_xxx)
+            current_iteration: The current iteration number
+
+        Returns:
+            True if the error is from 2+ iterations ago and should be removed
+        """
+        import re
+
+        # Extract iteration number from call_id
+        match = re.search(r'format_error_iter(\d+)', call_id)
+        if match:
+            error_iteration = int(match.group(1))
+            # Remove errors from 2+ iterations ago (current - error >= 2)
+            return current_iteration - error_iteration >= 2
+
+        # If we can't parse the iteration, don't delete (safety fallback)
+        return False
+
     def _parse_agent_response(self, response_text: str) -> Dict[str, Any]:
         import re
 
         parsed: Dict[str, Any] = {
             "message": response_text.strip(),
             "raw": response_text,
-            "status": "COMPLETE",
+            "status": "PARSE_ERROR",  # Default to error - will be overridden if parsing succeeds
             "tool_call": None,
+            "format_valid": False,
         }
         try:
+            # Extract content within AGENT_DECISION block
             decision_match = re.search(
                 r"<AGENT_DECISION>(.*?)</AGENT_DECISION>",
                 response_text,
                 re.DOTALL | re.IGNORECASE,
             )
-            body = decision_match.group(1) if decision_match else response_text
 
+            if not decision_match:
+                self.logger.warning("[PARSE-ERROR] Missing AGENT_DECISION block")
+                return parsed
+
+            body = decision_match.group(1)
+
+            # Extract MESSAGE
             message_match = re.search(
                 r"<MESSAGE>(.*?)</MESSAGE>", body, re.DOTALL | re.IGNORECASE
             )
             if message_match:
                 parsed["message"] = message_match.group(1).strip()
 
+            # Extract AGENT_STATUS
             status_match = re.search(
-                r"<STATUS>(.*?)</STATUS>", body, re.DOTALL | re.IGNORECASE
+                r"<AGENT_STATUS>(.*?)</AGENT_STATUS>", body, re.DOTALL | re.IGNORECASE
             )
-            if status_match:
-                parsed["status"] = status_match.group(1).strip().upper()
 
-            tool_section_match = re.search(
+            if not status_match:
+                self.logger.warning("[PARSE-ERROR] Failed to extract AGENT_STATUS")
+                return parsed
+
+            # Parsing succeeded
+            parsed["status"] = status_match.group(1).strip().upper()
+            parsed["format_valid"] = True
+
+            # Extract TOOL_CALL sections
+            tool_section_matches = re.findall(
                 r"<TOOL_CALL>(.*?)</TOOL_CALL>", body, re.DOTALL | re.IGNORECASE
             )
-            tool_section = tool_section_match.group(1) if tool_section_match else ""
 
-            tool_name_match = re.search(
-                r"<TOOL>(.*?)</TOOL>", tool_section, re.DOTALL | re.IGNORECASE
-            )
-            reason_match = re.search(
-                r"<REASON>(.*?)</REASON>", tool_section, re.DOTALL | re.IGNORECASE
-            )
-            param_matches = re.findall(
-                r"<PARAM\s+name=\"([^\"]+)\">(.*?)</PARAM>",
-                tool_section,
-                re.DOTALL | re.IGNORECASE,
-            )
+            tool_calls = []
+            for tool_section in tool_section_matches:
+                tool_name_match = re.search(
+                    r"<TOOL>(.*?)</TOOL>", tool_section, re.DOTALL | re.IGNORECASE
+                )
+                reason_match = re.search(
+                    r"<REASON>(.*?)</REASON>", tool_section, re.DOTALL | re.IGNORECASE
+                )
+                param_matches = re.findall(
+                    r"<PARAM\s+name=\"([^\"]+)\">(.*?)</PARAM>",
+                    tool_section,
+                    re.DOTALL | re.IGNORECASE,
+                )
 
-            if tool_name_match:
-                param_entries: List[Tuple[str, Any]] = []
-                for param_name, raw_value in param_matches:
-                    cleaned = raw_value.strip()
-                    param_entries.append((param_name, self._normalise_param_value(cleaned)))
+                if tool_name_match:
+                    tool_name = tool_name_match.group(1).strip()
+                    param_entries: List[Tuple[str, Any]] = []
+                    for param_name, raw_value in param_matches:
+                        cleaned = raw_value.strip()
+                        param_entries.append((param_name, self._normalise_param_value(cleaned, tool_name, param_name)))
 
-                parsed["tool_call"] = {
-                    "tool": tool_name_match.group(1).strip(),
-                    "reason": reason_match.group(1).strip() if reason_match else "",
-                    "param_entries": param_entries,
-                }
+                    tool_calls.append({
+                        "tool": tool_name_match.group(1).strip(),
+                        "reason": reason_match.group(1).strip() if reason_match else "",
+                        "param_entries": param_entries,
+                    })
+
+            parsed["tool_calls"] = tool_calls
+            parsed["tool_call"] = tool_calls[0] if tool_calls else None
+
         except Exception as exc:
-            self.logger.warning("Failed to parse agent response: %s", exc)
+            self.logger.warning(f"Parse exception: {exc}")
 
         return parsed
 
@@ -1301,7 +1721,7 @@ class SingleDomainExecutor:
             "status": state.status,
             "agent_message": state.agent_message,
             "output": state.output,
-            "pending_tool": self._serialize_tool_proposal(state.pending_tool),
+            "pending_tools": [self._serialize_tool_proposal(t) for t in state.pending_tools],
             "actions": [action.to_dict() for action in state.actions],
             "context_snapshots": state.context_snapshots,
             "plan": state.plan,
@@ -1357,14 +1777,126 @@ class SingleDomainExecutor:
                 return value.decode("utf-8", errors="replace")
             return str(value)
 
-    def _normalise_param_value(self, value: str) -> Any:
+    def _normalise_param_value(self, value: str, tool_name: str, param_name: str) -> Any:
+        """Parse parameter value based on tool schema.
+
+        Uses tool's schema to determine if parameter should be:
+        - Kept as literal string (for "type": "string" parameters like file.write content)
+        - Parsed as nested tags (for "type": "object" or "array" parameters like plan.update updates)
+
+        This respects the design principle: tags are regex delimiters, content is literal.
+        Parsing only happens when the tool's schema explicitly expects structured data.
+        """
         stripped = value.strip()
         if not stripped:
             return ""
-        try:
-            return json.loads(stripped)
-        except (json.JSONDecodeError, TypeError):
+
+        # Look up tool schema to determine expected parameter type
+        tool_spec = tool_registry.get(tool_name)
+        expected_type = "string"  # Default to string (literal extraction)
+
+        if tool_spec and tool_spec.in_schema:
+            properties = tool_spec.in_schema.get("properties", {})
+            param_schema = properties.get(param_name, {})
+            expected_type = param_schema.get("type", "string")
+
+        # If parameter expects string type, return literally (no parsing)
+        if expected_type == "string":
             return stripped
+
+        # If parameter expects integer, parse as int
+        if expected_type == "integer":
+            try:
+                return int(stripped)
+            except (ValueError, TypeError):
+                raise ValueError(f"Parameter '{param_name}' expects an integer, but got: '{stripped}'")
+
+        # If parameter expects number (float), parse as float
+        if expected_type == "number":
+            try:
+                return float(stripped)
+            except (ValueError, TypeError):
+                raise ValueError(f"Parameter '{param_name}' expects a number, but got: '{stripped}'")
+
+        # If parameter expects boolean, parse as bool
+        if expected_type == "boolean":
+            lower = stripped.lower()
+            if lower in ("true", "1", "yes"):
+                return True
+            elif lower in ("false", "0", "no"):
+                return False
+            else:
+                raise ValueError(f"Parameter '{param_name}' expects a boolean (true/false), but got: '{stripped}'")
+
+        # If parameter expects object/array, try to parse nested tag format
+        if expected_type in ("object", "array"):
+            # Try nested tag format first (preferred for structured data)
+            if stripped.startswith('<') and stripped.endswith('>'):
+                try:
+                    parsed = self._parse_nested_tags(stripped)
+                    return parsed
+                except Exception:
+                    pass  # Fall through to other formats
+
+            # Try JSON format (backward compatibility)
+            try:
+                return json.loads(stripped)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Try Python literal_eval (backward compatibility for Python dict syntax)
+            try:
+                import ast
+                return ast.literal_eval(stripped)
+            except (ValueError, SyntaxError):
+                pass
+
+        # Fallback: return as plain string
+        return stripped
+
+    def _parse_nested_tags(self, content: str) -> Any:
+        """Parse nested tag format into Python objects.
+
+        Conventions:
+          - <item> tags = array elements (anonymous)
+          - Other named tags = object properties (with keys)
+
+        Examples:
+          <item>value</item> → "value" (single item, unwrapped)
+          <item>val1</item><item>val2</item> → ["val1", "val2"] (multiple items = array)
+          <key1>val1</key1><key2>val2</key2> → {"key1": "val1", "key2": "val2"} (object)
+          <update_steps><item>x</item></update_steps> → {"update_steps": ["x"]}
+        """
+        import re
+
+        content = content.strip()
+
+        # Find all top-level tags
+        tag_pattern = r'<([^/>]+)>(.*?)</\1>'
+        matches = list(re.finditer(tag_pattern, content, re.DOTALL))
+
+        if not matches:
+            # No tags found, return as string
+            return content
+
+        # Check if all tags are <item> tags (array elements)
+        tag_names = [m.group(1) for m in matches]
+        if all(name == 'item' for name in tag_names):
+            # All <item> tags → array
+            parsed_items = [self._parse_nested_tags(m.group(2).strip()) for m in matches]
+            # If only one item, unwrap it (unless it's explicitly an array context)
+            if len(parsed_items) == 1 and not content.strip().startswith('<item>'):
+                return parsed_items[0]
+            return parsed_items
+
+        # Named tags → object
+        result = {}
+        for match in matches:
+            tag_name = match.group(1)
+            tag_content = match.group(2).strip()
+            result[tag_name] = self._parse_nested_tags(tag_content)
+
+        return result
 
     def _summarize_tool_output(self, output: Any) -> str:
         """
@@ -1411,6 +1943,37 @@ class SingleDomainExecutor:
         serialized = str(output)
         return serialized
 
+    def _validate_completion(self, state: DomainTaskState) -> Tuple[bool, str]:
+        """Validate that completion is justified.
+
+        Returns:
+            Tuple[bool, str]: (is_valid, rejection_reason)
+                - (True, "") if completion is valid
+                - (False, "reason") if completion should be rejected
+        """
+        # Only validate coder domain
+        if state.context.domain_id != "coder":
+            return (True, "")
+
+        # Check if any actual work was done (prevent "zero work" completions)
+        tool_calls_made = state.metadata.get("tool_calls", 0)
+
+        if tool_calls_made == 0:
+            # No tools executed - this is premature completion
+            rejection_reason = (
+                "No tools have been executed yet. You must use tools to do actual work.\n"
+                "Review your plan and propose the next tool call to begin implementation."
+            )
+            return (False, rejection_reason)
+
+        # Some work was done - trust agent's judgment about completion
+        # The plan is guidance; agent can adapt as needed
+        self.logger.info(
+            "[COMPLETION-VALIDATED] %d tool calls executed, allowing completion",
+            tool_calls_made
+        )
+        return (True, "")
+
     def _mark_failure(self, state: DomainTaskState, message: str) -> None:
         self.logger.error("Domain execution failure: %s", message)
         state.status = "failed"
@@ -1421,7 +1984,7 @@ class SingleDomainExecutor:
             description=message,
             status="failed",
         )
-        state.pending_tool = None
+        state.pending_tools = []
 
     def _find_action_by_call_id(
         self, state: DomainTaskState, call_id: str

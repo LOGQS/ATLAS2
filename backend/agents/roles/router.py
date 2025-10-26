@@ -145,6 +145,8 @@ class Router:
         """
         # Track router token usage
         from agents.context.context_manager import context_manager
+        from utils.rate_limiter import get_rate_limiter
+
         router_provider = Config.get_router_provider()
         token_estimate = context_manager.estimate_request_tokens(
             role="router",
@@ -157,6 +159,14 @@ class Router:
         )
         estimated_tokens = token_estimate['estimated_tokens']['total']
         logger.debug(f"Router estimated tokens: {estimated_tokens}")
+
+        limiter = get_rate_limiter()
+        try:
+            limiter.check_and_reserve(router_provider, self.router_model, estimated_tokens)
+            logger.info(f"[RATE-LIMIT] Reserved capacity for router {router_provider}:{self.router_model} (estimated {estimated_tokens} tokens)")
+        except Exception as rate_limit_error:
+            logger.error(f"[RATE-LIMIT] Router rate limit check failed: {rate_limit_error}")
+            raise
 
         if providers and router_provider in providers and providers[router_provider].is_available():
             response = providers[router_provider].generate_text(
@@ -186,6 +196,14 @@ class Router:
         actual_tokens = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
         if actual_tokens_data:
             logger.info(f"Router actual tokens: {actual_tokens}")
+
+        # Finalize rate limit with actual tokens
+        if actual_tokens > 0:
+            try:
+                limiter.finalize_tokens(router_provider, self.router_model, estimated_tokens, actual_tokens)
+                logger.info(f"[RATE-LIMIT] Finalized router token usage: estimated={estimated_tokens}, actual={actual_tokens}")
+            except Exception as finalize_error:
+                logger.warning(f"[RATE-LIMIT] Failed to finalize router tokens: {finalize_error}")
 
         # Save token usage to database if chat_id provided
         if chat_id and not chat_id.startswith("router_temp_"):

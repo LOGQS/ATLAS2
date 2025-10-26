@@ -1,11 +1,9 @@
 # status: complete
 
-from typing import Any, Callable, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 from utils.logger import get_logger
-from utils.rate_limiter import get_rate_limiter
-from utils.config import Config
 
 load_dotenv()
 
@@ -93,29 +91,6 @@ class Groq:
         total = getattr(usage, "total_tokens", None)
         return int(total) if total is not None else None
 
-    def _execute_with_rate_limit(
-        self,
-        operation_name: str,
-        method,
-        *args,
-        estimated_tokens: Optional[int] = None,
-        usage_getter: Optional[Callable[[Any], Optional[int]]] = None,
-        **kwargs,
-    ):
-        """Common rate limiting wrapper for all API calls"""
-        json_payload = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else {}
-        model_name = json_payload.get("model") or kwargs.get("model")
-        rate_config = Config.get_rate_limit_config(provider="groq", model=model_name)
-        limiter = get_rate_limiter()
-        return limiter.execute(
-            method,
-            operation_name,
-            *args,
-            limit_config=rate_config,
-            usage_getter=usage_getter or self._usage_from_response,
-            estimated_tokens=estimated_tokens,
-            **kwargs,
-        )
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Groq/OpenAI format"""
@@ -166,13 +141,7 @@ class Groq:
             request_params["include_reasoning"] = True
 
         try:
-            response = self._execute_with_rate_limit(
-                f"groq:{model}",
-                self.client.chat.completions.create,
-                usage_getter=None,
-                estimated_tokens=estimated_tokens,
-                **request_params
-            )
+            response = self.client.chat.completions.create(**request_params)
 
             thoughts = None
             content = ""
@@ -246,12 +215,7 @@ class Groq:
             request_params["include_reasoning"] = True
 
         try:
-            response = self._execute_with_rate_limit(
-                f"groq:{model}",
-                self.client.chat.completions.create,
-                estimated_tokens=estimated_tokens,
-                **request_params
-            )
+            response = self.client.chat.completions.create(**request_params)
 
             answer_started = False
             thoughts_started = False

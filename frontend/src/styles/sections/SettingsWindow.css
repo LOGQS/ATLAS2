@@ -344,3 +344,108 @@
   flex-direction: column;
   gap: 12px;
 }
+
+/* Source badges */
+.rate-limit-source-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.rate-limit-source-env {
+  background: rgba(255, 146, 79, 0.2);
+  color: #ffb380;
+  border: 1px solid rgba(255, 146, 79, 0.4);
+}
+
+.rate-limit-source-file {
+  background: rgba(74, 144, 226, 0.2);
+  color: #80b3ff;
+  border: 1px solid rgba(74, 144, 226, 0.4);
+}
+
+.rate-limit-source-default {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Disabled input styling for .env-controlled fields */
+.rate-limit-field input:disabled {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.rate-limit-field input:disabled::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Progress bars for usage tracking */
+.rate-limit-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.rate-limit-usage-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  display: flex;
+  justify-content: space-between;
+  font-weight: 500;
+}
+
+.rate-limit-progress-bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.rate-limit-progress-fill {
+  height: 100%;
+  transition: width 0.4s ease, background 0.3s ease;
+  border-radius: 2px;
+}
+
+/* Low usage: 0-70% - Green gradient */
+.rate-limit-progress-fill.low {
+  background: linear-gradient(90deg, #4fd1a1 0%, #5de2b2 100%);
+  box-shadow: 0 0 8px rgba(79, 209, 161, 0.3);
+}
+
+/* Medium usage: 70-90% - Yellow/Orange gradient */
+.rate-limit-progress-fill.medium {
+  background: linear-gradient(90deg, #ffb380 0%, #ffc599 100%);
+  box-shadow: 0 0 8px rgba(255, 179, 128, 0.3);
+}
+
+/* High usage: 90-100% - Red gradient with pulse animation */
+.rate-limit-progress-fill.high {
+  background: linear-gradient(90deg, #ff6b7d 0%, #ff8594 100%);
+  box-shadow: 0 0 10px rgba(255, 107, 125, 0.4);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(255, 107, 125, 0.4);
+  }
+  50% {
+    opacity: 0.85;
+    box-shadow: 0 0 16px rgba(255, 107, 125, 0.6);
+  }
+}

@@ -5,7 +5,13 @@ to ensure consistent, parseable responses.
 """
 
 AGENT_RESPONSE_FORMAT = """
-Respond using the following structure (no extra text before or after):
+CRITICAL - FORMAT STRUCTURE:
+Your entire response must be wrapped in <AGENT_DECISION>...</AGENT_DECISION> tags.
+All components (MESSAGE, TOOL_CALL sections, AGENT_STATUS) must be INSIDE this block.
+Close the </AGENT_DECISION> tag ONLY after you've written AGENT_STATUS and all rules.
+Do not write ANY text before <AGENT_DECISION> or after </AGENT_DECISION>.
+
+Response structure:
 
 <AGENT_DECISION>
 <MESSAGE>
@@ -19,20 +25,34 @@ Short message for the user describing what you will do next or summarising the o
 <PARAM name="another_param">another value</PARAM>
 </TOOL_CALL>
 
-<STATUS>
-AWAIT_TOOL if the tool must be approved and executed before you continue.
-COMPLETE if the task is fully finished and no tool call is needed.
-</STATUS>
+<TOOL_CALL>
+<TOOL>another.tool</TOOL>
+<REASON>Why this tool is also needed.</REASON>
+<PARAM name="param">value</PARAM>
+</TOOL_CALL>
+
+<AGENT_STATUS>
+AWAIT_TOOL if you have tool calls to propose (must include TOOL_CALL section(s) with TOOL/REASON/PARAM tags).
+COMPLETE if the task is FULLY finished - ALL work completed, user request satisfied, no more actions needed.
+</AGENT_STATUS>
+
+CRITICAL COMPLETION RULES:
+- Do NOT use COMPLETE if you just described what you'll do - you must DO it first using tools.
+- Describing work ("I will create X") is NOT the same as doing work (calling file.write to create X).
+- When in doubt, propose tool calls (AWAIT_TOOL) rather than completing prematurely.
+
+<!- IMPORTANT: Close the decision block AFTER the above rules, NOT before AGENT_STATUS ->
 </AGENT_DECISION>
 
 Rules:
 - MESSAGE must always be present and concise (1-3 sentences).
-- When STATUS is AWAIT_TOOL you MUST provide TOOL, REASON, and every required PARAM tag.
+- You can propose multiple TOOL_CALL blocks to batch related operations.
+- When AGENT_STATUS is AWAIT_TOOL you MUST provide at least one TOOL_CALL with TOOL, REASON, and required PARAM tags.
 - Use absolute/explicit parameter values; never leave placeholders.
-- Only reference tools from the allowlist. One tool per decision turn.
-- When STATUS is COMPLETE, leave the TOOL_CALL section empty (no TOOL/REASON/PARAM tags).
+- Only reference tools from the allowlist.
+- When AGENT_STATUS is COMPLETE, leave TOOL_CALL sections empty (no TOOL/REASON/PARAM tags).
 - Never execute tools yourself—you only propose them for approval.
-- Do not add any text outside the <AGENT_DECISION> block.
+- STRUCTURE: Everything (MESSAGE, TOOL_CALL, AGENT_STATUS, rules) goes INSIDE <AGENT_DECISION> block.
 
 CRITICAL - PARAMETER VALUE FORMATTING (READ THIS CAREFULLY):
 
@@ -83,6 +103,8 @@ BASE_AGENT_PROMPT = """You are a specialized domain agent in the ATLAS2 agentic 
 {tool_history_section}
 
 {task_notes_section}
+
+{plan_status_section}
 
 {response_format}
 """

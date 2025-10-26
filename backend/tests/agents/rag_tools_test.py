@@ -9,8 +9,13 @@ import sys
 import os
 import json
 import threading
+import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add backend directory to Python path
+# File is at: backend/tests/agents/rag_tools_test.py
+# We need:  backend/ in the path
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, backend_dir)
 
 from agents.tools.tool_registry import ToolExecutionContext, tool_registry
 from agents.tools.rag.rag_search_func import get_chunk_with_context
@@ -23,8 +28,9 @@ class SettingsWindow:
     def __init__(self, parent, settings):
         self.window = tk.Toplevel(parent)
         self.window.title("RAG Settings")
-        self.window.geometry("500x400")
-        self.window.resizable(False, False)
+        self.window.geometry("550x550")
+        self.window.resizable(True, True)
+        self.window.minsize(500, 500)
 
         self.settings = settings.copy()
         self.result = None
@@ -52,13 +58,24 @@ class SettingsWindow:
             row=3, column=1, pady=5, sticky="w"
         )
 
-        ttk.Label(frame, text="Embedding Model:").grid(row=4, column=0, sticky="w", pady=5)
-        self.embed_model_var = tk.StringVar(value=settings.get('embed_model', 'sentence-transformers/all-MiniLM-L6-v2'))
-        ttk.Entry(frame, textvariable=self.embed_model_var, width=30).grid(row=4, column=1, pady=5)
+        ttk.Label(frame, text="Embedding Speed:").grid(row=4, column=0, sticky="w", pady=5)
+        self.speed_var = tk.StringVar(value=settings.get('speed', ''))
+        speed_frame = ttk.Frame(frame)
+        speed_frame.grid(row=4, column=1, pady=5, sticky="w")
+        speed_combo = ttk.Combobox(speed_frame, textvariable=self.speed_var,
+                                   values=['', 'fast', 'slow'], width=12, state='readonly')
+        speed_combo.grid(row=0, column=0)
+        ttk.Label(speed_frame, text="(fast=33MB, slow=305MB)", font=("Arial", 8)).grid(row=0, column=1, padx=5)
+
+        ttk.Label(frame, text="Embedding Model:").grid(row=5, column=0, sticky="w", pady=5)
+        self.embed_model_var = tk.StringVar(value=settings.get('embed_model', 'fast'))
+        embed_entry = ttk.Entry(frame, textvariable=self.embed_model_var, width=30)
+        embed_entry.grid(row=5, column=1, pady=5)
+        ttk.Label(frame, text="(overridden by speed if set)", font=("Arial", 8)).grid(row=6, column=1, sticky="w")
 
         self.incremental_var = tk.BooleanVar(value=settings.get('incremental', True))
         ttk.Checkbutton(frame, text="Incremental Indexing", variable=self.incremental_var).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=5
+            row=7, column=0, columnspan=2, sticky="w", pady=5
         )
 
         search_frame = ttk.LabelFrame(self.window, text="Search Settings", padding=10)
@@ -95,6 +112,7 @@ class SettingsWindow:
             'persist_dir': self.persist_dir_var.get(),
             'chunk_size': self.chunk_size_var.get(),
             'overlap': self.overlap_var.get(),
+            'speed': self.speed_var.get(),
             'embed_model': self.embed_model_var.get(),
             'incremental': self.incremental_var.get(),
             'top_k': self.top_k_var.get(),
@@ -114,14 +132,17 @@ class RAGTestUI:
 
         self.file_paths = []
 
-        default_persist_dir = str(Path(__file__).resolve().parent.parent.parent / "data" / "rag_data" / "test_rag_data")
+        # Path resolution: tests/agents/rag_tools_test.py -> agents -> tests -> backend -> ATLAS2 (root)
+        # Need 4 parents to reach root, then data/rag_data/test_rag_data
+        default_persist_dir = str(Path(__file__).resolve().parent.parent.parent.parent / "data" / "rag_data" / "test_rag_data")
 
         self.settings = {
             'index_name': 'test_index',
             'persist_dir': default_persist_dir,
             'chunk_size': 4096,
             'overlap': 200,
-            'embed_model': 'sentence-transformers/all-MiniLM-L6-v2',
+            'speed': '',  # '' means use embed_model, 'fast' or 'slow' to use speed mode
+            'embed_model': 'fast',
             'incremental': True,
             'top_k': 5,
             'similarity': 'cosine',
@@ -140,6 +161,7 @@ class RAGTestUI:
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
         ttk.Button(toolbar, text="Select Files", command=self.select_files).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Select Folder", command=self.select_folder).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Clear Files", command=self.clear_files).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Settings", command=self.show_settings).pack(side=tk.LEFT, padx=2)
 
@@ -198,9 +220,19 @@ class RAGTestUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=60, height=20)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
+        # Status bar with speed indicator
+        status_frame = ttk.Frame(self.root)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
-        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        status_bar = ttk.Label(status_frame, textvariable=self.status_var, relief=tk.SUNKEN)
+        status_bar.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.speed_indicator_var = tk.StringVar(value="Model: default")
+        speed_indicator = ttk.Label(status_frame, textvariable=self.speed_indicator_var, relief=tk.SUNKEN, width=30)
+        speed_indicator.pack(side=tk.RIGHT)
+
+        self._update_speed_indicator()
 
     def select_files(self):
         """Select files to index."""
@@ -216,6 +248,63 @@ class RAGTestUI:
                     self.file_listbox.insert(tk.END, os.path.basename(file))
 
             self.update_file_count()
+
+    def select_folder(self):
+        """Select a folder and add all code files, ignoring common build/cache directories."""
+        folder = filedialog.askdirectory(title="Select folder to index")
+
+        if not folder:
+            return
+
+        # Directories to ignore (case-insensitive)
+        ignore_dirs = {
+            '.git', '.svn', '.hg',
+            'node_modules', '__pycache__', '.pytest_cache', '.mypy_cache',
+            '.venv', 'venv', 'env',
+            'dist', 'build', 'out', 'target',
+            'bin', 'obj', '.next', '.nuxt',
+            'coverage', '.coverage',
+            '.idea', '.vscode', '.vs'
+        }
+
+        # Code file extensions
+        code_extensions = {
+            '.py', '.js', '.ts', '.jsx', '.tsx',
+            '.java', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx',
+            '.cs', '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.kts',
+            '.scala', '.r', '.m', '.mm', '.html', '.css', '.scss', '.sass',
+            '.sql', '.sh', '.bat', '.ps1', '.lua', '.dart', '.groovy',
+            '.vb', '.fs', '.fsx', '.clj', '.cljs', '.erl', '.ex', '.exs',
+            '.jl', '.nim', '.v', '.vhdl', '.asm', '.lisp', '.scm', '.rkt',
+            '.ml', '.mli', '.hs', '.elm', '.f90', '.f', '.pas', '.pp',
+            '.tcl', '.awk', '.sed', '.pl', '.pm', '.vue', '.svelte',
+            '.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg',
+            '.md', '.rst', '.tex', '.txt'
+        }
+
+        added_count = 0
+        self.log(f"Scanning folder: {folder}")
+
+        for root, dirs, files in os.walk(folder):
+            # Filter out ignored directories (modify dirs in-place to prevent traversal)
+            dirs[:] = [d for d in dirs if d.lower() not in ignore_dirs and not d.startswith('.')]
+
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_ext = os.path.splitext(file)[1].lower()
+
+                # Only add code files
+                if file_ext in code_extensions:
+                    if file_path not in self.file_paths:
+                        self.file_paths.append(file_path)
+                        # Show relative path for better readability
+                        rel_path = os.path.relpath(file_path, folder)
+                        self.file_listbox.insert(tk.END, rel_path)
+                        added_count += 1
+
+        self.update_file_count()
+        self.log(f"Added {added_count} code files from folder")
+        messagebox.showinfo("Folder Added", f"Added {added_count} code files from:\n{folder}")
 
     def clear_files(self):
         """Clear the file list."""
@@ -236,6 +325,20 @@ class RAGTestUI:
         if dialog.result:
             self.settings.update(dialog.result)
             self.log(f"Settings updated: {json.dumps(self.settings, indent=2)}")
+            self._update_speed_indicator()
+
+    def _update_speed_indicator(self):
+        """Update the speed indicator in the status bar."""
+        if self.settings['speed']:
+            speed_info = {
+                'fast': 'Fast (e5-small-v2, 33MB)',
+                'slow': 'Slow (gte-multilingual-base, 305MB)'
+            }
+            indicator = f"Speed: {speed_info.get(self.settings['speed'], self.settings['speed'])}"
+        else:
+            model_short = self.settings['embed_model'].split('/')[-1]
+            indicator = f"Model: {model_short}"
+        self.speed_indicator_var.set(indicator)
 
     def index_files(self):
         """Index selected files using the RAG tool."""
@@ -246,13 +349,21 @@ class RAGTestUI:
         self.status_var.set("Indexing files...")
         self.log_text.delete(1.0, tk.END)
         self.log("Starting indexing process...")
-        self.log(f"Using embedding model: {self.settings['embed_model']}")
+
+        # Log which model is being used
+        if self.settings['speed']:
+            speed_models = {'fast': 'intfloat/e5-small-v2 (33MB)', 'slow': 'Alibaba-NLP/gte-multilingual-base (305MB)'}
+            model_info = speed_models.get(self.settings['speed'], self.settings['speed'])
+            self.log(f"Using speed mode: {self.settings['speed']} -> {model_info}")
+        else:
+            self.log(f"Using embedding model: {self.settings['embed_model']}")
 
         thread = threading.Thread(target=self._index_worker, daemon=True)
         thread.start()
 
     def _index_worker(self):
         """Worker thread for indexing with full RAG."""
+        start_time = time.time()
         try:
             ctx = ToolExecutionContext(
                 chat_id="test_chat",
@@ -265,7 +376,8 @@ class RAGTestUI:
             self.log(f"Index: {self.settings['index_name']}")
             self.log(f"Chunk size: {self.settings['chunk_size']}, Overlap: {self.settings['overlap']}")
 
-            result = self.index_tool.fn({
+            # Build params with speed if set
+            params = {
                 'file_paths': self.file_paths,
                 'index_name': self.settings['index_name'],
                 'persist_dir': self.settings['persist_dir'],
@@ -273,8 +385,15 @@ class RAGTestUI:
                 'overlap': self.settings['overlap'],
                 'embed_model': self.settings['embed_model'],
                 'incremental': self.settings['incremental']
-            }, ctx)
+            }
 
+            # Add speed parameter if set
+            if self.settings['speed']:
+                params['speed'] = self.settings['speed']
+
+            result = self.index_tool.fn(params, ctx)
+
+            elapsed_time = time.time() - start_time
             output = result.output
             chunks = output.get('chunks', 0)
             status = output.get('status', 'unknown')
@@ -284,11 +403,15 @@ class RAGTestUI:
             self.log(f"  Chunks created: {chunks}")
             if output.get('files'):
                 self.log(f"  Files processed: {output['files']}")
+            self.log(f"  ⏱️  Time taken: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
 
-            self.root.after(0, lambda: self.status_var.set(f"Indexed {len(self.file_paths)} files, {chunks} chunks"))
+            self.root.after(0, lambda: self.status_var.set(
+                f"Indexed {len(self.file_paths)} files, {chunks} chunks in {elapsed_time:.1f}s"
+            ))
 
         except Exception as e:
-            self.log(f"\n❌ Indexing failed: {str(e)}")
+            elapsed_time = time.time() - start_time
+            self.log(f"\n❌ Indexing failed after {elapsed_time:.2f} seconds: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
             self.root.after(0, lambda: self.status_var.set("Indexing failed"))
@@ -316,14 +439,21 @@ class RAGTestUI:
                 ctx_id="test_ctx"
             )
 
-            result = self.search_tool.fn({
+            # Build params with speed if set
+            params = {
                 'query': query,
                 'index_name': self.settings['index_name'],
                 'persist_dir': self.settings['persist_dir'],
                 'top_k': self.settings['top_k'],
                 'embed_model': self.settings['embed_model'],
                 'similarity': self.settings['similarity']
-            }, ctx)
+            }
+
+            # Add speed parameter if set (must match indexing speed)
+            if self.settings['speed']:
+                params['speed'] = self.settings['speed']
+
+            result = self.search_tool.fn(params, ctx)
 
             output = result.output
             hits = output.get('hits', [])

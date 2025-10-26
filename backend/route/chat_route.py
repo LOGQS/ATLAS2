@@ -171,11 +171,16 @@ def _drain_backlog_events() -> list[dict]:
     return drained
 
 def _broadcast(event: dict):
+    event_type = event.get('type', 'unknown')
+    chat_id = event.get('chat_id', 'global')
+
     with _sub_lock:
         if not _subscribers:
+            logger.warning(f'[SSE_BROADCAST] No subscribers for {event_type} event (chat: {chat_id}), storing in backlog')
             _store_backlog_event(event)
             return
         subscribers_snapshot = list(_subscribers)
+        logger.debug(f'[SSE_BROADCAST] Broadcasting {event_type} event to {len(subscribers_snapshot)} subscriber(s) (chat: {chat_id})')
 
     delivered = False
     to_remove = []
@@ -193,7 +198,10 @@ def _broadcast(event: dict):
                     _subscribers.remove(q)
         logger.warning(f'[SSE] Removed {len(to_remove)} stale subscriber(s) with full queues')
 
-    if not delivered:
+    if delivered:
+        logger.debug(f'[SSE_BROADCAST] Successfully delivered {event_type} event (chat: {chat_id})')
+    else:
+        logger.warning(f'[SSE_BROADCAST] Failed to deliver {event_type} event (chat: {chat_id}), storing in backlog')
         _store_backlog_event(event)
 
 
@@ -777,6 +785,7 @@ def register_chat_routes(app: Flask):
             payload = request.get_json() or {}
             decision = (payload.get('decision') or '').lower()
             assistant_message_id = payload.get('assistant_message_id')
+            batch_mode = payload.get('batch_mode', True)  # Default to batch mode
 
             if decision not in {'accept', 'reject'}:
                 return jsonify({'success': False, 'error': "decision must be 'accept' or 'reject'"}), 400
@@ -786,7 +795,8 @@ def register_chat_routes(app: Flask):
                 task_id=task_id,
                 call_id=call_id,
                 decision=decision,
-                assistant_message_id=assistant_message_id
+                assistant_message_id=assistant_message_id,
+                batch_mode=batch_mode
             )
             status_code = 200 if response.get('success') else 400
             return jsonify(response), status_code

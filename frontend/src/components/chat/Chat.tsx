@@ -34,8 +34,11 @@ import type { AttachedFile, Message } from '../../types/messages';
 
 const DUPLICATE_WINDOW_MS = 1000;
 const SKELETON_READY_DELAY_MS = 120;
-const LOAD_HISTORY_DEBOUNCE_MS = 50;
 const RECONCILE_AFTER_STREAM_DELAY_MS = 100;
+
+// Module-level storage to persist across component unmount/remount (React StrictMode)
+const loadHistoryGuard = new Map<string, boolean>();
+const optimisticMessagesStore = new Map<string, Message[]>();
 
 interface ChatProps {
   chatId?: string;
@@ -421,27 +424,32 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
 
       if (snap.routerDecision && snap.routerDecision.selectedRoute) {
-        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-        if (lastAssistant && !lastAssistant.routerDecision) {
-          logger.info(`[ROUTER_DEBUG] Applying router decision to message ${lastAssistant.id}`);
-          setMessages(prev => prev.map(msg => {
-            if (msg.id === lastAssistant.id) {
-              return {
-                ...msg,
-                routerEnabled: true,
-                routerDecision: {
-                  route: snap.routerDecision!.selectedRoute!,
-                  available_routes: snap.routerDecision!.availableRoutes || [],
-                  selected_model: snap.routerDecision!.selectedModel,
-                  tools_needed: snap.routerDecision!.toolsNeeded ?? null,
-                  execution_type: snap.routerDecision!.executionType || null,
-                  fastpath_params: snap.routerDecision!.fastpathParams || null
-                }
-              };
-            }
-            return msg;
-          }));
-        }
+        // Use functional update to avoid messages dependency
+        // This prevents the subscription from re-registering on every message change
+        setMessages(prev => {
+          const lastAssistant = [...prev].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant && !lastAssistant.routerDecision) {
+            logger.info(`[ROUTER_DEBUG] Applying router decision to message ${lastAssistant.id}`);
+            return prev.map(msg => {
+              if (msg.id === lastAssistant.id) {
+                return {
+                  ...msg,
+                  routerEnabled: true,
+                  routerDecision: {
+                    route: snap.routerDecision!.selectedRoute!,
+                    available_routes: snap.routerDecision!.availableRoutes || [],
+                    selected_model: snap.routerDecision!.selectedModel,
+                    tools_needed: snap.routerDecision!.toolsNeeded ?? null,
+                    execution_type: snap.routerDecision!.executionType || null,
+                    fastpath_params: snap.routerDecision!.fastpathParams || null
+                  }
+                };
+              }
+              return msg;
+            });
+          }
+          return prev;
+        });
       }
 
 
@@ -449,14 +457,47 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         onChatStateChange(_id, snap.state);
       }
     });
-  }, [chatId, onChatStateChange, loadHistory, messages]);
+  }, [chatId, onChatStateChange, loadHistory]);
 
   const loadHistoryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const previousChatIdRef = useRef<string | undefined>(undefined);
 
+  // Restore optimistic messages from module storage on mount (React StrictMode remount)
   useEffect(() => {
     if (!chatId) return;
 
+    const stored = optimisticMessagesStore.get(chatId);
+    if (stored && stored.length > 0) {
+      logger.debug(`[CHAT_SWITCH] Restoring ${stored.length} optimistic messages on remount`);
+      setMessages(stored);
+    }
+  }, [chatId]);
+
+  // Save optimistic messages to module storage to survive React StrictMode remounts
+  useEffect(() => {
+    if (!chatId) return;
+
+    const optimistic = messages.filter(m => m.id.startsWith('temp_') || m.clientId);
+    if (optimistic.length > 0) {
+      optimisticMessagesStore.set(chatId, optimistic);
+    } else {
+      optimisticMessagesStore.delete(chatId);
+    }
+  }, [chatId, messages]);
+
+  useEffect(() => {
+    if (!chatId) return;
+
+    const guardKey = `${chatId}_initial`;
+    const hasGuard = loadHistoryGuard.get(guardKey);
+
+    // Prevent duplicate loadHistory calls using module-level guard
+    if (hasGuard) {
+      logger.debug(`[CHAT_SWITCH] Skipping duplicate loadHistory for ${chatId}`);
+      return;
+    }
+
+    loadHistoryGuard.set(guardKey, true);
     initialLoadStrategyRef.current = null;
 
     try {
@@ -477,16 +518,29 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   useEffect(() => {
     if (chatId && chatId !== previousChatIdRef.current) {
-      logger.info(`[CHAT_SWITCH] ===== CHAT COMPONENT RECEIVED NEW CHATID =====`);
-      logger.info(`[CHAT_SWITCH] Previous chatId: ${previousChatIdRef.current}, New chatId: ${chatId}`);
-      logger.info(`[CHAT_SWITCH] Current messages count: ${messages.length}`);
-      logger.info(`[CHAT_SWITCH] isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
+      logger.info(`[CHAT_SWITCH] Chat changed: ${previousChatIdRef.current} → ${chatId}`);
+
+      if (previousChatIdRef.current) {
+        // Reset module-level storage when switching between chats
+        const oldGuardKey = `${previousChatIdRef.current}_initial`;
+        const newGuardKey = `${chatId}_initial`;
+        loadHistoryGuard.delete(oldGuardKey);
+        loadHistoryGuard.delete(newGuardKey);
+        optimisticMessagesStore.delete(previousChatIdRef.current);
+      }
 
       if (previousChatIdRef.current) {
         const shouldClearState = initialLoadStrategyRef.current !== 'cached';
-        logger.info(`[CHAT_SWITCH] Clearing state for fast switch (shouldClearState: ${shouldClearState})`);
         if (shouldClearState) {
-          setMessages([]);
+          // Preserve optimistic messages during state clear
+          setMessages(prev => {
+            const optimistic = prev.filter(m => m.id.startsWith('temp_') || m.clientId);
+            if (optimistic.length > 0) {
+              logger.debug(`[CHAT_SWITCH] Preserving ${optimistic.length} optimistic messages`);
+              return optimistic;
+            }
+            return [];
+          });
         }
         setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
         setDismissedErrorAt(null);
@@ -498,23 +552,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
       previousChatIdRef.current = chatId;
 
+      // Cancel any pending debounced loads
       if (loadHistoryTimeoutRef.current) {
         clearTimeout(loadHistoryTimeoutRef.current);
-        logger.info(`[DOUBLE_MOUNT] Cancelled pending loadHistory call due to rapid remount`);
-      }
-
-      const shouldScheduleDebouncedLoad = initialLoadStrategyRef.current !== 'cached';
-      if (shouldScheduleDebouncedLoad) {
-        loadHistoryTimeoutRef.current = setTimeout(() => {
-          logger.info(`[CHAT_SWITCH] Calling loadHistory() after debounce`);
-          loadHistory().then(() => {
-            logger.info(`[CHAT_SWITCH] loadHistory() completed for ${chatId}`);
-          }).catch((error) => {
-            logger.error(`[CHAT_SWITCH] loadHistory() failed for ${chatId}:`, error);
-          });
-        }, LOAD_HISTORY_DEBOUNCE_MS);
-      } else {
-        logger.info(`[CHAT_SWITCH] Debounced load skipped for ${chatId} (cache already hydrated)`);
+        loadHistoryTimeoutRef.current = undefined;
       }
     }
 

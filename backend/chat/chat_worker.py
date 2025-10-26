@@ -74,7 +74,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
         providers = None
         processing_active = False
         current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None, 'last_db_update': 0.0}
-        
+
         try:
             db = DatabaseManager()
             
@@ -124,15 +124,23 @@ def chat_worker(chat_id: str, child_conn) -> None:
                         elif command_type == 'cancel':
                             if processing_active:
                                 processing_active = False
-                                
+
                                 db.update_chat_state(chat_id, "static")
                                 child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
-                                
+
                                 child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': command_id})
                                 worker_logger.info(f"[CHAT-WORKER] Cancelled processing for {chat_id}")
                             else:
                                 child_conn.send({'success': True, 'cancelled': False, 'chat_id': chat_id, 'command_id': command_id})
-                        
+
+                        elif command_type == 'reload_config':
+                            try:
+                                worker_logger.info(f"[CHAT-WORKER] Config reload command received for {chat_id} (no-op in worker)")
+                                child_conn.send({'success': True, 'chat_id': chat_id, 'command_id': command_id})
+                            except Exception as reload_error:
+                                worker_logger.error(f"[CHAT-WORKER] Failed to reload config: {reload_error}")
+                                child_conn.send({'success': False, 'error': str(reload_error), 'chat_id': chat_id, 'command_id': command_id})
+
                         elif command_type == 'process':
                             if processing_active:
                                 child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id, 'command_id': command_id})
@@ -247,6 +255,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                             decision = command.get('decision')
                             decision_chat_id = command.get('chat_id', chat_id)
                             assistant_override = command.get('assistant_message_id')
+                            batch_mode = command.get('batch_mode', True)  # Default to batch mode
 
                             if not task_id or not call_id or not decision:
                                 child_conn.send({
@@ -267,8 +276,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 # Send immediate acknowledgement before processing
                                 child_conn.send({'success': True, 'chat_id': decision_chat_id, 'command_id': command_id})
 
-                                worker_logger.info(f"[DOMAIN-DECISION] Handling decision '{decision}' for task {task_id}, call {call_id}")
-                                result = single_domain_executor.handle_tool_decision(task_id, call_id, decision)
+                                worker_logger.info(f"[DOMAIN-DECISION] Handling decision '{decision}' (batch={batch_mode}) for task {task_id}, call {call_id}")
+                                result = single_domain_executor.handle_tool_decision(task_id, call_id, decision, batch_mode)
 
                                 if result.get('error'):
                                     error_msg = result['error']
@@ -599,6 +608,15 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                         'type': 'content',
                         'chat_id': chat_id,
                         'content_type': 'domain_execution_update',
+                        'content': json.dumps(payload),
+                        'task_id': task_id,
+                    })
+                elif event_type == "model_retry" and payload:
+                    # Send retry event to frontend
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'model_retry',
                         'content': json.dumps(payload),
                         'task_id': task_id,
                     })
@@ -1098,6 +1116,9 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                 # OpenAI-compatible format (Groq, OpenRouter)
                 actual_tokens_count = streaming_usage_metadata['total_tokens']
             worker_logger.info(f"[TokenUsage] Using actual tokens from stream: {actual_tokens_count}")
+
+            # Rate limiting is now handled in main process
+            # Main process will query token usage from DB after streaming completes
 
         # Save token usage with both estimated and actual
         if actual_tokens_count > 0:

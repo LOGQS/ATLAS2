@@ -1,15 +1,11 @@
 # status: complete
 
-from typing import Any, Callable, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
-import json
-import requests
 from google import genai
 from google.genai import types
 from utils.logger import get_logger
-from utils.rate_limiter import get_rate_limiter
-from utils.config import Config
 from pathlib import Path
 import time
 from file_utils.upload_worker import start_upload_process
@@ -89,28 +85,6 @@ class Gemini:
             return None
         return int(total_tokens)
 
-    def _execute_with_rate_limit(
-        self,
-        operation_name: str,
-        method,
-        *args,
-        estimated_tokens: Optional[int] = None,
-        usage_getter: Optional[Callable[[Any], Optional[int]]] = None,
-        **kwargs,
-    ):
-        """Common rate limiting wrapper for all API calls"""
-        model_name = kwargs.get("model")
-        rate_config = Config.get_rate_limit_config(provider="gemini", model=model_name)
-        limiter = get_rate_limiter()
-        return limiter.execute(
-            method,
-            operation_name,
-            *args,
-            limit_config=rate_config,
-            usage_getter=usage_getter or self._usage_from_response,
-            estimated_tokens=estimated_tokens,
-            **kwargs,
-        )
     
     def _validate_historical_files(self, attached_files: List[Dict[str, Any]]) -> List[str]:
         """Validate historical files and return list of available API file names"""
@@ -284,13 +258,10 @@ class Gemini:
         contents.append({"role": "user", "parts": user_parts})
             
         try:
-            response = self._execute_with_rate_limit(
-                f"gemini:{model}",
-                self.client.models.generate_content,
+            response = self.client.models.generate_content(
                 model=model,
                 contents=contents,
                 config=config,
-                estimated_tokens=estimated_tokens
             )
         except Exception as e:
             error_message = self._extract_error_message(e)
@@ -374,14 +345,10 @@ class Gemini:
         answer = ""
 
         try:
-            stream = self._execute_with_rate_limit(
-                f"gemini:{model}",
-                self.client.models.generate_content_stream,
+            stream = self.client.models.generate_content_stream(
                 model=model,
                 contents=contents,
                 config=config,
-                estimated_tokens=estimated_tokens,
-                usage_getter=None,
             )
         except Exception as e:
             error_message = self._extract_error_message(e)
@@ -558,9 +525,7 @@ class Gemini:
         try:
             logger.debug(f"Getting file metadata from Gemini: {api_file_name}")
             
-            file_info = self._execute_with_rate_limit(
-                "gemini:get_file",
-                self.client.files.get,
+            file_info = self.client.files.get(
                 name=api_file_name
             )
             
@@ -605,11 +570,8 @@ class Gemini:
         
         try:
             logger.debug("Listing files from Gemini")
-            
-            files_response = self._execute_with_rate_limit(
-                "gemini:list_files",
-                self.client.files.list
-            )
+        
+            files_response = self.client.files.list()
             
             files = []
             for file_info in files_response:
@@ -668,9 +630,7 @@ class Gemini:
         try:
             logger.info(f"Deleting file from Gemini: {api_file_name}")
             
-            self._execute_with_rate_limit(
-                "gemini:delete_file",
-                self.client.files.delete,
+            self.client.files.delete(
                 name=api_file_name
             )
             

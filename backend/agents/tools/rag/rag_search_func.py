@@ -89,7 +89,13 @@ def _tool_rag_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     default_persist_dir = str(Path(__file__).resolve().parent.parent.parent.parent.parent / "data" / "rag_data")
     persist_dir = params.get("persist_dir", default_persist_dir)
 
-    embed_model = params.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
+    # Handle speed parameter: if provided, use speed-based model; otherwise use embed_model
+    speed = params.get("speed")
+    if speed:
+        embed_model = speed
+    else:
+        embed_model = params.get("embed_model", "fast")
+
     similarity = params.get("similarity", "cosine")
 
     if not query or not query.strip():
@@ -223,10 +229,14 @@ rag_search_spec = ToolSpec(
                 "type": "string",
                 "description": "Base directory for index storage (default: data/rag_data)"
             },
+            "speed": {
+                "type": "string",
+                "description": "Embedding speed mode: 'fast' (e5-small-v2, 33MB) or 'slow' (gte-multilingual-base, 305MB). Must match the speed used during indexing. Overrides embed_model if provided."
+            },
             "embed_model": {
                 "type": "string",
-                "default": "sentence-transformers/all-MiniLM-L6-v2",
-                "description": "HuggingFace embedding model (must match indexing)"
+                "default": "fast",
+                "description": "HuggingFace embedding model or speed alias (must match indexing, ignored if speed is provided)"
             },
             "similarity": {
                 "type": "string",

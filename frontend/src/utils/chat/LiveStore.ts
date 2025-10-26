@@ -109,6 +109,12 @@ interface DomainExecutionUpdateEvent extends BaseSSEEvent {
   task_id?: string;
 }
 
+interface ModelRetryEvent extends BaseSSEEvent {
+  type: 'model_retry';
+  content?: string;
+  task_id?: string;
+}
+
 interface CoderOperationEvent extends BaseSSEEvent {
   type: 'coder_operation';
   content?: string;
@@ -141,6 +147,7 @@ type SSEEvent =
   | ErrorEvent
   | DomainExecutionEvent
   | DomainExecutionUpdateEvent
+  | ModelRetryEvent
   | CoderOperationEvent
   | CoderWorkspacePromptEvent
   | CoderFileChangeEvent;
@@ -384,7 +391,24 @@ class LiveStore {
     try {
       const domainExecution = JSON.parse(ev.content || '{}');
       logger.info(`[DOMAIN-EXEC-LIVESTORE] Parsed domain execution: domain_id=${domainExecution.domain_id}, status=${domainExecution.status}, plan=${!!domainExecution.plan}, actions=${domainExecution.actions?.length || 0}`);
+
+      // Preserve model_retry if it exists (not sent by backend in domain_execution events)
+      // But clear it if status is 'running' (retry succeeded) or terminal states
+      const existingRetry = next.domainExecution?.model_retry;
       next.domainExecution = domainExecution;
+
+      if (existingRetry && !domainExecution.model_retry && next.domainExecution) {
+        const status = domainExecution.status;
+        // Clear retry on success (running) or terminal states (completed/failed/aborted)
+        if (status === 'running' || status === 'completed' || status === 'failed' || status === 'aborted') {
+          logger.info(`[DOMAIN-EXEC-LIVESTORE] Clearing model_retry due to status: ${status}`);
+        } else {
+          // Preserve retry for other states (starting, waiting_user)
+          next.domainExecution.model_retry = existingRetry;
+          logger.info(`[DOMAIN-EXEC-LIVESTORE] Preserved existing model_retry data (status: ${status})`);
+        }
+      }
+
       next.version++;
       logger.info(`[DOMAIN-EXEC-LIVESTORE] Updated next.domainExecution, version=${next.version}`);
       logger.info(`[DOMAIN-EXEC-LIVESTORE] next.domainExecution is now: ${JSON.stringify(next.domainExecution).substring(0, 200)}`);
@@ -392,6 +416,32 @@ class LiveStore {
     } catch (err) {
       logger.error(`[DOMAIN-EXEC-LIVESTORE] Failed to parse domain execution for ${chatId}:`, err);
       logger.error(`[DOMAIN-EXEC-LIVESTORE] Event content was: ${ev.content}`);
+    }
+    return next;
+  }
+
+  private handleModelRetryEvent(chatId: string, ev: ModelRetryEvent, cur: ChatLive): ChatLive {
+    const next = { ...cur };
+    logger.info(`[MODEL-RETRY] Retry event for ${chatId}`);
+    try {
+      const retryData = JSON.parse(ev.content || '{}');
+      logger.info(`[MODEL-RETRY] Attempt ${retryData.attempt}/${retryData.max_attempts}, waiting ${retryData.delay_seconds}s`);
+      logger.info(`[MODEL-RETRY] Current domainExecution exists: ${!!next.domainExecution}`);
+
+      // Add retry info to domain execution if it exists
+      if (next.domainExecution) {
+        next.domainExecution = {
+          ...next.domainExecution,
+          model_retry: retryData,
+        };
+        next.version++;
+        this.enableParentFromBridge(chatId, 'Model retry');
+        logger.info(`[MODEL-RETRY] Updated domainExecution with retry data, version: ${next.version}`);
+      } else {
+        logger.warn(`[MODEL-RETRY] No domainExecution found for ${chatId}, retry event ignored!`);
+      }
+    } catch (err) {
+      logger.error(`[MODEL-RETRY] Failed to parse retry event for ${chatId}:`, err);
     }
     return next;
   }
@@ -541,6 +591,9 @@ class LiveStore {
             break;
           case 'domain_execution_update':
             next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionUpdateEvent, cur);
+            break;
+          case 'model_retry':
+            next = this.handleModelRetryEvent(chatId, ev as ModelRetryEvent, cur);
             break;
           case 'complete':
             next = this.handleCompleteEvent(chatId, cur);

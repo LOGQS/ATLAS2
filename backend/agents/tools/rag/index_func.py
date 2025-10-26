@@ -212,7 +212,14 @@ def _tool_rag_index(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
 
     chunk_size = params.get("chunk_size", 4096)
     overlap = params.get("overlap", 200)
-    embed_model = params.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
+
+    # Handle speed parameter: if provided, use speed-based model; otherwise use embed_model
+    speed = params.get("speed")
+    if speed:
+        embed_model = speed
+    else:
+        embed_model = params.get("embed_model", "fast")
+
     incremental = params.get("incremental", True)
     max_workers = params.get("max_workers") or multiprocessing.cpu_count()
 
@@ -536,10 +543,14 @@ rag_index_spec = ToolSpec(
                 "default": 200,
                 "description": "Overlap between chunks"
             },
+            "speed": {
+                "type": "string",
+                "description": "Embedding speed mode: 'fast' (e5-small-v2, 33MB) or 'slow' (gte-multilingual-base, 305MB). Overrides embed_model if provided."
+            },
             "embed_model": {
                 "type": "string",
-                "default": "sentence-transformers/all-MiniLM-L6-v2",
-                "description": "HuggingFace embedding model"
+                "default": "fast",
+                "description": "HuggingFace embedding model or speed alias (ignored if speed is provided)"
             },
             "incremental": {
                 "type": "boolean",

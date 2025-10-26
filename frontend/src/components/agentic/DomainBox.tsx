@@ -317,6 +317,8 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     isIsolated: true,
   });
 
+  const modelRetry = (domainExecution as any)?.model_retry;
+
   useEffect(() => {
     if (isProcessing && domainExecution?.actions && domainBoxScrollControl.shouldAutoScroll()) {
       actionsEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -371,12 +373,13 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   };
   const currentContext = getCurrentContext();
   const actions = domainExecution?.actions || [];
-  const pendingTool = domainExecution?.pending_tool || null;
+  const pendingTools = domainExecution?.pending_tools || [];
   const isWaitingForUser = domainExecution?.status === 'waiting_user';
   const plan = domainExecution?.plan;
   const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';
   const toolHistory = useMemo(() => domainExecution?.tool_history || [], [domainExecution?.tool_history]);
   const isCoderDomain = domainExecution?.domain_id === 'coder';
+  const hasPendingTools = pendingTools.length > 0;
 
   const getLinesAdded = (operation: Partial<ToolOperation> | undefined): number => {
     if (!operation) return 0;
@@ -534,14 +537,15 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   }, [coderFileOperations]);
 
   const executionMetadata = domainExecution?.metadata;
-  const pendingToolSummary = buildParamChips(pendingTool?.params, 1);
+  const firstPendingTool = pendingTools[0] || null;
+  const pendingToolSummary = buildParamChips(firstPendingTool?.params, 1);
   const pendingToolPrimaryParam = pendingToolSummary.chips[0];
   const hasExecutionStats =
     !!executionMetadata &&
     (typeof executionMetadata.iterations === 'number' ||
       typeof executionMetadata.tool_calls === 'number' ||
       typeof executionMetadata.elapsed_seconds === 'number');
-  const hasHeaderDetails = !!taskDescription || hasExecutionStats || !!pendingTool;
+  const hasHeaderDetails = !!taskDescription || hasExecutionStats || hasPendingTools;
 
   useEffect(() => {
     if (!isWaitingForUser) {
@@ -555,11 +559,11 @@ const DomainBox: React.FC<DomainBoxProps> = ({
       setShowApprovalUI(true);
       setConfirmedDecision(null);
     }
-  }, [isWaitingForUser, pendingTool]);
+  }, [isWaitingForUser, pendingTools]);
 
   // Tool decision handler - defined early so it can be used in useEffects below
-  const handleToolDecision = useCallback(async (decision: 'accept' | 'reject') => {
-    if (!pendingTool || !chatId || !domainExecution) {
+  const handleToolDecision = useCallback(async (decision: 'accept' | 'reject', batchMode: boolean = true) => {
+    if (!hasPendingTools || !chatId || !domainExecution) {
       return;
     }
 
@@ -568,12 +572,20 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     setDecisionError(null);
 
     try {
-      const endpoint = apiUrl(`/api/chats/${chatId}/domain/${domainExecution.task_id}/tool/${pendingTool.call_id}/decision`);
+      // Use "batch_all" as call_id for batch mode, or first tool's call_id
+      const callId = batchMode ? 'batch_all' : firstPendingTool?.call_id || 'batch_all';
+      const endpoint = apiUrl(`/api/chats/${chatId}/domain/${domainExecution.task_id}/tool/${callId}/decision`);
+
+      const toolDesc = batchMode
+        ? `${pendingTools.length} tool(s)`
+        : firstPendingTool?.tool || 'tool';
+
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           decision,
+          batch_mode: batchMode,
           assistant_message_id: messageId ?? null
         })
       });
@@ -581,11 +593,15 @@ const DomainBox: React.FC<DomainBoxProps> = ({
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok || data?.success === false) {
-        const errorMsg = data?.error || `Failed to ${decision} tool call`;
+        const errorMsg = data?.error || `Failed to ${decision} ${toolDesc}`;
         throw new Error(errorMsg);
       }
 
-      logger.info(`[DOMAINBOX] Submitted tool decision '${decision}' for ${pendingTool.tool}`, { chatId, taskId: domainExecution.task_id });
+      logger.info(`[DOMAINBOX] Submitted tool decision '${decision}' (batch=${batchMode}) for ${toolDesc}`, {
+        chatId,
+        taskId: domainExecution.task_id,
+        toolCount: pendingTools.length
+      });
 
       // Show confirmed state for 650ms before hiding UI
       setConfirmedDecision(decision);
@@ -597,7 +613,7 @@ const DomainBox: React.FC<DomainBoxProps> = ({
     } finally {
       setDecisionState('idle');
     }
-  }, [pendingTool, chatId, domainExecution, messageId]);
+  }, [hasPendingTools, pendingTools, firstPendingTool, chatId, domainExecution, messageId]);
 
   // Listen for auto-accept setting changes
   useEffect(() => {
@@ -613,12 +629,13 @@ const DomainBox: React.FC<DomainBoxProps> = ({
 
   // Auto-accept logic
   useEffect(() => {
-    if (!autoAcceptEnabled || !isWaitingForUser || !pendingTool || !chatId || !domainExecution) {
+    if (!autoAcceptEnabled || !isWaitingForUser || !hasPendingTools || !chatId || !domainExecution) {
       return;
     }
 
-    // Guard against double-triggering
-    if (autoAcceptTriggered.current === pendingTool.call_id) {
+    // Guard against double-triggering - use first tool's call_id as marker
+    const markerId = firstPendingTool?.call_id || '';
+    if (autoAcceptTriggered.current === markerId) {
       return;
     }
 
@@ -627,28 +644,32 @@ const DomainBox: React.FC<DomainBoxProps> = ({
       return;
     }
 
-    logger.info(`[DOMAINBOX] Auto-accepting tool: ${pendingTool.tool}`, {
+    const toolDesc = pendingTools.length === 1
+      ? firstPendingTool?.tool || 'tool'
+      : `${pendingTools.length} tools`;
+
+    logger.info(`[DOMAINBOX] Auto-accepting ${toolDesc}`, {
       chatId,
       taskId: domainExecution.task_id,
-      callId: pendingTool.call_id
+      toolCount: pendingTools.length
     });
 
-    // Mark this tool as auto-accepted to prevent re-triggering
-    autoAcceptTriggered.current = pendingTool.call_id;
+    // Mark as auto-accepted to prevent re-triggering
+    autoAcceptTriggered.current = markerId;
 
     // Hide the approval UI immediately
     setShowApprovalUI(false);
 
-    // Automatically accept the tool
-    handleToolDecision('accept');
-  }, [autoAcceptEnabled, isWaitingForUser, pendingTool, chatId, domainExecution, decisionState, handleToolDecision]);
+    // Automatically accept all pending tools in batch mode
+    handleToolDecision('accept', true);
+  }, [autoAcceptEnabled, isWaitingForUser, hasPendingTools, pendingTools, firstPendingTool, chatId, domainExecution, decisionState, handleToolDecision]);
 
-  // Reset auto-accept trigger when tool changes
+  // Reset auto-accept trigger when tools change
   useEffect(() => {
-    if (!pendingTool) {
+    if (!hasPendingTools) {
       autoAcceptTriggered.current = null;
     }
-  }, [pendingTool]);
+  }, [hasPendingTools]);
 
   // Auto-collapse/expand based on execution state
   useEffect(() => {
@@ -735,22 +756,28 @@ const DomainBox: React.FC<DomainBoxProps> = ({
                 )}
               </div>
             )}
-            {pendingTool && (
+            {hasPendingTools && (
               <div
                 className="pending-tool-summary"
-                title={pendingTool.reason || pendingTool.tool_description || ''}
+                title={firstPendingTool?.reason || firstPendingTool?.tool_description || ''}
               >
-                <span className="pending-tool-name">{pendingTool.tool}</span>
-                {pendingToolPrimaryParam && (
-                  <span className="pending-tool-param">
-                    {pendingToolPrimaryParam.shortValue}
-                    {pendingToolSummary.remaining > 0 && ` (+${pendingToolSummary.remaining} more)`}
-                  </span>
-                )}
-                {!pendingToolPrimaryParam && pendingTool.reason && (
-                  <span className="pending-tool-param">
-                    {formatParamValue(pendingTool.reason, 32).short}
-                  </span>
+                {pendingTools.length === 1 ? (
+                  <>
+                    <span className="pending-tool-name">{firstPendingTool?.tool}</span>
+                    {pendingToolPrimaryParam && (
+                      <span className="pending-tool-param">
+                        {pendingToolPrimaryParam.shortValue}
+                        {pendingToolSummary.remaining > 0 && ` (+${pendingToolSummary.remaining} more)`}
+                      </span>
+                    )}
+                    {!pendingToolPrimaryParam && firstPendingTool?.reason && (
+                      <span className="pending-tool-param">
+                        {formatParamValue(firstPendingTool.reason, 32).short}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="pending-tool-name">{pendingTools.length} tools pending</span>
                 )}
               </div>
             )}
@@ -765,6 +792,21 @@ const DomainBox: React.FC<DomainBoxProps> = ({
         className={`domain-box-content ${isCollapsed ? 'collapsed' : ''}`}
         ref={domainBoxContentRef}
       >
+        {/* Model Retry Banner */}
+        {modelRetry && (
+          <div className="model-retry-banner">
+            <Icons.Info className="retry-icon" />
+            <div className="retry-content">
+              <div className="retry-message">
+                {modelRetry.reason}, retrying... (Attempt {modelRetry.attempt}/{modelRetry.max_attempts})
+              </div>
+              <div className="retry-countdown">
+                Waiting {typeof modelRetry.delay_seconds === 'number' ? modelRetry.delay_seconds.toFixed(1) : modelRetry.delay_seconds}s before retry
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Task Description */}
         <div className="task-description">
           <div className="task-label">Task:</div>
@@ -1168,40 +1210,51 @@ const DomainBox: React.FC<DomainBoxProps> = ({
         )}
 
         {/* Tool Approval - appears after action flow */}
-        {pendingTool && isWaitingForUser && showApprovalUI && (
+        {hasPendingTools && isWaitingForUser && showApprovalUI && (
           <div className="domain-tool-approval">
             <div className="domain-tool-approval-header">
-              <div className="tool-approval-heading">Tool Approval Required</div>
-              <div className="tool-approval-subheading">Call ID: {pendingTool.call_id}</div>
-            </div>
-            <div className="tool-approval-body">
-              <div className="tool-approval-name">{pendingTool.tool}</div>
-              {pendingTool.tool_description && (
-                <div className="tool-approval-description">{pendingTool.tool_description}</div>
-              )}
+              <div className="tool-approval-heading">
+                Tool Approval Required {pendingTools.length > 1 && `(${pendingTools.length} tools)`}
+              </div>
               {domainExecution?.agent_message && (
                 <div className="tool-approval-message">
                   <span className="label">Agent:</span>
                   <span>{domainExecution.agent_message}</span>
                 </div>
               )}
-              <div className="tool-approval-reason">
-                <span className="label">Reason:</span>
-                <span>{pendingTool.reason || 'No reason provided'}</span>
-              </div>
-              <div className="tool-approval-params">
-                <span className="label">Parameters:</span>
-                <ul>
-                  {pendingTool.params.map(([name, value]) => (
-                    <li key={name}>
-                      <span className="param-name">{name}</span>
-                      <span className="param-value">
-                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+            </div>
+            <div className="tool-approval-body">
+              {pendingTools.map((tool, index) => (
+                <div key={tool.call_id} className="tool-approval-item">
+                  <div className="tool-approval-item-header">
+                    <div className="tool-approval-name">
+                      {pendingTools.length > 1 && <span className="tool-number">{index + 1}.</span>}
+                      {tool.tool}
+                    </div>
+                    <div className="tool-approval-subheading">ID: {getShortCallId(tool.call_id)}</div>
+                  </div>
+                  {tool.tool_description && (
+                    <div className="tool-approval-description">{tool.tool_description}</div>
+                  )}
+                  <div className="tool-approval-reason">
+                    <span className="label">Reason:</span>
+                    <span>{tool.reason || 'No reason provided'}</span>
+                  </div>
+                  <div className="tool-approval-params">
+                    <span className="label">Parameters:</span>
+                    <ul>
+                      {tool.params.map(([name, value]) => (
+                        <li key={name}>
+                          <span className="param-name">{name}</span>
+                          <span className="param-value">
+                            {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              ))}
             </div>
             {decisionError && (
               <div className="domain-tool-approval-error" role="alert">
@@ -1211,19 +1264,21 @@ const DomainBox: React.FC<DomainBoxProps> = ({
             <div className="domain-tool-approval-actions">
               <button
                 type="button"
-                className={`approval-button approve ${confirmedDecision === 'accept' ? 'confirmed' : ''}`}
-                onClick={() => handleToolDecision('accept')}
+                className={`approval-button approve primary ${confirmedDecision === 'accept' ? 'confirmed' : ''}`}
+                onClick={() => handleToolDecision('accept', true)}
                 disabled={decisionState !== 'idle'}
+                title={pendingTools.length > 1 ? `Accept all ${pendingTools.length} tools` : 'Accept tool'}
               >
-                {decisionState === 'accepting' ? 'Accepting…' : 'Accept'}
+                {decisionState === 'accepting' ? 'Accepting…' : pendingTools.length > 1 ? `Accept All (${pendingTools.length})` : 'Accept'}
               </button>
               <button
                 type="button"
                 className={`approval-button reject ${confirmedDecision === 'reject' ? 'confirmed' : ''}`}
-                onClick={() => handleToolDecision('reject')}
+                onClick={() => handleToolDecision('reject', true)}
                 disabled={decisionState !== 'idle'}
+                title={pendingTools.length > 1 ? `Reject all ${pendingTools.length} tools` : 'Reject tool'}
               >
-                {decisionState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+                {decisionState === 'rejecting' ? 'Rejecting…' : pendingTools.length > 1 ? `Reject All (${pendingTools.length})` : 'Reject'}
               </button>
             </div>
           </div>

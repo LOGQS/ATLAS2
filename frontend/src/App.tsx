@@ -28,6 +28,7 @@ import { apiUrl } from './config/api';
 import { MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
+import { chatHistoryCache } from './utils/chat/ChatHistoryCache';
 import { useAppState } from './hooks/app/useAppState';
 import { useFileManagement } from './hooks/files/useFileManagement';
 import { useDragDrop } from './hooks/files/useDragDrop';
@@ -326,11 +327,16 @@ function App() {
         } else {
           setChats(chatsFromDb);
         }
+
+        // Return the loaded chat IDs for validation
+        return chatsFromDb.map((chat: ChatItem) => chat.id);
       } else {
         logger.error('[App.loadChatsFromDatabase] Failed to load chats:', data.error);
+        return null;
       }
     } catch (error) {
       logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
+      return null;
     }
   }, []);
 
@@ -347,7 +353,18 @@ function App() {
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
       liveStore.start();
-      await loadChatsFromDatabase();
+      const loadedChatIds = await loadChatsFromDatabase();
+
+      // Validate cache on startup - prune any cached chats that no longer exist in backend
+      if (loadedChatIds !== null && Array.isArray(loadedChatIds)) {
+        logger.info(`[App.useEffect] Successfully loaded ${loadedChatIds.length} chats, validating cache`);
+        chatHistoryCache.validateAgainstBackend(loadedChatIds);
+      } else if (loadedChatIds === null) {
+        logger.warn('[App.useEffect] Failed to load chats from backend - skipping cache validation to preserve existing cache');
+      } else {
+        logger.info('[App.useEffect] No chats loaded (empty database)');
+      }
+
       await loadActiveChat();
 
       initializeAttachedFiles();
@@ -929,14 +946,25 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         logger.info('Chat deleted successfully');
-        
-        if (data.cascade_deleted && data.deleted_chats && activeChatId !== 'none') {
-          shouldReturnToMainScreen = data.deleted_chats.includes(activeChatId);
-          if (shouldReturnToMainScreen) {
-            logger.info(`[CASCADE_DELETE] Current active chat ${activeChatId} was cascade deleted, returning to main screen`);
+
+        // Clear cache for deleted chat
+        chatHistoryCache.delete(chatId);
+
+        // Handle cascade deletions
+        if (data.cascade_deleted && data.deleted_chats) {
+          // Clear cache for all cascade-deleted chats
+          data.deleted_chats.forEach((deletedId: string) => {
+            chatHistoryCache.delete(deletedId);
+          });
+
+          if (activeChatId !== 'none') {
+            shouldReturnToMainScreen = data.deleted_chats.includes(activeChatId);
+            if (shouldReturnToMainScreen) {
+              logger.info(`[CASCADE_DELETE] Current active chat ${activeChatId} was cascade deleted, returning to main screen`);
+            }
           }
         }
-        
+
         if (shouldReturnToMainScreen) {
           handleNewChat();
         }

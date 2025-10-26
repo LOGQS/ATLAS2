@@ -74,7 +74,7 @@ export interface DomainExecution {
   context_snapshots: ContextSnapshot[];
   output?: string;
   agent_message?: string;
-  pending_tool?: {
+  pending_tools?: Array<{
     call_id: string;
     tool: string;
     params: Array<[string, any]>;
@@ -82,7 +82,7 @@ export interface DomainExecution {
     message: string;
     created_at: string;
     tool_description?: string;
-  } | null;
+  }>;
   tool_history?: Array<{
     call_id: string;
     tool: string;
@@ -98,6 +98,13 @@ export interface DomainExecution {
     iterations?: number;
     tool_calls?: number;
     elapsed_seconds?: number;
+  };
+  model_retry?: {
+    attempt: number;
+    max_attempts: number;
+    delay_seconds: number;
+    model: string;
+    reason: string;
   };
   assistant_message_id?: string | number | null;
 }

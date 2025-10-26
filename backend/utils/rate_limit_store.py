@@ -90,7 +90,8 @@ def persist_rate_limit_override(
     """Persist a rate limit override and apply it to configuration."""
     global _CACHE
     sanitized = Config._sanitize_rate_limit_dict(limits or {})
-    Config.set_rate_limit_override(provider, model, sanitized)
+    # Check for .env conflicts - will raise ValueError if conflict detected
+    Config.set_rate_limit_override(provider, model, sanitized, check_env_conflicts=True)
 
     pruned = _prune_limits(sanitized)
 

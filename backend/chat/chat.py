@@ -10,6 +10,8 @@ from utils.config import get_provider_map, Config
 from utils.db_utils import db
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
+from utils.rate_limiter import get_rate_limiter
+from agents.context.context_manager import context_manager
 
 logger = get_logger(__name__)
 
@@ -147,6 +149,49 @@ def get_chat_process_status(chat_id: str) -> Optional[str]:
     with _chat_processes_lock:
         return _chat_process_status.get(chat_id)
 
+def broadcast_config_reload() -> Dict[str, Any]:
+    """
+    Broadcast reload_config command to all active worker processes.
+    Returns dict with success count, failure count, and any errors.
+    """
+    success_count = 0
+    failure_count = 0
+    errors = []
+
+    with _chat_processes_lock:
+        active_chats = list(_chat_processes.keys())
+
+    logger.info(f"[CONFIG-RELOAD] Broadcasting config reload to {len(active_chats)} active workers")
+
+    for chat_id in active_chats:
+        try:
+            response, error, _ = _issue_worker_command(
+                chat_id,
+                {'command': 'reload_config'},
+                timeout=2.0
+            )
+            if response and response.get('success'):
+                success_count += 1
+                logger.debug(f"[CONFIG-RELOAD] Successfully reloaded config for chat {chat_id}")
+            else:
+                failure_count += 1
+                error_msg = error or 'Unknown error'
+                errors.append(f"{chat_id}: {error_msg}")
+                logger.warning(f"[CONFIG-RELOAD] Failed to reload config for chat {chat_id}: {error_msg}")
+        except Exception as e:
+            failure_count += 1
+            errors.append(f"{chat_id}: {str(e)}")
+            logger.error(f"[CONFIG-RELOAD] Exception reloading config for chat {chat_id}: {e}")
+
+    logger.info(f"[CONFIG-RELOAD] Broadcast complete: {success_count} succeeded, {failure_count} failed")
+
+    return {
+        'success_count': success_count,
+        'failure_count': failure_count,
+        'total': len(active_chats),
+        'errors': errors
+    }
+
 def is_chat_processing(chat_id: str) -> bool:
     """Check if a chat is currently being processed in background"""
     with _chat_processes_lock:
@@ -210,14 +255,16 @@ def cancel_chat_process(chat_id: str) -> bool:
 
 
 def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision: str,
-                              assistant_message_id: Optional[int] = None) -> Dict[str, Any]:
+                              assistant_message_id: Optional[int] = None,
+                              batch_mode: bool = True) -> Dict[str, Any]:
     """Send a tool decision command to the chat worker for single-domain execution."""
     payload = {
         'command': 'domain_tool_decision',
         'chat_id': chat_id,
         'task_id': task_id,
         'call_id': call_id,
-        'decision': decision
+        'decision': decision,
+        'batch_mode': batch_mode
     }
     if assistant_message_id is not None:
         payload['assistant_message_id'] = assistant_message_id
@@ -451,6 +498,29 @@ def _configure_chat_process(conn, chat_id: str, message: str, provider: str, mod
 
 def _start_background_processing(chat_id: str, message: str, provider: str, model: str, include_reasoning: bool, attached_file_ids: List[str], user_message_id: int, is_retry: bool = False, router_result: Optional[Dict] = None):
     """Start background processing using multiprocessing"""
+
+    try:
+
+        chat_history = db.get_chat_history(chat_id)
+        system_prompt = db.get_chat_system_prompt(chat_id)
+
+        token_estimate = context_manager.estimate_request_tokens(
+            role="assistant",
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            chat_history=chat_history[:-1] if chat_history and chat_history[-1]["role"] == "user" else chat_history,
+            current_message=message,
+            file_attachments=[] 
+        )
+        estimated_tokens = token_estimate['estimated_tokens']['total']
+
+        limiter = get_rate_limiter()
+        limiter.check_and_reserve(provider, model, estimated_tokens)
+
+        logger.info(f"[RATE-LIMIT] Reserved capacity for {provider}:{model} (estimated {estimated_tokens} tokens)")
+    except Exception as rate_limit_error:
+        logger.error(f"[RATE-LIMIT] Failed to check rate limits: {rate_limit_error}")
 
     with _chat_processes_lock:
         if not _prepare_background_process(chat_id):
@@ -852,6 +922,16 @@ class Chat:
         if not is_internal_call:
             estimated_tokens = token_estimate['estimated_tokens']['total']
             actual_tokens_count = actual_tokens['total_tokens'] if actual_tokens else 0
+
+            try:
+                from utils.rate_limiter import get_rate_limiter
+                limiter = get_rate_limiter()
+                if actual_tokens_count > 0:
+                    limiter.finalize_tokens(provider, model, actual_tokens_count)
+                    logger.debug(f"[RATE-LIMIT] Finalized with {actual_tokens_count} actual tokens")
+            except Exception as e:
+                logger.warning(f"[RATE-LIMIT] Failed to finalize tokens: {e}")
+
             if actual_tokens_count > 0:
                 db.save_token_usage(
                     chat_id=self.chat_id,

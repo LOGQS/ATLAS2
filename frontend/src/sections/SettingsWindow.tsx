@@ -24,9 +24,38 @@ interface RateLimitResponseLimits {
   burst_size: number | null;
 }
 
+interface RateLimitSources {
+  requests_per_minute: string;
+  requests_per_hour: string;
+  requests_per_day: string;
+  tokens_per_minute: string;
+  tokens_per_hour: string;
+  tokens_per_day: string;
+  burst_size: string;
+}
+
+interface RateLimitUsage {
+  requests_per_minute?: number;
+  requests_per_hour?: number;
+  requests_per_day?: number;
+  tokens_per_minute?: number;
+  tokens_per_hour?: number;
+  tokens_per_day?: number;
+  expires_at?: {
+    requests_minute?: number;
+    requests_hour?: number;
+    requests_day?: number;
+    tokens_minute?: number;
+    tokens_hour?: number;
+    tokens_day?: number;
+  };
+}
+
 interface RateLimitScopeData {
   limits: RateLimitResponseLimits;
   overrides: RateLimitResponseLimits;
+  sources: RateLimitSources;
+  usage?: RateLimitUsage;
 }
 
 interface RateLimitModel extends RateLimitScopeData {
@@ -103,6 +132,8 @@ interface RateLimitFieldState {
   value: string;
   placeholder: string;
   overrideValue: string;
+  source: string;
+  isReadOnly: boolean;
 }
 
 interface RateLimitCardProps {
@@ -121,6 +152,7 @@ interface RateLimitCardProps {
   collapsible?: boolean;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
+  usage?: RateLimitUsage;
 }
 
 const RateLimitCard: React.FC<RateLimitCardProps> = ({
@@ -139,6 +171,7 @@ const RateLimitCard: React.FC<RateLimitCardProps> = ({
   collapsible = false,
   isExpanded = true,
   onToggleExpand,
+  usage,
 }) => {
   const handleHeaderClick = () => {
     if (collapsible && onToggleExpand) {
@@ -193,20 +226,72 @@ const RateLimitCard: React.FC<RateLimitCardProps> = ({
       {isExpanded && (
         <>
           <div className="rate-limit-fields">
-            {fields.map((field) => (
-              <label key={field.alias} className="rate-limit-field">
-                <span className="rate-limit-field-label">{field.label}</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={field.value}
-                  placeholder={field.placeholder || 'Default'}
-                  onChange={(event) => onChange(field.alias, event.target.value)}
-                />
-                <span className="rate-limit-field-description">{field.description}</span>
-              </label>
-            ))}
+            {fields.map((field) => {
+              // Map alias to usage field name (numeric fields only)
+              type NumericUsageField = Exclude<keyof RateLimitUsage, 'oldest_timestamps'>;
+              const aliasToUsageField: Record<string, NumericUsageField> = {
+                rpm: 'requests_per_minute',
+                rph: 'requests_per_hour',
+                rpd: 'requests_per_day',
+                tpm: 'tokens_per_minute',
+                tph: 'tokens_per_hour',
+                tpd: 'tokens_per_day',
+              };
+              const usageField = aliasToUsageField[field.alias];
+              const usageValue = usage && usageField ? usage[usageField] : undefined;
+              const currentUsage = (typeof usageValue === 'number' ? usageValue : 0) || 0;
+              const limitValue = Number(field.placeholder) || null;
+              const percentage = getUsagePercentage(currentUsage, limitValue);
+              const progressClass = getProgressBarClass(percentage);
+
+              return (
+                <label key={field.alias} className="rate-limit-field">
+                  <span className="rate-limit-field-label">
+                    {field.label}
+                    {field.source && (
+                      <span
+                        className={`rate-limit-source-badge rate-limit-source-${field.source}`}
+                        title={
+                          field.source === 'env'
+                            ? 'Value from .env file (highest priority, cannot be overridden)'
+                            : field.source === 'file'
+                            ? 'Value from rate_limits.json (persisted override)'
+                            : 'Default value (lowest priority)'
+                        }
+                      >
+                        {field.source === 'env' ? '.env' : field.source === 'file' ? 'file' : 'default'}
+                      </span>
+                    )}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={field.value}
+                    placeholder={field.placeholder || 'Default'}
+                    onChange={(event) => onChange(field.alias, event.target.value)}
+                    disabled={field.isReadOnly}
+                    title={field.isReadOnly ? 'This value is set in .env and cannot be overridden' : ''}
+                  />
+                  {limitValue !== null && limitValue > 0 && (
+                    <div className="rate-limit-progress-container">
+                      <div className="rate-limit-usage-label">
+                        <span>{currentUsage} used</span>
+                        <span>{percentage.toFixed(1)}%</span>
+                      </div>
+                      <div className="rate-limit-progress-bar">
+                        <div
+                          className={`rate-limit-progress-fill ${progressClass}`}
+                          style={{ width: `${percentage}%` }}
+                          title={`${currentUsage} / ${limitValue} (${percentage.toFixed(1)}%)`}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <span className="rate-limit-field-description">{field.description}</span>
+                </label>
+              );
+            })}
           </div>
           {status ? (
             <div className={`rate-limit-status rate-limit-status-${status.type}`}>
@@ -386,6 +471,23 @@ function hasAnyDraftValues(draft?: RateLimitDraftValues): boolean {
   return Object.values(draft).some((value) => value !== undefined);
 }
 
+function getUsagePercentage(current: number, limit: number | null): number {
+  if (!limit || limit <= 0) {
+    return 0;
+  }
+  return Math.min((current / limit) * 100, 100);
+}
+
+function getProgressBarClass(percentage: number): string {
+  if (percentage >= 90) {
+    return 'high';
+  }
+  if (percentage >= 70) {
+    return 'medium';
+  }
+  return 'low';
+}
+
 function getEntryKey(scope: RateLimitScope, provider?: string, model?: string): string {
   if (scope === 'global') {
     return 'global';
@@ -446,6 +548,34 @@ const SettingsWindow: React.FC = () => {
       }
       const data: RateLimitResponse = await response.json();
       setRateLimitData(data);
+
+      // Save backend state to browser storage for comparison
+      BrowserStorage.setRateLimitBackendState({
+        global: data.global.limits,
+      });
+
+      // Extract and save usage data to browser storage (JSON is source of truth)
+      const usageCache: import('../utils/storage/BrowserStorage').RateLimitUsageCache = {
+        global: data.global.usage,
+        providers: {},
+        models: {},
+      };
+
+      for (const provider of data.providers) {
+        if (provider.usage) {
+          usageCache.providers![provider.id] = provider.usage;
+        }
+        for (const model of provider.models) {
+          if (model.usage) {
+            if (!usageCache.models![provider.id]) {
+              usageCache.models![provider.id] = {};
+            }
+            usageCache.models![provider.id][model.id] = model.usage;
+          }
+        }
+      }
+
+      BrowserStorage.setRateLimitUsage(usageCache);
     } catch (error) {
       console.error('Failed to fetch rate limits:', error);
       setRateLimitError(
@@ -457,8 +587,65 @@ const SettingsWindow: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Fetch immediately on mount - backend reads from JSON file (source of truth)
+    // Backend data is then saved to browser storage for future caching
     fetchRateLimits();
   }, [fetchRateLimits]);
+
+  // Event-driven timer: Find next expiration and schedule refresh
+  useEffect(() => {
+    if (activeSection !== 'rate-limits' || !rateLimitData) {
+      return;
+    }
+
+    // Find the earliest upcoming expiration across all scopes
+    const now = Date.now() / 1000; // Convert to seconds
+    let nextExpiration: number | null = null;
+
+    const checkUsageExpirations = (usage?: RateLimitUsage) => {
+      if (!usage?.expires_at) return;
+
+      // Check all expiration timestamps directly (no calculation needed)
+      const expirationKeys = [
+        'requests_minute',
+        'requests_hour',
+        'requests_day',
+        'tokens_minute',
+        'tokens_hour',
+        'tokens_day',
+      ] as const;
+
+      for (const key of expirationKeys) {
+        const expiresAt = usage.expires_at[key];
+        if (expiresAt !== undefined && expiresAt !== null && expiresAt > now) {
+          if (nextExpiration === null || expiresAt < nextExpiration) {
+            nextExpiration = expiresAt;
+          }
+        }
+      }
+    };
+
+    // Check global usage
+    checkUsageExpirations(rateLimitData.global.usage);
+
+    // Check provider and model usage
+    for (const provider of rateLimitData.providers) {
+      checkUsageExpirations(provider.usage);
+      for (const model of provider.models) {
+        checkUsageExpirations(model.usage);
+      }
+    }
+
+    // If we found an upcoming expiration, set timer for it
+    if (nextExpiration !== null) {
+      const msUntilExpiration = Math.max(0, (nextExpiration - now) * 1000);
+      const timerId = window.setTimeout(() => {
+        fetchRateLimits(); // Refetch when entry expires
+      }, msUntilExpiration);
+
+      return () => window.clearTimeout(timerId);
+    }
+  }, [rateLimitData, activeSection, fetchRateLimits]);
 
   const updateDraftStorage = useCallback((updater: (current: RateLimitDrafts) => RateLimitDrafts) => {
     setRateLimitDrafts((previous) => {
@@ -673,13 +860,15 @@ const SettingsWindow: React.FC = () => {
       });
     }
 
-    const fields: RateLimitFieldState[] = RATE_LIMIT_FIELDS.map(({ alias, label, description }) => {
+    const fields: RateLimitFieldState[] = RATE_LIMIT_FIELDS.map(({ alias, field, label, description }) => {
       const overrideValue = overrideAlias[alias] ?? '';
       let value = overrideValue;
       if (draftEntry && Object.prototype.hasOwnProperty.call(draftEntry, alias)) {
         const draftValue = draftEntry[alias];
         value = draftValue ?? '';
       }
+      const fieldSource = data.sources?.[field] || 'default';
+      const isReadOnly = fieldSource === 'env';
       return {
         alias,
         label,
@@ -687,6 +876,8 @@ const SettingsWindow: React.FC = () => {
         value,
         placeholder: effectiveAlias[alias] ?? '',
         overrideValue,
+        source: fieldSource,
+        isReadOnly,
       };
     });
 
@@ -726,6 +917,7 @@ const SettingsWindow: React.FC = () => {
         collapsible={collapsible}
         isExpanded={isExpanded}
         onToggleExpand={onToggleExpand}
+        usage={data.usage}
       >
         {childContent}
       </RateLimitCard>

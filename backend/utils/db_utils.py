@@ -552,6 +552,23 @@ class DatabaseManager:
                 ON file_edit_history(workspace_path, file_path, content_hash)
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS rate_limit_usage (
+                    scope_key TEXT NOT NULL,
+                    window TEXT NOT NULL CHECK(window IN ('minute', 'hour', 'day')),
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    token_count INTEGER NOT NULL DEFAULT 0,
+                    oldest_request_ts REAL,
+                    oldest_token_ts REAL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (scope_key, window)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rate_limit_updated
+                ON rate_limit_usage(updated_at)
+            """)
+
             # No migration logic required fresh schema creation only during development
 
             conn.commit()
@@ -927,7 +944,7 @@ class DatabaseManager:
                 LEFT JOIN message_files mf ON m.id = mf.message_id
                 LEFT JOIN files f ON mf.file_id = f.id
                 WHERE m.chat_id = ?
-                ORDER BY m.id ASC, mf.created_at ASC
+                ORDER BY m.timestamp ASC, mf.created_at ASC
             """, (chat_id,))
 
             messages_map = defaultdict(lambda: {
@@ -975,7 +992,7 @@ class DatabaseManager:
                     })
 
             messages = []
-            for message_id in sorted(messages_map.keys()):
+            for message_id in sorted(messages_map.keys(), key=lambda x: int(x.split('_')[-1])):
                 message = dict(messages_map[message_id])
                 if not message["attachedFiles"]:
                     del message["attachedFiles"]

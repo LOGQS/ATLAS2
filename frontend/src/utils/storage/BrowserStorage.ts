@@ -52,6 +52,13 @@ export interface RateLimitDrafts {
   models?: Record<string, Record<string, RateLimitDraftValues>>;
 }
 
+export interface RateLimitBackendState {
+  global?: any;
+  providers?: Record<string, any>;
+  models?: Record<string, Record<string, any>>;
+  lastSyncTimestamp?: number;
+}
+
 export interface MessageGenerationStats {
   messageId: string;
   totalTimeMs: number | null;
@@ -95,12 +102,38 @@ interface MessageStatsChatEntry {
 
 type MessageStatsStorage = Record<string, MessageStatsChatEntry>;
 
+export interface RateLimitUsageData {
+  requests_per_minute?: number;
+  requests_per_hour?: number;
+  requests_per_day?: number;
+  tokens_per_minute?: number;
+  tokens_per_hour?: number;
+  tokens_per_day?: number;
+  oldest_timestamps?: {
+    requests_minute?: number;
+    requests_hour?: number;
+    requests_day?: number;
+    tokens_minute?: number;
+    tokens_hour?: number;
+    tokens_day?: number;
+  };
+}
+
+export interface RateLimitUsageCache {
+  global?: RateLimitUsageData;
+  providers?: Record<string, RateLimitUsageData>;
+  models?: Record<string, Record<string, RateLimitUsageData>>;
+  lastSyncTimestamp?: number;
+}
+
 export class BrowserStorage {
   private static readonly SETTINGS_KEY = 'atlas_ui_settings';
   private static readonly ATTACHED_FILES_KEY = 'atlas_attached_files';
   private static readonly SOURCE_PREFS_KEY = 'atlas_source_preferences';
   private static readonly MESSAGE_STATS_KEY = 'atlas_message_stats_v1';
   private static readonly RATE_LIMIT_DRAFTS_KEY = 'atlas_rate_limit_drafts';
+  private static readonly RATE_LIMIT_BACKEND_STATE_KEY = 'atlas_rate_limit_backend_state';
+  private static readonly RATE_LIMIT_USAGE_KEY = 'atlas_rate_limit_usage';
   private static readonly MESSAGE_STATS_LIMIT = 200;
 
   static getUISettings(): UISettings {
@@ -168,6 +201,70 @@ export class BrowserStorage {
       localStorage.removeItem(this.RATE_LIMIT_DRAFTS_KEY);
     } catch (error) {
       console.warn('Failed to clear rate limit drafts from localStorage:', error);
+    }
+  }
+
+  static getRateLimitBackendState(): RateLimitBackendState {
+    try {
+      const stored = localStorage.getItem(this.RATE_LIMIT_BACKEND_STATE_KEY);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (error) {
+      console.warn('Failed to load rate limit backend state from localStorage:', error);
+    }
+    return {};
+  }
+
+  static setRateLimitBackendState(state: RateLimitBackendState): void {
+    try {
+      const stateWithTimestamp = {
+        ...state,
+        lastSyncTimestamp: Date.now(),
+      };
+      localStorage.setItem(this.RATE_LIMIT_BACKEND_STATE_KEY, JSON.stringify(stateWithTimestamp));
+    } catch (error) {
+      console.warn('Failed to persist rate limit backend state to localStorage:', error);
+    }
+  }
+
+  static clearRateLimitBackendState(): void {
+    try {
+      localStorage.removeItem(this.RATE_LIMIT_BACKEND_STATE_KEY);
+    } catch (error) {
+      console.warn('Failed to clear rate limit backend state from localStorage:', error);
+    }
+  }
+
+  static getRateLimitUsage(): RateLimitUsageCache {
+    try {
+      const stored = localStorage.getItem(this.RATE_LIMIT_USAGE_KEY);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (error) {
+      console.warn('Failed to load rate limit usage from localStorage:', error);
+    }
+    return {};
+  }
+
+  static setRateLimitUsage(usage: RateLimitUsageCache): void {
+    try {
+      const usageWithTimestamp = {
+        ...usage,
+        lastSyncTimestamp: Date.now(),
+      };
+      localStorage.setItem(this.RATE_LIMIT_USAGE_KEY, JSON.stringify(usageWithTimestamp));
+    } catch (error) {
+      console.warn('Failed to persist rate limit usage to localStorage:', error);
+    }
+  }
+
+  static clearRateLimitUsage(): void {
+    try {
+      localStorage.removeItem(this.RATE_LIMIT_USAGE_KEY);
+    } catch (error) {
+      console.warn('Failed to clear rate limit usage from localStorage:', error);
     }
   }
 

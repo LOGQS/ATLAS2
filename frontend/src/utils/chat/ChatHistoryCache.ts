@@ -238,6 +238,56 @@ class ChatHistoryCache {
     });
   }
 
+  delete(chatId: string): void {
+    const existed = this.memoryCache.has(chatId);
+    this.memoryCache.delete(chatId);
+    this.versionCounter.delete(chatId);
+    if (existed) {
+      this.persistToStorage();
+      logger.info(`[ChatCache] Deleted cache for chat ${chatId}`);
+    }
+  }
+
+  getCachedChatIds(): string[] {
+    return Array.from(this.memoryCache.keys());
+  }
+
+  validateAgainstBackend(validChatIds: string[]): void {
+    // Defensive check: never validate against empty array unless it's intentional
+    // This prevents accidental cache wipes if called with empty/invalid data
+    if (!validChatIds || !Array.isArray(validChatIds)) {
+      logger.warn('[ChatCache] validateAgainstBackend called with invalid input - skipping validation');
+      return;
+    }
+
+    const cachedIds = this.getCachedChatIds();
+
+    // If there are cached chats but validChatIds is empty, this is suspicious
+    // Only proceed if we have zero cached items OR we have valid chat IDs
+    if (cachedIds.length > 0 && validChatIds.length === 0) {
+      logger.warn(`[ChatCache] Refusing to prune ${cachedIds.length} cached chats against empty backend list - likely an error`);
+      return;
+    }
+
+    const validSet = new Set(validChatIds);
+    const toDelete: string[] = [];
+
+    for (const cachedId of cachedIds) {
+      if (!validSet.has(cachedId)) {
+        toDelete.push(cachedId);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      logger.info(`[ChatCache] Pruning ${toDelete.length} stale cache entries not found in backend (${validChatIds.length} valid chats)`);
+      for (const chatId of toDelete) {
+        this.delete(chatId);
+      }
+    } else {
+      logger.debug('[ChatCache] All cached chats are valid');
+    }
+  }
+
   clear(): void {
     this.memoryCache.clear();
     this.versionCounter.clear();

@@ -14,7 +14,7 @@ interface UseBulkOperationsProps {
   setChats: React.Dispatch<React.SetStateAction<ChatItem[]>>;
   setPendingFirstMessages: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   handleNewChat: () => void;
-  loadChatsFromDatabase: () => Promise<void>;
+  loadChatsFromDatabase: (options?: { expectedToken?: number }) => Promise<string[] | null>;
 }
 
 interface UseBulkOperationsReturn {
