@@ -25,6 +25,7 @@ if str(backend_dir) not in sys.path:
 
 from utils.logger import get_logger
 from utils.config import Config
+from utils import startup_cache
 
 logger = get_logger(__name__)  
 
@@ -110,10 +111,24 @@ class WorkerPool:
             logger.debug(f"Spawning worker {worker_id}")
             process, conn = start_chat_process(placeholder_chat_id)
 
-            if conn.poll(timeout):
+            while True:
+                elapsed = time.time() - start_time
+                remaining = timeout - elapsed
+                if remaining <= 0:
+                    logger.error(
+                        f"Worker {worker_id} initialization timeout after {elapsed:.2f}s (limit={timeout:.2f}s)"
+                    )
+                    break
+
+                if not conn.poll(remaining):
+                    continue
+
                 response = conn.recv()
+                if startup_cache.handle_parent_message(conn, response):
+                    continue
+
                 duration = time.time() - start_time
-                if response.get('success'):
+                if isinstance(response, dict) and response.get('success'):
                     worker = PooledWorker(
                         process=process,
                         conn=conn,
@@ -124,10 +139,12 @@ class WorkerPool:
                     self._log_spawn_success(worker_id, duration)
                     success = True
                 else:
-                    logger.error(f"Worker {worker_id} initialization failed after {duration:.2f}s: {response.get('error')}")
-            else:
-                duration = time.time() - start_time
-                logger.error(f"Worker {worker_id} initialization timeout after {duration:.2f}s (limit={timeout:.2f}s)")
+                    logger.error(
+                        f"Worker {worker_id} initialization failed after {duration:.2f}s: {response.get('error')}"
+                        if isinstance(response, dict) else
+                        f"Worker {worker_id} initialization failed with unexpected payload: {response!r}"
+                    )
+                break
 
         except Exception as e:
             duration = time.time() - start_time
@@ -225,6 +242,10 @@ class WorkerPool:
     def _terminate_process(self, process: Optional[multiprocessing.Process], conn: Any) -> None:
         """Ensure a failed worker process is cleaned up."""
         if conn is not None:
+            try:
+                startup_cache.cleanup_for_connection(conn)
+            except Exception:
+                logger.debug("Ignored cache cleanup error during worker termination", exc_info=True)
             try:
                 conn.close()
             except Exception as conn_error:

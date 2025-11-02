@@ -58,6 +58,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
     When the process is terminated, all operations stop immediately.
     """
 
+    startup_cache_module = None
     try:
         backend_dir = Path(__file__).parent.parent
         if str(backend_dir) not in sys.path:
@@ -66,6 +67,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
         from utils.logger import get_logger
         from utils.db_utils import DatabaseManager
         from utils.config import get_provider_map, Config
+        from utils import startup_cache as _startup_cache
+        startup_cache_module = _startup_cache
 
         worker_logger = get_logger(__name__)
         worker_logger.info(f"[CHAT-WORKER] Starting chat worker process for {chat_id}")
@@ -76,6 +79,9 @@ def chat_worker(chat_id: str, child_conn) -> None:
         current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None, 'last_db_update': 0.0}
 
         try:
+            if startup_cache_module is not None:
+                startup_cache_module.register_worker_channel(child_conn)
+
             db = DatabaseManager()
             
             providers = get_provider_map()
@@ -341,8 +347,13 @@ def chat_worker(chat_id: str, child_conn) -> None:
     finally:
         try:
             child_conn.close()
-        except:
+        except Exception:
             pass
+        if startup_cache_module is not None:
+            try:
+                startup_cache_module.clear_worker_channel()
+            except Exception:
+                pass
 
 
 def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, worker_logger) -> Optional[str]:

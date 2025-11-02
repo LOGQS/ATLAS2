@@ -1,6 +1,7 @@
 # status: complete
 
 from typing import Dict, Any, Optional
+import threading
 from dotenv import load_dotenv
 import os
 from utils.logger import get_logger
@@ -22,22 +23,33 @@ class Groq:
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         self.status = "enabled" if self.api_key else "disabled"
-        self.client = None
+        self._client = None
+        self._client_lock = threading.Lock()
 
-        if self.api_key:
+        if not self.api_key:
+            logger.warning("[GROQ-PROVIDER] No API key found, disabling provider")
+            self.status = "disabled"
+
+    def is_available(self) -> bool:
+        """Check if provider is available"""
+        return self.status == "enabled"
+
+    def _ensure_client(self) -> None:
+        if self._client or self.status != "enabled":
+            return
+
+        with self._client_lock:
+            if self._client or self.status != "enabled":
+                return
+
             try:
                 from groq import Groq as GroqClient
-                self.client = GroqClient(api_key=self.api_key)
+                self._client = GroqClient(api_key=self.api_key)
                 logger.info("[GROQ-PROVIDER] Groq STT client initialized successfully")
             except Exception as e:
                 logger.error(f"[GROQ-PROVIDER] Failed to initialize Groq client: {str(e)}")
                 self.status = "disabled"
-        else:
-            logger.warning("[GROQ-PROVIDER] No API key found, disabling provider")
-
-    def is_available(self) -> bool:
-        """Check if provider is available"""
-        return self.status == "enabled" and self.client is not None
+                self._client = None
 
     def get_available_models(self) -> Dict[str, str]:
         """Get available STT models for this provider"""
@@ -59,9 +71,13 @@ class Groq:
         if not self.is_available():
             return {"success": False, "error": "Provider not available"}
 
+        self._ensure_client()
+        if not self._client:
+            return {"success": False, "error": "Provider not available"}
+
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = self.client.audio.transcriptions.create(
+                transcription = self._client.audio.transcriptions.create(
                     file=audio_file,
                     model=model,
                     language=language,

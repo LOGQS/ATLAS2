@@ -2,8 +2,12 @@
 
 from typing import Any, Dict, Generator, List, Optional
 from dotenv import load_dotenv
+import json
 import os
+import threading
+from pathlib import Path
 from utils.logger import get_logger
+from utils.startup_cache import worker_get_or_initialize, has_worker_channel
 
 load_dotenv()
 
@@ -58,22 +62,20 @@ class Cerebras:
     def __init__(self):
         self.api_key = os.getenv("CEREBRAS_API_KEY")
         self.status = "enabled" if self.api_key else "disabled"
-        self.client = None
+        self._client = None
+        self._client_lock = threading.Lock()
 
-        if self.api_key:
-            try:
-                from cerebras.cloud.sdk import Cerebras as CerebrasClient
-                self.client = CerebrasClient(api_key=self.api_key)
-                logger.info("Cerebras text generation client initialized successfully")
-            except ImportError:
-                logger.error("cerebras_cloud_sdk package not installed. Please run: pip install cerebras_cloud_sdk")
-                self.status = "disabled"
-            except Exception as e:
-                logger.error(f"Failed to initialize Cerebras client: {str(e)}")
-                self.status = "disabled"
+        base_dir = Path(__file__).resolve().parents[3]
+        self.cache_dir = base_dir / "data" / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.warmup_file = self.cache_dir / "cerebras_warmup.json"
+
+        if not self.api_key:
+            logger.warning("Cerebras provider disabled: CEREBRAS_API_KEY not configured")
+            self.status = "disabled"
 
     def is_available(self) -> bool:
-        return self.status == "enabled" and self.client is not None
+        return self.status == "enabled"
 
     def get_available_models(self) -> Dict[str, Any]:
         """Get available models for this provider"""
@@ -82,6 +84,113 @@ class Cerebras:
     def supports_reasoning(self, model: str) -> bool:
         """Check if specific model supports reasoning"""
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
+
+    def _warmup_once(self, client) -> None:
+        if not client or not hasattr(client, "tcp_warming"):
+            return
+
+        logger.debug("Checking disk warmup cache at %s", self.warmup_file)
+        if self._load_warmup_cache():
+            logger.info("Cerebras TCP warmup already cached on disk (%s); skipping", self.warmup_file)
+            return
+
+        logger.debug("Disk cache miss; requesting TCP warmup via startup cache")
+        logger.debug("Startup cache connection available: %s", has_worker_channel())
+        def initializer() -> Dict[str, Any]:
+            try:
+                client.tcp_warming()
+                logger.info("Cerebras TCP warmup completed successfully")
+                return {"success": True}
+            except Exception as exc:
+                logger.warning(f"Cerebras TCP warmup failed: {exc}")
+                return {"success": False, "error": str(exc)}
+
+        result = worker_get_or_initialize("cerebras_tcp_warmup", initializer)
+        if isinstance(result, dict) and result.get("success"):
+            logger.info("Cerebras TCP warmup obtained from cache or computed; writing to disk")
+            self._write_warmup_cache()
+        elif isinstance(result, dict) and not result.get("success", True):
+            logger.warning(
+                "Cerebras warmup previously failed (%s); proceeding without cached warm state",
+                result.get("error", "unknown error"),
+            )
+        else:
+            logger.warning("Received unexpected warmup cache payload: %r", result)
+
+    def _ensure_client(self):
+        if not self.is_available():
+            return None
+
+        if self._client is not None:
+            return self._client
+
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+
+            try:
+                from cerebras.cloud.sdk import Cerebras as CerebrasClient
+            except ImportError:
+                logger.error("cerebras_cloud_sdk package not installed. Please run: pip install cerebras_cloud_sdk")
+                self.status = "disabled"
+                return None
+
+            try:
+                client = CerebrasClient(api_key=self.api_key)
+                logger.info("Cerebras text generation client initialized successfully")
+            except Exception as exc:
+                logger.error(f"Failed to initialize Cerebras client: {exc}")
+                self.status = "disabled"
+                return None
+
+            if hasattr(client, "tcp_warming"):
+                logger.debug("Starting Cerebras TCP warmup check for new client")
+                self._warmup_once(client)
+            else:
+                logger.debug("Cerebras client does not expose tcp_warming; skipping explicit warmup")
+
+            self._client = client
+            return self._client
+
+    def _load_warmup_cache(self) -> bool:
+        if not self.warmup_file.exists():
+            logger.debug("Cerebras warmup cache file %s not found", self.warmup_file)
+            return False
+        try:
+            data = json.loads(self.warmup_file.read_text(encoding="utf-8"))
+            ttl = data.get("ttl_hours", 6)
+            timestamp = data.get("timestamp")
+            if timestamp is None:
+                raise ValueError("missing timestamp")
+            import time
+            age_seconds = time.time() - float(timestamp)
+            if age_seconds > ttl * 3600:
+                logger.debug(
+                    "Cerebras warmup cache expired (age=%.1fs, ttl_hours=%s)",
+                    age_seconds,
+                    ttl,
+                )
+                raise ValueError("warmup cache expired")
+            logger.info("Cerebras warmup cache hit from %s", self.warmup_file)
+            return True
+        except Exception as exc:
+            logger.info("Cerebras warmup cache at %s invalid or expired; refreshing (%s)", self.warmup_file, exc)
+            try:
+                self.warmup_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+
+    def _write_warmup_cache(self) -> None:
+        try:
+            import time
+            payload = {"timestamp": time.time(), "ttl_hours": 6}
+            tmp = self.warmup_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(self.warmup_file)
+            logger.debug("Cerebras warmup cache written to %s", self.warmup_file)
+        except Exception as exc:
+            logger.warning(f"Cerebras warmup cache write failed: {exc}")
 
     def count_tokens(self, text: str, model: str) -> int:
         """Count tokens using tiktoken for OpenAI-compatible models"""
@@ -157,8 +266,16 @@ class Cerebras:
             if "reasoning_effort" not in request_params:
                 request_params["reasoning_effort"] = "medium"
 
+        client = self._ensure_client()
+        if client is None:
+            return {
+                "text": None,
+                "thoughts": None,
+                "error": "Provider not available",
+            }
+
         try:
-            response = self.client.chat.completions.create(**request_params)
+            response = client.chat.completions.create(**request_params)
 
             content = ""
             thoughts = None
@@ -229,8 +346,13 @@ class Cerebras:
             if "reasoning_effort" not in request_params:
                 request_params["reasoning_effort"] = "medium"
 
+        client = self._ensure_client()
+        if client is None:
+            yield {"type": "error", "content": "Provider not available"}
+            return
+
         try:
-            response = self.client.chat.completions.create(**request_params)
+            response = client.chat.completions.create(**request_params)
 
             answer_started = False
             thoughts_started = False

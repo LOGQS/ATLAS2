@@ -1,5 +1,6 @@
 ﻿# status: complete
 
+import time
 import uuid
 import pickle
 import multiprocessing
@@ -7,6 +8,7 @@ import threading
 from queue import Queue, Empty
 from typing import Dict, Any, Optional, Generator, List, Tuple
 from utils.config import get_provider_map, Config
+from utils import startup_cache
 from utils.db_utils import db
 from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
@@ -135,8 +137,12 @@ def _close_connection_safely(conn: Any, chat_id: str) -> None:
     """Safely close a connection with proper error handling"""
     if not conn:
         return
-    
+
     try:
+        try:
+            startup_cache.cleanup_for_connection(conn)
+        except Exception:
+            logger.debug(f"[CACHE] Connection cleanup failed for {chat_id}", exc_info=True)
         if hasattr(conn, 'close'):
             conn.close()
     except (OSError, BrokenPipeError) as e:
@@ -389,6 +395,10 @@ def force_cleanup_chat_process(chat_id: str):
             del _chat_processes[chat_id]
         if chat_id in _chat_process_connections:
             conn = _chat_process_connections[chat_id]
+            try:
+                startup_cache.cleanup_for_connection(conn)
+            except Exception:
+                logger.debug(f"[CACHE] Cleanup failed for chat {chat_id}", exc_info=True)
             _close_connection_safely(conn, chat_id)
             del _chat_process_connections[chat_id]
         _chat_process_status.pop(chat_id, None)
@@ -457,18 +467,34 @@ def _configure_chat_process(conn, chat_id: str, message: str, provider: str, mod
         _chat_process_status[chat_id] = 'running'
         logger.info(f"[CHAT-CONFIG] Pooled worker ready for {chat_id}")
     else:
-        if conn.poll(INIT_RESPONSE_TIMEOUT):
-            init_response = conn.recv()
-            if init_response and init_response.get('success'):
-                _chat_process_status[chat_id] = 'running'
-                logger.info(f"[CHAT-CONFIG] New worker initialized for {chat_id}")
-            else:
-                error = init_response.get('error', 'Unknown initialization error') if init_response else 'No response'
-                logger.error(f"[CHAT-CONFIG] Failed to initialize chat process {chat_id}: {error}")
+        start_time = time.time()
+        while True:
+            elapsed = time.time() - start_time
+            remaining = INIT_RESPONSE_TIMEOUT - elapsed
+            if remaining <= 0:
+                logger.error(f"[CHAT-CONFIG] Chat process initialization timeout for {chat_id}")
                 cleanup_completed_processes()
                 return False
-        else:
-            logger.error(f"[CHAT-CONFIG] Chat process initialization timeout for {chat_id}")
+
+            if not conn.poll(remaining):
+                continue
+
+            init_response = conn.recv()
+            if startup_cache.handle_parent_message(conn, init_response):
+                continue
+
+            if isinstance(init_response, dict) and init_response.get('success'):
+                _chat_process_status[chat_id] = 'running'
+                logger.info(f"[CHAT-CONFIG] New worker initialized for {chat_id}")
+                break
+
+            if isinstance(init_response, dict):
+                error = init_response.get('error', 'Unknown initialization error')
+            elif init_response:
+                error = f'Unexpected response type: {type(init_response).__name__}'
+            else:
+                error = 'No response'
+            logger.error(f"[CHAT-CONFIG] Failed to initialize chat process {chat_id}: {error}")
             cleanup_completed_processes()
             return False
 
@@ -562,6 +588,9 @@ def _relay_worker_messages(chat_id: str, conn):
                 if conn.poll(POLL_INTERVAL):
                     message = conn.recv()
                     if not isinstance(message, dict):
+                        continue
+
+                    if startup_cache.handle_parent_message(conn, message):
                         continue
 
                     message_type = message.get('type')

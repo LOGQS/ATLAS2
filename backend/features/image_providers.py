@@ -1,6 +1,7 @@
 # status: complete
 
 from typing import Dict, Any, Optional
+import json
 import os
 import requests
 import uuid
@@ -8,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
+from utils.startup_cache import worker_get_or_initialize
 
 logger = get_logger(__name__)
 
@@ -44,11 +46,17 @@ class Pollinations:
             "burst_size": 1,
         }
 
-        self.images_dir = Path(__file__).resolve().parent.parent.parent / "data" / "generated_images"
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        self.images_dir = base_dir / "data" / "generated_images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
+        self.cache_dir = base_dir / "data" / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_file = self.cache_dir / "pollinations_models.json"
+
         self._cached_models = None
-        self._fetch_available_models()
+        if not self._load_models_from_disk():
+            self._fetch_available_models()
 
         logger.info(f"[POLLINATIONS-PROVIDER] Pollinations image generation provider initialized. Images directory: {self.images_dir}")
 
@@ -56,28 +64,98 @@ class Pollinations:
         """Check if provider is available"""
         return self.status == "enabled"
 
+    def _load_models_from_disk(self) -> bool:
+        """Load cached model list from disk if available."""
+        if not self.cache_file.exists():
+            return False
+
+        try:
+            data = json.loads(self.cache_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Cached model data must be a dict")
+
+            self._cached_models = {name: str(label) for name, label in data.items()}
+            logger.info(
+                "[POLLINATIONS-PROVIDER] Loaded %d cached models from %s",
+                len(self._cached_models),
+                self.cache_file,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[POLLINATIONS-PROVIDER] Failed to load cached models (%s); refetching",
+                exc,
+            )
+            try:
+                self.cache_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+
+    def _save_models_to_disk(self, models: Dict[str, str]) -> None:
+        """Persist the fetched model list for future startups."""
+        try:
+            tmp_file = self.cache_file.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(models, ensure_ascii=True, indent=2), encoding="utf-8")
+            tmp_file.replace(self.cache_file)
+            logger.debug(
+                "[POLLINATIONS-PROVIDER] Cached %d models to %s",
+                len(models),
+                self.cache_file,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[POLLINATIONS-PROVIDER] Failed to cache models to disk: %s",
+                exc,
+            )
+
     def _fetch_available_models(self) -> None:
         """
         Fetch available models dynamically from API endpoint.
         Falls back to hardcoded FALLBACK_MODELS if fetch fails.
         """
-        try:
-            logger.info("[POLLINATIONS-PROVIDER] Fetching available models from API...")
-            response = requests.get(self.models_url, timeout=10)
-            response.raise_for_status()
+        def initializer() -> Dict[str, Any]:
+            payload: Dict[str, Any] = {}
+            try:
+                logger.info("[POLLINATIONS-PROVIDER] Fetching available models from API...")
+                response = requests.get(self.models_url, timeout=10)
+                response.raise_for_status()
 
-            models_list = response.json()
+                models_list = response.json()
 
-            if not isinstance(models_list, list):
-                raise ValueError(f"Expected list of models, got {type(models_list)}")
+                if not isinstance(models_list, list):
+                    raise ValueError(f"Expected list of models, got {type(models_list)}")
 
-            self._cached_models = {model: model for model in models_list if isinstance(model, str)}
+                models = {model: model for model in models_list if isinstance(model, str)}
+                payload["models"] = models
+                payload["fallback"] = False
+                logger.info(f"[POLLINATIONS-PROVIDER] Successfully fetched {len(models)} models from API")
+            except Exception as exc:
+                logger.warning(
+                    f"[POLLINATIONS-PROVIDER] Failed to fetch models from API: {exc}. Using fallback models."
+                )
+                payload["models"] = self.FALLBACK_MODELS.copy()
+                payload["fallback"] = True
+                payload["error"] = str(exc)
+            return payload
 
-            logger.info(f"[POLLINATIONS-PROVIDER] Successfully fetched {len(self._cached_models)} models from API")
+        cache_payload = worker_get_or_initialize("pollinations_models", initializer)
 
-        except Exception as e:
-            logger.warning(f"[POLLINATIONS-PROVIDER] Failed to fetch models from API: {e}. Using fallback models.")
+        if not isinstance(cache_payload, dict):
+            logger.warning("[POLLINATIONS-PROVIDER] Unexpected cache payload type, falling back to defaults")
             self._cached_models = self.FALLBACK_MODELS.copy()
+            return
+
+        models = cache_payload.get("models")
+        if not isinstance(models, dict) or not models:
+            logger.warning("[POLLINATIONS-PROVIDER] Cache payload missing models, falling back to defaults")
+            self._cached_models = self.FALLBACK_MODELS.copy()
+            return
+
+        self._cached_models = {name: label for name, label in models.items()}
+
+        if not cache_payload.get("fallback"):
+            self._save_models_to_disk(self._cached_models)
 
     def get_available_models(self) -> Dict[str, str]:
         """Get available image generation models for this provider"""
