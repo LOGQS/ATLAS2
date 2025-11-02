@@ -63,6 +63,7 @@ class Cerebras:
         self.api_key = os.getenv("CEREBRAS_API_KEY")
         self.status = "enabled" if self.api_key else "disabled"
         self._client = None
+        self._async_client = None
         self._client_lock = threading.Lock()
 
         base_dir = Path(__file__).resolve().parents[3]
@@ -73,6 +74,17 @@ class Cerebras:
         if not self.api_key:
             logger.warning("Cerebras provider disabled: CEREBRAS_API_KEY not configured")
             self.status = "disabled"
+        else:
+            # Conditionally initialize async client based on execution mode
+            from utils.config import Config
+            if Config.should_init_async_clients():
+                try:
+                    self._ensure_async_client()
+                    logger.debug("Cerebras async client initialized eagerly at startup")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Cerebras async client at startup: {e}")
+            else:
+                logger.debug("Cerebras async client initialization skipped (execution mode: %s)", Config.get_chat_execution_mode())
 
     def is_available(self) -> bool:
         return self.status == "enabled"
@@ -387,4 +399,191 @@ class Cerebras:
 
         except Exception as e:
             logger.error(f"Cerebras streaming API request failed: {str(e)}")
+            yield {"type": "error", "content": str(e)}
+
+    # ==================== ASYNC METHODS ====================
+
+    def _ensure_async_client(self):
+        """Initialize async Cerebras client for async operations"""
+        if not self.is_available():
+            return None
+
+        if self._async_client is not None:
+            return self._async_client
+
+        with self._client_lock:
+            if self._async_client is not None:
+                return self._async_client
+
+            try:
+                from cerebras.cloud.sdk import AsyncCerebras
+            except ImportError:
+                logger.error("cerebras_cloud_sdk package not installed. Please run: pip install cerebras_cloud_sdk")
+                self.status = "disabled"
+                return None
+
+            try:
+                client = AsyncCerebras(api_key=self.api_key)
+                logger.info("Cerebras async client initialized successfully")
+                self._async_client = client
+                return self._async_client
+            except Exception as exc:
+                logger.error(f"Failed to initialize Cerebras async client: {exc}")
+                return None
+
+    async def generate_text_async(self, prompt: str, model: str = "",
+                                 include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
+                                 file_attachments: List[str] = None,
+                                 **config_params) -> Dict[str, Any]:
+        """Async version of generate_text"""
+        if not self.is_available():
+            return {"text": None, "thoughts": None, "error": "Provider not available"}
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+
+        messages = []
+        if chat_history:
+            formatted_history = self._format_chat_history(chat_history)
+            messages.extend(formatted_history)
+
+        messages.append({"role": "user", "content": prompt})
+
+        request_params = {
+            "model": model,
+            "messages": messages
+        }
+
+        if config_params:
+            for key, value in config_params.items():
+                if key in ["temperature", "max_completion_tokens", "max_tokens", "top_p", "stop", "stream", "reasoning_effort"]:
+                    if key == "max_tokens":
+                        request_params["max_completion_tokens"] = value
+                    else:
+                        request_params[key] = value
+
+        if include_thoughts and self.supports_reasoning(model):
+            if "reasoning_effort" not in request_params:
+                request_params["reasoning_effort"] = "medium"
+
+        client = self._ensure_async_client()
+        if client is None:
+            return {
+                "text": None,
+                "thoughts": None,
+                "error": "Async client not available",
+            }
+
+        try:
+            response = await client.chat.completions.create(**request_params)
+
+            content = ""
+            thoughts = None
+
+            if response and response.choices and len(response.choices) > 0:
+                message = response.choices[0].message
+                content = message.content or ""
+
+                if hasattr(message, 'reasoning') and message.reasoning:
+                    thoughts = message.reasoning
+
+            usage_metadata = None
+            if hasattr(response, 'usage') and response.usage:
+                usage_metadata = {
+                    'prompt_tokens': response.usage.prompt_tokens if hasattr(response.usage, 'prompt_tokens') else 0,
+                    'completion_tokens': response.usage.completion_tokens if hasattr(response.usage, 'completion_tokens') else 0,
+                    'total_tokens': response.usage.total_tokens if hasattr(response.usage, 'total_tokens') else 0
+                }
+
+            return {
+                "text": content,
+                "thoughts": thoughts,
+                "model": model,
+                "usage": usage_metadata
+            }
+
+        except Exception as e:
+            logger.error(f"Cerebras async API request failed: {str(e)}")
+            return {
+                "text": None,
+                "thoughts": None,
+                "error": str(e)
+            }
+
+    async def generate_text_stream_async(self, prompt: str, model: str = "",
+                                       include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
+                                       file_attachments: List[str] = None,
+                                       **config_params):
+        """Async generator version of generate_text_stream"""
+        if not self.is_available():
+            yield {"type": "error", "content": "Provider not available"}
+            return
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+
+        messages = []
+        if chat_history:
+            formatted_history = self._format_chat_history(chat_history)
+            messages.extend(formatted_history)
+
+        messages.append({"role": "user", "content": prompt})
+
+        request_params = {
+            "model": model,
+            "messages": messages,
+            "stream": True
+        }
+
+        if config_params:
+            for key, value in config_params.items():
+                if key in ["temperature", "max_completion_tokens", "max_tokens", "top_p", "stop", "reasoning_effort"]:
+                    if key == "max_tokens":
+                        request_params["max_completion_tokens"] = value
+                    else:
+                        request_params[key] = value
+
+        if include_thoughts and self.supports_reasoning(model):
+            if "reasoning_effort" not in request_params:
+                request_params["reasoning_effort"] = "medium"
+
+        client = self._ensure_async_client()
+        if client is None:
+            yield {"type": "error", "content": "Async client not available"}
+            return
+
+        try:
+            response = await client.chat.completions.create(**request_params)
+
+            answer_started = False
+            thoughts_started = False
+            last_chunk = None
+
+            async for chunk in response:
+                last_chunk = chunk
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+
+                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                        if not thoughts_started:
+                            yield {"type": "thoughts_start"}
+                            thoughts_started = True
+                        yield {"type": "thoughts", "content": delta.reasoning}
+
+                    if delta.content:
+                        if not answer_started:
+                            yield {"type": "answer_start"}
+                            answer_started = True
+                        yield {"type": "answer", "content": delta.content}
+
+            if last_chunk and hasattr(last_chunk, 'usage') and last_chunk.usage:
+                usage_metadata = {
+                    'prompt_tokens': last_chunk.usage.prompt_tokens if hasattr(last_chunk.usage, 'prompt_tokens') else 0,
+                    'completion_tokens': last_chunk.usage.completion_tokens if hasattr(last_chunk.usage, 'completion_tokens') else 0,
+                    'total_tokens': last_chunk.usage.total_tokens if hasattr(last_chunk.usage, 'total_tokens') else 0
+                }
+                yield {"type": "usage", "usage": usage_metadata}
+
+            yield {"type": "complete"}
+
+        except Exception as e:
+            logger.error(f"Cerebras async streaming API request failed: {str(e)}")
             yield {"type": "error", "content": str(e)}

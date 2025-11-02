@@ -24,8 +24,8 @@ import CoderWindow from './sections/CoderWindow';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
-import { apiUrl } from './config/api';
-import { MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
+import { apiUrl, fetchBackendConfig } from './config/api';
+import { DEFAULT_MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
 import { chatHistoryCache } from './utils/chat/ChatHistoryCache';
@@ -69,6 +69,7 @@ function App() {
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
+  const [maxConcurrentStreams, setMaxConcurrentStreams] = useState<number>(DEFAULT_MAX_CONCURRENT_STREAMS);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -353,6 +354,12 @@ function App() {
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
       liveStore.start();
+
+      // Fetch backend configuration (execution mode, concurrent limits, etc.)
+      const config = await fetchBackendConfig();
+      setMaxConcurrentStreams(config.maxConcurrentChats);
+      logger.info(`[App.useEffect] Backend config loaded: maxConcurrentChats=${config.maxConcurrentChats}, executionMode=${config.executionMode}`);
+
       const loadedChatIds = await loadChatsFromDatabase();
 
       // Validate cache on startup - prune any cached chats that no longer exist in backend
@@ -495,7 +502,12 @@ function App() {
       setIsMessageBeingSent(true);
 
       const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const startTs = Date.now();
       const chatName = trimmedMessage.split(' ').slice(0, 4).join(' ');
+      const ts = new Date().toISOString();
+      logger.info(
+        `[UX_PERF][FRONT] first_message_initiated chat=${chatId} preview=${JSON.stringify(trimmedMessage.slice(0, 32))} length=${trimmedMessage.length} ts=${ts}`
+      );
 
       performanceTracker.startTracking(chatId, chatId);
       performanceTracker.mark(performanceTracker.MARKS.CHAT_CREATED, chatId);
@@ -530,6 +542,7 @@ function App() {
       void (async () => {
         logger.info('Creating new chat in DB:', { chatId, chatName });
         try {
+          const before = Date.now();
           const response = await fetch(apiUrl('/api/db/chat'), {
             method: 'POST',
             headers: {
@@ -540,6 +553,7 @@ function App() {
               system_prompt: null
             })
           });
+          logger.info(`[UX_PERF][FRONT] first_chat_create ms=${Date.now() - before}`);
 
           if (!response.ok) {
             const data = await response.json();
@@ -555,6 +569,7 @@ function App() {
           }
 
           try {
+            const renameStart = Date.now();
             await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
               method: 'PUT',
               headers: {
@@ -562,13 +577,17 @@ function App() {
               },
               body: JSON.stringify({ name: chatName })
             });
+            logger.info(`[UX_PERF][FRONT] first_chat_rename ms=${Date.now() - renameStart}`);
           } catch (error) {
             logger.warn('Failed to set chat name:', error);
           }
 
           await syncActiveChat(chatId);
+          logger.info(`[UX_PERF][FRONT] first_chat_setup_complete chat=${chatId} total_ms=${Date.now() - startTs}`);
         } catch (error) {
           logger.error('Failed to create chat:', error);
+        } finally {
+          logger.info(`[UX_PERF][FRONT] first_chat_setup_finished chat=${chatId} total_ms=${Date.now() - startTs}`);
         }
       })();
       return true;
@@ -580,9 +599,15 @@ function App() {
     }
 
     setIsMessageBeingSent(true);
+    const sendStart = Date.now();
     logger.info('Sending message to active chat:', activeChatId, { source, length: trimmedMessage.length });
+    const ts = new Date().toISOString();
+    logger.info(
+      `[UX_PERF][FRONT] message_initiated chat=${activeChatId} preview=${JSON.stringify(trimmedMessage.slice(0, 32))} length=${trimmedMessage.length} ts=${ts}`
+    );
 
     chatRef.current.handleNewMessage(trimmedMessage, filesToSend);
+    logger.info(`[UX_PERF][FRONT] handleNewMessage duration_ms=${Date.now() - sendStart}`);
 
     if (clearInput) {
       setMessage('');
@@ -1018,7 +1043,7 @@ function App() {
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = Boolean(activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding'));
   const activeStreamCount = useMemo(() => chats.filter(c => c.state === 'thinking' || c.state === 'responding').length, [chats]);
-  const atConcurrencyLimit = activeStreamCount >= MAX_CONCURRENT_STREAMS;
+  const atConcurrencyLimit = activeStreamCount >= maxConcurrentStreams;
   const isSendInProgressForActive = sendingByChat.get(activeChatId) === true;
   const isGlobalSendDisabled = sendDisabledFlag;
   const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled || atConcurrencyLimit;
@@ -1230,7 +1255,7 @@ function App() {
 
   return (
     <div className={`app ${isCoderVisible ? 'coder-docked' : ''}`}>
-      <LeftSidebar 
+      <LeftSidebar
         chats={chats}
         activeChat={activeChatId}
         onChatSelect={handleChatSelect}
@@ -1244,6 +1269,8 @@ function App() {
         onChatReorder={handleChatReorder}
         onOpenModal={handleOpenModal}
         activeChatId={activeChatId}
+        activeStreamCount={activeStreamCount}
+        maxConcurrentStreams={maxConcurrentStreams}
       />
 
       {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
@@ -1298,6 +1325,7 @@ function App() {
                   isStopRequestInFlight={isStopRequestInFlight}
                   activeStreamCount={activeStreamCount}
                   atConcurrencyLimit={atConcurrencyLimit}
+                  maxConcurrentStreams={maxConcurrentStreams}
                   isProcessingSegment={isProcessingSegment}
                   isSendingVoiceMessage={isSendingVoiceMessage}
                   isAwaitingResponse={awaitingAIResponseRef.current}
@@ -1423,6 +1451,7 @@ function App() {
                     isStopRequestInFlight={isStopRequestInFlight}
                     activeStreamCount={activeStreamCount}
                     atConcurrencyLimit={atConcurrencyLimit}
+                    maxConcurrentStreams={maxConcurrentStreams}
                     isProcessingSegment={isProcessingSegment}
                     isSendingVoiceMessage={isSendingVoiceMessage}
                     isAwaitingResponse={awaitingAIResponseRef.current}

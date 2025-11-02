@@ -55,11 +55,17 @@ class Gemini:
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.status = "enabled" if self.api_key else "disabled"
         self.client = None
-        
+        self.async_client = None
+
         if self.api_key:
             try:
                 self.client = genai.Client(api_key=self.api_key)
                 logger.info("Gemini client initialized successfully")
+
+                # Conditionally initialize async client based on execution mode
+                # The async client is accessed via client.aio
+                if self.client:
+                    self._ensure_async_client()
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini client: {str(e)}")
                 self.status = "disabled"
@@ -74,6 +80,22 @@ class Gemini:
     def supports_reasoning(self, model: str) -> bool:
         """Check if specific model supports reasoning"""
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
+
+    def _ensure_async_client(self):
+        """Lazily initialize and cache the async Gemini client tied to the persistent event loop."""
+        if not self.is_available():
+            return None
+
+        if self.async_client is None:
+            try:
+                self.async_client = self.client.aio
+                logger.info("Gemini async client initialized successfully")
+            except Exception as exc:
+                logger.error(f"Failed to initialize Gemini async client: {exc}")
+                self.async_client = None
+                return None
+
+        return self.async_client
     
     @staticmethod
     def _usage_from_response(response: Any) -> Optional[int]:
@@ -687,4 +709,104 @@ class Gemini:
             return message
 
         return default
+
+    # ==================== ASYNC METHODS ====================
+
+    async def generate_text_stream_async(self, prompt: str, model: str = "",
+                                        include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
+                                        file_attachments: List[str] = None,
+                                        **config_params):
+        """Async generator version of generate_text_stream"""
+        if not self.is_available():
+            yield {"type": "error", "content": "Provider not available"}
+            return
+
+        async_client = self._ensure_async_client()
+        if async_client is None:
+            yield {"type": "error", "content": "Async client not available"}
+            return
+
+        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        config = types.GenerateContentConfig(**config_params)
+        if include_thoughts:
+            config.thinking_config = types.ThinkingConfig(include_thoughts=True)
+
+        contents = []
+        if chat_history:
+            formatted_history = self._format_chat_history(chat_history)
+            contents.extend(formatted_history)
+
+        user_parts = [{"text": prompt}]
+        user_parts = self._prepare_file_attachments(file_attachments, user_parts, is_streaming=True)
+
+        if contents and contents[-1].get("role") == "user":
+            contents.append({"role": "model", "parts": [{"text": " "}]})
+
+        contents.append({"role": "user", "parts": user_parts})
+
+        thoughts = ""
+        answer = ""
+
+        try:
+            stream = await async_client.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            error_message = self._extract_error_message(e)
+            logger.error(f"Failed to start Gemini async streaming request: {error_message}")
+            raise RuntimeError(error_message) from e
+
+        if not stream:
+            error_message = "Gemini did not return any streaming data. Please try again."
+            logger.error(error_message)
+            raise RuntimeError(error_message)
+
+        has_content = False
+        saw_invalid_chunk = False
+        last_chunk = None
+
+        try:
+            async for chunk in stream:
+                last_chunk = chunk
+                if (not chunk or not chunk.candidates or len(chunk.candidates) == 0
+                    or not chunk.candidates[0].content or not chunk.candidates[0].content.parts):
+                    saw_invalid_chunk = True
+                    logger.warning(f"Received empty or invalid chunk from Gemini async streaming API: {chunk}")
+                    continue
+
+                for part in chunk.candidates[0].content.parts:
+                    if not part.text:
+                        continue
+                    has_content = True
+                    if part.thought:
+                        if not thoughts:
+                            yield {"type": "thoughts_start"}
+                        yield {"type": "thoughts", "content": part.text}
+                        thoughts += part.text
+                    else:
+                        if not answer:
+                            yield {"type": "answer_start"}
+                        yield {"type": "answer", "content": part.text}
+                        answer += part.text
+        except Exception as e:
+            error_message = self._extract_error_message(e)
+            logger.error(f"Gemini async streaming request failed: {error_message}")
+            raise RuntimeError(error_message) from e
+
+        if last_chunk and hasattr(last_chunk, 'usage_metadata') and last_chunk.usage_metadata:
+            usage_metadata = {
+                'prompt_token_count': last_chunk.usage_metadata.prompt_token_count,
+                'candidates_token_count': last_chunk.usage_metadata.candidates_token_count,
+                'total_token_count': last_chunk.usage_metadata.total_token_count
+            }
+            yield {"type": "usage", "usage_metadata": usage_metadata}
+
+        if not has_content:
+            if saw_invalid_chunk:
+                logger.error("Gemini async streaming returned only empty or invalid chunks")
+            else:
+                logger.error("Gemini async streaming completed without delivering any content")
+            raise RuntimeError("Gemini returned an empty response. Please retry your request.")
 

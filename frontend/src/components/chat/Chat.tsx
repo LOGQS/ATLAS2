@@ -8,15 +8,12 @@ import RouterBox from './RouterBox';
 import DomainBox from '../agentic/DomainBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
-import PlanMessage from '../agentic/PlanMessage';
 import { liveStore } from '../../utils/chat/LiveStore';
-import { planStore } from '../../utils/agentic/PlanStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
 import { performanceTracker } from '../../utils/core/performanceTracker';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
-import { usePlanExecution } from '../../hooks/agentic/usePlanExecution';
 import { apiUrl } from '../../config/api';
 import { computeIsScrollable, MessageDuplicateChecker } from '../../utils/chat/chatHelpers';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -71,7 +68,6 @@ interface ChatLive {
     fastpathParams?: string | null;
   } | null;
   domainExecution: any | null;
-  planSummary: { planId: string; fingerprint: string; plan: any } | null;
   error: { message: string; receivedAt: number; messageId?: string | null } | null;
   version: number;
 }
@@ -100,19 +96,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     thoughtsBuf: '',
     routerDecision: null,
     domainExecution: null,
-    planSummary: null,
     error: null,
     version: 0
   });
   const [dismissedErrorAt, setDismissedErrorAt] = useState<number | null>(null);
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
   const [wasStreaming, setWasStreaming] = useState(false);
-
-  const planState = usePlanExecution(chatId);
-  const planSummary = planState?.summary ?? null;
-  const planTasks = useMemo(() => planState ? Array.from(planState.tasks.values()) : [], [planState]);
-  const planToolCalls = useMemo(() => planState?.toolCalls ?? [], [planState]);
-  const planCommits = useMemo(() => planState?.contextCommits ?? [], [planState]);
 
   const [needsBottomAnchor, setNeedsBottomAnchor] = useState(false);
   const [notLoadingSettled, setNotLoadingSettled] = useState(false);
@@ -406,7 +395,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         thoughtsBuf: snap.thoughtsBuf,
         routerDecision: snap.routerDecision,
         domainExecution: snap.domainExecution,
-        planSummary: snap.planSummary,
         error: snap.error ?? null,
         version: snap.version
       });
@@ -542,7 +530,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
             return [];
           });
         }
-        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
+        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
         setDismissedErrorAt(null);
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
@@ -1040,7 +1028,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
+    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
     setDismissedErrorAt(null);
     liveStore.reset(chatId);
 
@@ -1376,57 +1364,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
 
       renderedComponents.push(renderMessage(message, originalIndex));
-
-      if (message.planId && chatId) {
-        const messagePlanState = planStore.get(chatId);
-        if (messagePlanState && messagePlanState.summary?.planId === message.planId) {
-          renderedComponents.push(
-            <MessageWrapper
-              key={`plan-${message.planId}`}
-              messageId={`plan-${message.planId}`}
-              messageRole="assistant"
-              messageContent="Plan overview"
-              className="assistant-message agentic-plan-message-wrapper"
-              currentChatId={chatId}
-              isTTSSupported={false}
-            >
-              <PlanMessage
-                summary={messagePlanState.summary}
-                tasks={Array.from(messagePlanState.tasks.values())}
-                commits={messagePlanState.contextCommits}
-                toolCalls={messagePlanState.toolCalls}
-                chatId={chatId || ''}
-              />
-            </MessageWrapper>
-          );
-        }
-      }
     });
-
-    if (planSummary) {
-      const isAlreadyRendered = rendered.some(msg => msg.planId === planSummary.planId);
-      if (!isAlreadyRendered) {
-        renderedComponents.push(
-          <MessageWrapper
-            key={`plan-${planSummary.planId}`}
-            messageId={`plan-${planSummary.planId}`}
-            messageRole="assistant"
-            messageContent="Plan overview"
-            className="assistant-message agentic-plan-message-wrapper"
-            currentChatId={chatId}
-            isTTSSupported={false}
-          >
-            <PlanMessage
-              summary={planSummary}
-              tasks={planTasks}
-              commits={planCommits}
-              toolCalls={planToolCalls}
-              chatId={chatId || ''}
-            />
-          </MessageWrapper>
-        );
-      }
-    }
 
     if (showErrorNotice && activeError) {
       renderedComponents.push(
@@ -1451,7 +1389,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
     logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
     return renderedComponents;
-  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError, planSummary, planTasks, planCommits, planToolCalls]);
+  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
 
   return (
     <>

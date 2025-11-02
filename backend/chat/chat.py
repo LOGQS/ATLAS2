@@ -14,6 +14,12 @@ from utils.logger import get_logger
 from utils.cancellation_manager import cancellation_manager
 from utils.rate_limiter import get_rate_limiter
 from agents.context.context_manager import context_manager
+from chat.async_engine import (
+    start_async_chat_processing,
+    cancel_async_chat,
+    is_async_chat_processing,
+    cleanup_async_chat
+)
 
 logger = get_logger(__name__)
 
@@ -28,6 +34,16 @@ _chat_processes: Dict[str, multiprocessing.Process] = {}
 _chat_process_connections: Dict[str, Any] = {}
 _chat_process_status: Dict[str, str] = {}
 _chat_command_queues: Dict[str, Dict[str, Queue]] = {}
+
+def should_use_async_execution(provider: str) -> bool:
+    """
+    Determine if we should use async execution instead of multiprocessing.
+
+    Uses config-based execution mode and provider capabilities to decide.
+    Cloud providers with async support can use async execution when configured.
+    Local models and file operations use multiprocessing for process isolation.
+    """
+    return Config.should_use_async_execution(provider)
 
 
 def _register_command_queue(chat_id: str, command_id: str) -> Queue:
@@ -199,14 +215,19 @@ def broadcast_config_reload() -> Dict[str, Any]:
     }
 
 def is_chat_processing(chat_id: str) -> bool:
-    """Check if a chat is currently being processed in background"""
+    """Check if a chat is currently being processed in background (async or multiprocessing)"""
+    # Check async path first
+    if is_async_chat_processing(chat_id):
+        return True
+
+    # Check multiprocessing path
     with _chat_processes_lock:
         status = _chat_process_status.get(chat_id)
         if status in ['completed', 'cancelled']:
             return False
-            
-        return (chat_id in _chat_processes and 
-                _chat_processes[chat_id].is_alive() and 
+
+        return (chat_id in _chat_processes and
+                _chat_processes[chat_id].is_alive() and
                 status == 'running')
 
 def cleanup_completed_processes():
@@ -234,8 +255,17 @@ def cleanup_completed_processes():
         logger.info(f"Cleaned up completed process for chat {chat_id}")
 
 def cancel_chat_process(chat_id: str) -> bool:
-    """Cancel a running background process for a chat."""
+    """Cancel a running background process or async task for a chat."""
 
+    # First check if it's an async task
+    if is_async_chat_processing(chat_id):
+        logger.info(f"[CANCEL] Cancelling async chat {chat_id}")
+        success = cancel_async_chat(chat_id)
+        if success:
+            cancellation_manager.cancel_chat(chat_id)
+        return success
+
+    # Otherwise try multiprocessing path
     response, error, _ = _issue_worker_command(
         chat_id,
         {'command': 'cancel', 'chat_id': chat_id},
@@ -387,7 +417,13 @@ def is_chat_cancelled(chat_id: str) -> bool:
     return cancellation_manager.is_chat_cancelled(chat_id)
 
 def force_cleanup_chat_process(chat_id: str):
-    """Force cleanup of a specific chat's process status"""
+    """Force cleanup of a specific chat's process status or async task"""
+    # Clean up async task if it exists
+    if is_async_chat_processing(chat_id):
+        cancel_async_chat(chat_id)
+        cleanup_async_chat(chat_id)
+
+    # Clean up multiprocessing resources
     with _chat_processes_lock:
         if chat_id in _chat_processes:
             process = _chat_processes[chat_id]
@@ -404,7 +440,7 @@ def force_cleanup_chat_process(chat_id: str):
         _chat_process_status.pop(chat_id, None)
         cancellation_manager.cleanup_chat(chat_id)
     _fail_pending_command_queues(chat_id, "Chat worker force cleaned")
-    logger.info(f"Force cleaned up process for chat {chat_id}")
+    logger.info(f"Force cleaned up process/async task for chat {chat_id}")
 
 def _prepare_background_process(chat_id: str) -> bool:
     """Check if background process can be started for chat"""
@@ -1186,9 +1222,25 @@ class Chat:
         else:
             user_message_id = db.save_message(self.chat_id, "user", message, attached_file_ids=attached_file_ids)
             logger.info(f"[DUPLICATE_FIX] Normal flow - created new user message {user_message_id}")
-        
-        return _start_background_processing(
-            self.chat_id, message, provider, model, include_reasoning,
-            attached_file_ids, user_message_id, config_params.get('is_retry', False),
-            router_result_to_pass
-        )
+
+        # Route to async or multiprocessing based on provider capability
+        if should_use_async_execution(provider):
+            logger.info(f"[ROUTING] Using async execution for {provider}")
+            return start_async_chat_processing(
+                chat_id=self.chat_id,
+                message=message,
+                provider=provider,
+                model=model,
+                include_reasoning=include_reasoning,
+                attached_file_ids=attached_file_ids,
+                user_message_id=user_message_id,
+                is_retry=config_params.get('is_retry', False),
+                router_result=router_result_to_pass
+            )
+        else:
+            logger.info(f"[ROUTING] Using multiprocessing execution for {provider}")
+            return _start_background_processing(
+                self.chat_id, message, provider, model, include_reasoning,
+                attached_file_ids, user_message_id, config_params.get('is_retry', False),
+                router_result_to_pass
+            )

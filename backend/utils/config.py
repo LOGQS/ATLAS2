@@ -214,6 +214,20 @@ class Config:
     STT_PROVIDER = "groq"
     STT_MODEL = "whisper-large-v3-turbo"
 
+    # Chat execution mode: "async", "multiprocessing", or "auto"
+    # - "async": Use async execution only (no worker pool), requires providers with async support
+    # - "multiprocessing": Use multiprocessing only (no async clients), compatible with all providers
+    # - "auto": Initialize both systems (default, backwards compatible)
+    CHAT_EXECUTION_MODE = "async"
+
+    # Providers that support async execution (used for validation and routing)
+    ASYNC_CAPABLE_PROVIDERS = {"cerebras", "groq", "gemini", "openrouter"}
+
+    # Maximum concurrent chats when using async execution
+    # Async is much lighter than multiprocessing (10MB vs 250MB per chat)
+    # For good consumer specs (16GB RAM, 6-8 core CPU), 20 concurrent chats is safe
+    MAX_ASYNC_CONCURRENT_CHATS = 20
+
     WORKER_POOL_SIZE = 4
     WORKER_MAX_PARALLEL_SPAWN = 5
     WORKER_INIT_TIMEOUT = 40.0
@@ -711,6 +725,34 @@ class Config:
         return cls.WORKER_POOL_SIZE
 
     @classmethod
+    def get_max_async_concurrent_chats(cls) -> int:
+        """Get maximum concurrent chats for async execution."""
+        return cls.MAX_ASYNC_CONCURRENT_CHATS
+
+    @classmethod
+    def get_max_concurrent_chats(cls) -> int:
+        """
+        Get maximum concurrent chats based on current execution mode.
+        - async mode: Returns MAX_ASYNC_CONCURRENT_CHATS (20)
+        - multiprocessing mode: Returns WORKER_POOL_SIZE - 1 (3)
+          Worker pool has 1 extra worker as buffer, so concurrent limit is pool_size - 1
+        - auto mode: Returns the larger of the two (async limit)
+
+        This is used by the frontend to determine UI limits.
+        """
+        mode = cls.get_chat_execution_mode()
+        if mode == "async":
+            return cls.MAX_ASYNC_CONCURRENT_CHATS
+        elif mode == "multiprocessing":
+            # Worker pool has 1 extra worker for replacement/buffer
+            # Actual concurrent chat limit is pool_size - 1
+            return max(1, cls.WORKER_POOL_SIZE - 1)
+        else:  # auto mode
+            # In auto mode, async-capable providers use async (20 limit)
+            # but we return the async limit as the frontend maximum
+            return cls.MAX_ASYNC_CONCURRENT_CHATS
+
+    @classmethod
     def get_worker_max_parallel_spawn(cls) -> int:
         """Get max parallel worker spawn count."""
         return cls.WORKER_MAX_PARALLEL_SPAWN
@@ -763,3 +805,72 @@ class Config:
         """Get the provider used for router model."""
         router_model = cls.get_router_model()
         return infer_provider_from_model(router_model)
+
+    @classmethod
+    def get_chat_execution_mode(cls) -> str:
+        """
+        Get the chat execution mode.
+        Returns: 'async', 'multiprocessing', or 'auto'
+        """
+        mode = os.getenv("CHAT_EXECUTION_MODE", cls.CHAT_EXECUTION_MODE).lower()
+        if mode not in {"async", "multiprocessing", "auto"}:
+            logger.warning(f"Invalid CHAT_EXECUTION_MODE '{mode}', defaulting to 'auto'")
+            return "auto"
+        return mode
+
+    @classmethod
+    def should_init_async_clients(cls) -> bool:
+        """
+        Check if async clients should be initialized.
+        Returns True for 'async' or 'auto' modes.
+        """
+        mode = cls.get_chat_execution_mode()
+        return mode in {"async", "auto"}
+
+    @classmethod
+    def should_init_worker_pool(cls) -> bool:
+        """
+        Check if worker pool should be initialized.
+        Returns True for 'multiprocessing' or 'auto' modes.
+        """
+        mode = cls.get_chat_execution_mode()
+        return mode in {"multiprocessing", "auto"}
+
+    @classmethod
+    def is_provider_async_capable(cls, provider: str) -> bool:
+        """
+        Check if a provider supports async execution.
+
+        Args:
+            provider: Provider name (e.g., "gemini", "groq")
+
+        Returns:
+            True if provider supports async execution
+        """
+        return provider.lower() in cls.ASYNC_CAPABLE_PROVIDERS
+
+    @classmethod
+    def should_use_async_execution(cls, provider: str) -> bool:
+        """
+        Determine if async execution should be used for a given provider.
+
+        Args:
+            provider: Provider name
+
+        Returns:
+            True if async execution should be used, False for multiprocessing
+        """
+        mode = cls.get_chat_execution_mode()
+
+        if mode == "async":
+            # Async mode: use async if provider supports it, error if not
+            if not cls.is_provider_async_capable(provider):
+                logger.error(f"Provider '{provider}' does not support async execution in async-only mode")
+                return False
+            return True
+        elif mode == "multiprocessing":
+            # Multiprocessing mode: always use multiprocessing
+            return False
+        else:  # mode == "auto"
+            # Auto mode: use async if provider supports it, otherwise multiprocessing
+            return cls.is_provider_async_capable(provider)

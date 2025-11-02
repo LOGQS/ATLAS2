@@ -38,6 +38,9 @@ from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 from utils.rate_limit_store import load_rate_limit_overrides
 
+# Ensure built-in tools are registered during startup rather than first request
+from agents.tools import tool_registry as _tool_registry  # noqa: F401
+
 logger = get_logger(__name__)
 
 _DEBUG_TRUE_VALUES = {"1", "true", "t", "yes", "on"}
@@ -228,7 +231,17 @@ def create_app():
             'default_model': Config.get_default_model(),
             'default_streaming': Config.get_default_streaming()
         })
-    
+
+    @app.route('/api/config')
+    def api_config():
+        """Get client-side configuration values"""
+        return jsonify({
+            'maxConcurrentChats': Config.get_max_concurrent_chats(),
+            'executionMode': Config.get_chat_execution_mode(),
+            'defaultModel': Config.get_default_model(),
+            'defaultStreaming': Config.get_default_streaming()
+        })
+
     @app.route('/api')
     def api_info():
         return jsonify({
@@ -286,40 +299,44 @@ if __name__ == '__main__':
     is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
     is_production = not DEBUG_ENABLED
 
-    if is_reloader_child or is_production:
-        logger.info("[POOL-INIT] Starting worker pool initialization in background...")
-        logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
+    # Check if worker pool should be initialized based on execution mode
+    if Config.should_init_worker_pool():
+        if is_reloader_child or is_production:
+            logger.info("[POOL-INIT] Starting worker pool initialization in background...")
+            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
 
-        def init_pool_background():
-            try:
-                from utils.config import Config
-                pool_size = Config.get_worker_pool_size()
-                logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
-                pool = initialize_pool(pool_size=pool_size)
+            def init_pool_background():
+                try:
+                    from utils.config import Config
+                    pool_size = Config.get_worker_pool_size()
+                    logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
+                    pool = initialize_pool(pool_size=pool_size)
 
-                if pool is None:
-                    logger.warning("[POOL-INIT] Pool initialization returned None - likely blocked in reloader parent")
-                    return
+                    if pool is None:
+                        logger.warning("[POOL-INIT] Pool initialization returned None - likely blocked in reloader parent")
+                        return
 
-                stats = pool.get_stats()
-                logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
-
-                for i in range(6):
-                    time.sleep(5)
                     stats = pool.get_stats()
-                    logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
-                    if stats['ready_workers'] >= stats['target_size']:
-                        logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
-                        break
-            except Exception as e:
-                logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
-                logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
+                    logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
 
-        pool_thread = threading.Thread(target=init_pool_background, daemon=True)
-        pool_thread.start()
+                    for i in range(6):
+                        time.sleep(5)
+                        stats = pool.get_stats()
+                        logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
+                        if stats['ready_workers'] >= stats['target_size']:
+                            logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
+                            break
+                except Exception as e:
+                    logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
+                    logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
+
+            pool_thread = threading.Thread(target=init_pool_background, daemon=True)
+            pool_thread.start()
+        else:
+            logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
+            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
     else:
-        logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
-        logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
+        logger.info("[POOL-INIT] Worker pool initialization skipped (execution mode: %s)", Config.get_chat_execution_mode())
 
     logger.info("Registering shutdown handlers...")
 

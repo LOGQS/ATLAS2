@@ -1,5 +1,4 @@
 import React from 'react';
-import { MAX_CONCURRENT_STREAMS } from '../../config/chat';
 
 interface SendButtonProps {
   onClick: () => void;
@@ -17,6 +16,7 @@ interface SendButtonProps {
   isStopRequestInFlight: boolean;
   activeStreamCount: number;
   atConcurrencyLimit: boolean;
+  maxConcurrentStreams: number;
   isProcessingSegment?: boolean;
   isSendingVoiceMessage?: boolean;
   isAwaitingResponse?: boolean;
@@ -38,6 +38,7 @@ const SendButton: React.FC<SendButtonProps> = ({
   isStopRequestInFlight,
   activeStreamCount,
   atConcurrencyLimit,
+  maxConcurrentStreams,
   isProcessingSegment = false,
   isSendingVoiceMessage = false,
   isAwaitingResponse = false
@@ -79,7 +80,7 @@ const SendButton: React.FC<SendButtonProps> = ({
   } else if (hasUnreadyFiles) {
     buttonTitle = 'Waiting for files to finish processing...';
   } else if (atConcurrencyLimit) {
-    buttonTitle = `Concurrent limit reached (${activeStreamCount}/${MAX_CONCURRENT_STREAMS})`;
+    buttonTitle = `Concurrent limit reached (${activeStreamCount}/${maxConcurrentStreams})`;
   } else if (hasMessage) {
     buttonTitle = 'Send message';
   } else {

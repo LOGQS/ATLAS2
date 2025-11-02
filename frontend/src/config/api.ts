@@ -26,3 +26,30 @@ export const terminalWsUrl = (path: string): string => {
   }
   return httpUrl;
 };
+
+export interface BackendConfig {
+  maxConcurrentChats: number;
+  executionMode: 'async' | 'multiprocessing' | 'auto';
+  defaultModel: string;
+  defaultStreaming: boolean;
+}
+
+export const fetchBackendConfig = async (): Promise<BackendConfig> => {
+  try {
+    const response = await fetch(apiUrl('/api/config'));
+    if (!response.ok) {
+      throw new Error(`Failed to fetch backend config: ${response.statusText}`);
+    }
+    const config = await response.json();
+    return config;
+  } catch (error) {
+    console.error('[API] Failed to fetch backend config, using defaults:', error);
+    // Return safe defaults if fetch fails
+    return {
+      maxConcurrentChats: 3,
+      executionMode: 'async',
+      defaultModel: 'gemini-2.5-flash-preview-09-2025',
+      defaultStreaming: true
+    };
+  }
+};

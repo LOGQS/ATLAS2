@@ -3,7 +3,6 @@ import { apiUrl } from '../../config/api';
 import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
-import { planStore, PlanSummary } from '../agentic/PlanStore';
 import type { RouterDecision, DomainExecution } from '../../types/messages';
 
 type ChatLive = {
@@ -13,7 +12,6 @@ type ChatLive = {
   thoughtsBuf: string;
   routerDecision: RouterDecision | null;
   domainExecution: DomainExecution | null;
-  planSummary: PlanSummary | null;
   error: {
     message: string;
     receivedAt: number;
@@ -78,20 +76,6 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   error?: string | null;
 }
 
-interface TaskflowPlanEvent extends BaseSSEEvent {
-  type: 'taskflow_plan';
-  plan_id: string;
-  fingerprint?: string;
-  plan: any;
-  status?: string;
-}
-
-interface PlanPendingApprovalEvent extends BaseSSEEvent {
-  type: 'plan_pending_approval';
-  plan_id: string;
-  message?: string;
-}
-
 interface ErrorEvent extends BaseSSEEvent {
   type: 'error';
   content?: string;
@@ -142,8 +126,6 @@ type SSEEvent =
   | FileStateEvent
   | FileSystemEvent
   | RouterDecisionEvent
-  | TaskflowPlanEvent
-  | PlanPendingApprovalEvent
   | ErrorEvent
   | DomainExecutionEvent
   | DomainExecutionUpdateEvent
@@ -256,30 +238,6 @@ class LiveStore {
     return next;
   }
 
-  private handleTaskflowPlanEvent(chatId: string, ev: any, cur: ChatLive): ChatLive {
-    if (ev.plan_id && ev.plan) {
-      const planData = { ...ev.plan };
-      if (ev.status) {
-        planData.status = ev.status;
-      }
-      planStore.registerPlan(chatId, { plan_id: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData });
-    }
-    const next = { ...cur };
-    const planData = ev.plan ? { ...ev.plan } : null;
-    if (planData && ev.status) {
-      planData.status = ev.status;
-    }
-    next.planSummary = ev.plan_id ? { planId: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData } : null;
-    next.version++;
-    // For pending approval, keep chat in static state
-    if (ev.status === 'PENDING_APPROVAL') {
-      next.state = 'static';
-    } else if (next.state === 'static') {
-      next.state = 'thinking';
-    }
-    return next;
-  }
-
   private handleChatStateEvent(chatId: string, ev: ChatStateEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     const oldState = next.state;
@@ -287,6 +245,11 @@ class LiveStore {
     next.state = requestedState;
     if (next.state !== 'static') {
       next.error = null;
+    }
+
+    if (oldState !== requestedState) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] state_transition chat=${chatId} from=${oldState} to=${requestedState} ts=${ts}`);
     }
 
     if (oldState === 'static' && (requestedState === 'thinking' || requestedState === 'responding')) {
@@ -318,6 +281,10 @@ class LiveStore {
     next.thoughtsBuf = cur.thoughtsBuf + addedContent;
     next.error = null;
     next.version++;
+    if (cur.thoughtsBuf.length === 0 && addedContent.length > 0) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] first_thoughts_chunk chat=${chatId} size=${addedContent.length} ts=${ts}`);
+    }
     logger.debug(`[LIVESTORE_SSE] Thoughts chunk for ${chatId}: +${addedContent.length} chars (total: ${next.thoughtsBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Thoughts content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First thoughts content');
@@ -330,6 +297,10 @@ class LiveStore {
     next.contentBuf = cur.contentBuf + addedContent;
     next.error = null;
     next.version++;
+    if (cur.contentBuf.length === 0 && addedContent.length > 0) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] first_answer_chunk chat=${chatId} size=${addedContent.length} ts=${ts}`);
+    }
     logger.debug(`[LIVESTORE_SSE] Content chunk for ${chatId}: +${addedContent.length} chars (total: ${next.contentBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First answer content');
@@ -341,11 +312,6 @@ class LiveStore {
     const oldState = next.state;
     next.state = 'static';
     next.error = null;
-
-    if (next.planSummary) {
-      logger.info(`[LIVESTORE_SSE] Clearing planSummary for ${chatId} after stream completion`);
-      next.planSummary = null;
-    }
 
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
@@ -370,7 +336,6 @@ class LiveStore {
     next.state = 'static';
     next.contentBuf = '';
     next.thoughtsBuf = '';
-    next.planSummary = null;
     next.routerDecision = null;
     next.error = {
       message,
@@ -537,7 +502,6 @@ class LiveStore {
           thoughtsBuf: '',
           routerDecision: null,
           domainExecution: null,
-          planSummary: null,
           error: null,
           version: 0
         };
@@ -548,22 +512,6 @@ class LiveStore {
           logger.info(`[LIVESTORE_SSE] - Selected route: ${next.routerDecision?.selectedRoute}`);
           logger.info(`[LIVESTORE_SSE] - Available routes: ${next.routerDecision?.availableRoutes.length}`);
 
-          this.byChat.set(chatId, next);
-          this.emit(chatId, next, { eventType: ev.type });
-          return;
-        }
-
-        if (ev.type === 'taskflow_plan') {
-          const next = this.handleTaskflowPlanEvent(chatId, ev as any, cur);
-          this.byChat.set(chatId, next);
-          this.emit(chatId, next, { eventType: ev.type });
-          return;
-        }
-
-        if (ev.type === 'plan_pending_approval') {
-          const next = { ...cur };
-          next.state = 'static';
-          next.version++;
           this.byChat.set(chatId, next);
           this.emit(chatId, next, { eventType: ev.type });
           return;
@@ -633,6 +581,8 @@ class LiveStore {
     
     this.es.onopen = () => {
       logger.info('[LiveStore] SSE connection established');
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] sse_opened ts=${ts}`);
     };
   }
 
@@ -644,7 +594,6 @@ class LiveStore {
       thoughtsBuf: '',
       routerDecision: null,
       domainExecution: null,
-      planSummary: null,
       error: null,
       version: 0
     };
