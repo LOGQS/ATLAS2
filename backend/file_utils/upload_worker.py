@@ -58,10 +58,8 @@ def upload_worker(file_path: str, display_name: Optional[str], provider_config: 
                 'file_id': file_id
             }
             
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
+        limiter = get_rate_limiter()
+        rate_config = Config.get_rate_limit_config(provider=default_provider)
         
         upload_kwargs = {"file": str(file_path)}
         if file_path_obj.suffix.lower() == '.md':
@@ -71,8 +69,9 @@ def upload_worker(file_path: str, display_name: Optional[str], provider_config: 
         
         uploaded_file = limiter.execute(
             provider.client.files.upload,
-            "gemini:upload", 
-            **upload_kwargs
+            f"{default_provider}:upload",
+            limit_config=rate_config,
+            **upload_kwargs,
         )
         
         logger.info(f"[WORKER] Upload completed for file {file_id}: {uploaded_file.name}")

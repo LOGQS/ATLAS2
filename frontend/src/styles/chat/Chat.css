@@ -292,6 +292,12 @@
   transform: translateY(2px);
 }
 
+/* Reposition scroll button when coder is docked */
+.coder-docked .scroll-to-bottom-button {
+  right: auto;
+  left: calc(min(38vw, 520px) - 68px);
+}
+
 @keyframes fadeInScale {
   from {
     opacity: 0;

@@ -30,6 +30,47 @@ TEXTUAL_EXTENSIONS = {
 }
 
 
+def _resolve_with_workspace(path: Path, workspace_root: Optional[str]) -> Path:
+    """
+    Resolve a path, optionally relative to an active workspace root.
+
+    Raises ValueError if the resolved path escapes the workspace boundary.
+    """
+    if workspace_root:
+        workspace_root_path = Path(workspace_root).resolve()
+        candidate = path if path.is_absolute() else workspace_root_path / path
+    else:
+        workspace_root_path = None
+        candidate = path
+
+    resolved = candidate.resolve()
+
+    if workspace_root_path:
+        try:
+            resolved.relative_to(workspace_root_path)
+        except ValueError:
+            raise ValueError(
+                f"path '{path}' resolves outside the active coder workspace '{workspace_root_path}'"
+            )
+
+    return resolved
+
+
+def workspace_relative_path(path: Path, workspace_root: Optional[str]) -> str:
+    """
+    Return a path relative to the workspace root, falling back to absolute.
+    """
+    if workspace_root:
+        workspace_root_path = Path(workspace_root).resolve()
+        try:
+            relative = path.relative_to(workspace_root_path)
+            relative_str = relative.as_posix()
+            return relative_str if relative_str else "."
+        except ValueError:
+            pass
+    return path.as_posix()
+
+
 def get_data_dir() -> Path:
     """Get the file_ops data directory."""
     data_dir = Path(__file__).resolve().parent.parent.parent.parent.parent / "data" / "file_ops_data"
@@ -66,7 +107,13 @@ def is_likely_binary(file_path: Path) -> tuple[bool, str]:
         return True, f"unable to read file for type detection: {str(e)}"
 
 
-def validate_file_path(file_path: str, must_exist: bool = True, must_be_file: bool = True, allow_symlinks: bool = True) -> tuple[bool, str, Optional[Path]]:
+def validate_file_path(
+    file_path: str,
+    must_exist: bool = True,
+    must_be_file: bool = True,
+    allow_symlinks: bool = True,
+    workspace_root: Optional[str] = None,
+) -> tuple[bool, str, Optional[Path]]:
     """
     Validate a file path.
     Returns (is_valid, error_message, resolved_path).
@@ -74,16 +121,18 @@ def validate_file_path(file_path: str, must_exist: bool = True, must_be_file: bo
     """
     try:
         path = Path(file_path)
+        resolved_path = _resolve_with_workspace(path, workspace_root)
 
         if not allow_symlinks and path.is_symlink():
             return False, f"path '{file_path}' is a symbolic link. This tool does not follow symlinks for safety.", None
-
-        resolved_path = path.resolve()
 
         if must_exist and not resolved_path.exists():
             if path.is_symlink():
                 return False, f"path '{file_path}' is a broken symbolic link (target does not exist)", None
             return False, f"path '{file_path}' does not exist", None
+
+        if not allow_symlinks and resolved_path.exists() and resolved_path.is_symlink():
+            return False, f"path '{file_path}' is a symbolic link. This tool does not follow symlinks for safety.", None
 
         if must_exist and must_be_file and not resolved_path.is_file():
             if resolved_path.is_dir():
@@ -92,17 +141,23 @@ def validate_file_path(file_path: str, must_exist: bool = True, must_be_file: bo
                 return False, f"path '{file_path}' is not a regular file", None
 
         return True, "", resolved_path
+    except ValueError as e:
+        return False, str(e), None
     except Exception as e:
         return False, f"invalid file path '{file_path}': {str(e)}", None
 
 
-def validate_directory_path(dir_path: str, must_exist: bool = True) -> tuple[bool, str, Optional[Path]]:
+def validate_directory_path(
+    dir_path: str,
+    must_exist: bool = True,
+    workspace_root: Optional[str] = None,
+) -> tuple[bool, str, Optional[Path]]:
     """
     Validate a directory path.
     Returns (is_valid, error_message, resolved_path).
     """
     try:
-        path = Path(dir_path).resolve()
+        path = _resolve_with_workspace(Path(dir_path), workspace_root)
 
         if must_exist and not path.exists():
             return False, f"directory '{dir_path}' does not exist", None
@@ -114,6 +169,8 @@ def validate_directory_path(dir_path: str, must_exist: bool = True) -> tuple[boo
                 return False, f"path '{dir_path}' is not a directory", None
 
         return True, "", path
+    except ValueError as e:
+        return False, str(e), None
     except Exception as e:
         return False, f"invalid directory path '{dir_path}': {str(e)}", None
 

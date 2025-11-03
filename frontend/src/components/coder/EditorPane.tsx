@@ -1,9 +1,12 @@
-import React, { useCallback, memo } from 'react';
+import React, { useCallback, memo, useEffect, useRef } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import { FileBreadcrumb } from './FileBreadcrumb';
 import { PanelHeader } from '../ui/PanelHeader';
 import { PanelHeaderButton } from '../ui/PanelHeaderButton';
 import { Icons } from '../ui/Icons';
+import type * as Monaco from 'monaco-editor';
+
+type EditorOnMount = NonNullable<React.ComponentProps<typeof Editor>['onMount']>;
 
 interface EditorPaneProps {
   document: {
@@ -22,6 +25,7 @@ interface EditorPaneProps {
   onHistoryClick: () => void;
   onEditorWillMount: BeforeMount;
   onPaneClick: () => void;
+  chatId?: string;
 }
 
 export const EditorPane = memo<EditorPaneProps>(({
@@ -35,12 +39,88 @@ export const EditorPane = memo<EditorPaneProps>(({
   onHistoryClick,
   onEditorWillMount,
   onPaneClick,
+  chatId,
 }) => {
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (value !== undefined) {
       onContentChange(value);
     }
   }, [onContentChange]);
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const layoutFrameRef = useRef<number | null>(null);
+
+  const scheduleEditorLayout = useCallback(() => {
+    if (!editorRef.current) {
+      return;
+    }
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (layoutFrameRef.current !== null) {
+      window.cancelAnimationFrame(layoutFrameRef.current);
+    }
+    layoutFrameRef.current = window.requestAnimationFrame(() => {
+      layoutFrameRef.current = null;
+      // Guard against editors that might have been disposed during the frame
+      editorRef.current?.layout();
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (layoutFrameRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(layoutFrameRef.current);
+      }
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      editorRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    scheduleEditorLayout();
+  }, [scheduleEditorLayout, document?.filePath]);
+
+  const handleEditorMount = useCallback<EditorOnMount>((editorInstance, _monaco) => {
+    editorRef.current = editorInstance;
+    scheduleEditorLayout();
+
+    editorInstance.onKeyDown((e) => {
+      const key = e.browserEvent.key;
+
+      if ((e.browserEvent.ctrlKey || e.browserEvent.metaKey) && key === 's') {
+        e.preventDefault();
+        e.stopPropagation();
+        onSave();
+        return;
+      }
+
+      if ((key === 'a' || key === 's' || key === 'd') &&
+          !e.browserEvent.ctrlKey && !e.browserEvent.metaKey &&
+          !e.browserEvent.shiftKey && !e.browserEvent.altKey) {
+        editorInstance.trigger('keyboard', 'type', { text: key });
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    });
+
+    if (!containerRef.current || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    resizeObserverRef.current?.disconnect();
+
+    const observer = new ResizeObserver(() => {
+      scheduleEditorLayout();
+    });
+
+    observer.observe(containerRef.current);
+    resizeObserverRef.current = observer;
+  }, [onSave, scheduleEditorLayout]);
 
   if (!document) {
     return (
@@ -90,7 +170,7 @@ export const EditorPane = memo<EditorPaneProps>(({
         </div>
       </PanelHeader>
 
-      <div className="flex-1 relative overflow-hidden modern-scrollbar">
+      <div className="flex-1 relative overflow-hidden modern-scrollbar" ref={containerRef}>
         {isLoading && (
           <div className="loading-overlay">
             <div className="spinner"></div>
@@ -102,33 +182,14 @@ export const EditorPane = memo<EditorPaneProps>(({
           value={document.content}
           onChange={handleEditorChange}
           beforeMount={onEditorWillMount}
-          onMount={(editor, monaco) => {
-            editor.onKeyDown((e) => {
-              const key = e.browserEvent.key;
-
-              if ((e.browserEvent.ctrlKey || e.browserEvent.metaKey) && key === 's') {
-                e.preventDefault();
-                e.stopPropagation();
-                onSave();
-                return;
-              }
-
-              if ((key === 'a' || key === 's' || key === 'd') &&
-                  !e.browserEvent.ctrlKey && !e.browserEvent.metaKey &&
-                  !e.browserEvent.shiftKey && !e.browserEvent.altKey) {
-                editor.trigger('keyboard', 'type', { text: key });
-                e.preventDefault();
-                e.stopPropagation();
-              }
-            });
-          }}
+          onMount={handleEditorMount}
           theme="vs-dark"
           options={{
             fontSize: 14,
             fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace",
             minimap: { enabled: true },
             scrollBeyondLastLine: false,
-            automaticLayout: true,
+            automaticLayout: false,
             tabSize: 2,
             wordWrap: 'on',
             smoothScrolling: true,

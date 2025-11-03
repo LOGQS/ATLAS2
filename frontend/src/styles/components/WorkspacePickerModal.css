@@ -20,9 +20,10 @@
   background: var(--bolt-elements-background-depth-2);
   border: 1px solid var(--bolt-elements-borderColor);
   border-radius: 16px;
-  width: 700px;
+  width: 1200px;
   max-width: 90vw;
-  max-height: 85vh;
+  height: 750px;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -59,6 +60,13 @@
   font-weight: 600;
   color: var(--bolt-elements-textPrimary);
   margin: 0;
+}
+
+.workspace-modal-subtitle {
+  font-size: 13px;
+  color: var(--bolt-elements-textSecondary);
+  margin: 4px 0 0 0;
+  opacity: 0.8;
 }
 
 .workspace-modal-close {

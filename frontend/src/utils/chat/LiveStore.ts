@@ -3,7 +3,6 @@ import { apiUrl } from '../../config/api';
 import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
-import { planStore, PlanSummary } from '../agentic/PlanStore';
 import type { RouterDecision, DomainExecution } from '../../types/messages';
 
 type ChatLive = {
@@ -13,7 +12,6 @@ type ChatLive = {
   thoughtsBuf: string;
   routerDecision: RouterDecision | null;
   domainExecution: DomainExecution | null;
-  planSummary: PlanSummary | null;
   error: {
     message: string;
     receivedAt: number;
@@ -75,20 +73,7 @@ interface RouterDecisionEvent extends BaseSSEEvent {
   tools_needed?: boolean | null;
   execution_type?: string | null;
   fastpath_params?: string | null;
-}
-
-interface TaskflowPlanEvent extends BaseSSEEvent {
-  type: 'taskflow_plan';
-  plan_id: string;
-  fingerprint?: string;
-  plan: any;
-  status?: string;
-}
-
-interface PlanPendingApprovalEvent extends BaseSSEEvent {
-  type: 'plan_pending_approval';
-  plan_id: string;
-  message?: string;
+  error?: string | null;
 }
 
 interface ErrorEvent extends BaseSSEEvent {
@@ -102,7 +87,52 @@ interface DomainExecutionEvent extends BaseSSEEvent {
   content?: string;
 }
 
-type SSEEvent = ChatStateEvent | ContentEvent | CompleteEvent | MessageIdsEvent | FileStateEvent | FileSystemEvent | RouterDecisionEvent | TaskflowPlanEvent | PlanPendingApprovalEvent | ErrorEvent | DomainExecutionEvent;
+interface DomainExecutionUpdateEvent extends BaseSSEEvent {
+  type: 'domain_execution_update';
+  content?: string;
+  task_id?: string;
+}
+
+interface ModelRetryEvent extends BaseSSEEvent {
+  type: 'model_retry';
+  content?: string;
+  task_id?: string;
+}
+
+interface CoderOperationEvent extends BaseSSEEvent {
+  type: 'coder_operation';
+  content?: string;
+}
+
+interface CoderWorkspacePromptEvent extends BaseSSEEvent {
+  type: 'coder_workspace_prompt';
+  content?: string;
+}
+
+interface CoderFileChangeEvent extends BaseSSEEvent {
+  type: 'coder_file_change';
+  workspace_path?: string;
+  file_path?: string;
+  operation?: 'write' | 'edit' | 'move';
+  content?: string;
+  previous_path?: string;
+}
+
+type SSEEvent =
+  | ChatStateEvent
+  | ContentEvent
+  | CompleteEvent
+  | MessageIdsEvent
+  | FileStateEvent
+  | FileSystemEvent
+  | RouterDecisionEvent
+  | ErrorEvent
+  | DomainExecutionEvent
+  | DomainExecutionUpdateEvent
+  | ModelRetryEvent
+  | CoderOperationEvent
+  | CoderWorkspacePromptEvent
+  | CoderFileChangeEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -171,6 +201,21 @@ class LiveStore {
     }));
   }
 
+  private handleCoderFileChangeEvent(ev: CoderFileChangeEvent): void {
+    const operation = ev.operation || 'edit';
+    logger.info(`[LiveStore] Coder file change: ${operation} -> ${ev.file_path} (chat: ${ev.chat_id})`);
+    window.dispatchEvent(new CustomEvent('coderFileChange', {
+      detail: {
+        chatId: ev.chat_id || null,
+        workspacePath: ev.workspace_path || null,
+        filePath: ev.file_path || '',
+        operation,
+        content: ev.content || null,
+        previousPath: ev.previous_path || null,
+      }
+    }));
+  }
+
   private handleRouterDecisionEvent(chatId: string, ev: RouterDecisionEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     next.routerDecision = {
@@ -179,36 +224,17 @@ class LiveStore {
       selectedModel: ev.selected_model || null,
       toolsNeeded: ev.tools_needed ?? null,
       executionType: ev.execution_type || null,
-      fastpathParams: ev.fastpath_params || null
+      fastpathParams: ev.fastpath_params || null,
+      error: ev.error || null
     };
     next.error = null;
     next.version++;
-    logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, tools_needed=${ev.tools_needed} (type: ${typeof ev.tools_needed}), available=${ev.available_routes?.length || 0}`);
+    if (ev.error) {
+      logger.warn(`[ROUTER_LIVESTORE] Router decision with error for ${chatId}: ${ev.error}, falling back to model=${ev.selected_model}`);
+    } else {
+      logger.info(`[ROUTER_LIVESTORE] Router decision stored for ${chatId}: route=${ev.selected_route}, model=${ev.selected_model}, tools_needed=${ev.tools_needed} (type: ${typeof ev.tools_needed}), available=${ev.available_routes?.length || 0}`);
+    }
     this.enableParentFromBridge(chatId, 'Router decision');
-    return next;
-  }
-
-  private handleTaskflowPlanEvent(chatId: string, ev: any, cur: ChatLive): ChatLive {
-    if (ev.plan_id && ev.plan) {
-      const planData = { ...ev.plan };
-      if (ev.status) {
-        planData.status = ev.status;
-      }
-      planStore.registerPlan(chatId, { plan_id: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData });
-    }
-    const next = { ...cur };
-    const planData = ev.plan ? { ...ev.plan } : null;
-    if (planData && ev.status) {
-      planData.status = ev.status;
-    }
-    next.planSummary = ev.plan_id ? { planId: ev.plan_id, fingerprint: ev.fingerprint || '', plan: planData } : null;
-    next.version++;
-    // For pending approval, keep chat in static state
-    if (ev.status === 'PENDING_APPROVAL') {
-      next.state = 'static';
-    } else if (next.state === 'static') {
-      next.state = 'thinking';
-    }
     return next;
   }
 
@@ -219,6 +245,11 @@ class LiveStore {
     next.state = requestedState;
     if (next.state !== 'static') {
       next.error = null;
+    }
+
+    if (oldState !== requestedState) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] state_transition chat=${chatId} from=${oldState} to=${requestedState} ts=${ts}`);
     }
 
     if (oldState === 'static' && (requestedState === 'thinking' || requestedState === 'responding')) {
@@ -250,6 +281,10 @@ class LiveStore {
     next.thoughtsBuf = cur.thoughtsBuf + addedContent;
     next.error = null;
     next.version++;
+    if (cur.thoughtsBuf.length === 0 && addedContent.length > 0) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] first_thoughts_chunk chat=${chatId} size=${addedContent.length} ts=${ts}`);
+    }
     logger.debug(`[LIVESTORE_SSE] Thoughts chunk for ${chatId}: +${addedContent.length} chars (total: ${next.thoughtsBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Thoughts content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First thoughts content');
@@ -262,6 +297,10 @@ class LiveStore {
     next.contentBuf = cur.contentBuf + addedContent;
     next.error = null;
     next.version++;
+    if (cur.contentBuf.length === 0 && addedContent.length > 0) {
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] first_answer_chunk chat=${chatId} size=${addedContent.length} ts=${ts}`);
+    }
     logger.debug(`[LIVESTORE_SSE] Content chunk for ${chatId}: +${addedContent.length} chars (total: ${next.contentBuf.length})`);
     logger.debug(`[LIVESTORE_SSE] Content: "${addedContent.substring(0, 50)}..."`);
     this.enableParentFromBridge(chatId, 'First answer content');
@@ -273,11 +312,6 @@ class LiveStore {
     const oldState = next.state;
     next.state = 'static';
     next.error = null;
-
-    if (next.planSummary) {
-      logger.info(`[LIVESTORE_SSE] Clearing planSummary for ${chatId} after stream completion`);
-      next.planSummary = null;
-    }
 
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
@@ -302,7 +336,6 @@ class LiveStore {
     next.state = 'static';
     next.contentBuf = '';
     next.thoughtsBuf = '';
-    next.planSummary = null;
     next.routerDecision = null;
     next.error = {
       message,
@@ -315,7 +348,7 @@ class LiveStore {
     return next;
   }
 
-  private handleDomainExecutionEvent(chatId: string, ev: DomainExecutionEvent, cur: ChatLive): ChatLive {
+  private handleDomainExecutionEvent(chatId: string, ev: DomainExecutionEvent | DomainExecutionUpdateEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     logger.info(`[DOMAIN-EXEC-LIVESTORE] handleDomainExecutionEvent called for ${chatId}`);
     logger.info(`[DOMAIN-EXEC-LIVESTORE] Event content length: ${ev.content?.length || 0} chars`);
@@ -323,7 +356,24 @@ class LiveStore {
     try {
       const domainExecution = JSON.parse(ev.content || '{}');
       logger.info(`[DOMAIN-EXEC-LIVESTORE] Parsed domain execution: domain_id=${domainExecution.domain_id}, status=${domainExecution.status}, plan=${!!domainExecution.plan}, actions=${domainExecution.actions?.length || 0}`);
+
+      // Preserve model_retry if it exists (not sent by backend in domain_execution events)
+      // But clear it if status is 'running' (retry succeeded) or terminal states
+      const existingRetry = next.domainExecution?.model_retry;
       next.domainExecution = domainExecution;
+
+      if (existingRetry && !domainExecution.model_retry && next.domainExecution) {
+        const status = domainExecution.status;
+        // Clear retry on success (running) or terminal states (completed/failed/aborted)
+        if (status === 'running' || status === 'completed' || status === 'failed' || status === 'aborted') {
+          logger.info(`[DOMAIN-EXEC-LIVESTORE] Clearing model_retry due to status: ${status}`);
+        } else {
+          // Preserve retry for other states (starting, waiting_user)
+          next.domainExecution.model_retry = existingRetry;
+          logger.info(`[DOMAIN-EXEC-LIVESTORE] Preserved existing model_retry data (status: ${status})`);
+        }
+      }
+
       next.version++;
       logger.info(`[DOMAIN-EXEC-LIVESTORE] Updated next.domainExecution, version=${next.version}`);
       logger.info(`[DOMAIN-EXEC-LIVESTORE] next.domainExecution is now: ${JSON.stringify(next.domainExecution).substring(0, 200)}`);
@@ -331,6 +381,32 @@ class LiveStore {
     } catch (err) {
       logger.error(`[DOMAIN-EXEC-LIVESTORE] Failed to parse domain execution for ${chatId}:`, err);
       logger.error(`[DOMAIN-EXEC-LIVESTORE] Event content was: ${ev.content}`);
+    }
+    return next;
+  }
+
+  private handleModelRetryEvent(chatId: string, ev: ModelRetryEvent, cur: ChatLive): ChatLive {
+    const next = { ...cur };
+    logger.info(`[MODEL-RETRY] Retry event for ${chatId}`);
+    try {
+      const retryData = JSON.parse(ev.content || '{}');
+      logger.info(`[MODEL-RETRY] Attempt ${retryData.attempt}/${retryData.max_attempts}, waiting ${retryData.delay_seconds}s`);
+      logger.info(`[MODEL-RETRY] Current domainExecution exists: ${!!next.domainExecution}`);
+
+      // Add retry info to domain execution if it exists
+      if (next.domainExecution) {
+        next.domainExecution = {
+          ...next.domainExecution,
+          model_retry: retryData,
+        };
+        next.version++;
+        this.enableParentFromBridge(chatId, 'Model retry');
+        logger.info(`[MODEL-RETRY] Updated domainExecution with retry data, version: ${next.version}`);
+      } else {
+        logger.warn(`[MODEL-RETRY] No domainExecution found for ${chatId}, retry event ignored!`);
+      }
+    } catch (err) {
+      logger.error(`[MODEL-RETRY] Failed to parse retry event for ${chatId}:`, err);
     }
     return next;
   }
@@ -382,6 +458,37 @@ class LiveStore {
           return;
         }
 
+        if (ev.type === 'coder_file_change') {
+          this.handleCoderFileChangeEvent(ev as CoderFileChangeEvent);
+          return;
+        }
+
+        if (ev.type === 'coder_workspace_prompt') {
+          try {
+            const detail = ev.content ? JSON.parse(ev.content) : {};
+            detail.chatId = ev.chat_id || null;
+            window.dispatchEvent(new CustomEvent('coderWorkspacePrompt', { detail }));
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse coder_workspace_prompt payload', err);
+          }
+          return;
+        }
+
+        if (ev.type === 'coder_operation') {
+          if (!ev.content) {
+            logger.warn('[LiveStore] coder_operation event missing content payload');
+            return;
+          }
+          try {
+            const detail = JSON.parse(ev.content);
+            detail.chatId = ev.chat_id || null;
+            window.dispatchEvent(new CustomEvent('coderOperation', { detail }));
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse coder_operation payload', err);
+          }
+          return;
+        }
+
         const chatId = ev.chat_id as string;
         if (!chatId) {
           logger.debug(`[LIVESTORE_SSE] Received event without chatId, skipping`);
@@ -395,7 +502,6 @@ class LiveStore {
           thoughtsBuf: '',
           routerDecision: null,
           domainExecution: null,
-          planSummary: null,
           error: null,
           version: 0
         };
@@ -406,22 +512,6 @@ class LiveStore {
           logger.info(`[LIVESTORE_SSE] - Selected route: ${next.routerDecision?.selectedRoute}`);
           logger.info(`[LIVESTORE_SSE] - Available routes: ${next.routerDecision?.availableRoutes.length}`);
 
-          this.byChat.set(chatId, next);
-          this.emit(chatId, next, { eventType: ev.type });
-          return;
-        }
-
-        if (ev.type === 'taskflow_plan') {
-          const next = this.handleTaskflowPlanEvent(chatId, ev as any, cur);
-          this.byChat.set(chatId, next);
-          this.emit(chatId, next, { eventType: ev.type });
-          return;
-        }
-
-        if (ev.type === 'plan_pending_approval') {
-          const next = { ...cur };
-          next.state = 'static';
-          next.version++;
           this.byChat.set(chatId, next);
           this.emit(chatId, next, { eventType: ev.type });
           return;
@@ -446,6 +536,12 @@ class LiveStore {
             break;
           case 'domain_execution':
             next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionEvent, cur);
+            break;
+          case 'domain_execution_update':
+            next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionUpdateEvent, cur);
+            break;
+          case 'model_retry':
+            next = this.handleModelRetryEvent(chatId, ev as ModelRetryEvent, cur);
             break;
           case 'complete':
             next = this.handleCompleteEvent(chatId, cur);
@@ -485,6 +581,8 @@ class LiveStore {
     
     this.es.onopen = () => {
       logger.info('[LiveStore] SSE connection established');
+      const ts = new Date().toISOString();
+      logger.info(`[UX_PERF][FRONT] sse_opened ts=${ts}`);
     };
   }
 
@@ -496,7 +594,6 @@ class LiveStore {
       thoughtsBuf: '',
       routerDecision: null,
       domainExecution: null,
-      planSummary: null,
       error: null,
       version: 0
     };

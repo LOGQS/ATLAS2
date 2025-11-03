@@ -341,7 +341,10 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
         <div className="workspace-modal-header">
           <div className="workspace-modal-title-group">
             <Icons.FolderOpen className="workspace-modal-icon" />
-            <h2 className="workspace-modal-title">Select Coding Workspace</h2>
+            <div>
+              <h2 className="workspace-modal-title">Select Coding Workspace</h2>
+              <p className="workspace-modal-subtitle">Your coding request will continue after selection</p>
+            </div>
           </div>
           <button className="workspace-modal-close" onClick={onClose}>
             <Icons.Close className="w-5 h-5" />

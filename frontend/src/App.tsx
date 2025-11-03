@@ -10,6 +10,7 @@ import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import ContextWindow from './components/chat/ContextWindow';
+import { Icons } from './components/ui/Icons';
 import SendButton from './components/input/SendButton';
 import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
@@ -23,10 +24,11 @@ import CoderWindow from './sections/CoderWindow';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
-import { apiUrl } from './config/api';
-import { MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
+import { apiUrl, fetchBackendConfig } from './config/api';
+import { DEFAULT_MAX_CONCURRENT_STREAMS, DEBUG_TOOLS_CONFIG } from './config/chat';
 import { BrowserStorage } from './utils/storage/BrowserStorage';
 import { liveStore, sendButtonStateManager } from './utils/chat/LiveStore';
+import { chatHistoryCache, type BackendStateSnapshot } from './utils/chat/ChatHistoryCache';
 import { useAppState } from './hooks/app/useAppState';
 import { useFileManagement } from './hooks/files/useFileManagement';
 import { useDragDrop } from './hooks/files/useDragDrop';
@@ -45,6 +47,57 @@ interface ChatItem {
   last_active?: string;
 }
 
+interface LoadChatsResult {
+  ids: string[];
+  backendState: BackendStateSnapshot;
+}
+
+const ALLOWED_BACKEND_STATUSES = new Set<BackendStateSnapshot['status']>([
+  'unknown',
+  'initializing',
+  'ready',
+  'degraded'
+]);
+
+const createDefaultBackendState = (): BackendStateSnapshot => ({
+  status: 'unknown',
+  completed: false,
+  success: null,
+  error: null,
+  summary: null,
+  resetCount: 0
+});
+
+const normalizeBackendState = (raw: any): BackendStateSnapshot => {
+  if (!raw || typeof raw !== 'object') {
+    return createDefaultBackendState();
+  }
+
+  const statusValue = typeof raw.status === 'string' ? raw.status : 'unknown';
+  const status = ALLOWED_BACKEND_STATUSES.has(statusValue as BackendStateSnapshot['status'])
+    ? (statusValue as BackendStateSnapshot['status'])
+    : 'unknown';
+
+  const success = typeof raw.success === 'boolean' ? raw.success : null;
+  const completed = typeof raw.completed === 'boolean' ? raw.completed : Boolean(success);
+  const error = typeof raw.error === 'string' ? raw.error : null;
+  const summary = raw.summary && typeof raw.summary === 'object' ? raw.summary as Record<string, unknown> : null;
+  const resetCount = typeof raw.reset_count === 'number'
+    ? raw.reset_count
+    : typeof raw.resetCount === 'number'
+      ? raw.resetCount
+      : 0;
+
+  return {
+    status,
+    completed,
+    success,
+    error,
+    summary,
+    resetCount
+  };
+};
+
 
 type SendMessageOptions = {
   message: string;
@@ -54,19 +107,150 @@ type SendMessageOptions = {
   source?: 'manual' | 'voice';
 };
 
+const PENDING_FIRST_MESSAGES_STORAGE_KEY = 'atlas_pending_first_messages_v1';
+const PENDING_CHAT_META_STORAGE_KEY = 'atlas_pending_chat_meta_v1';
+
+interface PendingChatMeta {
+  activeChatId: string | null;
+  updatedAt: number;
+}
+
+type PendingFirstMessageStatus = 'pending' | 'dispatching';
+
+type PendingDispatchSource = 'active' | 'bootstrap';
+
+interface PendingFirstMessageRecord {
+  message: string;
+  files?: AttachedFile[];
+  name?: string;
+  status: PendingFirstMessageStatus;
+  createdAt: number;
+  lastAttemptAt?: number;
+  bootstrapAttemptAt?: number;
+  dispatchSource?: PendingDispatchSource;
+}
+
+const parsePendingFirstMessage = (raw: string): PendingFirstMessageRecord | null => {
+  try {
+    const parsed = JSON.parse(raw ?? '{}');
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+    const record: PendingFirstMessageRecord = {
+      message: typeof parsed.message === 'string' ? parsed.message : '',
+      files: Array.isArray(parsed.files) ? parsed.files : undefined,
+      name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : undefined,
+      status: parsed.status === 'dispatching' ? 'dispatching' : 'pending',
+      createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : Date.now(),
+      lastAttemptAt: typeof parsed.lastAttemptAt === 'number' ? parsed.lastAttemptAt : undefined,
+      bootstrapAttemptAt: typeof parsed.bootstrapAttemptAt === 'number' ? parsed.bootstrapAttemptAt : undefined,
+      dispatchSource: parsed.dispatchSource === 'active' || parsed.dispatchSource === 'bootstrap' ? parsed.dispatchSource : undefined
+    };
+    if (!record.message.trim()) {
+      return null;
+    }
+    return record;
+  } catch (error) {
+    logger.warn('[FIRST_MSG][PARSE_ERROR] Failed to parse pending message payload', { error: String(error) });
+    return null;
+  }
+};
+
+const serializePendingFirstMessage = (record: PendingFirstMessageRecord): string => {
+  return JSON.stringify(record);
+};
+
+const derivePendingChatName = (record: PendingFirstMessageRecord, fallback: string = 'New Chat'): string => {
+  if (record.name && record.name.trim()) {
+    return record.name;
+  }
+  if (record.message && record.message.trim()) {
+    const candidate = record.message.split(' ').slice(0, 4).join(' ').trim();
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return fallback;
+};
+
+const loadPendingFirstMessagesFromStorage = (): Map<string, string> => {
+  if (typeof window === 'undefined') {
+    return new Map();
+  }
+  try {
+    const raw = window.localStorage.getItem(PENDING_FIRST_MESSAGES_STORAGE_KEY);
+    if (!raw) {
+      return new Map();
+    }
+    const parsed = JSON.parse(raw) as Record<string, string> | null;
+    if (!parsed || typeof parsed !== 'object') {
+      return new Map();
+    }
+    return new Map(Object.entries(parsed));
+  } catch (error) {
+    logger.warn('[FIRST_MSG][HYDRATE_ERROR] Failed to load pending messages from storage', { error: String(error) });
+    return new Map();
+  }
+};
+
+const buildInitialChatsFromPending = (pending: Map<string, string>, activeChatId: string | null): ChatItem[] => {
+  if (!pending.size) {
+    return [];
+  }
+
+  const chats: ChatItem[] = [];
+  pending.forEach((raw, chatId) => {
+    const record = parsePendingFirstMessage(raw);
+    if (!record) {
+      return;
+    }
+    chats.push({
+      id: chatId,
+      name: derivePendingChatName(record),
+      isActive: activeChatId === chatId,
+      state: 'static'
+    });
+  });
+
+  return chats;
+};
 
 function App() {
+  const storedPendingMetaRaw = typeof window !== 'undefined'
+    ? window.localStorage.getItem(PENDING_CHAT_META_STORAGE_KEY)
+    : null;
+
+  let initialPendingMeta: PendingChatMeta | null = null;
+  if (storedPendingMetaRaw) {
+    try {
+      initialPendingMeta = JSON.parse(storedPendingMetaRaw) as PendingChatMeta;
+    } catch (error) {
+      logger.warn('[FIRST_MSG][META_PARSE_ERROR] Failed to parse pending chat meta from storage', { error: String(error) });
+    }
+  }
+
+  const initialPendingChatId = initialPendingMeta?.activeChatId || null;
+
+  // Cache the initial pending messages to avoid duplicate localStorage reads during initialization
+  const initialPendingRef = useRef<Map<string, string> | undefined>(undefined);
+
   const [message, setMessage] = useState('');
-  const [hasMessageBeenSent, setHasMessageBeenSent] = useState(false);
-  const [centerFading, setCenterFading] = useState(false);
-  const [chats, setChats] = useState<ChatItem[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string>('none');
-  const [pendingFirstMessages, setPendingFirstMessages] = useState<Map<string, string>>(new Map());
+  const [hasMessageBeenSent, setHasMessageBeenSent] = useState(() => Boolean(initialPendingChatId));
+  const [centerFading, setCenterFading] = useState(() => Boolean(initialPendingChatId));
+  const [pendingFirstMessages, setPendingFirstMessagesState] = useState<Map<string, string>>(() => {
+    if (initialPendingRef.current === undefined) {
+      initialPendingRef.current = loadPendingFirstMessagesFromStorage();
+    }
+    return initialPendingRef.current;
+  });
+  const [chats, setChats] = useState<ChatItem[]>(() => buildInitialChatsFromPending(initialPendingRef.current!, initialPendingChatId));
+  const [activeChatId, setActiveChatId] = useState<string>(() => initialPendingChatId || 'none');
   const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [forceRender, setForceRender] = useState(0);
   const [sendDisabledFlag, setSendDisabledFlag] = useState(false);
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
+  const [maxConcurrentStreams, setMaxConcurrentStreams] = useState<number>(DEFAULT_MAX_CONCURRENT_STREAMS);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -83,6 +267,180 @@ function App() {
   const awaitingAIResponseRef = useRef(false);
   const [isProcessingSegment, setIsProcessingSegment] = useState(false);
   const [isSendingVoiceMessage, setIsSendingVoiceMessage] = useState(false);
+
+  const persistPendingFirstMessages = useCallback((map: Map<string, string>) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      if (map.size === 0) {
+        window.localStorage.removeItem(PENDING_FIRST_MESSAGES_STORAGE_KEY);
+      } else {
+        const serialized = JSON.stringify(Object.fromEntries(map));
+        window.localStorage.setItem(PENDING_FIRST_MESSAGES_STORAGE_KEY, serialized);
+      }
+    } catch (error) {
+      logger.warn('[FIRST_MSG][PERSIST_ERROR] Failed to persist pending messages', { error: String(error) });
+    }
+  }, []);
+
+  const persistPendingChatMeta = useCallback((meta: PendingChatMeta | null) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    try {
+      if (!meta || !meta.activeChatId) {
+        window.localStorage.removeItem(PENDING_CHAT_META_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(PENDING_CHAT_META_STORAGE_KEY, JSON.stringify(meta));
+      }
+    } catch (error) {
+      logger.warn('[FIRST_MSG][META_PERSIST_ERROR] Failed to persist pending chat meta', { error: String(error) });
+    }
+  }, []);
+
+  const getPendingChatMeta = useCallback((): PendingChatMeta | null => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(PENDING_CHAT_META_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+      return JSON.parse(raw) as PendingChatMeta;
+    } catch (error) {
+      logger.warn('[FIRST_MSG][META_READ_ERROR] Failed to read pending chat meta', { error: String(error) });
+      return null;
+    }
+  }, []);
+
+  const clearPendingChatMeta = useCallback((chatId?: string | null) => {
+    const meta = getPendingChatMeta();
+    if (!meta) {
+      persistPendingChatMeta(null);
+      return;
+    }
+
+    if (!chatId || meta.activeChatId === chatId) {
+      persistPendingChatMeta(null);
+    }
+  }, [getPendingChatMeta, persistPendingChatMeta]);
+
+  const setPendingFirstMessages = useCallback<React.Dispatch<React.SetStateAction<Map<string, string>>>>((value) => {
+    setPendingFirstMessagesState(prev => {
+      const next = (typeof value === 'function'
+        ? (value as (prevState: Map<string, string>) => Map<string, string>)(prev)
+        : value) as Map<string, string>;
+
+      persistPendingFirstMessages(next);
+      return next;
+    });
+  }, [persistPendingFirstMessages]);
+
+  const updatePendingFirstMessage = useCallback((chatId: string, mutator: (existing: PendingFirstMessageRecord | null) => PendingFirstMessageRecord | null) => {
+    setPendingFirstMessages(prev => {
+      const next = new Map(prev);
+      const currentRaw = next.get(chatId) ?? null;
+      const currentRecord = currentRaw ? parsePendingFirstMessage(currentRaw) : null;
+      const updatedRecord = mutator(currentRecord);
+
+      if (!updatedRecord) {
+        next.delete(chatId);
+      } else {
+        next.set(chatId, serializePendingFirstMessage(updatedRecord));
+      }
+
+      return next;
+    });
+  }, [setPendingFirstMessages]);
+
+  const ensurePendingChatBootstrap = useCallback(async (chatId: string, payload: PendingFirstMessageRecord) => {
+    logger.info('[FIRST_MSG][BOOTSTRAP] Ensuring chat state for pending chat', { chatId, hasName: Boolean(payload.name) });
+
+    try {
+      const response = await fetch(apiUrl('/api/db/chat'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          system_prompt: null
+        })
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({} as any));
+        if (data?.message !== 'Chat already exists') {
+          logger.warn('[FIRST_MSG][BOOTSTRAP] Chat create returned error', { chatId, status: response.status, data });
+        }
+      }
+    } catch (error) {
+      logger.error('[FIRST_MSG][BOOTSTRAP] Error ensuring chat exists', { chatId, error });
+    }
+
+    if (payload.name && payload.name.trim()) {
+      try {
+        await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name: payload.name })
+        });
+      } catch (error) {
+        logger.warn('[FIRST_MSG][BOOTSTRAP] Failed to apply pending chat name', { chatId, error });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pendingFirstMessages.size) {
+      return;
+    }
+
+    pendingFirstMessages.forEach((raw, chatId) => {
+      const record = parsePendingFirstMessage(raw);
+      if (!record) {
+        updatePendingFirstMessage(chatId, () => null);
+        return;
+      }
+
+      if (record.status && record.status !== 'pending') {
+        logger.debug('[FIRST_MSG][INIT_DISPATCH] Skipping dispatch - status not pending', { chatId, status: record.status, dispatchSource: record.dispatchSource });
+        return;
+      }
+
+      const now = Date.now();
+      const lastBootstrapAttempt = record.bootstrapAttemptAt ?? 0;
+      if (now - lastBootstrapAttempt < 5000) {
+        return;
+      }
+
+      const timestamp = now;
+      updatePendingFirstMessage(chatId, (current) => {
+        if (!current) {
+          return {
+            ...record,
+            bootstrapAttemptAt: timestamp
+          };
+        }
+        return {
+          ...current,
+          bootstrapAttemptAt: timestamp
+        };
+      });
+
+      void ensurePendingChatBootstrap(chatId, {
+        ...record,
+        bootstrapAttemptAt: timestamp
+      });
+    });
+  }, [ensurePendingChatBootstrap, pendingFirstMessages, updatePendingFirstMessage]);
 
   const enqueueVoiceTranscript = useCallback((text: string) => {
     const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -264,6 +622,7 @@ function App() {
   }, [activeChatId]);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
+  const isCoderVisible = activeModal === 'coder';
   const {
     attachedFiles,
     fileInputRef,
@@ -281,18 +640,24 @@ function App() {
   const chatSwitchTokenRef = useRef(0);
   const activeChatSyncAbortRef = useRef<AbortController | null>(null);
 
-  const loadChatsFromDatabase = useCallback(async (options?: { expectedToken?: number }) => {
+  const loadChatsFromDatabase = useCallback(async (options?: { expectedToken?: number }): Promise<LoadChatsResult | null | void> => {
     try {
       logger.info('[App.loadChatsFromDatabase] Loading chats from database');
       const response = await fetch(apiUrl('/api/db/chats'));
       const data = await response.json();
+      const backendState = normalizeBackendState((data as any)?.backendState);
 
       if (options?.expectedToken && options.expectedToken !== chatSwitchTokenRef.current) {
         return;
       }
 
       if (response.ok) {
-        logger.info('[App.loadChatsFromDatabase] Successfully loaded chats:', data.chats.length);
+        if (!Array.isArray(data.chats)) {
+          logger.warn('[App.loadChatsFromDatabase] Unexpected payload: missing chats array');
+          return null;
+        }
+
+        logger.info(`[App.loadChatsFromDatabase] Successfully loaded chats: ${data.chats.length} (backend status=${backendState.status})`);
         const chatsFromDb = data.chats.map((chat: any) => ({
           id: chat.id,
           name: chat.name,
@@ -301,43 +666,272 @@ function App() {
           last_active: chat.last_active
         }));
 
+        const chatMap = new Map<string, ChatItem>();
+        chatsFromDb.forEach((chat: ChatItem) => {
+          chatMap.set(chat.id, { ...chat });
+        });
+
+        const pendingRecords = new Map<string, PendingFirstMessageRecord>();
+
+        pendingFirstMessages.forEach((serialized, pendingChatId) => {
+          const record = parsePendingFirstMessage(serialized);
+          if (!record) {
+            logger.warn('[FIRST_MSG][LOAD_MERGE] Invalid pending payload encountered, clearing', { pendingChatId });
+            updatePendingFirstMessage(pendingChatId, () => null);
+            return;
+          }
+          pendingRecords.set(pendingChatId, record);
+        });
+
+        const meta = getPendingChatMeta();
+        const pendingActiveChatId = meta?.activeChatId ?? null;
+
+        pendingRecords.forEach((pendingRecord, pendingChatId) => {
+          const existing = chatMap.get(pendingChatId);
+          const derivedName = derivePendingChatName(pendingRecord);
+          if (existing) {
+            if (!existing.name || !existing.name.trim() || existing.name === 'New Chat') {
+              logger.info('[FIRST_MSG][LOAD_MERGE] Overriding backend chat name with pending name', {
+                pendingChatId,
+                derivedName
+              });
+              existing.name = derivedName;
+            }
+          } else {
+            logger.info('[FIRST_MSG][LOAD_MERGE] Injecting pending chat into sidebar', {
+              pendingChatId,
+              derivedName
+            });
+            chatMap.set(pendingChatId, {
+              id: pendingChatId,
+              name: derivedName,
+              isActive: false,
+              state: 'static'
+            });
+          }
+        });
+
+        const dbActiveChatId = chatsFromDb.find((chat: ChatItem) => chat.isActive)?.id || null;
+
+        const shouldRestorePendingActiveChat =
+          !options?.expectedToken &&
+          pendingActiveChatId &&
+          pendingFirstMessages.has(pendingActiveChatId) &&
+          (activeChatId === 'none' || activeChatId === pendingActiveChatId);
+
+        if (shouldRestorePendingActiveChat) {
+          setActiveChatId(pendingActiveChatId);
+          setHasMessageBeenSent(true);
+          setCenterFading(true);
+        }
+
+        const nextActiveChatId = (() => {
+          if (shouldRestorePendingActiveChat && pendingActiveChatId) {
+            return pendingActiveChatId;
+          }
+          if (activeChatId !== 'none') {
+            return activeChatId;
+          }
+          if (dbActiveChatId) {
+            return dbActiveChatId;
+          }
+          return 'none';
+        })();
+
+        const mergedChats = Array.from(chatMap.values()).map(chat => ({
+          ...chat,
+          isActive: chat.id === nextActiveChatId
+        }));
+
         const settings = BrowserStorage.getUISettings();
         if (settings.chatOrder && settings.chatOrder.length > 0) {
           const orderedChats: ChatItem[] = [];
-          const chatMap = new Map<string, ChatItem>(chatsFromDb.map((chat: ChatItem) => [chat.id, chat]));
+          const orderedMap = new Map<string, ChatItem>(mergedChats.map((chat: ChatItem) => [chat.id, chat]));
 
           settings.chatOrder.forEach(chatId => {
-            if (chatMap.has(chatId)) {
-              const chat = chatMap.get(chatId);
+            if (orderedMap.has(chatId)) {
+              const chat = orderedMap.get(chatId);
               if (chat) {
                 orderedChats.push(chat);
-                chatMap.delete(chatId);
+                orderedMap.delete(chatId);
               }
             }
           });
 
-          chatMap.forEach((chat) => {
+          orderedMap.forEach((chat) => {
             orderedChats.push(chat);
           });
 
           setChats(orderedChats);
         } else {
-          setChats(chatsFromDb);
+          setChats(mergedChats);
         }
+
+        // Return the loaded chat IDs for validation alongside backend state context
+        return {
+          ids: chatsFromDb.map((chat: ChatItem) => chat.id),
+          backendState
+        };
       } else {
         logger.error('[App.loadChatsFromDatabase] Failed to load chats:', data.error);
+        return null;
       }
     } catch (error) {
       logger.error('[App.loadChatsFromDatabase] Failed to load chats:', error);
+      return null;
     }
-  }, []);
+  }, [activeChatId, getPendingChatMeta, pendingFirstMessages, setCenterFading, setHasMessageBeenSent, setActiveChatId, updatePendingFirstMessage]);
 
   const { handleBulkDelete, handleBulkExport, handleBulkImport } = useBulkOperations({
     setChats,
     setPendingFirstMessages,
     handleNewChat: () => handleNewChat(),
-    loadChatsFromDatabase
+    loadChatsFromDatabase,
+    clearPendingChatMeta
   });
+
+  // Clean up pending messages that no longer have corresponding chats
+  useEffect(() => {
+    if (!isAppInitialized || !pendingFirstMessages.size) {
+      return;
+    }
+
+    const validIds = new Set(chats.map(chat => chat.id));
+
+    setPendingFirstMessages(prev => {
+      if (!prev.size) {
+        return prev;
+      }
+
+      let mutated = false;
+      const next = new Map<string, string>();
+
+      prev.forEach((value, key) => {
+        if (validIds.has(key)) {
+          next.set(key, value);
+        } else {
+          mutated = true;
+        }
+      });
+
+      return mutated ? next : prev;
+    });
+    // Note: pendingFirstMessages excluded from deps - we use updater form and size check is just optimization
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats, isAppInitialized, setPendingFirstMessages]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    if (activeChatId !== 'none') {
+      document.body.classList.add('chat-active');
+    } else {
+      document.body.classList.remove('chat-active');
+    }
+  }, [activeChatId]);
+
+  const handleFirstMessageSent = useCallback((chatId: string) => {
+    logger.info('[FIRST_MSG][ACTIVE_DISPATCH] First message dispatched via component', { chatId });
+    updatePendingFirstMessage(chatId, (record) => {
+      if (!record) {
+        return null;
+      }
+      return {
+        ...record,
+        status: 'dispatching',
+        lastAttemptAt: Date.now(),
+        dispatchSource: 'active'
+      };
+    });
+  }, [updatePendingFirstMessage]);
+
+  const handleMessageAcknowledged = useCallback((chatId: string, _message?: string) => {
+    if (!chatId || chatId === 'none') {
+      return;
+    }
+    logger.info('[FIRST_MSG][ACK] First message acknowledged by backend', { chatId });
+    updatePendingFirstMessage(chatId, () => null);
+    clearPendingChatMeta(chatId);
+  }, [clearPendingChatMeta, updatePendingFirstMessage]);
+
+  useEffect(() => {
+    if (!isAppInitialized) {
+      return;
+    }
+    if (!activeChatId || activeChatId === 'none') {
+      return;
+    }
+
+    const raw = pendingFirstMessages.get(activeChatId);
+    if (!raw) {
+      return;
+    }
+
+    const record = parsePendingFirstMessage(raw);
+    if (!record) {
+      updatePendingFirstMessage(activeChatId, () => null);
+      return;
+    }
+
+    if (record.status !== 'dispatching' || record.dispatchSource !== 'active') {
+      return;
+    }
+    if (!chatRef.current || typeof chatRef.current.handleNewMessage !== 'function') {
+      return;
+    }
+
+    const isChatBusy = chatRef.current.isBusy?.() ?? false;
+    if (isChatBusy) {
+      return;
+    }
+
+    if (!record.message?.trim()) {
+      logger.warn('[FIRST_MSG][ACTIVE_DISPATCH] Missing content, clearing entry', { chatId: activeChatId });
+      updatePendingFirstMessage(activeChatId, () => null);
+      return;
+    }
+
+    const now = Date.now();
+    const lastAttempt = record.lastAttemptAt ?? 0;
+    if (now - lastAttempt < 750) {
+      return;
+    }
+
+    logger.info('[FIRST_MSG][ACTIVE_DISPATCH] Dispatching via mounted chat component', {
+      chatId: activeChatId,
+      preview: record.message.slice(0, 64)
+    });
+
+    updatePendingFirstMessage(activeChatId, (current) => {
+      if (!current) {
+        return null;
+      }
+      return {
+        ...current,
+        status: 'dispatching',
+        lastAttemptAt: now,
+        dispatchSource: 'active'
+      };
+    });
+
+    try {
+      chatRef.current.handleNewMessage(record.message, record.files || []);
+    } catch (error) {
+      logger.error('[FIRST_MSG][ACTIVE_DISPATCH] Failed to dispatch via chatRef', { chatId: activeChatId, error });
+      updatePendingFirstMessage(activeChatId, (current) => {
+        if (!current) {
+          return null;
+        }
+        return {
+          ...current,
+          status: 'pending',
+          dispatchSource: undefined
+        };
+      });
+    }
+  }, [activeChatId, isAppInitialized, pendingFirstMessages, updatePendingFirstMessage]);
 
   useEffect(() => {
     if (isAppInitialized) return;
@@ -345,7 +939,131 @@ function App() {
     const initializeApp = async () => {
       logger.info('[App.useEffect] Initializing app');
       liveStore.start();
-      await loadChatsFromDatabase();
+
+      // Fetch backend configuration (execution mode, concurrent limits, etc.)
+      const config = await fetchBackendConfig();
+      setMaxConcurrentStreams(config.maxConcurrentChats);
+      logger.info(`[App.useEffect] Backend config loaded: maxConcurrentChats=${config.maxConcurrentChats}, executionMode=${config.executionMode}`);
+
+      const loadedChats = await loadChatsFromDatabase();
+
+      // Validate cache on startup - prune any cached chats that no longer exist in backend
+      if (loadedChats && Array.isArray(loadedChats.ids)) {
+        const { ids, backendState } = loadedChats;
+        logger.info(`[App.useEffect] Loaded ${ids.length} chats (backend status=${backendState.status}), validating cache`);
+        chatHistoryCache.validateAgainstBackend(ids, { backendState, source: 'startup' });
+
+        if (ids.length === 0) {
+          if (backendState.status === 'ready') {
+            logger.info('[App.useEffect] Backend reports zero chats after initialization; cache cleared if needed');
+          } else {
+            logger.warn(`[App.useEffect] Backend returned zero chats but status=${backendState.status}; preserved local cache as safeguard`);
+          }
+        }
+      } else if (loadedChats === null) {
+        logger.warn('[App.useEffect] Failed to load chats from backend - skipping cache validation to preserve existing cache');
+      } else {
+        logger.info('[App.useEffect] Skipping cache validation because chat load returned without data');
+      }
+
+      // Kick off pending first messages even if the chat isn't opened yet.
+      pendingFirstMessages.forEach((raw, chatId) => {
+        const record = parsePendingFirstMessage(raw);
+        if (!record) {
+          updatePendingFirstMessage(chatId, () => null);
+          return;
+        }
+
+        if (!record.message?.trim()) {
+          logger.warn('[FIRST_MSG][INIT_DISPATCH] Skipping pending entry with no content', { chatId });
+          updatePendingFirstMessage(chatId, () => null);
+          return;
+        }
+
+        if (record.status === 'dispatching') {
+          return;
+        }
+
+        const now = Date.now();
+        updatePendingFirstMessage(chatId, (current) => {
+          if (!current) {
+            return {
+              ...record,
+              status: 'dispatching',
+              lastAttemptAt: now
+            };
+          }
+        return {
+          ...current,
+          status: 'dispatching',
+          lastAttemptAt: now,
+          dispatchSource: 'bootstrap'
+        };
+      });
+
+        void (async () => {
+          try {
+            await ensurePendingChatBootstrap(chatId, record);
+
+            const controller = new AbortController();
+            const response = await fetch(apiUrl('/api/chat/stream'), {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                message: record.message,
+                chat_id: chatId,
+                include_reasoning: true,
+                client_id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+                  ? crypto.randomUUID()
+                  : `pending_bootstrap_${chatId}_${now}`,
+                attached_file_ids: Array.isArray(record.files) ? record.files.map(file => file.id).filter(Boolean) : []
+              }),
+              signal: controller.signal
+            });
+
+            if (!response.ok) {
+              const payload = await response.json().catch(() => ({} as any));
+              logger.error('[FIRST_MSG][INIT_DISPATCH] Backend rejected pending message', {
+                chatId,
+                status: response.status,
+                payload
+              });
+              updatePendingFirstMessage(chatId, (current) => {
+                if (!current) {
+                  return null;
+                }
+                return {
+                  ...current,
+                  status: 'pending',
+                  dispatchSource: undefined
+                };
+              });
+              return;
+            }
+
+            try { await response.body?.cancel(); } catch {}
+            controller.abort();
+
+            logger.info('[FIRST_MSG][INIT_DISPATCH] Backend dispatch acknowledged during initialization', { chatId });
+            handleMessageAcknowledged(chatId, record.message);
+          } catch (error) {
+            logger.error('[FIRST_MSG][INIT_DISPATCH] Error dispatching pending message during initialization', { chatId, error });
+            updatePendingFirstMessage(chatId, (current) => {
+              if (!current) {
+                return null;
+              }
+              return {
+                ...current,
+                status: 'pending',
+                dispatchSource: undefined
+              };
+            });
+          }
+        })();
+      });
+
       await loadActiveChat();
 
       initializeAttachedFiles();
@@ -353,7 +1071,7 @@ function App() {
       setIsAppInitialized(true);
     };
     initializeApp();
-  }, [isAppInitialized, initializeAttachedFiles, loadChatsFromDatabase]);
+  }, [ensurePendingChatBootstrap, handleMessageAcknowledged, isAppInitialized, initializeAttachedFiles, loadChatsFromDatabase, pendingFirstMessages, updatePendingFirstMessage]);
 
   useEffect(() => {
     const unsubs = chats.map(chat =>
@@ -456,7 +1174,6 @@ function App() {
     }
   }, []);
 
-
   const sendMessage = useCallback(async ({
     message: rawMessage,
     attachments = [],
@@ -476,7 +1193,12 @@ function App() {
       setIsMessageBeingSent(true);
 
       const chatId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      const startTs = Date.now();
       const chatName = trimmedMessage.split(' ').slice(0, 4).join(' ');
+      const ts = new Date().toISOString();
+      logger.info(
+        `[UX_PERF][FRONT] first_message_initiated chat=${chatId} preview=${JSON.stringify(trimmedMessage.slice(0, 32))} length=${trimmedMessage.length} ts=${ts}`
+      );
 
       performanceTracker.startTracking(chatId, chatId);
       performanceTracker.mark(performanceTracker.MARKS.CHAT_CREATED, chatId);
@@ -504,13 +1226,22 @@ function App() {
       logger.info(`[ActiveChatId] Changed to new chat: ${chatId}`);
       logger.info(`[SidebarHighlight] Set to highlight new chat: ${chatId} (${chatName})`);
 
-      setPendingFirstMessages(prev => new Map(prev).set(chatId, JSON.stringify({ message: trimmedMessage, files: filesToSend })));
+      const pendingRecord: PendingFirstMessageRecord = {
+        message: trimmedMessage,
+        files: filesToSend,
+        name: chatName,
+        status: 'pending',
+        createdAt: Date.now()
+      };
+      setPendingFirstMessages(prev => new Map(prev).set(chatId, serializePendingFirstMessage(pendingRecord)));
+      persistPendingChatMeta({ activeChatId: chatId, updatedAt: Date.now() });
 
       setTimeout(() => bottomInputRef.current?.focus(), 100);
 
       void (async () => {
         logger.info('Creating new chat in DB:', { chatId, chatName });
         try {
+          const before = Date.now();
           const response = await fetch(apiUrl('/api/db/chat'), {
             method: 'POST',
             headers: {
@@ -521,6 +1252,7 @@ function App() {
               system_prompt: null
             })
           });
+          logger.info(`[UX_PERF][FRONT] first_chat_create ms=${Date.now() - before}`);
 
           if (!response.ok) {
             const data = await response.json();
@@ -536,6 +1268,7 @@ function App() {
           }
 
           try {
+            const renameStart = Date.now();
             await fetch(apiUrl(`/api/db/chat/${chatId}/name`), {
               method: 'PUT',
               headers: {
@@ -543,13 +1276,17 @@ function App() {
               },
               body: JSON.stringify({ name: chatName })
             });
+            logger.info(`[UX_PERF][FRONT] first_chat_rename ms=${Date.now() - renameStart}`);
           } catch (error) {
             logger.warn('Failed to set chat name:', error);
           }
 
           await syncActiveChat(chatId);
+          logger.info(`[UX_PERF][FRONT] first_chat_setup_complete chat=${chatId} total_ms=${Date.now() - startTs}`);
         } catch (error) {
           logger.error('Failed to create chat:', error);
+        } finally {
+          logger.info(`[UX_PERF][FRONT] first_chat_setup_finished chat=${chatId} total_ms=${Date.now() - startTs}`);
         }
       })();
       return true;
@@ -561,9 +1298,15 @@ function App() {
     }
 
     setIsMessageBeingSent(true);
+    const sendStart = Date.now();
     logger.info('Sending message to active chat:', activeChatId, { source, length: trimmedMessage.length });
+    const ts = new Date().toISOString();
+    logger.info(
+      `[UX_PERF][FRONT] message_initiated chat=${activeChatId} preview=${JSON.stringify(trimmedMessage.slice(0, 32))} length=${trimmedMessage.length} ts=${ts}`
+    );
 
     chatRef.current.handleNewMessage(trimmedMessage, filesToSend);
+    logger.info(`[UX_PERF][FRONT] handleNewMessage duration_ms=${Date.now() - sendStart}`);
 
     if (clearInput) {
       setMessage('');
@@ -585,6 +1328,7 @@ function App() {
     setChats,
     setActiveChatId,
     setPendingFirstMessages,
+    persistPendingChatMeta,
     syncActiveChat,
     bottomInputRef
   ]);
@@ -686,7 +1430,7 @@ function App() {
     }
   };
 
-  const handleChatSelect = useCallback(async (chatId: string) => {
+  const handleChatSelect = useCallback(async (chatId: string, metadata?: { trigger?: string; reason?: string }) => {
     if (activeChatId === chatId) return;
 
     const switchToken = chatSwitchTokenRef.current + 1;
@@ -772,6 +1516,40 @@ function App() {
 
     logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
   }, [activeChatId, hasMessageBeenSent, chats, syncActiveChat, loadChatsFromDatabase]);
+
+  useEffect(() => {
+    const handleCoderPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      const targetChatId: string | undefined = detail.chatId ?? undefined;
+
+      if (targetChatId && targetChatId !== 'none' && targetChatId !== activeChatId) {
+        void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-workspace-prompt' });
+      }
+
+      handleOpenModal('coder');
+    };
+
+    window.addEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
+    return () => window.removeEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
+  }, [activeChatId, handleChatSelect, handleOpenModal]);
+
+  useEffect(() => {
+    const handleCoderOperationEvent = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      const targetChatId: string | undefined = detail.chatId ?? undefined;
+
+      if (targetChatId && targetChatId !== 'none' && targetChatId !== activeChatId) {
+        void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-operation' });
+      }
+
+      if (!isCoderVisible) {
+        handleOpenModal('coder');
+      }
+    };
+
+    window.addEventListener('coderOperation', handleCoderOperationEvent as EventListener);
+    return () => window.removeEventListener('coderOperation', handleCoderOperationEvent as EventListener);
+  }, [activeChatId, handleChatSelect, handleOpenModal, isCoderVisible]);
 
   const handleChatSwitch = useCallback(async (newChatId: string) => {
     const switchToken = chatSwitchTokenRef.current + 1;
@@ -859,6 +1637,7 @@ function App() {
     setHasMessageBeenSent(false);
     setCenterFading(false);
     setActiveChatId('none');
+    persistPendingChatMeta(null);
     
     logger.info(`[ActiveChatId] Changed to: none`);
     setMessage('');
@@ -893,14 +1672,27 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         logger.info('Chat deleted successfully');
-        
-        if (data.cascade_deleted && data.deleted_chats && activeChatId !== 'none') {
-          shouldReturnToMainScreen = data.deleted_chats.includes(activeChatId);
-          if (shouldReturnToMainScreen) {
-            logger.info(`[CASCADE_DELETE] Current active chat ${activeChatId} was cascade deleted, returning to main screen`);
+
+        // Clear cache for deleted chat
+        chatHistoryCache.delete(chatId);
+        clearPendingChatMeta(chatId);
+
+        // Handle cascade deletions
+        if (data.cascade_deleted && data.deleted_chats) {
+          // Clear cache for all cascade-deleted chats
+          data.deleted_chats.forEach((deletedId: string) => {
+            chatHistoryCache.delete(deletedId);
+            clearPendingChatMeta(deletedId);
+          });
+
+          if (activeChatId !== 'none') {
+            shouldReturnToMainScreen = data.deleted_chats.includes(activeChatId);
+            if (shouldReturnToMainScreen) {
+              logger.info(`[CASCADE_DELETE] Current active chat ${activeChatId} was cascade deleted, returning to main screen`);
+            }
           }
         }
-        
+
         if (shouldReturnToMainScreen) {
           handleNewChat();
         }
@@ -954,7 +1746,7 @@ function App() {
   const activeChat = chats.find(chat => chat.id === activeChatId);
   const isActiveChatStreaming = Boolean(activeChatId !== 'none' && activeChat && (activeChat.state === 'thinking' || activeChat.state === 'responding'));
   const activeStreamCount = useMemo(() => chats.filter(c => c.state === 'thinking' || c.state === 'responding').length, [chats]);
-  const atConcurrencyLimit = activeStreamCount >= MAX_CONCURRENT_STREAMS;
+  const atConcurrencyLimit = activeStreamCount >= maxConcurrentStreams;
   const isSendInProgressForActive = sendingByChat.get(activeChatId) === true;
   const isGlobalSendDisabled = sendDisabledFlag;
   const isSendDisabled = isActiveChatStreaming || (chatRef.current?.isBusy?.() ?? false) || hasUnreadyFiles || isSendInProgressForActive || isGlobalSendDisabled || atConcurrencyLimit;
@@ -1127,16 +1919,6 @@ function App() {
     }
   }, []);
 
-  const handleFirstMessageSent = useCallback((chatId: string) => {
-    logger.info('First message sent for chat:', chatId);
-    setPendingFirstMessages(prev => {
-      const newMap = new Map(prev);
-      newMap.delete(chatId);
-      return newMap;
-    });
-  }, []);
-
-
   const handleActiveStateChange = useCallback((chatId: string, isReallyActive: boolean) => {
     logger.info('Chat confirms active state:', chatId, isReallyActive);
     if (isReallyActive) {
@@ -1165,8 +1947,8 @@ function App() {
   // END_TEST_FRAMEWORK_CONDITIONAL
 
   return (
-    <div className="app">
-      <LeftSidebar 
+    <div className={`app ${isCoderVisible ? 'coder-docked' : ''}`}>
+      <LeftSidebar
         chats={chats}
         activeChat={activeChatId}
         onChatSelect={handleChatSelect}
@@ -1180,12 +1962,15 @@ function App() {
         onChatReorder={handleChatReorder}
         onOpenModal={handleOpenModal}
         activeChatId={activeChatId}
+        activeStreamCount={activeStreamCount}
+        maxConcurrentStreams={maxConcurrentStreams}
       />
 
       {/* TEMPORARY_DEBUG_TRIGGERLOG - debugging component */}
       {DEBUG_TOOLS_CONFIG.showTriggerLog && <TriggerLog activeChatId={activeChatId} />}
 
-      <div className="main-content">
+      <div className="main-area">
+        <div className="main-content">
         <div className="chat-container">
           <h1 className={`title ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             How can I help you?
@@ -1233,6 +2018,7 @@ function App() {
                   isStopRequestInFlight={isStopRequestInFlight}
                   activeStreamCount={activeStreamCount}
                   atConcurrencyLimit={atConcurrencyLimit}
+                  maxConcurrentStreams={maxConcurrentStreams}
                   isProcessingSegment={isProcessingSegment}
                   isSendingVoiceMessage={isSendingVoiceMessage}
                   isAwaitingResponse={awaitingAIResponseRef.current}
@@ -1276,6 +2062,7 @@ function App() {
               firstMessage={pendingFirstMessages.get(activeChatId) || ''}
               onChatStateChange={handleChatStateChange}
               onFirstMessageSent={handleFirstMessageSent}
+              onMessageSent={handleMessageAcknowledged}
               onActiveStateChange={handleActiveStateChange}
               onBusyStateChange={handleBusyStateChange}
               setIsMessageBeingSent={setIsMessageBeingSent}
@@ -1358,6 +2145,7 @@ function App() {
                     isStopRequestInFlight={isStopRequestInFlight}
                     activeStreamCount={activeStreamCount}
                     atConcurrencyLimit={atConcurrencyLimit}
+                    maxConcurrentStreams={maxConcurrentStreams}
                     isProcessingSegment={isProcessingSegment}
                     isSendingVoiceMessage={isSendingVoiceMessage}
                     isAwaitingResponse={awaitingAIResponseRef.current}
@@ -1375,6 +2163,25 @@ function App() {
             )}
           </>
         )}
+        </div>
+        {isCoderVisible && (
+          <aside className="coder-dock">
+            <div className="coder-dock__header">
+              <span className="coder-dock__title">Coder</span>
+              <button
+                className="coder-dock__close"
+                onClick={handleCloseModal}
+                aria-label="Close coder workspace"
+              >
+                <Icons.Close className="coder-dock__close-icon" />
+              </button>
+            </div>
+            <CoderWindow
+              isOpen={true}
+              chatId={activeChatId !== 'none' ? activeChatId : undefined}
+            />
+          </aside>
+        )}
       </div>
       <RightSidebar 
         onOpenModal={handleOpenModal} 
@@ -1389,13 +2196,13 @@ function App() {
         { id: 'profiles', className: 'profiles-modal', render: () => <KnowledgeSection activeSubsection="profiles" onSubsectionChange={() => {}} /> },
         { id: 'workspace', className: 'workspace-modal', render: (isOpen: boolean) => <WorkspaceWindow isOpen={isOpen} /> },
         { id: 'sources', className: 'sources-modal', render: () => <SourcesWindow /> },
-        { id: 'coder', className: 'coder-modal', render: (isOpen: boolean) => <CoderWindow isOpen={isOpen} chatId={activeChatId !== 'none' ? activeChatId : undefined} /> },
       ].map(modal => (
         <ModalWindow
           key={modal.id}
           isOpen={activeModal === modal.id}
           onClose={handleCloseModal}
           className={modal.className}
+          closeOnBackdropClick={'closeOnBackdropClick' in modal ? (modal as any).closeOnBackdropClick : undefined}
         >
           {modal.render(activeModal === modal.id)}
         </ModalWindow>

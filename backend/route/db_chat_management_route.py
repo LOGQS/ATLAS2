@@ -16,6 +16,7 @@ from utils.db_route_utils import (
     ensure_chat_exists,
     get_request_data
 )
+from utils import startup_state
 
 logger = get_logger(__name__)
 
@@ -76,7 +77,10 @@ class ChatManagementRoute:
                     if is_highlighted:
                         logger.debug(f"[SidebarHighlight] Applied highlighting to: {chat['id']} ({chat.get('name') or 'New Chat'})")
 
-            return ResponseBuilder.success(chats=enhanced_chats)
+            return ResponseBuilder.success(
+                chats=enhanced_chats,
+                backendState=startup_state.get_backend_state()
+            )
 
         except Exception as e:
             return self._handle_route_error("getting all chats", e)

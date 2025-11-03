@@ -12,6 +12,9 @@ import json
 import os
 import hashlib
 import time
+import subprocess
+from collections import defaultdict, OrderedDict
+import threading
 import difflib
 
 from flask import Flask, jsonify, request
@@ -167,6 +170,11 @@ class CoderWorkspaceRoute:
     def __init__(self, app: Flask):
         self.app = app
         self._coder_data_dir = self._ensure_coder_data_dir()
+        self._workspace_cache: Dict[str, Path] = {}
+        self._workspace_cache_lock = threading.RLock()
+        self._file_cache: "OrderedDict[tuple[str, str], Dict[str, Any]]" = OrderedDict()
+        self._file_cache_lock = threading.RLock()
+        self._file_cache_max_entries = 256
         self._register_routes()
 
     def _ensure_coder_data_dir(self) -> Path:
@@ -182,9 +190,80 @@ class CoderWorkspaceRoute:
         logger.info(f"[CODER_WORKSPACE] Ensured coder data directory: {coder_dir}")
         return coder_dir
 
+    def _relative_path_key(self, workspace_root: Path, target: Path) -> str:
+        """Return a normalized relative key for caching."""
+        try:
+            relative = target.relative_to(workspace_root)
+        except ValueError:
+            relative = Path(os.path.relpath(target, workspace_root))
+        return relative.as_posix()
+
+    def _get_cached_file_payload(
+        self,
+        workspace_root: Path,
+        relative_key: str,
+        stat_result: os.stat_result
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = (str(workspace_root), relative_key)
+        with self._file_cache_lock:
+            entry = self._file_cache.get(cache_key)
+            if not entry:
+                return None
+            if entry["mtime_ns"] != getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9)) or entry["size"] != stat_result.st_size:
+                self._file_cache.pop(cache_key, None)
+                return None
+            self._file_cache.move_to_end(cache_key)
+            return entry["payload"]
+
+    def _store_file_payload_in_cache(
+        self,
+        workspace_root: Path,
+        relative_key: str,
+        stat_result: os.stat_result,
+        payload: Dict[str, Any]
+    ) -> None:
+        cache_key = (str(workspace_root), relative_key)
+        entry = {
+            "mtime_ns": getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1e9)),
+            "size": stat_result.st_size,
+            "payload": payload,
+        }
+        with self._file_cache_lock:
+            self._file_cache[cache_key] = entry
+            self._file_cache.move_to_end(cache_key)
+            if len(self._file_cache) > self._file_cache_max_entries:
+                self._file_cache.popitem(last=False)
+
+    def _invalidate_file_cache(
+        self,
+        workspace_root: Path,
+        relative_path: Optional[str] = None
+    ) -> None:
+        workspace_key = str(workspace_root)
+        with self._file_cache_lock:
+            if relative_path is None:
+                keys_to_remove = [key for key in self._file_cache if key[0] == workspace_key]
+            else:
+                normalized = relative_path.replace("\\", "/")
+                prefix = normalized + "/"
+                keys_to_remove = [
+                    key for key in self._file_cache
+                    if key[0] == workspace_key and (key[1] == normalized or key[1].startswith(prefix))
+                ]
+            for key in keys_to_remove:
+                self._file_cache.pop(key, None)
+
 
     def _get_workspace_path(self, chat_id: str) -> Optional[Path]:
         """Get the workspace path for a specific chat from database."""
+        if not chat_id:
+            return None
+
+        with self._workspace_cache_lock:
+            cached = self._workspace_cache.get(chat_id)
+            if cached is not None:
+                return cached
+
         try:
             def query(conn, cursor):
                 cursor.execute(
@@ -196,13 +275,24 @@ class CoderWorkspaceRoute:
                     return Path(result[0])
                 return None
 
-            return db._execute_with_connection("get workspace path", query)
+            path = db._execute_with_connection("get workspace path", query)
+            with self._workspace_cache_lock:
+                if path:
+                    self._workspace_cache[chat_id] = path
+                else:
+                    self._workspace_cache.pop(chat_id, None)
+            return path
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to get workspace path: %s", err)
             return None
 
     def _set_workspace_path(self, chat_id: str, path: str) -> bool:
         """Set the workspace path for a specific chat."""
+        previous_workspace = None
+        if chat_id:
+            with self._workspace_cache_lock:
+                previous_workspace = self._workspace_cache.get(chat_id)
+
         try:
             def query(conn, cursor):
                 cursor.execute(
@@ -218,7 +308,15 @@ class CoderWorkspaceRoute:
                 conn.commit()
                 return True
 
-            return db._execute_with_connection("set workspace path", query, return_on_error=False)
+            success = db._execute_with_connection("set workspace path", query, return_on_error=False)
+            if success:
+                new_workspace = Path(path)
+                with self._workspace_cache_lock:
+                    self._workspace_cache[chat_id] = new_workspace
+                if previous_workspace and previous_workspace != new_workspace:
+                    self._invalidate_file_cache(previous_workspace)
+                self._invalidate_file_cache(new_workspace)
+            return success
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to set workspace path: %s", err)
             return False
@@ -646,7 +744,7 @@ class CoderWorkspaceRoute:
                         SELECT id, content, timestamp, edit_type, content_hash
                         FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         """,
                         (workspace_path, file_path)
                     )
@@ -656,7 +754,7 @@ class CoderWorkspaceRoute:
                         SELECT id, content, timestamp, edit_type, content_hash
                         FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         LIMIT ?
                         """,
                         (workspace_path, file_path, limit)
@@ -700,7 +798,7 @@ class CoderWorkspaceRoute:
                     SELECT content
                     FROM file_edit_history
                     WHERE workspace_path = ? AND file_path = ?
-                    ORDER BY timestamp DESC
+                    ORDER BY timestamp DESC, id DESC
                     LIMIT 1
                     """,
                     (workspace_path, file_path)
@@ -723,7 +821,7 @@ class CoderWorkspaceRoute:
                     WHERE id IN (
                         SELECT id FROM file_edit_history
                         WHERE workspace_path = ? AND file_path = ?
-                        ORDER BY timestamp DESC
+                        ORDER BY timestamp DESC, id DESC
                         LIMIT -1 OFFSET ?
                     )
                     """,
@@ -764,6 +862,326 @@ class CoderWorkspaceRoute:
             return False
 
 
+    def _load_file_lines(self, path: Path) -> List[str]:
+        """Load file content into a list of lines with graceful decoding."""
+        try:
+            return path.read_text(encoding='utf-8').splitlines()
+        except UnicodeDecodeError:
+            return path.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except Exception as exc:
+            logger.debug("[CODER_WORKSPACE] Failed to read %s: %s", path, exc)
+            return []
+
+    def _search_with_ripgrep(
+        self,
+        workspace_path: Path,
+        query: str,
+        case_sensitivity: str,
+        use_regex: bool,
+        whole_word: bool,
+        include_hidden: bool,
+        max_results: int,
+        per_file_limit: int,
+        context_lines: int,
+        max_file_size_bytes: int
+    ) -> tuple[List[Dict[str, Any]], int, bool]:
+        """Perform workspace search using ripgrep."""
+        command = [
+            "rg",
+            "--json",
+            "--no-config",
+            "--max-count",
+            str(per_file_limit),
+            "--max-columns",
+            "512",
+        ]
+
+        if max_file_size_bytes:
+            command.extend(["--max-filesize", str(max_file_size_bytes)])
+
+        if case_sensitivity == "sensitive":
+            command.append("--case-sensitive")
+        elif case_sensitivity == "insensitive":
+            command.append("--ignore-case")
+        else:
+            command.append("--smart-case")
+
+        if whole_word:
+            command.append("--word-regexp")
+
+        if not use_regex:
+            command.append("--fixed-strings")
+
+        if include_hidden:
+            command.append("--hidden")
+
+        command.append("--")
+        command.append(query)
+        command.append(".")
+
+        logger.debug("[CODER_WORKSPACE] Executing ripgrep command: %s", ' '.join(command[:10]) + '...')
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(workspace_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1,
+            )
+            logger.debug("[CODER_WORKSPACE] Ripgrep process started - PID=%s", process.pid)
+        except FileNotFoundError:
+            logger.error("[CODER_WORKSPACE] Ripgrep executable not found - ensure 'rg' is in PATH")
+            raise ValueError("Ripgrep (rg) not found. Please install ripgrep.")
+        except Exception as exc:
+            logger.error("[CODER_WORKSPACE] Failed to start ripgrep process: %s", exc)
+            raise
+
+        results: Dict[str, Dict[str, Any]] = {}
+        per_file_counts: Dict[str, int] = defaultdict(int)
+        line_cache: Dict[str, List[str]] = {}
+        total_matches = 0
+        truncated = False
+        lines_processed = 0
+
+        try:
+            stdout = process.stdout
+            assert stdout is not None
+            logger.debug("[CODER_WORKSPACE] Reading ripgrep output...")
+            for raw_line in stdout:
+                lines_processed += 1
+                if total_matches >= max_results:
+                    truncated = True
+                    break
+
+                stripped = raw_line.strip()
+                if not stripped:
+                    continue
+
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    logger.debug("[CODER_WORKSPACE] Failed to parse JSON line: %s", exc)
+                    continue
+
+                event_type = event.get("type")
+                if event_type != "match":
+                    if event_type and lines_processed <= 5:
+                        logger.debug("[CODER_WORKSPACE] Skipping event type: %s", event_type)
+                    continue
+
+                data = event.get("data", {})
+                path_info = data.get("path", {})
+                path_text = path_info.get("text")
+                if not path_text:
+                    continue
+
+                absolute_path = (workspace_path / Path(path_text)).resolve()
+                try:
+                    relative_path = absolute_path.relative_to(workspace_path).as_posix()
+                except ValueError:
+                    relative_path = Path(path_text).as_posix()
+
+                if per_file_counts[relative_path] >= per_file_limit:
+                    continue
+
+                line_number = data.get("line_number") or 0
+                line_payload = data.get("lines", {})
+                line_text = (line_payload.get("text") or "").rstrip("\n\r")
+
+                submatches_payload = data.get("submatches", [])
+                submatches = []
+                for sub in submatches_payload:
+                    start = sub.get("start")
+                    end = sub.get("end")
+                    if start is None or end is None:
+                        continue
+                    submatches.append({"start": int(start), "end": int(end)})
+
+                if not submatches:
+                    continue
+
+                lines_list = line_cache.get(relative_path)
+                if lines_list is None and context_lines > 0:
+                    lines_list = self._load_file_lines(absolute_path)
+                    line_cache[relative_path] = lines_list
+                elif lines_list is None:
+                    line_cache[relative_path] = []
+                    lines_list = []
+
+                before: List[Dict[str, Any]] = []
+                after: List[Dict[str, Any]] = []
+
+                if context_lines > 0 and lines_list:
+                    index = max(line_number - 1, 0)
+                    for offset in range(context_lines, 0, -1):
+                        pos = index - offset
+                        if pos >= 0 and pos < len(lines_list):
+                            before.append({
+                                "lineNumber": pos + 1,
+                                "text": lines_list[pos],
+                            })
+                    for offset in range(1, context_lines + 1):
+                        pos = index + offset
+                        if pos < len(lines_list):
+                            after.append({
+                                "lineNumber": pos + 1,
+                                "text": lines_list[pos],
+                            })
+
+                file_entry = results.setdefault(
+                    relative_path,
+                    {"path": relative_path, "matches": []},
+                )
+                file_entry["matches"].append({
+                    "lineNumber": int(line_number),
+                    "lineText": line_text,
+                    "submatches": submatches,
+                    "before": before,
+                    "after": after,
+                })
+
+                per_file_counts[relative_path] += 1
+                total_matches += 1
+
+                if total_matches % 100 == 0:
+                    logger.debug(
+                        "[CODER_WORKSPACE] Search progress - matches=%d, files=%d, lines=%d",
+                        total_matches, len(results), lines_processed
+                    )
+
+                if total_matches >= max_results:
+                    truncated = True
+                    logger.debug("[CODER_WORKSPACE] Max results reached, truncating search")
+                    break
+
+            logger.debug(
+                "[CODER_WORKSPACE] Finished reading output - lines=%d, matches=%d, files=%d",
+                lines_processed, total_matches, len(results)
+            )
+
+        finally:
+            if truncated and process.poll() is None:
+                logger.debug("[CODER_WORKSPACE] Terminating ripgrep process (truncated)")
+                process.terminate()
+
+            try:
+                process.wait(timeout=0.5)
+                logger.debug("[CODER_WORKSPACE] Ripgrep process terminated - returncode=%s", process.returncode)
+            except subprocess.TimeoutExpired:
+                logger.warning("[CODER_WORKSPACE] Ripgrep process timeout - force killing")
+                process.kill()
+                process.wait()
+
+        logger.debug("[CODER_WORKSPACE] Checking for stderr output...")
+        stderr_output = ""
+        logger.debug("[CODER_WORKSPACE] Stderr check completed")
+
+        if process.returncode not in (0, 1, None) and not truncated:
+            logger.error("[CODER_WORKSPACE] Ripgrep failed with returncode=%s: %s", process.returncode, stderr_output.strip())
+            raise ValueError(stderr_output.strip() or "ripgrep failed")
+
+        logger.debug("[CODER_WORKSPACE] Building result list from %d files", len(results))
+        ordered_results = list(results.values())
+
+        logger.debug("[CODER_WORKSPACE] Sorting %d results by path", len(ordered_results))
+        ordered_results.sort(key=lambda entry: entry["path"])
+
+        logger.debug("[CODER_WORKSPACE] Returning %d files with %d total matches", len(ordered_results), total_matches)
+        return ordered_results, total_matches, truncated
+
+    def search_workspace(self):
+        """HTTP API handler for searching within the active workspace."""
+        start_time = time.time()
+        try:
+            data = request.get_json(silent=True) or {}
+
+            chat_id = data.get("chat_id") or request.args.get("chat_id")
+            query = (data.get("query") or "").strip()
+
+            logger.info("[CODER_WORKSPACE] Search request received - chat_id=%s, query='%s'", chat_id, query[:50] if query else None)
+
+            if not chat_id:
+                logger.warning("[CODER_WORKSPACE] Search rejected - missing chat_id")
+                return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+            if not query:
+                logger.warning("[CODER_WORKSPACE] Search rejected - empty query")
+                return jsonify({"success": False, "error": "query is required"}), 400
+
+            workspace_path = self._get_workspace_path(chat_id)
+            if not workspace_path or not workspace_path.exists():
+                logger.warning("[CODER_WORKSPACE] Search rejected - no workspace set for chat_id=%s", chat_id)
+                return jsonify({"success": False, "error": "No workspace set"}), 404
+
+            max_results = int(data.get("max_results", 200))
+            max_results = max(1, min(max_results, 2000))
+
+            per_file_limit = int(data.get("per_file_matches", 50))
+            per_file_limit = max(1, min(per_file_limit, 200))
+
+            context_lines = int(data.get("context_lines", 2))
+            context_lines = max(0, min(context_lines, 5))
+
+            case_sensitivity = data.get("case_sensitivity", "smart")
+            if case_sensitivity not in {"smart", "sensitive", "insensitive"}:
+                case_sensitivity = "smart"
+
+            use_regex = bool(data.get("regex", False))
+            whole_word = bool(data.get("whole_word", False))
+            include_hidden = bool(data.get("include_hidden", False))
+
+            max_file_size_bytes = data.get("max_file_size_bytes")
+            if not isinstance(max_file_size_bytes, int) or max_file_size_bytes <= 0:
+                max_file_size_bytes = 2 * 1024 * 1024
+
+            logger.info(
+                "[CODER_WORKSPACE] Starting ripgrep search - workspace=%s, case=%s, regex=%s, word=%s, max_results=%d",
+                workspace_path.name, case_sensitivity, use_regex, whole_word, max_results
+            )
+
+            results, total_matches, truncated = self._search_with_ripgrep(
+                workspace_path,
+                query,
+                case_sensitivity,
+                use_regex,
+                whole_word,
+                include_hidden,
+                max_results,
+                per_file_limit,
+                context_lines,
+                max_file_size_bytes,
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            logger.info(
+                "[CODER_WORKSPACE] Search completed - matches=%d, files=%d, duration=%dms, truncated=%s",
+                total_matches, len(results), duration_ms, truncated
+            )
+
+            return jsonify({
+                "success": True,
+                "results": results,
+                "truncated": truncated,
+                "stats": {
+                    "totalMatches": total_matches,
+                    "filesWithMatches": len(results),
+                    "durationMs": duration_ms,
+                },
+            })
+
+        except ValueError as exc:
+            logger.error("[CODER_WORKSPACE] Search validation error: %s", exc)
+            return jsonify({"success": False, "error": str(exc)}), 400
+        except Exception as err:
+            logger.error("[CODER_WORKSPACE] Workspace search failed: %s", err, exc_info=True)
+            return jsonify({"success": False, "error": "Search failed"}), 500
+
+
     def _register_routes(self) -> None:
         self.app.route("/api/coder-workspace/set", methods=["POST"], endpoint="coder_set_workspace")(self.set_workspace)
         self.app.route("/api/coder-workspace/get", methods=["GET"], endpoint="coder_get_workspace")(self.get_workspace)
@@ -787,6 +1205,8 @@ class CoderWorkspaceRoute:
         self.app.route("/api/coder-workspace/settings", methods=["POST"], endpoint="coder_save_settings")(self.save_settings)
         self.app.route("/api/coder-workspace/workspace/changes", methods=["GET"], endpoint="coder_workspace_changes")(self.get_workspace_changes)
         self.app.route("/api/coder-workspace/file/diff-stats", methods=["GET"], endpoint="coder_file_diff_stats")(self.get_file_diff_stats)
+        self.app.route("/api/coder-workspace/search", methods=["POST"], endpoint="coder_search_workspace")(self.search_workspace)
+        self.app.route("/api/coder-workspace/reveal-in-explorer", methods=["POST"], endpoint="coder_reveal_in_explorer")(self.reveal_in_explorer)
 
     def set_workspace(self):
         """Set the workspace path for a chat."""
@@ -980,8 +1400,15 @@ class CoderWorkspaceRoute:
             if target.is_dir():
                 return jsonify({"success": False, "error": "Path is a directory"}), 400
 
-            if target.stat().st_size > self._MAX_FILE_SIZE:
+            stat_result = target.stat()
+
+            if stat_result.st_size > self._MAX_FILE_SIZE:
                 return jsonify({"success": False, "error": "File too large (max 10MB)"}), 400
+
+            relative_key = self._relative_path_key(workspace_path, target)
+            cached_payload = self._get_cached_file_payload(workspace_path, relative_key, stat_result)
+            if cached_payload:
+                return jsonify(cached_payload)
 
             try:
                 content = target.read_text(encoding='utf-8')
@@ -993,14 +1420,18 @@ class CoderWorkspaceRoute:
 
             language = self._get_language_from_extension(target.name)
 
-            return jsonify({
+            payload = {
                 "success": True,
                 "content": content,
-                "path": file_path,
+                "path": relative_key,
                 "name": target.name,
                 "language": language,
-                "size": target.stat().st_size
-            })
+                "size": stat_result.st_size
+            }
+
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, payload)
+
+            return jsonify(payload)
 
         except ValueError as err:
             return jsonify({"success": False, "error": str(err)}), 400
@@ -1046,10 +1477,23 @@ class CoderWorkspaceRoute:
             if save_snapshot:
                 self._cleanup_old_checkpoints(str(workspace_path), file_path)
 
+            stat_result = target.stat()
+            relative_key = self._relative_path_key(workspace_path, target)
+            language = self._get_language_from_extension(target.name)
+            cache_payload = {
+                "success": True,
+                "content": content,
+                "path": relative_key,
+                "name": target.name,
+                "language": language,
+                "size": stat_result.st_size
+            }
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, cache_payload)
+
             return jsonify({
                 "success": True,
-                "path": file_path,
-                "size": target.stat().st_size
+                "path": relative_key,
+                "size": stat_result.st_size
             })
 
         except ValueError as err:
@@ -1084,9 +1528,21 @@ class CoderWorkspaceRoute:
             new_file.write_text("", encoding='utf-8')
             logger.info("[CODER_WORKSPACE] Created file: %s", new_file)
 
+            stat_result = new_file.stat()
+            relative_key = self._relative_path_key(workspace_path, new_file)
+            cache_payload = {
+                "success": True,
+                "content": "",
+                "path": relative_key,
+                "name": new_file.name,
+                "language": self._get_language_from_extension(new_file.name),
+                "size": stat_result.st_size
+            }
+            self._store_file_payload_in_cache(workspace_path, relative_key, stat_result, cache_payload)
+
             return jsonify({
                 "success": True,
-                "path": str(new_file.relative_to(workspace_path))
+                "path": relative_key
             })
 
         except ValueError as err:
@@ -1191,6 +1647,8 @@ class CoderWorkspaceRoute:
             if not target.exists():
                 return jsonify({"success": False, "error": "Path does not exist"}), 404
 
+            relative_key = self._relative_path_key(workspace_path, target)
+
             if is_directory:
                 if not target.is_dir():
                     return jsonify({"success": False, "error": "Path is not a directory"}), 400
@@ -1201,6 +1659,8 @@ class CoderWorkspaceRoute:
                     return jsonify({"success": False, "error": "Path is a directory"}), 400
                 target.unlink()
                 logger.info("[CODER_WORKSPACE] Deleted file: %s", target)
+
+            self._invalidate_file_cache(workspace_path, relative_key)
 
             return jsonify({"success": True})
 
@@ -1232,6 +1692,7 @@ class CoderWorkspaceRoute:
             if not old_target.exists():
                 return jsonify({"success": False, "error": "Path does not exist"}), 404
 
+            old_relative_key = self._relative_path_key(workspace_path, old_target)
             new_target = old_target.parent / new_name
             if new_target.exists():
                 return jsonify({"success": False, "error": "A file or folder with that name already exists"}), 400
@@ -1240,6 +1701,9 @@ class CoderWorkspaceRoute:
 
             old_target.rename(new_target)
             logger.info("[CODER_WORKSPACE] Renamed: %s -> %s", old_target, new_target)
+            new_relative_key = self._relative_path_key(workspace_path, new_target)
+            self._invalidate_file_cache(workspace_path, old_relative_key)
+            self._invalidate_file_cache(workspace_path, new_relative_key)
 
             if old_target.is_file() or not new_target.is_dir():
                 self._update_file_path_in_history(str(workspace_path), old_path_str, new_path_str)
@@ -1514,7 +1978,7 @@ class CoderWorkspaceRoute:
                 cursor.execute(
                     """
                     SELECT file_path,
-                           COUNT(*) as checkpoint_count,
+                           COUNT(DISTINCT content_hash) as checkpoint_count,
                            MAX(timestamp) as last_checkpoint
                     FROM file_edit_history
                     WHERE workspace_path = ?
@@ -1626,6 +2090,50 @@ class CoderWorkspaceRoute:
 
         except Exception as err:
             logger.error("[CODER_WORKSPACE] Failed to get file diff stats: %s", err)
+            return jsonify({"success": False, "error": str(err)}), 500
+
+    def reveal_in_explorer(self):
+        """Reveal a file in Windows Explorer."""
+        try:
+            data = request.get_json(force=True)
+            chat_id = data.get("chat_id")
+            file_path = data.get("file_path", "").strip()
+
+            if not chat_id:
+                return jsonify({"success": False, "error": "chat_id is required"}), 400
+
+            if not file_path:
+                return jsonify({"success": False, "error": "file_path is required"}), 400
+
+            # Get workspace path
+            workspace_path = self._get_workspace_path(chat_id)
+            if not workspace_path:
+                return jsonify({"success": False, "error": "No workspace set for this chat"}), 404
+
+            # Resolve full path
+            full_path = Path(workspace_path) / file_path
+
+            # Validate path exists
+            if not full_path.exists():
+                return jsonify({"success": False, "error": "File does not exist"}), 404
+
+            # Validate path is within workspace
+            try:
+                full_path.resolve().relative_to(Path(workspace_path).resolve())
+            except ValueError:
+                return jsonify({"success": False, "error": "Path is outside workspace"}), 403
+
+            # Use Windows explorer.exe to reveal the file
+            if os.name == 'nt':  # Windows
+                # The /select parameter must be combined with the path: /select,"path"
+                subprocess.run(f'explorer /select,"{full_path.resolve()}"', shell=True, check=False)
+                logger.info(f"[CODER_WORKSPACE] Revealed file in explorer: {full_path}")
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "This feature is only available on Windows"}), 400
+
+        except Exception as err:
+            logger.error("[CODER_WORKSPACE] Failed to reveal file in explorer: %s", err)
             return jsonify({"success": False, "error": str(err)}), 500
 
 

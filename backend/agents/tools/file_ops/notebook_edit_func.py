@@ -138,7 +138,12 @@ def _tool_notebook_edit(params: Dict[str, Any], ctx: ToolExecutionContext) -> To
             "Must be 'replace', 'insert', or 'delete'."
         )
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot edit notebook: {error_msg}")
 
@@ -380,15 +385,15 @@ notebook_edit_spec = ToolSpec(
             },
             "cell_id": {
                 "type": "string",
-                "description": "ID of the cell to edit (use this OR cell_number, not both)"
+                "description": "ID of the cell to edit. Use this OR cell_number, not both. For delete/replace modes, one of these is REQUIRED"
             },
             "cell_number": {
                 "type": "integer",
-                "description": "Index of the cell to edit, 0-indexed (use this OR cell_id, not both)"
+                "description": "Index of the cell to edit, 0-indexed. Use this OR cell_id, not both. For delete/replace modes, one of these is REQUIRED"
             },
             "new_source": {
                 "type": "string",
-                "description": "New source content for the cell (required for replace and insert modes)"
+                "description": "New source content for the cell. REQUIRED when edit_mode='replace' or edit_mode='insert'"
             },
             "cell_type": {
                 "type": "string",

@@ -36,7 +36,11 @@ def _tool_list_dir(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRes
             "Cannot list directory with both options disabled."
         )
 
-    is_valid, error_msg, resolved_path = validate_directory_path(directory_path, must_exist=True)
+    is_valid, error_msg, resolved_path = validate_directory_path(
+        directory_path,
+        must_exist=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot list directory: {error_msg}")
 

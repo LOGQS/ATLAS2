@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 from utils.logger import get_logger
 from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
-from .file_utils import format_file_size, is_windows_reserved_name
+from .file_utils import format_file_size, is_windows_reserved_name, validate_file_path, workspace_relative_path
 
 _logger = get_logger(__name__)
 
@@ -47,8 +47,17 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "Consider breaking the content into multiple files or using a different approach."
         )
 
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=False,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
+    if not is_valid:
+        raise ValueError(f"Cannot write file: {error_msg}")
+
     try:
-        path = Path(file_path).resolve()
+        path = resolved_path
 
         if is_windows_reserved_name(path.name):
             raise ValueError(
@@ -56,7 +65,9 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
                 "Choose a different filename."
             )
 
-        if path.exists() and not overwrite:
+        file_existed = path.exists()
+
+        if file_existed and not overwrite:
             if path.is_dir():
                 raise ValueError(
                     f"Cannot write to '{file_path}': path is a directory. "
@@ -77,6 +88,13 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             _logger.info(f"Creating parent directories for '{file_path}'")
             parent_dir.mkdir(parents=True, exist_ok=True)
 
+        before_content = None
+        if file_existed and path.is_file():
+            try:
+                before_content = path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                before_content = None
+
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
 
@@ -87,18 +105,30 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             f"Successfully wrote file '{file_path}' ({format_file_size(file_size)}, {line_count} lines)"
         )
 
+        ops = [
+            {
+                "type": "file_write",
+                "path": workspace_relative_path(path, ctx.workspace_path),
+                "absolute_path": str(path),
+                "before": before_content,
+                "after": content,
+                "overwrite": bool(overwrite and file_existed),
+            }
+        ]
+
         return ToolResult(
             output={
                 "status": "success",
                 "file_path": str(path),
-                "action": "overwritten" if overwrite and path.exists() else "created",
+                "action": "overwritten" if overwrite and file_existed else "created",
                 "metadata": {
                     "file_size": format_file_size(file_size),
                     "file_size_bytes": file_size,
                     "line_count": line_count
                 }
             },
-            metadata={"file_path": str(path), "size_bytes": file_size}
+            metadata={"file_path": str(path), "size_bytes": file_size},
+            ops=ops,
         )
 
     except PermissionError:

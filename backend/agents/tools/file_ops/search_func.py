@@ -70,7 +70,11 @@ def _tool_search_files(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
                 "Use smaller values to prevent excessive recursion."
             )
 
-    is_valid, error_msg, root_resolved = validate_directory_path(search_root, must_exist=True)
+    is_valid, error_msg, root_resolved = validate_directory_path(
+        search_root,
+        must_exist=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot search: {error_msg}")
 

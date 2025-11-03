@@ -44,6 +44,7 @@ Always test changes and maintain backwards compatibility.""",
             "file.read", "file.write", "file.edit", "file.move", "file.search",
             "file.list_dir", "file.move_lines", "bash.execute", "git.status",
             "git.add", "git.commit", "code.analyze", "test.run", "llm.generate",
+            "plan.write", "plan.update",
         ],
         procedures=[
             DomainProcedure(

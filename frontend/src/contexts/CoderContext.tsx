@@ -218,6 +218,8 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     stateRef.current = state;
   }, [state]);
 
+  const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
+
   const setError = useCallback((error: string) => {
     setState(prev => ({ ...prev, error }));
   }, []);
@@ -333,6 +335,40 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
           hasWorkspace: true,
         }));
         await loadFileTree();
+
+        // Notify the worker that workspace has been selected so it can continue
+        if (chatId) {
+          try {
+            const response = await fetch(apiUrl(`/api/chats/${chatId}/workspace_selected`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+
+            let result: any = null;
+            let parseError: unknown = null;
+            try {
+              result = await response.json();
+            } catch (error) {
+              parseError = error;
+            }
+
+            if (parseError) {
+              logger.debug('[CODER_CTX] workspace_selected response was not JSON', parseError);
+            }
+
+            const workerInactive = response.status === 400 && result?.error === 'Chat worker is not active';
+
+            if (response.ok && result?.success) {
+              logger.info('[CODER_CTX] Successfully notified worker of workspace selection');
+            } else if (workerInactive) {
+              logger.info('[CODER_CTX] Worker inactive; skipping workspace notification');
+            } else {
+              logger.warn('[CODER_CTX] Failed to notify worker', { status: response.status, error: result?.error });
+            }
+          } catch (notifyError) {
+            logger.error('[CODER_CTX] Failed to notify worker of workspace selection:', notifyError);
+          }
+        }
       } else {
         logger.warn('[CODER_CTX] setWorkspace failed', { error: data.error });
         setState(prev => ({ ...prev, error: data.error || 'Failed to set workspace', isLoading: false }));
@@ -495,8 +531,18 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       }));
     }
 
+    const controller = new AbortController();
+    const previousRequest = activeFileRequestRef.current;
+    if (previousRequest) {
+      previousRequest.controller.abort();
+    }
+    activeFileRequestRef.current = { path: filePath, controller };
+
     try {
-      const response = await fetch(apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`));
+      const response = await fetch(
+        apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`),
+        { signal: controller.signal }
+      );
       const data = await response.json();
 
       if (data.success) {
@@ -511,6 +557,10 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
         filePreloader.primeCache(filePath, data.content, data.language);
 
         setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+
           const nextOpenTabs = prev.openTabs.includes(filePath)
             ? prev.openTabs
             : [...prev.openTabs, filePath];
@@ -548,20 +598,39 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
         });
 
         // Preload related files for better IntelliSense
-        filePreloader.preloadRelatedFiles(
-          filePath,
-          data.content,
-          data.language,
-          stateRef.current.workspacePath,
-          chatId,
-          apiUrl
-        ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+        if (!activeFileRequestRef.current || activeFileRequestRef.current.path === filePath) {
+          filePreloader.preloadRelatedFiles(
+            filePath,
+            data.content,
+            data.language,
+            stateRef.current.workspacePath,
+            chatId,
+            apiUrl
+          ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+        }
       } else {
-        setState(prev => ({ ...prev, error: data.error || 'Failed to load file', isLoading: false }));
+        setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+          return { ...prev, error: data.error || 'Failed to load file', isLoading: false };
+        });
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
       logger.error('[CODER] Failed to load file:', err);
-      setState(prev => ({ ...prev, error: 'Failed to load file', isLoading: false }));
+      setState(prev => {
+        if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+          return prev;
+        }
+        return { ...prev, error: 'Failed to load file', isLoading: false };
+      });
+    } finally {
+      if (activeFileRequestRef.current && activeFileRequestRef.current.path === filePath) {
+        activeFileRequestRef.current = null;
+      }
     }
   }, [chatId]);
 
@@ -1322,6 +1391,142 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       setState(prev => ({ ...prev, error: 'Failed to load file', isLoading: false }));
     }
   }, [chatId, state.tabDocuments, state.workspacePath]);
+
+  // Listen for file changes from coder agent
+  useEffect(() => {
+    if (!chatId) return;
+
+    let refreshDebounceTimer: NodeJS.Timeout | null = null;
+
+    const scheduleFileTreeRefresh = () => {
+      // Debounce file tree refresh to avoid excessive API calls
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+
+      refreshDebounceTimer = setTimeout(() => {
+        logger.info('[CODER_CTX] Refreshing file tree after coder agent file operations');
+        loadFileTree();
+        refreshDebounceTimer = null;
+      }, 500); // 500ms debounce
+    };
+
+    const handleCoderFileChange = (event: CustomEvent) => {
+      const detail = event.detail;
+
+      // Only handle events for this chat's workspace
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      const filePath = detail.filePath;
+      const operation = detail.operation;
+      const newContent = detail.content;
+
+      logger.info(`[CODER_CTX] File change detected: ${operation} -> ${filePath}`);
+
+      // Always refresh file tree for any file operation
+      scheduleFileTreeRefresh();
+
+      setState(prev => {
+        // Handle file move/rename
+        if (operation === 'move' && detail.previousPath) {
+          const oldPath = detail.previousPath;
+          const newPath = filePath;
+
+          // Update open tabs
+          const updatedTabs = prev.openTabs.map(tab => tab === oldPath ? newPath : tab);
+          const updatedTabDocs = { ...prev.tabDocuments };
+
+          if (updatedTabDocs[oldPath]) {
+            updatedTabDocs[newPath] = {
+              ...updatedTabDocs[oldPath],
+              filePath: newPath,
+            };
+            delete updatedTabDocs[oldPath];
+          }
+
+          // Update active tab and current document if needed
+          const newActiveTabPath = prev.activeTabPath === oldPath ? newPath : prev.activeTabPath;
+          const newCurrentDocument = prev.activeTabPath === oldPath && updatedTabDocs[newPath]
+            ? updatedTabDocs[newPath]
+            : prev.currentDocument;
+
+          logger.info(`[CODER_CTX] File moved: ${oldPath} -> ${newPath}`);
+
+          return {
+            ...prev,
+            openTabs: updatedTabs,
+            tabDocuments: updatedTabDocs,
+            activeTabPath: newActiveTabPath,
+            currentDocument: newCurrentDocument,
+          };
+        }
+
+        // Handle file write/edit - update content if file is open
+        if ((operation === 'write' || operation === 'edit') && newContent !== null) {
+          const isFileOpen = prev.openTabs.includes(filePath);
+
+          if (!isFileOpen) {
+            // File not open in editor, just refresh file tree (already scheduled above)
+            return prev;
+          }
+
+          const existingDoc = prev.tabDocuments[filePath];
+          if (!existingDoc) {
+            return prev;
+          }
+
+          // Check if user has unsaved changes
+          const hasUnsavedChanges = prev.unsavedFiles.has(filePath);
+
+          if (hasUnsavedChanges) {
+            // Don't overwrite user's unsaved changes, but log it
+            logger.warn(`[CODER_CTX] File ${filePath} was modified by coder agent, but user has unsaved changes`);
+            return prev;
+          }
+
+          // Update the document with new content from coder agent
+          const updatedDoc: EditorDocument = {
+            ...existingDoc,
+            content: newContent,
+            originalContent: newContent,
+          };
+
+          const updatedTabDocs = {
+            ...prev.tabDocuments,
+            [filePath]: updatedDoc,
+          };
+
+          // Update current document if it's the active one
+          const newCurrentDocument = prev.activeTabPath === filePath
+            ? updatedDoc
+            : prev.currentDocument;
+
+          logger.info(`[CODER_CTX] Updated file content live: ${filePath} (${newContent.length} chars)`);
+
+          return {
+            ...prev,
+            tabDocuments: updatedTabDocs,
+            currentDocument: newCurrentDocument,
+          };
+        }
+
+        return prev;
+      });
+    };
+
+    window.addEventListener('coderFileChange', handleCoderFileChange as EventListener);
+    logger.info('[CODER_CTX] Listening for coder file changes');
+
+    return () => {
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+      window.removeEventListener('coderFileChange', handleCoderFileChange as EventListener);
+      logger.info('[CODER_CTX] Stopped listening for coder file changes');
+    };
+  }, [chatId, loadFileTree]);
 
   // Load workspace on mount
   useEffect(() => {

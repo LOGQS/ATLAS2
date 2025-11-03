@@ -9,6 +9,7 @@ interface ModalWindowProps {
   children: React.ReactNode;
   className?: string;
   showCloseButton?: boolean;
+  closeOnBackdropClick?: boolean;
 }
 
 const ModalWindow: React.FC<ModalWindowProps> = ({
@@ -16,7 +17,8 @@ const ModalWindow: React.FC<ModalWindowProps> = ({
   onClose,
   children,
   className = '',
-  showCloseButton = true
+  showCloseButton = true,
+  closeOnBackdropClick = true
 }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -36,8 +38,14 @@ const ModalWindow: React.FC<ModalWindowProps> = ({
 
   if (!isOpen) return null;
 
+  const handleBackdropClick = () => {
+    if (closeOnBackdropClick) {
+      onClose();
+    }
+  };
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={handleBackdropClick}>
       <div 
         className={`modal-window ${className}`}
         onClick={(e) => e.stopPropagation()}

@@ -3,6 +3,7 @@ import * as ContextMenu from '@radix-ui/react-context-menu';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { List } from 'react-window';
 import { useCoderContext } from '../../contexts/CoderContext';
+import { apiUrl } from '../../config/api';
 import { PhosphorIcon } from '../ui/PhosphorIcons';
 import { getFileIcon } from '../ui/Icons';
 
@@ -29,6 +30,7 @@ interface FlattenedItem {
 type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
 
 interface RowItemData {
+  chatId?: string;
   flattenedItems: FlattenedItem[];
   expandedFolders: Set<string>;
   selectedFile: string | undefined;
@@ -100,10 +102,11 @@ function ContextMenuItem({ onSelect, children }: ContextMenuItemProps) {
 interface FileContextMenuProps {
   fullPath: string;
   isFolder: boolean;
+  chatId?: string;
   children: ReactNode;
 }
 
-function FileContextMenu({ fullPath, isFolder, children }: FileContextMenuProps) {
+function FileContextMenu({ fullPath, isFolder, chatId, children }: FileContextMenuProps) {
   const { createFile, createFolder, deleteNode, renameNode } = useCoderContext();
 
   const handleCreateFile = async () => {
@@ -129,6 +132,41 @@ function FileContextMenu({ fullPath, isFolder, children }: FileContextMenuProps)
     const newName = prompt(`Rename to:`, currentName);
     if (!newName || newName === currentName) return;
     await renameNode(fullPath, newName);
+  };
+
+  const handleRevealInExplorer = async () => {
+    if (!chatId) {
+      console.error('No chatId available for revealing file in explorer');
+      return;
+    }
+
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/reveal-in-explorer'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          file_path: fullPath,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(
+          `Failed to reveal file in explorer: ${response.status} ${response.statusText} - ${errorText}`
+        );
+        return;
+      }
+
+      const data = await response.json();
+      if (!data.success) {
+        console.error('Failed to reveal file in explorer:', data.error);
+      }
+    } catch (error) {
+      console.error('Error revealing file in explorer:', error);
+    }
   };
 
   return (
@@ -161,6 +199,12 @@ function FileContextMenu({ fullPath, isFolder, children }: FileContextMenuProps)
           <ContextMenuItem onSelect={handleRename}>
             <div className="flex items-center gap-2">
               Rename
+            </div>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={handleRevealInExplorer}>
+            <div className="flex items-center gap-2">
+              <PhosphorIcon.FolderOpen className="w-4 h-4" />
+              Reveal in File Explorer
             </div>
           </ContextMenuItem>
           <div className="h-px bg-bolt-elements-borderColor my-1" />
@@ -207,12 +251,12 @@ function flattenTree(
 
 export const FileTree: React.FC = () => {
   const {
+    chatId,
     fileTree,
     expandedFolders,
     selectedFile,
     activeTabPath,
     unsavedFiles,
-    searchQuery,
     creatingNode,
     multiSelectedFiles,
     isGitRepo,
@@ -399,9 +443,8 @@ export const FileTree: React.FC = () => {
   }, []);
 
   const filteredTree = useMemo(() => {
-    if (!fileTree || !searchQuery) return fileTree;
-    return filterNode(fileTree, searchQuery);
-  }, [fileTree, searchQuery, filterNode]);
+    return fileTree;
+  }, [fileTree]);
 
   // Flatten the tree into a linear list for virtualization
   const flattenedItems = useMemo(() => {
@@ -409,6 +452,7 @@ export const FileTree: React.FC = () => {
   }, [filteredTree, expandedFolders]);
 
   const listData = useMemo<RowItemData>(() => ({
+    chatId,
     flattenedItems,
     expandedFolders,
     selectedFile,
@@ -430,6 +474,7 @@ export const FileTree: React.FC = () => {
     renameInputRef,
     setRenameValue,
   }), [
+    chatId,
     flattenedItems,
     expandedFolders,
     selectedFile,
@@ -457,6 +502,7 @@ export const FileTree: React.FC = () => {
       index,
       style,
       ariaAttributes,
+      chatId,
       flattenedItems,
       expandedFolders,
       selectedFile,
@@ -515,7 +561,7 @@ export const FileTree: React.FC = () => {
     if (node.type === 'directory') {
       return (
         <div style={style} {...ariaAttributes}>
-          <FileContextMenu fullPath={node.path} isFolder>
+          <FileContextMenu fullPath={node.path} isFolder chatId={chatId}>
             <div>
               <NodeButton
                 depth={depth}
@@ -597,7 +643,7 @@ export const FileTree: React.FC = () => {
     const FileIconComponent = getFileIcon(node.name);
     return (
       <div style={style} {...ariaAttributes}>
-        <FileContextMenu fullPath={node.path} isFolder={false}>
+        <FileContextMenu fullPath={node.path} isFolder={false} chatId={chatId}>
           <div>
             <NodeButton
               depth={depth}

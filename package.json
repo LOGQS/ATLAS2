@@ -4,8 +4,9 @@
   "description": "ATLAS2 - AI Chat Application",
   "main": "index.js",
   "scripts": {
-    "start": "concurrently \"npm run backend\" \"npm run frontend:wait\"",
+    "start": "concurrently \"npm run backend\" \"npm run terminal\" \"npm run frontend:wait\"",
     "backend": "cd backend && python app.py",
+    "terminal": "node services/terminal/index.js",
     "frontend": "cd frontend && npm start",
     "frontend:wait": "wait-on http://localhost:5000/health && npm run frontend",
     "dev": "npm start",
@@ -19,6 +20,12 @@
   ],
   "author": "ATLAS2 Team",
   "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.11.14",
+    "ws": "^8.18.0"
+  },
   "devDependencies": {
     "concurrently": "^8.2.2",
     "wait-on": "^7.2.0"

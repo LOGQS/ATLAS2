@@ -3,6 +3,44 @@
   padding: 0;
 }
 
+/* Tab Navigation */
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 16px 20px 0 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-wrap: wrap;
+}
+
+.settings-tab {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px 8px 0 0;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+  border-bottom: none;
+  position: relative;
+  bottom: -1px;
+}
+
+.settings-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.settings-tab.active {
+  background: linear-gradient(135deg, rgba(255, 146, 79, 0.15) 0%, rgba(74, 144, 226, 0.15) 100%);
+  border-color: rgba(255, 146, 79, 0.4);
+  color: #ffffff;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+
 .settings-group {
   margin-bottom: 24px;
 }
@@ -131,4 +169,283 @@
 .section-button.danger:hover {
   background: rgba(220, 53, 69, 0.3);
   border-color: rgba(220, 53, 69, 0.6);
+}
+
+.rate-limits-group {
+  margin-top: 32px;
+}
+
+.rate-limit-intro {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  margin: 0 0 16px 0;
+}
+
+.rate-limit-feedback {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.rate-limit-feedback-error {
+  color: #ff6b7d;
+  border-color: rgba(220, 53, 69, 0.4);
+  background: rgba(220, 53, 69, 0.12);
+}
+
+.rate-limit-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.rate-limit-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rate-limit-card-provider {
+  border-color: rgba(74, 144, 226, 0.25);
+}
+
+.rate-limit-card-model {
+  margin-left: 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.rate-limit-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  transition: background 0.2s ease;
+}
+
+.rate-limit-card-header.collapsible {
+  cursor: pointer;
+  user-select: none;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 6px;
+}
+
+.rate-limit-card-header.collapsible:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.rate-limit-card-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-right: 10px;
+  transition: transform 0.2s ease;
+  transform-origin: center;
+}
+
+.rate-limit-card-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.rate-limit-card-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.rate-limit-card-title h6 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.rate-limit-card-title p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.rate-limit-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.rate-limit-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.rate-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rate-limit-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.rate-limit-field input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  color: #ffffff;
+  padding: 8px 10px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.rate-limit-field input:focus {
+  border-color: rgba(74, 144, 226, 0.5);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rate-limit-field-description {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.rate-limit-status {
+  font-size: 11px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+
+.rate-limit-status-success {
+  color: #4fd1a1;
+  border-color: rgba(79, 209, 161, 0.4);
+  background: rgba(79, 209, 161, 0.12);
+}
+
+.rate-limit-status-error {
+  color: #ff6b7d;
+  border-color: rgba(220, 53, 69, 0.4);
+  background: rgba(220, 53, 69, 0.12);
+}
+
+.rate-limit-models {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Source badges */
+.rate-limit-source-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.rate-limit-source-env {
+  background: rgba(255, 146, 79, 0.2);
+  color: #ffb380;
+  border: 1px solid rgba(255, 146, 79, 0.4);
+}
+
+.rate-limit-source-file {
+  background: rgba(74, 144, 226, 0.2);
+  color: #80b3ff;
+  border: 1px solid rgba(74, 144, 226, 0.4);
+}
+
+.rate-limit-source-default {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Disabled input styling for .env-controlled fields */
+.rate-limit-field input:disabled {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.4);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.rate-limit-field input:disabled::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Progress bars for usage tracking */
+.rate-limit-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.rate-limit-usage-label {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  display: flex;
+  justify-content: space-between;
+  font-weight: 500;
+}
+
+.rate-limit-progress-bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.rate-limit-progress-fill {
+  height: 100%;
+  transition: width 0.4s ease, background 0.3s ease;
+  border-radius: 2px;
+}
+
+/* Low usage: 0-70% - Green gradient */
+.rate-limit-progress-fill.low {
+  background: linear-gradient(90deg, #4fd1a1 0%, #5de2b2 100%);
+  box-shadow: 0 0 8px rgba(79, 209, 161, 0.3);
+}
+
+/* Medium usage: 70-90% - Yellow/Orange gradient */
+.rate-limit-progress-fill.medium {
+  background: linear-gradient(90deg, #ffb380 0%, #ffc599 100%);
+  box-shadow: 0 0 8px rgba(255, 179, 128, 0.3);
+}
+
+/* High usage: 90-100% - Red gradient with pulse animation */
+.rate-limit-progress-fill.high {
+  background: linear-gradient(90deg, #ff6b7d 0%, #ff8594 100%);
+  box-shadow: 0 0 10px rgba(255, 107, 125, 0.4);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(255, 107, 125, 0.4);
+  }
+  50% {
+    opacity: 0.85;
+    box-shadow: 0 0 16px rgba(255, 107, 125, 0.6);
+  }
 }

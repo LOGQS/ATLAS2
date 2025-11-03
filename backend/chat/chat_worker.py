@@ -10,7 +10,7 @@ import sys
 import time
 import json
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Dict, List
 
 
 DB_UPDATE_THROTTLE_SECONDS = 0.25
@@ -58,6 +58,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
     When the process is terminated, all operations stop immediately.
     """
 
+    startup_cache_module = None
     try:
         backend_dir = Path(__file__).parent.parent
         if str(backend_dir) not in sys.path:
@@ -66,6 +67,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
         from utils.logger import get_logger
         from utils.db_utils import DatabaseManager
         from utils.config import get_provider_map, Config
+        from utils import startup_cache as _startup_cache
+        startup_cache_module = _startup_cache
 
         worker_logger = get_logger(__name__)
         worker_logger.info(f"[CHAT-WORKER] Starting chat worker process for {chat_id}")
@@ -74,8 +77,11 @@ def chat_worker(chat_id: str, child_conn) -> None:
         providers = None
         processing_active = False
         current_content = {'full_text': '', 'full_thoughts': '', 'assistant_message_id': None, 'last_db_update': 0.0}
-        
+
         try:
+            if startup_cache_module is not None:
+                startup_cache_module.register_worker_channel(child_conn)
+
             db = DatabaseManager()
             
             providers = get_provider_map()
@@ -97,7 +103,8 @@ def chat_worker(chat_id: str, child_conn) -> None:
                 if child_conn.poll(0.1):
                     try:
                         command = child_conn.recv()
-                        command_type = command.get('command')
+                        command_type = command.get('command') if isinstance(command, dict) else None
+                        command_id = command.get('command_id') if isinstance(command, dict) else None
                         
                         worker_logger.info(f"[CHAT-WORKER] Received command {command_type} for {chat_id}")
                         
@@ -117,24 +124,32 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
                                 except Exception as save_error:
                                     worker_logger.error(f"[CHAT-WORKER] Error saving partial content on stop: {save_error}")
-                            child_conn.send({'success': True, 'chat_id': chat_id})
+                            child_conn.send({'success': True, 'chat_id': chat_id, 'command_id': command_id})
                             break
                         
                         elif command_type == 'cancel':
                             if processing_active:
                                 processing_active = False
-                                
+
                                 db.update_chat_state(chat_id, "static")
                                 child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
-                                
-                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id})
+
+                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': command_id})
                                 worker_logger.info(f"[CHAT-WORKER] Cancelled processing for {chat_id}")
                             else:
-                                child_conn.send({'success': True, 'cancelled': False, 'chat_id': chat_id})
-                        
+                                child_conn.send({'success': True, 'cancelled': False, 'chat_id': chat_id, 'command_id': command_id})
+
+                        elif command_type == 'reload_config':
+                            try:
+                                worker_logger.info(f"[CHAT-WORKER] Config reload command received for {chat_id} (no-op in worker)")
+                                child_conn.send({'success': True, 'chat_id': chat_id, 'command_id': command_id})
+                            except Exception as reload_error:
+                                worker_logger.error(f"[CHAT-WORKER] Failed to reload config: {reload_error}")
+                                child_conn.send({'success': False, 'error': str(reload_error), 'chat_id': chat_id, 'command_id': command_id})
+
                         elif command_type == 'process':
                             if processing_active:
-                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id})
+                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id, 'command_id': command_id})
                                 continue
 
                             try:
@@ -168,6 +183,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     router_result = router.route_request(message, chat_history, providers, actual_chat_id, attached_files)  # type: ignore
                                     model = router_result['model']
                                     provider = router_result['provider']
+                                    router_error = router_result.get('error')
 
                                     child_conn.send({
                                         'type': 'router_decision',
@@ -179,10 +195,14 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                         'tools_needed': router_result.get('tools_needed'),
                                         'execution_type': router_result.get('execution_type'),
                                         'domain_id': router_result.get('domain_id'),
-                                        'fastpath_params': router_result.get('fastpath_params')
+                                        'fastpath_params': router_result.get('fastpath_params'),
+                                        'error': router_error
                                     })
 
-                                    worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
+                                    if router_error:
+                                        worker_logger.warning(f"[CHAT-WORKER] Router error, falling back to default: {router_error} -> model: {model} -> provider: {provider}")
+                                    else:
+                                        worker_logger.info(f"[CHAT-WORKER] Router selected route: {router_result['route']} -> model: {model} -> provider: {provider}")
                                 elif router_already_called and router_result:
                                     worker_logger.info(f"[CHAT-WORKER] Using router result from route handler: {router_result.get('route')} with tools_needed={router_result.get('tools_needed')}, fastpath_params={'present' if router_result.get('fastpath_params') else 'absent'}")
                                     worker_logger.info(f"[CHAT-WORKER] Router decision already broadcasted by route handler, skipping duplicate broadcast")
@@ -229,11 +249,91 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                     current_content['full_thoughts'] = ''
                                     current_content['last_db_update'] = 0.0
                                 
-                                child_conn.send({'success': False, 'error': error_msg, 'chat_id': chat_id})
+                                child_conn.send({'success': False, 'error': error_msg, 'chat_id': chat_id, 'command_id': command_id})
+                            
+                        elif command_type == 'domain_tool_decision':
+                            if processing_active:
+                                child_conn.send({'success': False, 'error': 'Processing already active', 'chat_id': chat_id, 'command_id': command_id})
+                                continue
+
+                            task_id = command.get('task_id')
+                            call_id = command.get('call_id')
+                            decision = command.get('decision')
+                            decision_chat_id = command.get('chat_id', chat_id)
+                            assistant_override = command.get('assistant_message_id')
+                            batch_mode = command.get('batch_mode', True)  # Default to batch mode
+
+                            if not task_id or not call_id or not decision:
+                                child_conn.send({
+                                    'success': False,
+                                    'chat_id': decision_chat_id,
+                                    'error': 'Missing task_id, call_id, or decision for domain tool decision',
+                                    'command_id': command_id
+                                })
+                                continue
+
+                            try:
+                                from agents.execution.single_domain_executor import single_domain_executor
+
+                                processing_active = True
+                                db.update_chat_state(decision_chat_id, "responding")
+                                child_conn.send({'type': 'state_update', 'chat_id': decision_chat_id, 'state': 'responding'})
+
+                                # Send immediate acknowledgement before processing
+                                child_conn.send({'success': True, 'chat_id': decision_chat_id, 'command_id': command_id})
+
+                                worker_logger.info(f"[DOMAIN-DECISION] Handling decision '{decision}' (batch={batch_mode}) for task {task_id}, call {call_id}")
+                                result = single_domain_executor.handle_tool_decision(task_id, call_id, decision, batch_mode)
+
+                                if result.get('error'):
+                                    error_msg = result['error']
+                                    worker_logger.error(f"[DOMAIN-DECISION] Error: {error_msg}")
+                                    db.update_chat_state(decision_chat_id, "static")
+                                    child_conn.send({'type': 'state_update', 'chat_id': decision_chat_id, 'state': 'static'})
+                                    child_conn.send({
+                                        'success': False,
+                                        'chat_id': decision_chat_id,
+                                        'task_id': task_id,
+                                        'error': error_msg,
+                                        'command_id': command_id
+                                    })
+                                else:
+                                    assistant_for_update = result.get('assistant_message_id') or assistant_override or current_content.get('assistant_message_id')
+                                    _handle_domain_result(
+                                        result=result,
+                                        chat_id=decision_chat_id,
+                                        db=db,
+                                        child_conn=child_conn,
+                                        worker_logger=worker_logger,
+                                        assistant_message_id=assistant_for_update,
+                                        current_content=current_content
+                                    )
+                                    child_conn.send({
+                                        'success': True,
+                                        'chat_id': decision_chat_id,
+                                        'task_id': task_id,
+                                        'status': result.get('status'),
+                                        'command_id': command_id
+                                    })
+
+                                processing_active = False
+
+                            except Exception as decision_error:
+                                processing_active = False
+                                worker_logger.error(f"[DOMAIN-DECISION] Failed to process decision: {decision_error}")
+                                db.update_chat_state(decision_chat_id, "static")
+                                child_conn.send({'type': 'state_update', 'chat_id': decision_chat_id, 'state': 'static'})
+                                child_conn.send({
+                                    'success': False,
+                                    'chat_id': decision_chat_id,
+                                    'task_id': task_id,
+                                    'error': str(decision_error),
+                                    'command_id': command_id
+                                })
                             
                     except Exception as cmd_error:
                         worker_logger.error(f"[CHAT-WORKER] Command processing error for {chat_id}: {str(cmd_error)}")
-                        child_conn.send({'success': False, 'error': f'Command processing failed: {str(cmd_error)}', 'chat_id': chat_id})
+                        child_conn.send({'success': False, 'error': f'Command processing failed: {str(cmd_error)}', 'chat_id': chat_id, 'command_id': command_id})
                 
             except Exception as loop_error:
                 worker_logger.error(f"[CHAT-WORKER] Main loop error for {chat_id}: {str(loop_error)}")
@@ -247,8 +347,13 @@ def chat_worker(chat_id: str, child_conn) -> None:
     finally:
         try:
             child_conn.close()
-        except:
+        except Exception:
             pass
+        if startup_cache_module is not None:
+            try:
+                startup_cache_module.clear_worker_channel()
+            except Exception:
+                pass
 
 
 def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, worker_logger) -> Optional[str]:
@@ -306,7 +411,41 @@ def _execute_fastpath_tool(fastpath_params: str, chat_id: str, ctx_id: str, work
 
     except Exception as e:
         worker_logger.error(f"[FASTPATH] Tool execution failed: {str(e)}")
+        # Return error message so LLM can inform user about the failure
+        return f"[TOOL EXECUTION ERROR] The {tool_name} tool failed with error: {str(e)}"
+
+
+def _get_coder_workspace_path(db, chat_id: str, worker_logger) -> Optional[str]:
+    """Fetch the configured coder workspace path for a chat."""
+
+    def query(conn, cursor):
+        cursor.execute(
+            "SELECT workspace_path FROM coder_workspaces WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+
+    workspace_path = db._execute_with_connection(
+        "fetch coder workspace",
+        query,
+        return_on_error=None,
+    )
+
+    if not workspace_path:
+        worker_logger.info(f"[CODER_WORKSPACE] No workspace mapping found for chat {chat_id}")
         return None
+
+    resolved_path = Path(workspace_path).expanduser()
+    if not resolved_path.exists():
+        worker_logger.warning(
+            "[CODER_WORKSPACE] Workspace path %s does not exist on disk for chat %s",
+            resolved_path,
+            chat_id,
+        )
+        return None
+
+    return str(resolved_path.resolve())
 
 
 def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_history: list,
@@ -338,27 +477,207 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                         'name': file_record['original_name']
                     })
 
-        import uuid
-        task_id = f"task_{uuid.uuid4().hex[:12]}"
-        initial_domain_data = {
-            'task_id': task_id,
-            'domain_id': domain_id,
-            'agent_id': 'dev_agent',  
-            'status': 'starting',
-            'actions': [],
-            'plan': None,
-            'context_snapshots': [],
-            'output': ''
-        }
-        initial_domain_json = json.dumps(initial_domain_data)
+        workspace_path: Optional[str] = None
+        if domain_id == 'coder':
+            workspace_path = _get_coder_workspace_path(db, chat_id, worker_logger)
+            if not workspace_path:
+                worker_logger.info(f"[CODER_WORKSPACE] Prompting user to select workspace for chat {chat_id}")
+                prompt_message = (
+                    "I need a workspace before I can start coding. "
+                    "Please select a workspace in the Coder view to continue."
+                )
 
-        worker_logger.info(f"[DOMAIN-EXEC-INIT] Sending initial domain_execution event")
-        child_conn.send({
-            'type': 'content',
-            'chat_id': chat_id,
-            'content_type': 'domain_execution',
-            'content': initial_domain_json
-        })
+                if assistant_message_id:
+                    db.update_message(assistant_message_id, prompt_message)
+
+                current_content['full_text'] = prompt_message
+                current_content['full_thoughts'] = ''
+                current_content['assistant_message_id'] = assistant_message_id
+                current_content['last_db_update'] = time.time()
+
+                child_conn.send({
+                    'type': 'content',
+                    'chat_id': chat_id,
+                    'content_type': 'coder_workspace_prompt',
+                    'content': json.dumps({
+                        'chat_id': chat_id,
+                        'message': message,
+                        'domain_id': domain_id
+                    })
+                })
+
+                child_conn.send({
+                    'type': 'content',
+                    'chat_id': chat_id,
+                    'content_type': 'answer',
+                    'content': prompt_message
+                })
+
+                # Keep worker alive and wait for workspace selection
+                worker_logger.info(f"[CODER_WORKSPACE] Waiting for workspace selection for chat {chat_id}")
+                db.update_chat_state(chat_id, "thinking")
+                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'thinking'})
+
+                # Wait for workspace_selected command
+                workspace_selected = False
+                while not workspace_selected:
+                    if child_conn.poll(timeout=0.5):
+                        cmd = child_conn.recv()
+                        if isinstance(cmd, dict):
+                            cmd_id = cmd.get('command_id')
+                            if cmd.get('command') == 'workspace_selected':
+                                worker_logger.info(f"[CODER_WORKSPACE] Received workspace_selected command for chat {chat_id}")
+                                workspace_path = _get_coder_workspace_path(db, chat_id, worker_logger)
+                                if workspace_path:
+                                    workspace_selected = True
+                                    child_conn.send({'success': True, 'workspace_path': workspace_path, 'command_id': cmd_id})
+                                else:
+                                    child_conn.send({'success': False, 'error': 'Workspace not found after selection', 'command_id': cmd_id})
+                            elif cmd.get('command') == 'cancel':
+                                worker_logger.info(f"[CODER_WORKSPACE] Received cancel during workspace wait for chat {chat_id}")
+                                db.update_chat_state(chat_id, "static")
+                                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+                                child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
+                                return
+
+                if not workspace_path:
+                    worker_logger.error(f"[CODER_WORKSPACE] Failed to get workspace after selection for chat {chat_id}")
+                    db.update_chat_state(chat_id, "static")
+                    child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                    return
+
+        def _derive_file_change_events(operation_detail: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            events: List[Dict[str, Any]] = []
+            if not isinstance(operation_detail, dict):
+                return events
+
+            # Prefer explicit workspace events when tools provide them
+            metadata = operation_detail.get("metadata")
+            if isinstance(metadata, dict):
+                workspace_events = metadata.get("workspace_events")
+                if isinstance(workspace_events, list):
+                    for raw in workspace_events:
+                        if isinstance(raw, dict):
+                            events.append(dict(raw))
+
+            ops_list = operation_detail.get("ops")
+            if isinstance(ops_list, list):
+                for op in ops_list:
+                    if not isinstance(op, dict):
+                        continue
+                    op_type = op.get("type")
+                    if op_type == "file_write":
+                        file_path = op.get("path") or op.get("destination_path")
+                        if not file_path:
+                            continue
+                        content = op.get("after") if isinstance(op.get("after"), str) else None
+                        events.append({
+                            "operation": "write",
+                            "file_path": file_path,
+                            "content": content,
+                        })
+                    elif op_type == "file_edit":
+                        file_path = op.get("path")
+                        if not file_path:
+                            continue
+                        content = op.get("after") if isinstance(op.get("after"), str) else None
+                        events.append({
+                            "operation": "edit",
+                            "file_path": file_path,
+                            "content": content,
+                        })
+                    elif op_type == "file_move":
+                        dest_path = op.get("destination_path") or op.get("path")
+                        if not dest_path:
+                            continue
+                        events.append({
+                            "operation": "move",
+                            "file_path": dest_path,
+                            "previous_path": op.get("source_path"),
+                        })
+
+            deduped: List[Dict[str, Any]] = []
+            seen = set()
+            for event in events:
+                key = (event.get("operation"), event.get("file_path"), event.get("previous_path"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(event)
+            return deduped
+
+        def _domain_event_callback(event: Dict[str, Any]) -> None:
+            try:
+                event_type = event.get("event")
+                payload = event.get("payload")
+                task_id = event.get("task_id")
+
+                if event_type == "state" and payload:
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'domain_execution_update',
+                        'content': json.dumps(payload),
+                        'task_id': task_id,
+                    })
+                elif event_type == "model_retry" and payload:
+                    # Send retry event to frontend
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'model_retry',
+                        'content': json.dumps(payload),
+                        'task_id': task_id,
+                    })
+                elif event_type == "tool_execution" and payload:
+                    operation_payload = {
+                        'task_id': task_id,
+                        'domain_id': event.get("domain_id"),
+                        'operation': payload,
+                        'workspace_path': workspace_path,
+                    }
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'coder_operation',
+                        'content': json.dumps(operation_payload),
+                    })
+
+                    try:
+                        file_events = _derive_file_change_events(payload)
+                        if file_events:
+                            for raw_event in file_events:
+                                file_path = raw_event.get("file_path")
+                                if not file_path:
+                                    continue
+                                event_detail = {
+                                    "chat_id": chat_id,
+                                    "workspace_path": workspace_path,
+                                    "file_path": file_path,
+                                    "operation": raw_event.get("operation", "edit"),
+                                    "content": raw_event.get("content"),
+                                    "previous_path": raw_event.get("previous_path"),
+                                }
+                                child_conn.send({
+                                    'type': 'content',
+                                    'chat_id': chat_id,
+                                    'content_type': 'coder_file_change',
+                                    'content': json.dumps(event_detail),
+                                })
+                    except Exception as file_event_error:
+                        worker_logger.warning(
+                            "[DOMAIN-EXEC] Failed to derive file change events for chat %s: %s",
+                            chat_id,
+                            file_event_error,
+                        )
+            except Exception as callback_error:
+                worker_logger.error(
+                    "[DOMAIN-EXEC] Failed to dispatch domain event for chat %s: %s",
+                    chat_id,
+                    callback_error,
+                )
 
         worker_logger.info(f"[DOMAIN-EXEC] Calling single_domain_executor.execute_domain_task...")
         result = single_domain_executor.execute_domain_task(
@@ -367,87 +686,31 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
             chat_id=chat_id,
             chat_history=chat_history,
             attached_files=attached_files,
-            task_budget=None  
+            task_budget=None,
+            assistant_message_id=assistant_message_id,
+            workspace_path=workspace_path,
+            event_callback=_domain_event_callback,
         )
 
         worker_logger.info("=" * 80)
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Execution completed")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Status: {result.get('status')}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Task ID: {result.get('task_id')}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Agent ID: {result.get('agent_id')}")
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Plan steps: {len(result.get('plan') or [])}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Actions: {len(result.get('actions') or [])}")
         worker_logger.info(f"[DOMAIN-EXEC-RESULT] Output length: {len(result.get('output') or '')} chars")
-        worker_logger.info(f"[DOMAIN-EXEC-RESULT] Has error: {'error' in result}")
-        if 'error' in result:
+        if result.get('error'):
             worker_logger.error(f"[DOMAIN-EXEC-RESULT] Error: {result.get('error')}")
         worker_logger.info("=" * 80)
 
-        if 'error' not in result:
-            domain_execution_data = {
-                'task_id': result.get('task_id'),
-                'domain_id': result.get('domain_id'),
-                'agent_id': result.get('agent_id'),
-                'status': result.get('status'),
-                'actions': result.get('actions', []),
-                'plan': result.get('plan'),
-                'context_snapshots': result.get('context_snapshots', []),
-                'output': result.get('output', '')
-            }
-            domain_execution_json = json.dumps(domain_execution_data)
-
-            worker_logger.info(f"[DOMAIN-EXEC-SSE] Preparing to send domain_execution SSE event")
-            worker_logger.info(f"[DOMAIN-EXEC-SSE] Event data preview: {domain_execution_json[:300]}...")
-            worker_logger.info(f"[DOMAIN-EXEC-SSE] Plan object: {result.get('plan')}")
-            worker_logger.info(f"[DOMAIN-EXEC-SSE] Actions count: {len(result.get('actions', []))}")
-
-            child_conn.send({
-                'type': 'content',
-                'chat_id': chat_id,
-                'content_type': 'domain_execution',
-                'content': domain_execution_json
-            })
-
-            worker_logger.info(f"[DOMAIN-EXEC-SSE] Successfully sent domain_execution event via child_conn")
-
-        output_text = result.get('output', '')
-        if result.get('error'):
-            output_text = f"Error during domain execution: {result['error']}"
-            worker_logger.error(f"[DOMAIN-EXEC-ERROR] Error: {result['error']}")
-
-        worker_logger.info(f"[DOMAIN-EXEC-DB] Updating database message {assistant_message_id}")
-        if assistant_message_id and output_text:
-            db.update_message(
-                assistant_message_id,
-                output_text,
-                thoughts=None,
-                domain_execution=domain_execution_json if 'error' not in result else None
-            )
-            worker_logger.info(f"[DOMAIN-EXEC-DB] Successfully saved output ({len(output_text)} chars) to message {assistant_message_id}")
-            if 'error' not in result:
-                worker_logger.info(f"[DOMAIN-EXEC-DB] Saved domain_execution JSON to message")
-
-        worker_logger.info(f"[DOMAIN-EXEC-SSE] Sending answer content ({len(output_text)} chars)")
-        child_conn.send({
-            'type': 'content',
-            'chat_id': chat_id,
-            'content_type': 'answer',
-            'content': output_text
-        })
-
-        worker_logger.info(f"[DOMAIN-EXEC-COMPLETE] Setting chat state to static and sending completion events")
-        db.update_chat_state(chat_id, "static")
-        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
-        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
-
-        current_content['full_text'] = ''
-        current_content['full_thoughts'] = ''
-        current_content['assistant_message_id'] = None
-        current_content['last_db_update'] = 0.0
-
-        worker_logger.info("=" * 80)
-        worker_logger.info(f"[DOMAIN-EXEC-COMPLETE] Domain execution workflow completed successfully")
-        worker_logger.info("=" * 80)
+        _handle_domain_result(
+            result=result,
+            chat_id=chat_id,
+            db=db,
+            child_conn=child_conn,
+            worker_logger=worker_logger,
+            assistant_message_id=assistant_message_id,
+            current_content=current_content
+        )
 
     except Exception as e:
         worker_logger.error("=" * 80)
@@ -470,6 +733,63 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
         db.update_chat_state(chat_id, "static")
         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+
+
+def _handle_domain_result(*, result: Dict[str, Any], chat_id: str, db, child_conn,
+                          worker_logger, assistant_message_id: Optional[int],
+                          current_content: Dict[str, Any]):
+    """Persist and broadcast domain execution state."""
+    status = (result.get('status') or '').lower()
+    domain_execution_json = json.dumps(result)
+
+    worker_logger.info(f"[DOMAIN-EXEC-STATE] Emitting domain_execution event (status={status})")
+    child_conn.send({
+        'type': 'content',
+        'chat_id': chat_id,
+        'content_type': 'domain_execution',
+        'content': domain_execution_json
+    })
+
+    message_text = ''
+    if result.get('error'):
+        message_text = f"Domain execution error: {result['error']}"
+    elif status == 'waiting_user':
+        message_text = result.get('agent_message') or ''
+    elif status in ('completed', 'failed', 'aborted'):
+        message_text = result.get('output') or result.get('agent_message') or ''
+    else:
+        message_text = result.get('agent_message') or ''
+
+    if assistant_message_id and message_text is not None:
+        db.update_message(
+            assistant_message_id,
+            message_text,
+            thoughts=None,
+            domain_execution=domain_execution_json if not result.get('error') else None
+        )
+        worker_logger.info(f"[DOMAIN-EXEC-DB] Updated message {assistant_message_id} with {len(message_text)} chars")
+
+    if message_text:
+        child_conn.send({
+            'type': 'content',
+            'chat_id': chat_id,
+            'content_type': 'answer',
+            'content': message_text
+        })
+
+    if status == 'waiting_user':
+        db.update_chat_state(chat_id, "static")
+        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+        return
+
+    if status in ('completed', 'failed', 'aborted'):
+        db.update_chat_state(chat_id, "static")
+        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+        current_content['full_text'] = ''
+        current_content['full_thoughts'] = ''
+        current_content['assistant_message_id'] = None
+        current_content['last_db_update'] = 0.0
 
 
 def _format_tool_output(tool_name: str, output: Any, worker_logger) -> str:
@@ -606,7 +926,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             'tools_needed': router_result.get('tools_needed'),
             'execution_type': router_result.get('execution_type'),
             'domain_id': router_result.get('domain_id'),
-            'fastpath_params': router_result.get('fastpath_params')
+            'fastpath_params': router_result.get('fastpath_params'),
+            'error': router_result.get('error')
         })
 
     assistant_message_id = db.save_message(
@@ -692,10 +1013,16 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             if child_conn.poll(0):
                 try:
                     cmd_data = child_conn.recv()
-                    if cmd_data.get('command') == 'cancel':
+                    if isinstance(cmd_data, dict):
+                        cmd_id = cmd_data.get('command_id')
+                    else:
+                        cmd_id = None
+
+                    if isinstance(cmd_data, dict) and cmd_data.get('command') == 'cancel':
                         worker_logger.info(f"[CHAT-WORKER] Processing cancelled for {chat_id}")
+                        child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
                         return
-                    elif cmd_data.get('command') == 'stop':
+                    elif isinstance(cmd_data, dict) and cmd_data.get('command') == 'stop':
                         worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
                         if assistant_message_id and (full_text or full_thoughts):
                             current_content['full_text'] = full_text
@@ -710,7 +1037,7 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                         db.update_chat_state(chat_id, "static")
                         child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
                         child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
-                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True})
+                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True, 'command_id': cmd_id})
                         return
                 except:
                     pass
@@ -800,6 +1127,9 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                 # OpenAI-compatible format (Groq, OpenRouter)
                 actual_tokens_count = streaming_usage_metadata['total_tokens']
             worker_logger.info(f"[TokenUsage] Using actual tokens from stream: {actual_tokens_count}")
+
+            # Rate limiting is now handled in main process
+            # Main process will query token usage from DB after streaming completes
 
         # Save token usage with both estimated and actual
         if actual_tokens_count > 0:

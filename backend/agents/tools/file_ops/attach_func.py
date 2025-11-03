@@ -29,7 +29,12 @@ def _tool_attach_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> Tool
     if not file_path:
         raise ValueError("file_path is required")
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot attach file: {error_msg}")
 
@@ -75,15 +80,14 @@ def _tool_attach_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> Tool
             upload_kwargs["config"] = {"mime_type": "text/markdown"}
 
         from utils.rate_limiter import get_rate_limiter
-        limiter = get_rate_limiter(
-            Config.get_rate_limit_requests_per_minute(),
-            Config.get_rate_limit_burst_size()
-        )
+        rate_config = Config.get_rate_limit_config(provider=provider_name)
+        limiter = get_rate_limiter()
 
         uploaded_file = limiter.execute(
             provider.client.files.upload,
             f"{provider_name}:upload",
-            **upload_kwargs
+            limit_config=rate_config,
+            **upload_kwargs,
         )
 
         api_file_name = uploaded_file.name

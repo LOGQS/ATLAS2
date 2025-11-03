@@ -990,6 +990,55 @@
   transition: all 0.2s ease;
 }
 
+/* Stats Bar */
+.sidebar-stats-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
 
+.sidebar-stats-bar:hover {
+  background: linear-gradient(135deg, rgba(74, 144, 226, 0.15), rgba(255, 146, 79, 0.2));
+  border-top-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+}
 
+.stats-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
 
+.stats-label {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.stats-value {
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: 'Courier New', monospace;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: all 0.2s ease;
+}
+
+.sidebar-stats-bar:hover .stats-value {
+  background: rgba(255, 146, 79, 0.15);
+  border-color: rgba(255, 146, 79, 0.3);
+  color: #ff924f;
+}

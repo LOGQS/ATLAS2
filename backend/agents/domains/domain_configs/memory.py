@@ -36,7 +36,7 @@ Always preserve context and maintain memory consistency.""",
                     max_time_seconds=60,
                     max_context_tokens=10000,
                 ),
-                model_preference="gemini-2.5-flash",
+                model_preference="gemini-2.5-flash-preview-09-2025",
             )
         ],
         tool_allowlist=[

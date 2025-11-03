@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from utils.logger import get_logger
 from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
-from .file_utils import validate_file_path, format_file_size, check_paths_same
+from .file_utils import validate_file_path, format_file_size, check_paths_same, workspace_relative_path
 
 _logger = get_logger(__name__)
 
@@ -33,13 +33,25 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
         raise ValueError("destination_path is required")
 
     is_valid, error_msg, source_resolved = validate_file_path(
-        source_path, must_exist=True, must_be_file=True
+        source_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
     )
     if not is_valid:
         raise ValueError(f"Cannot move file: {error_msg}")
 
+    dest_valid, dest_error, dest_resolved = validate_file_path(
+        destination_path,
+        must_exist=False,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
+    if not dest_valid:
+        raise ValueError(f"Cannot move file: {dest_error}")
+
     try:
-        dest_resolved = Path(destination_path).resolve()
+        dest_resolved = dest_resolved
 
         if check_paths_same(source_resolved, dest_resolved):
             raise ValueError(
@@ -70,14 +82,26 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             dest_parent.mkdir(parents=True, exist_ok=True)
 
         file_size = source_resolved.stat().st_size
+        dest_existed_before = dest_resolved.exists()
 
         shutil.move(str(source_resolved), str(dest_resolved))
 
-        action = "moved and overwritten" if overwrite and dest_resolved.exists() else "moved"
+        action = "moved and overwritten" if overwrite and dest_existed_before else "moved"
         _logger.info(
             f"Successfully {action} '{source_path}' to '{destination_path}' "
             f"({format_file_size(file_size)})"
         )
+
+        ops = [
+            {
+                "type": "file_move",
+                "source_path": workspace_relative_path(source_resolved, ctx.workspace_path),
+                "destination_path": workspace_relative_path(dest_resolved, ctx.workspace_path),
+                "absolute_source_path": str(source_resolved),
+                "absolute_destination_path": str(dest_resolved),
+                "overwrite": bool(overwrite and dest_existed_before),
+            }
+        ]
 
         return ToolResult(
             output={
@@ -94,7 +118,8 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
                 "source": source_path,
                 "destination": str(dest_resolved),
                 "size_bytes": file_size
-            }
+            },
+            ops=ops,
         )
 
     except PermissionError:

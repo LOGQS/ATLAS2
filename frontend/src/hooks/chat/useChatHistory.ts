@@ -64,6 +64,10 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
 
           if (activeChatIdRef.current === targetChatId) {
             setMessagesRef.current(prev => {
+              // Guard against race condition during rapid chat switching
+              if (activeChatIdRef.current !== targetChatId) {
+                return prev;
+              }
               const result = reconcileMessages(prev, freshMessages, targetChatId, false);
               const currentLiveState = liveStore.get(targetChatId);
               if (currentLiveState?.state === 'static') {
@@ -77,6 +81,15 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
               chatHistoryCache.put(targetChatId, freshMessages, 'clean-static');
             }
           }
+
+          // Reconcile LiveStore with DB to clear stale streaming buffers
+          const lastA = [...freshMessages].reverse().find(m => m.role === 'assistant');
+          liveStore.reconcileWithDB(
+            targetChatId,
+            lastA?.id || null,
+            lastA?.content || '',
+            lastA?.thoughts || ''
+          );
         } else {
           logger.info(`[ChatCache] Cache validated successfully for ${targetChatId}`);
         }
@@ -105,16 +118,34 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.info(`[ChatCache] Using cached messages for ${targetChatId} (${cached.messages.length} messages)`);
 
         if (activeChatIdRef.current === targetChatId && loadRequestIdRef.current === requestId) {
-          setMessagesRef.current(() => {
+          setMessagesRef.current(prev => {
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              return prev;
+            }
             logger.info(`[ChatCache] Setting cached messages immediately`);
             return cached.messages;
           });
         }
 
+        // Reconcile LiveStore to clear stale streaming buffers
+        const lastA = [...cached.messages].reverse().find(m => m.role === 'assistant');
+        liveStore.reconcileWithDB(
+          targetChatId,
+          lastA?.id || null,
+          lastA?.content || '',
+          lastA?.thoughts || ''
+        );
+        logger.info(`[CHAT_LOAD_DONE] DB load applied for ${targetChatId} (requestId=${requestId}, messages=${cached.messages.length})`);
+
         if (!silent && loadRequestIdRef.current === requestId) {
           setIsLoading(false);
+          logger.info(`[CHAT_LOAD_STATE] Cached load cleared isLoading for ${targetChatId} (requestId=${requestId})`);
+        } else if (silent) {
+          logger.info(`[CHAT_LOAD_STATE] Cached load completed silently for ${targetChatId} (requestId=${requestId})`);
         }
 
+        logger.info(`[CHAT_LOAD_DONE] Cached load satisfied for ${targetChatId} (requestId=${requestId})`);
         setIsValidating(true);
         validateCache(targetChatId);
         return;
@@ -129,7 +160,12 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
 
-    if (!silent) setIsLoading(true);
+    if (!silent) {
+      logger.info(`[CHAT_LOAD_STATE] setIsLoading(true) for ${targetChatId} (requestId=${requestId}, forceReplace=${forceReplaceMessages})`);
+      setIsLoading(true);
+    } else {
+      logger.info(`[CHAT_LOAD_STATE] Silent load started for ${targetChatId} (requestId=${requestId}, forceReplace=${forceReplaceMessages})`);
+    }
     try {
       logger.info(`[ChatHistory] === LOAD HISTORY CALLED FOR ${targetChatId} (forceReplace: ${forceReplaceMessages}) ===`);
       const res = await fetch(apiUrl(`/api/db/chat/${targetChatId}`), { signal });
@@ -142,6 +178,26 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
           const contentPreview = m.content ? m.content.substring(0, 50) : '';
           logger.info(`[ChatHistory] DB[${i}]: ${m.id}(${m.role}) content="${contentPreview}..."`);
         });
+
+        const assistantMessages = hist.filter(m => m.role === 'assistant');
+        if (assistantMessages.length > 0) {
+          const lastAssistant = assistantMessages[assistantMessages.length - 1];
+          logger.info(
+            `[ROUTER_STATE_DB_CHECK] ${targetChatId} lastAssistant=${lastAssistant.id} ` +
+            `routerEnabled=${Boolean(lastAssistant.routerEnabled)} ` +
+            `hasDecision=${Boolean(lastAssistant.routerDecision?.route)} ` +
+            `route=${lastAssistant.routerDecision?.route ?? 'none'}`
+          );
+
+          const missingRouterMeta = assistantMessages.filter(msg => msg.routerEnabled && !msg.routerDecision?.route);
+          if (missingRouterMeta.length > 0) {
+            logger.warn(
+              `[ROUTER_STATE_DB_CHECK] ${targetChatId} assistants with routerEnabled but missing decision: ${missingRouterMeta.map(m => m.id).join(', ')}`
+            );
+          }
+        } else {
+          logger.info(`[ROUTER_STATE_DB_CHECK] ${targetChatId} has no assistant messages in DB snapshot`);
+        }
         
         if (loadRequestIdRef.current !== requestId) {
           const currentLiveState = liveStore.get(targetChatId);
@@ -179,6 +235,13 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
           currentSetMessages(prev => {
             callbackExecuted.value = true;
             logger.info(`[RECONCILE] ===== SETMESSAGES CALLBACK STARTED =====`);
+
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              logger.warn(`[RECONCILE] Chat switched during callback - aborting state update`);
+              return prev;
+            }
+
             logger.info(`[MESSAGE_STATE] ChatHistory before reconciliation - prev: ${prev.length} messages: ${prev.map(m => `${m.id}(${m.role})`).join(', ')}`);
             prev.forEach((m, i) => {
               const contentPreview = m.content ? m.content.substring(0, 50) : '';
@@ -227,7 +290,13 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
       } else if (res.status === 404) {
         logger.debug(`[ChatHistory] Chat not found (404), handling new chat scenario`);
         if (loadRequestIdRef.current === requestId && activeChatIdRef.current === targetChatId) {
-          setMessagesRef.current(prev => handleNewChatScenario(prev, targetChatId));
+          setMessagesRef.current(prev => {
+            // Guard against race condition during rapid chat switching
+            if (activeChatIdRef.current !== targetChatId) {
+              return prev;
+            }
+            return handleNewChatScenario(prev, targetChatId);
+          });
         }
       } else {
         logger.error(`[ChatHistory] Failed to load history for ${targetChatId}:`, data.error);
@@ -239,7 +308,16 @@ export const useChatHistory = ({ chatId, setMessages, messages }: UseChatHistory
         logger.error(`[ChatHistory] Error loading history for ${targetChatId}:`, e);
       }
     } finally {
-      if (!silent && loadRequestIdRef.current === requestId) setIsLoading(false);
+      if (loadRequestIdRef.current === requestId) {
+        if (!silent) {
+          logger.info(`[CHAT_LOAD_STATE] setIsLoading(false) for ${targetChatId} (requestId=${requestId})`);
+          setIsLoading(false);
+        } else {
+          logger.info(`[CHAT_LOAD_STATE] Silent load completed for ${targetChatId} (requestId=${requestId})`);
+        }
+      } else {
+        logger.info(`[CHAT_LOAD_STATE] Skipping completion update for ${targetChatId} (requestId=${requestId}, latest=${loadRequestIdRef.current})`);
+      }
     }
   }, [chatId, validateCache]); 
 

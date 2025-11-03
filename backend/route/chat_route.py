@@ -7,11 +7,10 @@ import time
 import threading
 from threading import Lock
 from collections import deque
-from chat.chat import Chat, is_chat_processing, stop_chat_process
+from chat.chat import Chat, is_chat_processing, stop_chat_process, send_domain_tool_decision, send_workspace_selected
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
-from agents.services.service import AgenticService
 from typing import Optional, Dict, Any, List
 
 logger = get_logger(__name__)
@@ -38,11 +37,6 @@ _sub_lock = Lock()
 BACKLOG_EVENT_LIMIT = 500
 _backlog_events = deque()
 _backlog_lock = Lock()
-agentic_service = AgenticService()
-
-_plan_event_subscribers = []
-_plan_event_lock = Lock()
-_plan_event_backlog = deque(maxlen=BACKLOG_EVENT_LIMIT)
 
 
 def get_sse_headers(include_cors=False):
@@ -171,11 +165,16 @@ def _drain_backlog_events() -> list[dict]:
     return drained
 
 def _broadcast(event: dict):
+    event_type = event.get('type', 'unknown')
+    chat_id = event.get('chat_id', 'global')
+
     with _sub_lock:
         if not _subscribers:
+            logger.warning(f'[SSE_BROADCAST] No subscribers for {event_type} event (chat: {chat_id}), storing in backlog')
             _store_backlog_event(event)
             return
         subscribers_snapshot = list(_subscribers)
+        logger.debug(f'[SSE_BROADCAST] Broadcasting {event_type} event to {len(subscribers_snapshot)} subscriber(s) (chat: {chat_id})')
 
     delivered = False
     to_remove = []
@@ -193,7 +192,10 @@ def _broadcast(event: dict):
                     _subscribers.remove(q)
         logger.warning(f'[SSE] Removed {len(to_remove)} stale subscriber(s) with full queues')
 
-    if not delivered:
+    if delivered:
+        logger.debug(f'[SSE_BROADCAST] Successfully delivered {event_type} event (chat: {chat_id})')
+    else:
+        logger.warning(f'[SSE_BROADCAST] Failed to deliver {event_type} event (chat: {chat_id}), storing in backlog')
         _store_backlog_event(event)
 
 
@@ -292,7 +294,7 @@ def publish_file_state(file_id: str, api_state: str, provider: str = None, temp_
     })
 
 def publish_router_decision(chat_id: str, selected_route: str, available_routes: list, selected_model: str,
-                           tools_needed=None, execution_type=None, fastpath_params=None):
+                           tools_needed=None, execution_type=None, fastpath_params=None, error=None):
     """Publishes a router decision event via SSE."""
     payload = {
         "type": "router_decision",
@@ -302,81 +304,14 @@ def publish_router_decision(chat_id: str, selected_route: str, available_routes:
         "selected_model": selected_model,
         "tools_needed": tools_needed,
         "execution_type": execution_type,
-        "fastpath_params": fastpath_params
+        "fastpath_params": fastpath_params,
+        "error": error
     }
-    logger.info(f"[SSE_BROADCAST] Router decision payload: route={selected_route}, tools_needed={tools_needed}, execution_type={execution_type}")
+    if error:
+        logger.warning(f"[SSE_BROADCAST] Router decision payload with error: route={selected_route}, error={error}")
+    else:
+        logger.info(f"[SSE_BROADCAST] Router decision payload: route={selected_route}, tools_needed={tools_needed}, execution_type={execution_type}")
     _broadcast(payload)
-
-def _subscribe_plan_events():
-    q = queue.Queue()
-    with _plan_event_lock:
-        _plan_event_subscribers.append(q)
-    return q
-
-
-def _unsubscribe_plan_events(q):
-    with _plan_event_lock:
-        if q in _plan_event_subscribers:
-            _plan_event_subscribers.remove(q)
-
-
-def _broadcast_plan_event(event: Dict[str, Any]):
-    with _plan_event_lock:
-        _plan_event_backlog.append(event)
-        for subscriber in list(_plan_event_subscribers):
-            subscriber.put(event)
-
-
-def _emit_plan_event(chat_id: str, plan_id: str, event_type: str, payload: Dict[str, Any]):
-    event = dict(payload or {})
-    event['type'] = event_type
-    event['chat_id'] = chat_id
-    event['plan_id'] = plan_id
-    _broadcast_plan_event(event)
-
-def _build_plan_summary(plan_dict: Dict[str, Any], status: Optional[str] = None) -> Dict[str, Any]:
-    """Prepare plan payload for SSE consumers."""
-    try:
-        safe_plan = json.loads(json.dumps(plan_dict)) if plan_dict else {}
-    except (TypeError, ValueError):
-        safe_plan = dict(plan_dict or {})
-    tasks = safe_plan.get('tasks') or {}
-    summary = {
-        'plan_id': safe_plan.get('plan_id'),
-        'base_ctx_id': safe_plan.get('base_ctx_id'),
-        'version': safe_plan.get('version'),
-        'metadata': safe_plan.get('metadata', {}),
-        'tasks': tasks,
-        'task_count': len(tasks),
-        'task_ids': list(tasks.keys()),
-    }
-    if status:
-        summary['status'] = status
-    return summary
-
-
-
-def _broadcast_taskflow_plan(chat_id: str, plan_id: str, fingerprint: str, plan_summary: Dict[str, Any], status: Optional[str] = None, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    payload_plan = dict(plan_summary or {})
-    if status:
-        payload_plan['status'] = status
-    message = {
-        'chat_id': chat_id,
-        'type': 'taskflow_plan',
-        'plan_id': plan_id,
-        'fingerprint': fingerprint,
-        'plan': payload_plan,
-    }
-    if status:
-        message['status'] = status
-    if extra:
-        for key, value in extra.items():
-            if value is not None:
-                message[key] = value
-    _broadcast(message)
-    return payload_plan
-
-
 
 def get_content_queue(chat_id: str):
     """Get or create content queue for a chat."""
@@ -459,102 +394,6 @@ def _prepare_user_message_for_agentic(chat: Chat, message: str, attached_file_id
         'attached_file_ids': attached_file_ids
     }
 
-def handle_taskflow_stream(chat: Chat, message: str, router_info: Optional[Dict[str, Any]],
-                         attached_file_ids: List[str], is_retry: bool,
-                         existing_message_id: Optional[str], is_edit_regeneration: bool):
-    """Streaming handler for taskflow route."""
-
-    def generate():
-        yield f"retry: {SSE_RETRY_MS}\n\n"
-        yield format_sse_data({'type': 'chat_id', 'content': chat.chat_id})
-
-        if not message:
-            yield format_sse_data({'type': 'error', 'content': 'Message is required for taskflow route'})
-            return
-
-        try:
-            message_info = _prepare_user_message_for_agentic(
-                chat,
-                message,
-                attached_file_ids,
-                is_retry,
-                existing_message_id,
-                is_edit_regeneration,
-                router_info
-            )
-            attached_ids = message_info['attached_file_ids']
-            logger.info(f"[TASKFLOW] Prepared user message with {len(attached_ids)} attached files")
-        except Exception as exc:
-            logger.error(f"Taskflow preparation failed: {exc}")
-            yield format_sse_data({'type': 'error', 'content': str(exc)})
-            return
-
-        db.update_chat_state(chat.chat_id, 'thinking')
-        publish_state(chat.chat_id, 'thinking')
-
-        try:
-            logger.info(f"[TASKFLOW] Generating plan for chat {chat.chat_id}")
-            plan = agentic_service.generate_plan(chat.chat_id, message)
-            logger.info(f"[TASKFLOW] Plan generated successfully: {plan.plan_id}")
-            plan_dict = plan.to_dict()
-            fingerprint = plan.fingerprint()
-            plan_summary = _build_plan_summary(plan_dict, status='PENDING_APPROVAL')
-            logger.info(f"[TASKFLOW] Plan serialization complete, fingerprint: {fingerprint[:8]}")
-        except Exception as plan_exc:
-            logger.error(f"[TASKFLOW] Plan generation failed: {plan_exc}")
-            db.update_chat_state(chat.chat_id, 'static')
-            publish_state(chat.chat_id, 'static')
-            yield format_sse_data({'type': 'error', 'content': f'Plan generation failed: {str(plan_exc)}'})
-            yield format_sse_data({'type': 'complete'})
-            return
-        
-        try:
-            _emit_plan_event(chat.chat_id, plan.plan_id, 'plan_created', {'plan': plan_summary, 'fingerprint': fingerprint, 'status': 'PENDING_APPROVAL'})
-        except Exception as emit_exc:
-            logger.warning(f"[TASKFLOW] Plan event emission failed: {emit_exc}")
-
-
-        logger.info(f"[TASKFLOW] Sending taskflow_plan event via SSE for plan {plan.plan_id}")
-        try:
-            sse_plan = _broadcast_taskflow_plan(
-                chat.chat_id,
-                plan.plan_id,
-                fingerprint,
-                plan_summary,
-                status='PENDING_APPROVAL'
-            )
-
-            yield format_sse_data({
-                'type': 'taskflow_plan',
-                'plan_id': plan.plan_id,
-                'fingerprint': fingerprint,
-                'plan': sse_plan,
-                'status': 'PENDING_APPROVAL'
-            })
-            logger.info(f"[TASKFLOW] taskflow_plan event sent successfully")
-        except Exception as sse_exc:
-            logger.error(f"[TASKFLOW] Failed to send taskflow_plan event: {sse_exc}")
-            yield format_sse_data({'type': 'error', 'content': f'Plan display failed: {str(sse_exc)}'})
-            return
-
-        # Set chat state to waiting for approval
-        logger.info(f"[TASKFLOW] Setting chat {chat.chat_id} to static state")
-        db.update_chat_state(chat.chat_id, 'static')
-        publish_state(chat.chat_id, 'static')
-
-        # End stream - waiting for user approval via separate API endpoints
-        logger.info(f"[TASKFLOW] Sending plan_pending_approval event for plan {plan.plan_id}")
-        yield format_sse_data({
-            'type': 'plan_pending_approval',
-            'plan_id': plan.plan_id,
-            'message': 'Plan generated. Waiting for approval.'
-        })
-
-        logger.info(f"[TASKFLOW] Completing SSE stream for chat {chat.chat_id}")
-        yield format_sse_data({'type': 'complete'})
-
-    return create_sse_response(generate, include_cors=True)
-
 
 def register_chat_routes(app: Flask):
     """Register chat routes directly"""
@@ -599,199 +438,40 @@ def register_chat_routes(app: Flask):
                 _unsubscribe(q)
         return create_sse_response(generate, include_cors=True)
 
-    @app.route('/sse/plan_events')
-    def plan_events_stream():
-        """SSE endpoint for plan execution events."""
-        chat_filter = request.args.get('chat_id')
-        plan_filter = request.args.get('plan_id')
+    @app.route('/api/chats/<chat_id>/domain/<task_id>/tool/<call_id>/decision', methods=['POST'])
+    def domain_tool_decision(chat_id: str, task_id: str, call_id: str):
+        """Handle user accept/reject decisions for domain tool calls."""
+        try:
+            payload = request.get_json() or {}
+            decision = (payload.get('decision') or '').lower()
+            assistant_message_id = payload.get('assistant_message_id')
+            batch_mode = payload.get('batch_mode', True)  # Default to batch mode
 
-        def generate():
-            q = _subscribe_plan_events()
-            try:
-                with _plan_event_lock:
-                    for event in list(_plan_event_backlog):
-                        if chat_filter and event.get('chat_id') != chat_filter:
-                            continue
-                        if plan_filter and event.get('plan_id') != plan_filter:
-                            continue
-                        yield format_sse_data(event)
-                while True:
-                    try:
-                        event = q.get(timeout=SSE_TIMEOUT_SECONDS)
-                    except queue.Empty:
-                        yield ': keep-alive\n\n'
-                        continue
-                    if chat_filter and event.get('chat_id') != chat_filter:
-                        continue
-                    if plan_filter and event.get('plan_id') != plan_filter:
-                        continue
-                    yield format_sse_data(event)
-            finally:
-                _unsubscribe_plan_events(q)
+            if decision not in {'accept', 'reject'}:
+                return jsonify({'success': False, 'error': "decision must be 'accept' or 'reject'"}), 400
 
-        return create_sse_response(generate, include_cors=True)
+            response = send_domain_tool_decision(
+                chat_id=chat_id,
+                task_id=task_id,
+                call_id=call_id,
+                decision=decision,
+                assistant_message_id=assistant_message_id,
+                batch_mode=batch_mode
+            )
+            status_code = 200 if response.get('success') else 400
+            return jsonify(response), status_code
+        except Exception as e:
+            import traceback
+            logger.error(f"[DOMAIN_TOOL_DECISION] Error processing decision for {chat_id}/{task_id}/{call_id}: {str(e)}")
+            logger.error(f"[DOMAIN_TOOL_DECISION] Traceback: {traceback.format_exc()}")
+            return jsonify({'success': False, 'error': f'Internal server error: {str(e)}'}), 500
 
-    @app.route('/api/chats/<chat_id>/plan/<plan_id>/approve', methods=['POST'])
-    def approve_agentic_plan(chat_id: str, plan_id: str):
-        """Approve a plan and optionally execute it."""
-        payload = request.get_json() or {}
-        auto_execute = payload.get('auto_execute', True)
-
-        record = agentic_service.get_plan_record(plan_id)
-        if not record or record.get('chat_id') != chat_id:
-            return jsonify({'error': 'Plan not found'}), 404
-
-        already_approved = record.get('status') == 'APPROVED'
-        updated_record = record
-        if not already_approved:
-            updated = agentic_service.update_plan_status(plan_id, 'APPROVED')
-            if updated:
-                updated_record = updated
-
-        plan_dict = dict(updated_record.get('ir') or {})
-        plan_dict.setdefault('plan_id', plan_id)
-        plan_dict.setdefault('base_ctx_id', updated_record.get('base_ctx_id'))
-        fingerprint = updated_record.get('fingerprint', '')
-        plan_summary = _build_plan_summary(plan_dict, status='APPROVED')
-
-        _emit_plan_event(chat_id, plan_id, 'plan_approved', {
-            'plan': plan_summary,
-            'fingerprint': fingerprint,
-            'status': 'APPROVED'
-        })
-        _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='APPROVED')
-
-        response = {'plan_id': plan_id, 'status': 'APPROVED'}
-        if already_approved and not payload.get('force', False):
-            return jsonify(response)
-
-        if not auto_execute:
-            return jsonify(response)
-
-        def run_execution():
-            emitter = agentic_service.build_event_emitter()
-            emitter.subscribe(lambda event_type, data: _emit_plan_event(chat_id, plan_id, event_type, data))
-            try:
-                db.update_chat_state(chat_id, 'thinking')
-                publish_state(chat_id, 'thinking')
-                execution = agentic_service.execute_plan(chat_id, plan_id, events=emitter)
-                final_output = execution.get('final_output')
-                final_task_id = execution.get('final_task_id')
-                _emit_plan_event(chat_id, plan_id, 'execution_complete', {
-                    'final_output': final_output,
-                    'final_task_id': final_task_id
-                })
-                extra = {'final_output': final_output} if final_output else None
-                _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='COMPLETED', extra=extra)
-
-                assistant_message_id = execution.get('assistant_message_id')
-                if assistant_message_id:
-                    db.update_message_plan_id(assistant_message_id, plan_id)
-                    logger.info(f"[TASKFLOW] Associated plan {plan_id} with message {assistant_message_id}")
-
-                    try:
-                        history = db.get_chat_history(chat_id)
-                        if history:
-                            for msg in reversed(history):
-                                if msg.get('role') == 'user' and msg.get('routerEnabled'):
-                                    router_decision_str = None
-                                    if msg.get('routerDecision'):
-                                        router_decision_str = json.dumps(msg['routerDecision'])
-                                    db.update_message_router_metadata(assistant_message_id, True, router_decision_str)
-                                    logger.info(f"[TASKFLOW] Updated assistant message {assistant_message_id} with router metadata from user message")
-                                    break
-                    except Exception as router_update_exc:
-                        logger.warning(f"[TASKFLOW] Failed to update assistant message router metadata: {router_update_exc}")
-
-                if final_output:
-                    db.update_chat_state(chat_id, 'responding')
-                    publish_state(chat_id, 'responding')
-                    publish_content(
-                        chat_id,
-                        'answer',
-                        final_output,
-                        message_id=assistant_message_id,
-                        provider=execution.get('final_provider'),
-                        model=execution.get('final_model'),
-                        plan_id=plan_id
-                    )
-                db.update_chat_state(chat_id, 'static')
-                publish_state(chat_id, 'static')
-            except Exception as exc:
-                logger.error(f"[TASKFLOW] Plan execution failed: {exc}")
-                error_message = str(exc)
-                _emit_plan_event(chat_id, plan_id, 'execution_failed', {'error': error_message})
-                _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='FAILED', extra={'error': error_message})
-                db.update_chat_state(chat_id, 'static')
-                publish_state(chat_id, 'static')
-
-        threading.Thread(target=run_execution, name=f'plan-exec-{plan_id}', daemon=True).start()
-        return jsonify(response)
-
-    @app.route('/api/chats/<chat_id>/plan/<plan_id>/deny', methods=['POST'])
-    def deny_agentic_plan(chat_id: str, plan_id: str):
-        """Deny a generated plan and keep chat static."""
-        payload = request.get_json() or {}
-        record = agentic_service.get_plan_record(plan_id)
-        if not record or record.get('chat_id') != chat_id:
-            return jsonify({'error': 'Plan not found'}), 404
-
-        if record.get('status') == 'DENIED':
-            return jsonify({'plan_id': plan_id, 'status': 'DENIED'})
-
-        updated = agentic_service.update_plan_status(plan_id, 'DENIED')
-        plan_record = updated or record
-
-        plan_dict = dict(plan_record.get('ir') or {})
-        plan_dict.setdefault('plan_id', plan_id)
-        plan_dict.setdefault('base_ctx_id', plan_record.get('base_ctx_id'))
-        fingerprint = plan_record.get('fingerprint', '')
-        plan_summary = _build_plan_summary(plan_dict, status='DENIED')
-        reason = payload.get('reason')
-
-        event_payload = {
-            'plan': plan_summary,
-            'fingerprint': fingerprint,
-            'status': 'DENIED'
-        }
-        if reason:
-            event_payload['reason'] = reason
-
-        _emit_plan_event(chat_id, plan_id, 'plan_denied', event_payload)
-        _broadcast_taskflow_plan(chat_id, plan_id, fingerprint, plan_summary, status='DENIED', extra={'reason': reason} if reason else None)
-
-        publish_state(chat_id, 'static')
-        return jsonify({'plan_id': plan_id, 'status': 'DENIED'})
-
-    @app.route('/api/chats/<chat_id>/plan', methods=['POST'])
-    def create_agentic_plan(chat_id: str):
-        """Generate and persist a plan for a chat."""
-        data = request.get_json() or {}
-        message = data.get('message')
-        if not message:
-            return jsonify({'error': 'Message is required'}), 400
-        plan = agentic_service.generate_plan(chat_id, message)
-        return jsonify({'plan': plan.to_dict(), 'fingerprint': plan.fingerprint()})
-
-    @app.route('/api/chats/<chat_id>/execute', methods=['POST'])
-    def execute_agentic_plan(chat_id: str):
-        """Execute a stored plan immediately."""
-        data = request.get_json() or {}
-        plan_id = data.get('plan_id')
-        if not plan_id:
-            return jsonify({'error': 'plan_id is required'}), 400
-        emitter = agentic_service.build_event_emitter()
-        emitter.subscribe(lambda event_type, payload: _emit_plan_event(chat_id, plan_id, event_type, payload))
-        result = agentic_service.execute_plan(chat_id, plan_id, events=emitter)
-        return jsonify(result)
-
-    @app.route('/api/chats/<chat_id>/context/<ctx_id>', methods=['GET'])
-    def get_context_snapshot_endpoint(chat_id: str, ctx_id: str):
-        """Return a specific context snapshot for a chat."""
-        snapshot = agentic_service.get_context_snapshot(chat_id, ctx_id)
-        if not snapshot:
-            return jsonify({'error': 'Context snapshot not found'}), 404
-        return jsonify(snapshot)
+    @app.route('/api/chats/<chat_id>/workspace_selected', methods=['POST'])
+    def workspace_selected_notification(chat_id: str):
+        """Notify worker that workspace has been selected."""
+        response = send_workspace_selected(chat_id=chat_id)
+        status_code = 200 if response.get('success') else 400
+        return jsonify(response), status_code
 
     @app.route('/api/chat/send', methods=['POST'])
     def send_message():
@@ -878,7 +558,11 @@ def register_chat_routes(app: Flask):
                     from agents.roles.router import router as route_agent
                     chat_history = chat.get_chat_history()
                     router_info = route_agent.route_request(message, chat_history)
-                    logger.info(f"[ROUTE_HANDLER_ROUTER] Router returned for {chat.chat_id}: route={router_info.get('route')}, tools_needed={router_info.get('tools_needed')} (type: {type(router_info.get('tools_needed'))})")
+                    router_error = router_info.get('error')
+                    if router_error:
+                        logger.warning(f"[ROUTE_HANDLER_ROUTER] Router returned with error for {chat.chat_id}: {router_error}, falling back to default")
+                    else:
+                        logger.info(f"[ROUTE_HANDLER_ROUTER] Router returned for {chat.chat_id}: route={router_info.get('route')}, tools_needed={router_info.get('tools_needed')} (type: {type(router_info.get('tools_needed'))})")
                     publish_router_decision(
                         chat.chat_id,
                         router_info.get('route'),
@@ -886,10 +570,9 @@ def register_chat_routes(app: Flask):
                         router_info.get('model'),
                         router_info.get('tools_needed'),
                         router_info.get('execution_type'),
-                        router_info.get('fastpath_params')
+                        router_info.get('fastpath_params'),
+                        router_error
                     )
-                    if router_info.get('route') == 'taskflow':
-                        return handle_taskflow_stream(chat, message, router_info, attached_file_ids, is_retry, existing_message_id, is_edit_regeneration)
                     if router_info.get('provider'):
                         provider = router_info.get('provider')
                     if router_info.get('model'):
@@ -901,6 +584,7 @@ def register_chat_routes(app: Flask):
             def generate():
                 """Unified generator for streaming response using helper functions"""
                 logger.info(f"[BACKEND_STREAMING] Starting streaming generation for chat {chat_id}")
+                logger.info(f"[UX_PERF][BACKEND] stream_request_received chat={chat_id} message_len={len(message or '')}")
                 logger.info(f"[BACKEND_STREAMING] Parameters: message={message[:50] if message else 'None'}..., provider={provider}, model={model}")
                 logger.info(f"[BACKEND_STREAMING] Flags: is_retry={is_retry}, is_edit_regeneration={is_edit_regeneration}, existing_message_id={existing_message_id}")
                 

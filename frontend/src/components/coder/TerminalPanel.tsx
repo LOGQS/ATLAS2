@@ -3,7 +3,7 @@ import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import { useCoderContext } from '../../contexts/CoderContext';
-import { apiUrl } from '../../config/api';
+import { terminalApiUrl, terminalWsUrl } from '../../config/api';
 import logger from '../../utils/core/logger';
 import { Icons } from '../ui/Icons';
 import 'xterm/css/xterm.css';
@@ -31,7 +31,7 @@ interface SessionRuntime {
   terminal: Terminal;
   fitAddon: FitAddon;
   webLinksAddon: WebLinksAddon;
-  eventSource: EventSource | null;
+  socket: WebSocket | null;
   container: HTMLDivElement | null;
   isOpen: boolean;
   opening: boolean;
@@ -195,13 +195,13 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    if (runtime.eventSource) {
+    if (runtime.socket) {
       try {
-        runtime.eventSource.close();
+        runtime.socket.close();
       } catch (error) {
-        logger.warn('[TERMINAL] Failed to close stream during cleanup:', error);
+        logger.warn('[TERMINAL] Failed to close socket during cleanup:', error);
       }
-      runtime.eventSource = null;
+      runtime.socket = null;
     }
 
     if (typeof window !== 'undefined' && runtime.flushTimer !== null) {
@@ -244,20 +244,32 @@ export const TerminalPanel: React.FC = () => {
     containerCallbacksRef.current.delete(sessionId);
   }, []);
 
-  const sendInputChunk = useCallback((sessionId: string, chunk: string) => {
+  const sendInputChunk = useCallback((sessionId: string, chunk: string): boolean => {
     if (!chunk) {
-      return;
+      return true;
     }
 
-    // FIRE-AND-FORGET: Send immediately without waiting for response
-    // Let the browser handle parallelism and don't block on responses
-    fetch(apiUrl('/api/terminal/send'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, data: chunk }),
-    }).catch(error => {
-      logger.warn(`[TERMINAL] Failed to forward input for session ${sessionId}:`, error);
-    });
+    const runtime = sessionsRef.current.get(sessionId);
+    if (!runtime) {
+      return false;
+    }
+
+    const socket = runtime.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      logger.debug('[TERMINAL_WS] Socket not ready for input', {
+        sessionId,
+        readyState: socket ? socket.readyState : null,
+      });
+      return false;
+    }
+
+    try {
+      socket.send(JSON.stringify({ type: 'input', data: chunk }));
+      return true;
+    } catch (error) {
+      logger.warn('[TERMINAL_WS] Failed to send input chunk', { sessionId, error });
+      return false;
+    }
   }, []);
 
   const flushInputBuffer = useCallback((sessionId: string) => {
@@ -274,8 +286,15 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    // Send immediately - no queueing
-    sendInputChunk(sessionId, chunk);
+    const sent = sendInputChunk(sessionId, chunk);
+    if (!sent) {
+      runtime.inputBuffer = chunk + runtime.inputBuffer;
+      if (typeof window !== 'undefined') {
+        runtime.flushTimer = window.setTimeout(() => flushInputBuffer(sessionId), 30);
+      } else {
+        setTimeout(() => flushInputBuffer(sessionId), 30);
+      }
+    }
   }, [sendInputChunk]);
 
   const queueInput = useCallback((sessionId: string, data: string) => {
@@ -309,17 +328,30 @@ export const TerminalPanel: React.FC = () => {
     runtime.flushTimer = window.setTimeout(() => flushInputBuffer(sessionId), 10);
   }, [flushInputBuffer]);
 
-  const sendResize = useCallback(async (sessionId: string, rows: number, cols: number) => {
-    if (!rows || !cols) return;
-    try {
-      await fetch(apiUrl('/api/terminal/resize'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, rows, cols }),
+  const sendResize = useCallback((sessionId: string, rows: number, cols: number) => {
+    if (!rows || !cols) {
+      return;
+    }
+
+    const runtime = sessionsRef.current.get(sessionId);
+    if (!runtime) {
+      return;
+    }
+
+    const socket = runtime.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      logger.debug('[TERMINAL_WS] resize skipped; socket not ready', {
+        sessionId,
+        readyState: socket ? socket.readyState : null,
       });
-      logger.debug('[TERMINAL_UI] resize sent', { sessionId, rows, cols });
-    } catch (e) {
-      logger.warn('[TERMINAL_UI] resize failed', e);
+      return;
+    }
+
+    try {
+      socket.send(JSON.stringify({ type: 'resize', rows, cols }));
+      logger.debug('[TERMINAL_WS] resize sent', { sessionId, rows, cols });
+    } catch (error) {
+      logger.warn('[TERMINAL_WS] failed to send resize event', { sessionId, error });
     }
   }, []);
 
@@ -384,7 +416,7 @@ export const TerminalPanel: React.FC = () => {
         terminal,
         fitAddon,
         webLinksAddon,
-        eventSource: null,
+        socket: null,
         container: null,
         isOpen: false,
         opening: false,
@@ -491,7 +523,7 @@ export const TerminalPanel: React.FC = () => {
         const r = runtime.terminal.rows;
         const c = runtime.terminal.cols;
         if (r && c) {
-          void (async () => sendResize(sessionId, r, c))();
+          sendResize(sessionId, r, c);
         }
       } catch {
         // ignore
@@ -513,7 +545,7 @@ export const TerminalPanel: React.FC = () => {
     // Propagate future terminal resize events to backend PTY
     try {
       const resizeDisposable = runtime.terminal.onResize(({ rows, cols }) => {
-        void (async () => sendResize(sessionId, rows, cols))();
+        sendResize(sessionId, rows, cols);
       });
       runtime.disposables.push({
         dispose: () => {
@@ -537,30 +569,42 @@ export const TerminalPanel: React.FC = () => {
       return;
     }
 
-    if (runtime.eventSource) {
+    if (runtime.socket) {
       try {
-        runtime.eventSource.close();
+        runtime.socket.close();
       } catch (error) {
-        logger.warn('[TERMINAL] Failed to close existing stream:', error);
+        logger.warn('[TERMINAL_WS] Failed to close existing socket', { sessionId, error });
       }
-      runtime.eventSource = null;
+      runtime.socket = null;
     }
 
-    const streamUrl = `${apiUrl('/api/terminal/stream')}?session_id=${encodeURIComponent(sessionId)}`;
-    const source = new EventSource(streamUrl);
-    runtime.eventSource = source;
-    logger.info('[TERMINAL_SSE] connect', { sessionId, streamUrl });
+    const streamUrl = `${terminalWsUrl('/api/terminal/stream')}?session_id=${encodeURIComponent(sessionId)}`;
+    logger.info('[TERMINAL_WS] connect', { sessionId, streamUrl });
 
-    source.onmessage = (event) => {
-      if (!event.data) {
+    const socket = new WebSocket(streamUrl);
+    socket.binaryType = 'arraybuffer';
+    runtime.socket = socket;
+
+    runtime.disposables.push({
+      dispose: () => {
+        try {
+          socket.close();
+        } catch (error) {
+          logger.warn('[TERMINAL_WS] Failed to dispose socket', { sessionId, error });
+        }
+      },
+    });
+
+    const processPayload = (raw: string) => {
+      if (!raw) {
         return;
       }
 
       let payload: any;
       try {
-        payload = JSON.parse(event.data);
+        payload = JSON.parse(raw);
       } catch (error) {
-        logger.warn('[TERMINAL_SSE] parse error', error);
+        logger.warn('[TERMINAL_WS] Failed to parse payload', { sessionId, error });
         return;
       }
 
@@ -575,36 +619,39 @@ export const TerminalPanel: React.FC = () => {
 
       switch (payload.type) {
         case 'ready': {
-          logger.info('[TERMINAL_SSE] ready', { sessionId, payload });
-          const isAlive = Boolean(payload.is_alive ?? true);
+          logger.info('[TERMINAL_WS] ready', { sessionId, payload });
+          const isAlive = payload.is_alive !== false;
           const incomingPlatform =
             typeof payload.platform === 'string' ? payload.platform : currentRuntime.platform;
           const incomingShell =
             typeof payload.shell === 'string' ? payload.shell : currentRuntime.shell;
           const incomingLineEnding =
             typeof payload.line_ending === 'string' ? payload.line_ending : undefined;
+
           currentRuntime.platform = incomingPlatform ?? currentRuntime.platform ?? null;
           currentRuntime.shell = incomingShell ?? currentRuntime.shell ?? null;
           currentRuntime.preferredLineEnding = resolvePreferredLineEnding(
             incomingLineEnding,
             currentRuntime.platform,
           );
+
           updateSessionDescriptor(sessionId, {
             isAlive,
-            isConnected: isAlive,
+            isConnected: true,
             platform: currentRuntime.platform,
             shell: currentRuntime.shell,
             lineEnding: currentRuntime.preferredLineEnding,
           });
+
+          if (currentRuntime.inputBuffer) {
+            flushInputBuffer(sessionId);
+          }
           break;
         }
         case 'output': {
-          const clen = typeof payload.data === 'string' ? payload.data.length : (payload.output?.length ?? 0);
-          const sample = typeof payload.data === 'string' ? payload.data.slice(0, 60) : (payload.output?.slice?.(0,60));
-          logger.debug('[TERMINAL_SSE] output', { sessionId, len: clen, sample });
-          const chunk = typeof payload.data === 'string' ? payload.data : payload.output;
-          if (typeof chunk === 'string' && chunk.length > 0) {
-            writeRemoteChunk(currentRuntime, chunk);
+          const dataCandidate = typeof payload.data === 'string' ? payload.data : payload.output;
+          if (typeof dataCandidate === 'string' && dataCandidate.length > 0) {
+            writeRemoteChunk(currentRuntime, dataCandidate);
           }
           updateSessionDescriptor(sessionId, {
             isConnected: true,
@@ -616,42 +663,84 @@ export const TerminalPanel: React.FC = () => {
           break;
         }
         case 'terminated': {
-          logger.info('[TERMINAL_SSE] terminated', { sessionId });
+          logger.info('[TERMINAL_WS] terminated', { sessionId });
           updateSessionDescriptor(sessionId, { isAlive: false, isConnected: false });
           currentRuntime.terminal.writeln('\r\n\x1b[31mSession terminated\x1b[0m');
           break;
         }
         case 'error': {
-          logger.warn('[TERMINAL_SSE] error', { sessionId, payload });
+          logger.warn('[TERMINAL_WS] error', { sessionId, payload });
           updateSessionDescriptor(sessionId, { isConnected: false });
           const message = typeof payload.message === 'string' ? payload.message : 'Terminal stream error';
           currentRuntime.terminal.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
           break;
         }
-        default:
+        default: {
+          logger.debug('[TERMINAL_WS] unhandled payload type', {
+            sessionId,
+            payloadType: payload.type,
+          });
           break;
+        }
       }
     };
 
-    source.onerror = () => {
-      logger.warn('[TERMINAL_SSE] onerror', { sessionId });
+    socket.onopen = () => {
+      logger.info('[TERMINAL_WS] open', { sessionId });
+      updateSessionDescriptor(sessionId, { isConnected: true, isAlive: true });
+      if (runtime.inputBuffer) {
+        flushInputBuffer(sessionId);
+      }
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        processPayload(event.data);
+        return;
+      }
+      if (event.data instanceof ArrayBuffer) {
+        const text = new TextDecoder('utf-8').decode(event.data);
+        processPayload(text);
+        return;
+      }
+      if (typeof Blob !== 'undefined' && event.data instanceof Blob) {
+        event.data
+          .text()
+          .then(processPayload)
+          .catch((error) => {
+            logger.warn('[TERMINAL_WS] Failed to decode blob payload', { sessionId, error });
+          });
+        return;
+      }
+      logger.warn('[TERMINAL_WS] Unsupported message format', { sessionId });
+    };
+
+    socket.onerror = (event) => {
+      logger.warn('[TERMINAL_WS] socket error', { sessionId, event });
       updateSessionDescriptor(sessionId, { isConnected: false });
     };
 
-    runtime.disposables.push({
-      dispose: () => {
-        try {
-          source.close();
-        } catch (error) {
-          logger.warn('[TERMINAL] Failed to dispose stream:', error);
-        }
-      },
-    });
-  }, [updateSessionDescriptor]);
+    socket.onclose = (event) => {
+      logger.info('[TERMINAL_WS] socket closed', {
+        sessionId,
+        code: event.code,
+        reason: event.reason,
+      });
+      runtime.socket = null;
+      updateSessionDescriptor(sessionId, { isConnected: false });
+    };
+  }, [flushInputBuffer, updateSessionDescriptor]);
 
   const createSession = useCallback(async () => {
+    const normalizedWorkspace = (workspacePathRef.current || '').trim();
+
     if (!chatId) {
       setInitializationError('chat_id is required to start terminal sessions.');
+      return null;
+    }
+
+    if (!normalizedWorkspace) {
+      setInitializationError('Select a workspace before starting a terminal session.');
       return null;
     }
 
@@ -665,11 +754,11 @@ export const TerminalPanel: React.FC = () => {
     try {
       setInitializationError(null);
 
-      logger.info('[TERMINAL_UI] createSession request', { chatId });
-      const response = await fetch(apiUrl('/api/terminal/create'), {
+      logger.info('[TERMINAL_UI] createSession request', { chatId, workspace: normalizedWorkspace });
+      const response = await fetch(terminalApiUrl('/api/terminal/create'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId }),
+        body: JSON.stringify({ chat_id: chatId, workspace_path: normalizedWorkspace }),
       });
 
       const payload = await response.json();
@@ -791,7 +880,7 @@ export const TerminalPanel: React.FC = () => {
     });
 
     try {
-      await fetch(apiUrl('/api/terminal/kill'), {
+      await fetch(terminalApiUrl('/api/terminal/kill'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId }),
@@ -904,7 +993,9 @@ export const TerminalPanel: React.FC = () => {
   }, [workspacePath]);
 
   useEffect(() => {
-    if (!chatId || !workspacePath) {
+    const normalizedWorkspace = (workspacePath || '').trim();
+
+    if (!chatId || !normalizedWorkspace) {
       const sessionMap = sessionsRef.current;
       const sessionsToClean = Array.from(sessionMap.keys());
       sessionsToClean.forEach((sessionId) => cleanupRuntime(sessionId));
@@ -921,7 +1012,7 @@ export const TerminalPanel: React.FC = () => {
     let cancelled = false;
 
     const bootstrap = async () => {
-      logger.info('[TERMINAL_UI] bootstrap', { chatId, workspacePath });
+      logger.info('[TERMINAL_UI] bootstrap', { chatId, workspacePath: normalizedWorkspace });
       const existingIds = Array.from(sessionsRef.current.keys());
       existingIds.forEach((sessionId) => cleanupRuntime(sessionId));
       sessionsRef.current.clear();
@@ -933,7 +1024,7 @@ export const TerminalPanel: React.FC = () => {
       setInitializationError(null);
 
       try {
-        const response = await fetch(apiUrl('/api/terminal/list'));
+        const response = await fetch(terminalApiUrl('/api/terminal/list'));
         const payload = await response.json();
         logger.info('[TERMINAL_UI] list response', { ok: response.ok, count: Array.isArray(payload?.sessions) ? payload.sessions.length : -1 });
 
@@ -948,7 +1039,9 @@ export const TerminalPanel: React.FC = () => {
 
         const items = Array.isArray(payload.sessions) ? payload.sessions : [];
         const relevant = items.filter(
-          (item: any) => typeof item?.session_id === 'string' && item.workspace_path === workspacePath,
+          (item: any) =>
+            typeof item?.session_id === 'string' &&
+            (item.workspace_path === normalizedWorkspace || item.workspace_path === workspacePath),
         );
 
         relevant.sort((a: any, b: any) => parseCreatedAt(a.created_at) - parseCreatedAt(b.created_at));
@@ -996,7 +1089,7 @@ export const TerminalPanel: React.FC = () => {
         setSessions(descriptors);
 
         descriptors.forEach((descriptor) => {
-          logger.debug('[TERMINAL_SSE] start streaming', { id: descriptor.id });
+          logger.debug('[TERMINAL_WS] start streaming', { id: descriptor.id });
           startStreaming(descriptor.id);
         });
 
@@ -1088,7 +1181,7 @@ export const TerminalPanel: React.FC = () => {
         const r = runtime.terminal.rows;
         const c = runtime.terminal.cols;
         if (r && c) {
-          void (async () => sendResize(activeSessionId, r, c))();
+          sendResize(activeSessionId, r, c);
         }
       } catch {
         // Ignore fit issues triggered mid-resize.
