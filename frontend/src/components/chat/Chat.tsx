@@ -39,7 +39,7 @@ const optimisticMessagesStore = new Map<string, Message[]>();
 
 interface ChatProps {
   chatId?: string;
-  onMessageSent?: (message: string) => void;
+  onMessageSent?: (chatId: string, message: string) => void;
   onChatStateChange?: (chatId: string, state: 'thinking' | 'responding' | 'static') => void;
   onFirstMessageSent?: (chatId: string) => void;
   onActiveStateChange?: (chatId: string, isReallyActive: boolean) => void;
@@ -138,7 +138,24 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId]);
 
   useEffect(() => {
-    logger.info(`[MESSAGE_STATE] Chat ${chatId} messages changed - count: ${messages.length}, IDs: ${messages.map(m => `${m.id}(${m.role})`).join(', ')}`);
+    logger.info(`[CHAT_MESSAGES_STATE] ${chatId} count=${messages.length} ids=${messages.map(m => `${m.id}(${m.role})`).join(', ')}`);
+  }, [messages, chatId]);
+
+  useEffect(() => {
+    if (!chatId) {
+      return;
+    }
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+    if (lastAssistant) {
+      logger.info(
+        `[ROUTER_STATE_RENDER_CHECK] ${chatId} lastAssistant=${lastAssistant.id} ` +
+        `routerEnabled=${Boolean(lastAssistant.routerEnabled)} ` +
+        `hasDecision=${Boolean(lastAssistant.routerDecision?.route)} ` +
+        `route=${lastAssistant.routerDecision?.route ?? 'none'}`
+      );
+    } else if (messages.length > 0) {
+      logger.info(`[ROUTER_STATE_RENDER_CHECK] ${chatId} has ${messages.length} messages but no assistant entries`);
+    }
   }, [messages, chatId]);
 
   useEffect(() => {
@@ -173,6 +190,14 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   });
   const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
   const { isLoading, loadHistory } = useChatHistory({ chatId, setMessages, messages });
+
+  useEffect(() => {
+    logger.info(`[CHAT_LOAD_STATE] ${chatId} component isLoading=${isLoading}`);
+  }, [chatId, isLoading]);
+
+  useEffect(() => {
+    logger.info(`[CHAT_LOAD_STATE] ${chatId} notLoadingSettled=${notLoadingSettled} skeletonReady=${skeletonReady}`);
+  }, [chatId, notLoadingSettled, skeletonReady]);
 
   const sendMessageRef = useRef<((content: string, attachedFiles?: AttachedFile[]) => Promise<void>) | undefined>(undefined);
   
@@ -474,47 +499,18 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId, messages]);
 
   useEffect(() => {
-    if (!chatId) return;
-
-    const guardKey = `${chatId}_initial`;
-    const hasGuard = loadHistoryGuard.get(guardKey);
-
-    // Prevent duplicate loadHistory calls using module-level guard
-    if (hasGuard) {
-      logger.debug(`[CHAT_SWITCH] Skipping duplicate loadHistory for ${chatId}`);
-      return;
-    }
-
-    loadHistoryGuard.set(guardKey, true);
-    initialLoadStrategyRef.current = null;
-
-    try {
-      const hasCleanCache = chatHistoryCache.hasClean(chatId);
-      if (hasCleanCache) {
-        logger.info(`[CHAT_SWITCH] Using cached history for ${chatId} (background validation scheduled)`);
-        initialLoadStrategyRef.current = 'cached';
-        loadHistory({ silent: false }).catch(() => {});
-      } else {
-        logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
-        initialLoadStrategyRef.current = 'forced';
-        loadHistory({ forceReplace: true, silent: false }).catch(() => {});
-      }
-    } catch (error) {
-      logger.warn(`[CHAT_SWITCH] Initial load scheduling failed for ${chatId}:`, error);
-    }
-  }, [chatId, loadHistory]);
-
-  useEffect(() => {
     if (chatId && chatId !== previousChatIdRef.current) {
       logger.info(`[CHAT_SWITCH] Chat changed: ${previousChatIdRef.current} → ${chatId}`);
 
       if (previousChatIdRef.current) {
+        logger.info(`[CHAT_LOAD_GUARD] Before reset - prev=${previousChatIdRef.current} guard=${loadHistoryGuard.get(`${previousChatIdRef.current}_initial`)}, next=${chatId} guard=${loadHistoryGuard.get(`${chatId}_initial`)}`);
         // Reset module-level storage when switching between chats
         const oldGuardKey = `${previousChatIdRef.current}_initial`;
         const newGuardKey = `${chatId}_initial`;
         loadHistoryGuard.delete(oldGuardKey);
         loadHistoryGuard.delete(newGuardKey);
         optimisticMessagesStore.delete(previousChatIdRef.current);
+        logger.info(`[CHAT_LOAD_GUARD] After reset - deleted ${oldGuardKey} & ${newGuardKey}`);
       }
 
       if (previousChatIdRef.current) {
@@ -555,30 +551,98 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 
+  useEffect(() => {
+    if (!chatId) return;
+
+    const guardKey = `${chatId}_initial`;
+    const hasGuard = loadHistoryGuard.get(guardKey);
+    const shouldForceReload = hasGuard && messages.length === 0;
+    logger.info(`[CHAT_LOAD_GUARD] Load check for ${chatId}: guardKey=${guardKey}, hasGuard=${hasGuard}, shouldForceReload=${shouldForceReload}`);
+
+    if (hasGuard && shouldForceReload) {
+      const cached = chatHistoryCache.get(chatId);
+      if (cached) {
+        logger.info(`[CHAT_LOAD_GUARD] Restoring ${cached.messages.length} cached messages for ${chatId} instead of refetch`);
+        setMessages(cached.messages);
+        return;
+      }
+      logger.warn(`[CHAT_LOAD_GUARD] Guard present but no cache for ${chatId} - forcing reload`);
+      loadHistoryGuard.delete(guardKey);
+    }
+
+    // Prevent duplicate loadHistory calls using module-level guard
+    if (hasGuard && !shouldForceReload) {
+      logger.debug(`[CHAT_SWITCH] Skipping duplicate loadHistory for ${chatId}`);
+      return;
+    }
+
+    loadHistoryGuard.set(guardKey, true);
+    logger.info(`[CHAT_LOAD_GUARD] Guard set for ${chatId}`);
+    initialLoadStrategyRef.current = null;
+
+    try {
+      const hasCleanCache = chatHistoryCache.hasClean(chatId);
+      if (hasCleanCache) {
+        logger.info(`[CHAT_SWITCH] Using cached history for ${chatId} (background validation scheduled)`);
+        initialLoadStrategyRef.current = 'cached';
+        loadHistory({ silent: false }).then(() => {
+          logger.info(`[CHAT_LOAD_CALL] Cached load resolved for ${chatId}`);
+        }).catch((err) => {
+          logger.warn(`[CHAT_LOAD_CALL] Cached load failed for ${chatId}:`, err);
+        });
+      } else {
+        logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
+        initialLoadStrategyRef.current = 'forced';
+        loadHistory({ forceReplace: true, silent: false }).then(() => {
+          logger.info(`[CHAT_LOAD_CALL] Forced load resolved for ${chatId}`);
+        }).catch((err) => {
+          logger.warn(`[CHAT_LOAD_CALL] Forced load failed for ${chatId}:`, err);
+        });
+      }
+    } catch (error) {
+      logger.warn(`[CHAT_SWITCH] Initial load scheduling failed for ${chatId}:`, error);
+    }
+  }, [chatId, messages.length, loadHistory]);
+
 
   useEffect(() => {
     logger.debug(`[FirstMessage] Effect triggered - chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}, firstMessageSent: ${firstMessageSent}, isOperationLoading: ${isOperationLoading}`);
 
-    if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isOperationLoading) {
-      logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
+    if (!chatId || !isActive || !firstMessage || !firstMessage.trim() || firstMessageSent || isOperationLoading) {
+      return;
+    }
 
-      performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
+    let messageToSend: string | null = null;
+    let filesToSend: AttachedFile[] | undefined;
 
-      try {
-        const parsed = JSON.parse(firstMessage);
-        if (parsed.message && typeof parsed.message === 'string') {
-          handleNewMessage(parsed.message, parsed.files || []);
-        } else {
-          handleNewMessage(firstMessage);
+    try {
+      const parsed = JSON.parse(firstMessage);
+      if (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') {
+        if (parsed.status && parsed.status !== 'pending') {
+          logger.debug(`[Chat] Skipping auto-send for ${chatId} because pending status is ${parsed.status}`);
+          return;
         }
-      } catch {
-        handleNewMessage(firstMessage);
+        messageToSend = parsed.message;
+        if (Array.isArray(parsed.files)) {
+          filesToSend = parsed.files;
+        }
+      } else {
+        messageToSend = firstMessage;
       }
+    } catch {
+      messageToSend = firstMessage;
+    }
 
-      setFirstMessageSent(true);
-      if (onFirstMessageSent) {
-        onFirstMessageSent(chatId);
-      }
+    if (!messageToSend || !messageToSend.trim()) {
+      return;
+    }
+
+    logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
+    performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
+    handleNewMessage(messageToSend, filesToSend);
+    setFirstMessageSent(true);
+    if (onFirstMessageSent) {
+      onFirstMessageSent(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, isActive, firstMessage, firstMessageSent, isOperationLoading]);
@@ -683,40 +747,27 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const rendered = useMemo(() => {
     const out = [...messages];
-    
-    logger.info(`[RENDER_COMPUTE] Computing rendered messages for ${chatId}:`);
-    logger.info(`[RENDER_COMPUTE] - Base messages: ${messages.length} (${messages.map(m => `${m.id}(${m.role})`).join(', ')})`);
-    logger.info(`[RENDER_COMPUTE] - Live overlay: content=${liveOverlay.contentBuf.length}chars, thoughts=${liveOverlay.thoughtsBuf.length}chars, state=${liveOverlay.state}`);
-    
+
     const lastIdx = [...out].reverse().findIndex(m => m.role === 'assistant');
-    
+
     if (liveOverlay.contentBuf || liveOverlay.thoughtsBuf) {
       if (lastIdx !== -1) {
         const idx = out.length - 1 - lastIdx;
         const m = out[idx];
-        const originalContent = m.content;
-        const originalThoughts = m.thoughts || '';
-        
         out[idx] = {
           ...m,
           content: m.content + liveOverlay.contentBuf,
           thoughts: (m.thoughts || '') + liveOverlay.thoughtsBuf
         };
-        
-        logger.info(`[RENDER_COMPUTE] - Applied live overlay to existing message ${m.id}:`);
-        logger.info(`[RENDER_COMPUTE]   - Content: "${originalContent}" + "${liveOverlay.contentBuf}" = "${out[idx].content}"`);
-        logger.info(`[RENDER_COMPUTE]   - Thoughts: "${originalThoughts}" + "${liveOverlay.thoughtsBuf}" = "${out[idx].thoughts}"`);
       } else {
         logger.info(`[CLEAN_STREAMING] Live content available but no existing assistant message - live overlay will handle display`);
         logger.info(`[CLEAN_STREAMING] Live content: ${liveOverlay.contentBuf.length}chars content, ${liveOverlay.thoughtsBuf.length}chars thoughts`);
         logger.info(`[CLEAN_STREAMING] ThinkBox component will display streaming content directly without virtual messages`);
       }
     }
-    
-    logger.info(`[RENDER_COMPUTE] Final rendered: ${out.length} messages (${out.map(m => `${m.id}(${m.role})`).join(', ')})`);
-    
+
     return out;
-  }, [messages, chatId, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, liveOverlay.state]);
+  }, [messages, liveOverlay.contentBuf, liveOverlay.thoughtsBuf]);
 
   const recordAssistantStats = useCallback((message: Message | undefined | null) => {
 
@@ -1082,7 +1133,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       try { await response.body?.cancel(); } catch {}
       try { controller.abort(); } catch {}
       logger.debug(`[Chat] Message kickoff acknowledged for ${chatId}`);
-      onMessageSent?.(content);
+      if (chatId) {
+        onMessageSent?.(chatId, content);
+      } else {
+        logger.warn('[Chat] Message acknowledged without chatId');
+        onMessageSent?.('', content);
+      }
     } catch (error) {
       const isAbortError = (error as any)?.name === 'AbortError';
       if (!isAbortError) {
@@ -1344,7 +1400,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const messageListContent = useMemo(() => {
     if (shouldShowSkeleton) {
-      logger.info(`[CHAT_RENDER] Rendering skeleton for ${chatId} - isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
+      logger.info(`[CHAT_SKELETON_RENDER] ${chatId} isLoading=${isLoading} isOperationLoading=${isOperationLoading} skeletonReady=${skeletonReady}`);
       return (
         <div className="messages-skeleton">
           <div className="msg-skel" />
@@ -1352,17 +1408,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       );
     }
-
-    logger.info(`[CHAT_RENDER] Rendering ${rendered.length} messages for ${chatId}`);
-    logger.info(`[CHAT_RENDER] About to render message IDs: ${rendered.map(m => m.id).join(', ')}`);
-    logger.info(`[CHAT_RENDER] Message preview: ${rendered.map(m => `${m.id}: "${m.content.substring(0, 30)}..."`).join(' | ')}`);
-
+    
     const renderedComponents: React.ReactElement[] = [];
 
     rendered.forEach((message) => {
       const originalIndex = messageIndexMap.get(message.id) ?? -1;
-      logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
-
       renderedComponents.push(renderMessage(message, originalIndex));
     });
 
@@ -1386,10 +1436,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       );
     }
-
-    logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
     return renderedComponents;
-  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
+  }, [shouldShowSkeleton, skeletonReady, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
 
   return (
     <>

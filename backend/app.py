@@ -33,6 +33,7 @@ from route.token_route import register_token_routes
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
+from utils import startup_state
 from file_utils.filesystem_watcher import start_filesystem_monitor, stop_filesystem_monitor
 from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
@@ -122,22 +123,30 @@ def _run_startup_housekeeping():
             logger.debug("Startup housekeeping already completed; skipping repeat run")
             return _startup_sync_result, _startup_reset_count
 
-        setup_filespace()
+        startup_state.mark_initializing()
 
-        sync_result = sync_files_with_database()
-        _startup_sync_result = sync_result
+        try:
+            setup_filespace()
 
-        if sync_result.get('success'):
-            logger.info("File sync completed: %s", sync_result['summary'])
-        else:
-            logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
+            sync_result = sync_files_with_database()
+            _startup_sync_result = sync_result
 
-        reset_count = db.set_all_chats_static()
-        _startup_reset_count = reset_count
-        if reset_count > 0:
-            logger.info("Startup: Reset %d chat(s) to static state", reset_count)
-        else:
-            logger.debug("Startup: No active chats to reset")
+            if sync_result.get('success'):
+                logger.info("File sync completed: %s", sync_result['summary'])
+            else:
+                logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
+
+            reset_count = db.set_all_chats_static()
+            _startup_reset_count = reset_count
+            if reset_count > 0:
+                logger.info("Startup: Reset %d chat(s) to static state", reset_count)
+            else:
+                logger.debug("Startup: No active chats to reset")
+
+            startup_state.set_housekeeping_result(sync_result, reset_count)
+        except Exception as exc:
+            startup_state.set_housekeeping_result({'success': False, 'error': str(exc)}, 0)
+            raise
 
         _startup_housekeeping_done = True
 

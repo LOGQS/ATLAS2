@@ -373,7 +373,7 @@ const DomainBox: React.FC<DomainBoxProps> = ({
   };
   const currentContext = getCurrentContext();
   const actions = domainExecution?.actions || [];
-  const pendingTools = domainExecution?.pending_tools || [];
+  const pendingTools = useMemo(() => domainExecution?.pending_tools || [], [domainExecution?.pending_tools]);
   const isWaitingForUser = domainExecution?.status === 'waiting_user';
   const plan = domainExecution?.plan;
   const taskDescription = plan?.task_description || domainExecution?.output || 'Executing domain task...';

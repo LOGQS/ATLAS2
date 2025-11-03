@@ -4,10 +4,13 @@ import asyncio
 import threading
 import atexit
 import concurrent.futures
+import json
 from typing import Dict, Any, Optional, List, Coroutine
 from utils.logger import get_logger
 from utils.config import get_provider_map
 from utils.db_utils import db
+from agents.context.context_manager import context_manager
+from utils.rate_limiter import get_rate_limiter
 
 logger = get_logger(__name__)
 
@@ -177,9 +180,42 @@ async def _execute_async_streaming(
             answer_started = True
             logger.info(f"[UX_PERF][BACKEND] optimistic_answer_start chat={chat_id}")
 
+        # Pre-create assistant message so streaming updates have a target and router metadata persists after reloads.
+        assistant_message_id: Optional[str] = None
+        router_enabled = router_result is not None
+        router_decision_json: Optional[str] = None
+        if router_result:
+            router_decision_json = json.dumps({
+                'route': router_result.get('route'),
+                'available_routes': router_result.get('available_routes', []),
+                'selected_model': router_result.get('model'),
+                'selected_provider': router_result.get('provider'),
+                'tools_needed': router_result.get('tools_needed'),
+                'execution_type': router_result.get('execution_type'),
+                'domain_id': router_result.get('domain_id'),
+                'fastpath_params': router_result.get('fastpath_params'),
+                'error': router_result.get('error')
+            })
+
+        assistant_message_id = db.save_message(
+            chat_id,
+            "assistant",
+            "",
+            thoughts=None,
+            provider=provider,
+            model=model,
+            router_enabled=router_enabled,
+            router_decision=router_decision_json
+        )
+        if assistant_message_id:
+            logger.info(f"[ASYNC-EXEC] Created assistant placeholder {assistant_message_id} (router_enabled={router_enabled}) for chat {chat_id}")
+        else:
+            logger.warning(f"[ASYNC-EXEC] Failed to pre-create assistant message for {chat_id}; router metadata may be lost on refresh")
+
         # Stream the response
         full_text = ""
         full_thoughts = ""
+        captured_usage_data = None
 
         async for chunk in provider_instance.generate_text_stream_async(
             message,
@@ -222,6 +258,7 @@ async def _execute_async_streaming(
             elif chunk_type == "usage" or chunk_type == "usage_metadata":
                 usage_data = chunk.get("usage") or chunk.get("usage_metadata")
                 if usage_data:
+                    captured_usage_data = usage_data
                     publish_content(chat_id, chunk_type, '', usage=usage_data)
             elif chunk_type == "error":
                 error_content = chunk.get("content", "Unknown error")
@@ -232,16 +269,17 @@ async def _execute_async_streaming(
         # Update the assistant message in DB
         if user_message_id:
             # Find or create assistant message
-            history = db.get_chat_history(chat_id)
-            assistant_message_id = None
-            for msg in reversed(history):
-                if msg.get("role") == "assistant":
-                    assistant_message_id = msg.get("id")
-                    break
+            target_message_id = assistant_message_id
+            if not target_message_id:
+                history = db.get_chat_history(chat_id)
+                for msg in reversed(history):
+                    if msg.get("role") == "assistant":
+                        target_message_id = msg.get("id")
+                        break
 
-            if assistant_message_id:
+            if target_message_id:
                 db.update_message(
-                    assistant_message_id,
+                    target_message_id,
                     full_text,
                     thoughts=full_thoughts if full_thoughts else None
                 )
@@ -252,8 +290,32 @@ async def _execute_async_streaming(
                     full_text,
                     thoughts=full_thoughts if full_thoughts else None,
                     provider=provider,
-                    model=model
+                    model=model,
+                    router_enabled=router_enabled,
+                    router_decision=router_decision_json
                 )
+
+        # Finalize rate limiting with actual token usage
+        if captured_usage_data:
+            try:
+                # Build response-like dict for context_manager to extract tokens properly
+                response_dict = {
+                    'usage': captured_usage_data,
+                    'usage_metadata': captured_usage_data
+                }
+
+                # Use context_manager to extract tokens (handles all provider formats)
+                actual_tokens_data = context_manager.extract_actual_tokens_from_response(response_dict, provider)
+
+                if actual_tokens_data and actual_tokens_data.get('total_tokens', 0) > 0:
+                    actual_tokens_count = actual_tokens_data['total_tokens']
+                    limiter = get_rate_limiter()
+                    limiter.finalize_tokens(provider, model, actual_tokens_count)
+                    logger.info(f"[RATE-LIMIT][ASYNC] Finalized with {actual_tokens_count} actual tokens for {provider}:{model}")
+                else:
+                    logger.warning(f"[RATE-LIMIT][ASYNC] Could not extract token count from usage data: {captured_usage_data}")
+            except Exception as finalize_error:
+                logger.error(f"[RATE-LIMIT][ASYNC] Failed to finalize tokens for {chat_id}: {finalize_error}")
 
         # Set final state
         db.update_chat_state(chat_id, "static")
@@ -293,6 +355,30 @@ def start_async_chat_processing(
     """
     from utils.config import Config
 
+    # Check rate limits BEFORE acquiring lock (rate limiting may sleep/wait)
+    try:
+        chat_history = db.get_chat_history(chat_id)
+        system_prompt = db.get_chat_system_prompt(chat_id)
+
+        token_estimate = context_manager.estimate_request_tokens(
+            role="assistant",
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            chat_history=chat_history[:-1] if chat_history and chat_history[-1]["role"] == "user" else chat_history,
+            current_message=message,
+            file_attachments=[]
+        )
+        estimated_tokens = token_estimate['estimated_tokens']['total']
+
+        limiter = get_rate_limiter()
+        limiter.check_and_reserve(provider, model, estimated_tokens)
+
+        logger.info(f"[RATE-LIMIT][ASYNC] Reserved capacity for {provider}:{model} (estimated {estimated_tokens} tokens)")
+    except Exception as rate_limit_error:
+        logger.error(f"[RATE-LIMIT][ASYNC] Failed to check rate limits for {chat_id}: {rate_limit_error}")
+        # Continue anyway - rate limiting failures shouldn't block requests entirely
+
     with _async_chat_tasks_lock:
         # Check if already processing
         existing_task = _async_chat_tasks.get(chat_id)
@@ -308,7 +394,6 @@ def start_async_chat_processing(
 
             # Publish error message to client
             from route.chat_route import publish_content, publish_state
-            from utils.db_utils import db
             db.update_chat_state(chat_id, "static")
             publish_state(chat_id, "static")
             publish_content(
