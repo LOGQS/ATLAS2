@@ -27,6 +27,7 @@ interface WorkspacePickerModalProps {
   onClose: () => void;
   onWorkspaceSelected: (path: string) => void;
   chatId?: string;
+  embedded?: boolean; // When true, renders inline in chat instead of as modal
 }
 
 export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
@@ -34,6 +35,7 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   onClose,
   onWorkspaceSelected,
   chatId,
+  embedded = false,
 }) => {
   const [workspaceHistory, setWorkspaceHistory] = useState<WorkspaceHistoryItem[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
@@ -226,8 +228,21 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
       if (createData.success && createData.workspace_path) {
         logger.info('[WORKSPACE_PICKER] Created new workspace:', createData.workspace_path);
 
-        // Now set it as the workspace for this chat (if chat_id exists)
+        // Set it as the workspace for this chat
         if (chatId) {
+          const setResponse = await fetch(apiUrl('/api/coder-workspace/set'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, workspace_path: createData.workspace_path }),
+          });
+
+          const setData = await setResponse.json();
+          if (!setData.success) {
+            setError(setData.error || 'Failed to set workspace');
+            setIsCreating(false);
+            return;
+          }
+
           await saveWorkspaceSettings(createData.workspace_path);
         }
 
@@ -272,6 +287,21 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
       const data = await response.json();
 
       if (data.success && data.valid) {
+        // Set the workspace on the backend
+        if (chatId) {
+          const setResponse = await fetch(apiUrl('/api/coder-workspace/set'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, workspace_path: path }),
+          });
+
+          const setData = await setResponse.json();
+          if (!setData.success) {
+            setError(setData.error || 'Failed to set workspace');
+            return;
+          }
+        }
+
         // Save settings if path is provided
         if (selectedWorkspace || manualPath) {
           await saveWorkspaceSettings(path);
@@ -327,29 +357,24 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
 
   if (!isOpen) return null;
 
-  return (
-    <div className="workspace-modal-backdrop" onClick={onClose}>
-      <motion.div
-        className="workspace-modal"
-        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        transition={{ duration: 0.2, ease: 'easeOut' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="workspace-modal-header">
-          <div className="workspace-modal-title-group">
-            <Icons.FolderOpen className="workspace-modal-icon" />
-            <div>
-              <h2 className="workspace-modal-title">Select Coding Workspace</h2>
-              <p className="workspace-modal-subtitle">Your coding request will continue after selection</p>
-            </div>
+  // Content that is shared between modal and embedded modes
+  const workspaceContent = (
+    <>
+      {/* Header */}
+      <div className="workspace-modal-header">
+        <div className="workspace-modal-title-group">
+          <Icons.FolderOpen className="workspace-modal-icon" />
+          <div>
+            <h2 className="workspace-modal-title">Select Coding Workspace</h2>
+            <p className="workspace-modal-subtitle">Your coding request will continue after selection</p>
           </div>
+        </div>
+        {!embedded && (
           <button className="workspace-modal-close" onClick={onClose}>
             <Icons.Close className="w-5 h-5" />
           </button>
-        </div>
+        )}
+      </div>
 
         {/* Error Banner */}
         <AnimatePresence>
@@ -619,20 +644,52 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="workspace-modal-footer">
+      {/* Footer */}
+      <div className="workspace-modal-footer">
+        {!embedded && (
           <button className="workspace-btn workspace-btn-cancel" onClick={onClose}>
             Cancel
           </button>
-          <button
-            className="workspace-btn workspace-btn-primary"
-            onClick={handleOpenWorkspace}
-            disabled={!selectedWorkspace && !manualPath}
-          >
-            <Icons.FolderOpen className="w-4 h-4" />
-            Open Workspace
-          </button>
-        </div>
+        )}
+        <button
+          className="workspace-btn workspace-btn-primary"
+          onClick={handleOpenWorkspace}
+          disabled={!selectedWorkspace && !manualPath}
+        >
+          <Icons.FolderOpen className="w-4 h-4" />
+          Open Workspace
+        </button>
+      </div>
+    </>
+  );
+
+  // Render as embedded inline component
+  if (embedded) {
+    return (
+      <motion.div
+        className="workspace-modal workspace-modal-embedded"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+      >
+        {workspaceContent}
+      </motion.div>
+    );
+  }
+
+  // Render as modal overlay (original behavior)
+  return (
+    <div className="workspace-modal-backdrop" onClick={onClose}>
+      <motion.div
+        className="workspace-modal"
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {workspaceContent}
       </motion.div>
     </div>
   );

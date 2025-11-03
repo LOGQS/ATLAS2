@@ -25,6 +25,7 @@ from agents.prompts.agent_prompt_templates import (
 )
 from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
+from utils.rate_limiter import get_rate_limiter
 from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
 from utils.coder_session_logger import (
     create_coder_session_logger,
@@ -153,6 +154,7 @@ class SingleDomainExecutor:
         assistant_message_id: Optional[int] = None,
         workspace_path: Optional[str] = None,
         event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        rate_limit_prechecked: bool = False,
     ) -> Dict[str, Any]:
         """Start executing a task within a specific domain."""
 
@@ -195,6 +197,7 @@ class SingleDomainExecutor:
                 "start_time": time.time(),
                 "iterations": 0,
                 "tool_calls": 0,
+                "rate_limit_prechecked": rate_limit_prechecked,
             },
             event_callback=event_callback,
         )
@@ -1056,6 +1059,32 @@ class SingleDomainExecutor:
         attempt = 0
 
         while True:
+            limiter = get_rate_limiter()
+            if state.metadata.get("rate_limit_prechecked"):
+                state.metadata["rate_limit_prechecked"] = False
+                self.logger.debug(
+                    "[RATE-LIMIT][DOMAIN] Using existing reservation for %s:%s (attempt=%s)",
+                    provider,
+                    model,
+                    attempt + 1,
+                )
+            else:
+                try:
+                    limiter.check_and_reserve(provider, model, estimated_tokens=0)
+                    self.logger.info(
+                        "[RATE-LIMIT][DOMAIN] Reserved capacity for %s:%s (attempt=%s)",
+                        provider,
+                        model,
+                        attempt + 1,
+                    )
+                except Exception as rate_error:
+                    self.logger.error(
+                        "[RATE-LIMIT][DOMAIN] Failed to reserve capacity for %s:%s: %s",
+                        provider,
+                        model,
+                        rate_error,
+                    )
+
             full_text = ""
             error_message = None
             is_retryable_error = False

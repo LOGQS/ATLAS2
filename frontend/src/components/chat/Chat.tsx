@@ -8,6 +8,7 @@ import RouterBox from './RouterBox';
 import DomainBox from '../agentic/DomainBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
+import { WorkspacePickerModal } from '../coder/WorkspacePickerModal';
 import { liveStore } from '../../utils/chat/LiveStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
@@ -52,6 +53,8 @@ interface ChatProps {
   defaultModel?: string;
   autoTTSActive?: boolean;
   firstMessage?: string;
+  showWorkspacePicker?: boolean;
+  onWorkspaceSelected?: (chatId: string, workspacePath: string) => void;
 }
 
 interface ChatLive {
@@ -72,19 +75,21 @@ interface ChatLive {
   version: number;
 }
 
-const Chat = React.memo(forwardRef<any, ChatProps>(({ 
-  chatId, 
-  onMessageSent, 
-  onChatStateChange, 
-  onFirstMessageSent, 
-  onActiveStateChange, 
+const Chat = React.memo(forwardRef<any, ChatProps>(({
+  chatId,
+  onMessageSent,
+  onChatStateChange,
+  onFirstMessageSent,
+  onActiveStateChange,
   onBusyStateChange,
   setIsMessageBeingSent,
   isSendInProgress = false,
   onChatSwitch,
-  isActive = true, 
-  autoTTSActive = false, 
-  firstMessage
+  isActive = true,
+  autoTTSActive = false,
+  firstMessage,
+  showWorkspacePicker = false,
+  onWorkspaceSelected
 }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [firstMessageSent, setFirstMessageSent] = useState(false);
@@ -1382,14 +1387,29 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         })()}
 
         <div className="response-content">
-          <MessageRenderer 
-            content={message.content} 
+          <MessageRenderer
+            content={message.content}
             showCursor={showCursor}
           />
         </div>
+
+        {/* Render workspace picker for the last assistant message when needed */}
+        {isLastAssistantMessage && showWorkspacePicker && (
+          <WorkspacePickerModal
+            isOpen={true}
+            onClose={() => {}}
+            onWorkspaceSelected={(workspace: string) => {
+              if (onWorkspaceSelected && chatId) {
+                onWorkspaceSelected(chatId, workspace);
+              }
+            }}
+            chatId={chatId}
+            embedded={true}
+          />
+        )}
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
+  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));

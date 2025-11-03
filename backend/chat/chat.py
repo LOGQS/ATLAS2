@@ -18,7 +18,9 @@ from chat.async_engine import (
     start_async_chat_processing,
     cancel_async_chat,
     is_async_chat_processing,
-    cleanup_async_chat
+    cleanup_async_chat,
+    has_async_domain_session,
+    handle_async_domain_tool_decision,
 )
 
 logger = get_logger(__name__)
@@ -294,6 +296,23 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
                               assistant_message_id: Optional[int] = None,
                               batch_mode: bool = True) -> Dict[str, Any]:
     """Send a tool decision command to the chat worker for single-domain execution."""
+
+    if is_async_chat_processing(chat_id) or has_async_domain_session(chat_id):
+        async_response = handle_async_domain_tool_decision(
+            chat_id=chat_id,
+            task_id=task_id,
+            call_id=call_id,
+            decision=decision,
+            assistant_message_id=assistant_message_id,
+            batch_mode=batch_mode,
+        )
+        if async_response is not None:
+            logger.info(f"[DOMAIN-DECISION] Routed tool decision for {chat_id} through async engine")
+            return async_response
+        else:
+            logger.info(f"[DOMAIN-DECISION] Async engine unable to handle decision for {chat_id}, falling back to worker")
+
+    # Handle multiprocessing case
     payload = {
         'command': 'domain_tool_decision',
         'chat_id': chat_id,
@@ -331,6 +350,26 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
 
 def send_workspace_selected(chat_id: str) -> Dict[str, Any]:
     """Notify the chat worker that workspace has been selected."""
+    # Check if this is an async chat waiting for workspace
+    from chat.async_engine import resume_async_after_workspace_selection, is_async_chat_waiting_for_workspace
+
+    if is_async_chat_waiting_for_workspace(chat_id):
+        logger.info(f"[WORKSPACE_SELECTED] Detected async chat {chat_id} waiting for workspace, attempting async resume")
+        resumed = resume_async_after_workspace_selection(chat_id)
+        if resumed:
+            return {
+                'success': True,
+                'chat_id': chat_id,
+                'message': 'Async execution resumed with workspace'
+            }
+        else:
+            return {
+                'success': False,
+                'error': 'Failed to resume async execution',
+                'chat_id': chat_id,
+            }
+
+    # Handle multiprocessing case
     response, error, command_id = _issue_worker_command(
         chat_id,
         {'command': 'workspace_selected', 'chat_id': chat_id},

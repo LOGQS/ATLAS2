@@ -109,6 +109,7 @@ type SendMessageOptions = {
 
 const PENDING_FIRST_MESSAGES_STORAGE_KEY = 'atlas_pending_first_messages_v1';
 const PENDING_CHAT_META_STORAGE_KEY = 'atlas_pending_chat_meta_v1';
+const WORKSPACE_SELECTION_STORAGE_KEY = 'atlas_workspace_selection_chat_id';
 
 interface PendingChatMeta {
   activeChatId: string | null;
@@ -251,6 +252,12 @@ function App() {
   const [sendingByChat, setSendingByChat] = useState<Map<string, boolean>>(new Map());
   const [isStopRequestInFlight, setIsStopRequestInFlight] = useState(false);
   const [maxConcurrentStreams, setMaxConcurrentStreams] = useState<number>(DEFAULT_MAX_CONCURRENT_STREAMS);
+  const [workspaceSelectionChatId, setWorkspaceSelectionChatId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(WORKSPACE_SELECTION_STORAGE_KEY);
+    }
+    return null;
+  });
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -329,6 +336,18 @@ function App() {
       persistPendingChatMeta(null);
     }
   }, [getPendingChatMeta, persistPendingChatMeta]);
+
+  const clearWorkspaceSelection = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    setWorkspaceSelectionChatId(null);
+    localStorage.removeItem(WORKSPACE_SELECTION_STORAGE_KEY);
+  }, []);
+
+  const setWorkspaceSelectionForChat = useCallback((chatId: string) => {
+    if (typeof window === 'undefined') return;
+    setWorkspaceSelectionChatId(chatId);
+    localStorage.setItem(WORKSPACE_SELECTION_STORAGE_KEY, chatId);
+  }, []);
 
   const setPendingFirstMessages = useCallback<React.Dispatch<React.SetStateAction<Map<string, string>>>>((value) => {
     setPendingFirstMessagesState(prev => {
@@ -1517,21 +1536,35 @@ function App() {
     logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
   }, [activeChatId, hasMessageBeenSent, chats, syncActiveChat, loadChatsFromDatabase]);
 
+  const handleWorkspaceSelected = useCallback((chatId: string, workspacePath: string) => {
+    logger.info('[WORKSPACE_SELECTION] Workspace selected in chat:', { chatId, workspacePath });
+
+    // Clear the workspace selection prompt
+    clearWorkspaceSelection();
+
+    // Open the CoderWindow
+    handleOpenModal('coder');
+  }, [handleOpenModal, clearWorkspaceSelection]);
+
   useEffect(() => {
     const handleCoderPrompt = (event: Event) => {
       const detail = (event as CustomEvent<any>).detail || {};
       const targetChatId: string | undefined = detail.chatId ?? undefined;
 
-      if (targetChatId && targetChatId !== 'none' && targetChatId !== activeChatId) {
-        void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-workspace-prompt' });
-      }
+      if (targetChatId && targetChatId !== 'none') {
+        // Switch to the chat if needed
+        if (targetChatId !== activeChatId) {
+          void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-workspace-prompt' });
+        }
 
-      handleOpenModal('coder');
+        // Show workspace picker in chat instead of immediately opening CoderWindow
+        setWorkspaceSelectionForChat(targetChatId);
+      }
     };
 
     window.addEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
     return () => window.removeEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
-  }, [activeChatId, handleChatSelect, handleOpenModal]);
+  }, [activeChatId, handleChatSelect, setWorkspaceSelectionForChat]);
 
   useEffect(() => {
     const handleCoderOperationEvent = (event: Event) => {
@@ -2068,6 +2101,8 @@ function App() {
               setIsMessageBeingSent={setIsMessageBeingSent}
               isSendInProgress={isSendInProgressForActive}
               onChatSwitch={handleChatSwitch}
+              showWorkspacePicker={workspaceSelectionChatId === activeChatId}
+              onWorkspaceSelected={handleWorkspaceSelected}
             />
             
             <div

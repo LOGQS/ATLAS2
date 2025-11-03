@@ -63,11 +63,11 @@ const CoderWindowContent: React.FC = () => {
   } = useCoderContext();
 
   const [selectedView, setSelectedView] = React.useState<ViewType>('code');
-  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [isHistoryPanelOpen, setIsHistoryPanelOpen] = useState(false);
   const [isWorkspaceHistoryOpen, setIsWorkspaceHistoryOpen] = useState(false);
   const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [autoAcceptTools, setAutoAcceptTools] = useState(() => {
     return localStorage.getItem('coder-auto-accept') === 'true';
   });
@@ -91,12 +91,18 @@ const CoderWindowContent: React.FC = () => {
     }));
   }, [autoAcceptTools]);
 
-  // Open modal when workspace is not set (only on mount or when hasWorkspace becomes false)
-  useEffect(() => {
-    if (!hasWorkspace && !isWorkspaceModalOpen) {
-      setIsWorkspaceModalOpen(true);
-    }
-  }, [hasWorkspace, isWorkspaceModalOpen]);
+  // Workspace picker is now handled in chat flow - modal only shown on manual trigger
+  // No auto-show on mount
+
+  const handleCloseModal = useCallback(() => {
+    setIsWorkspaceModalOpen(false);
+  }, []);
+
+  const handleWorkspaceSelected = useCallback(async (workspace: string) => {
+    logger.info('[CoderWindow] Workspace selected:', workspace);
+    await setWorkspace(workspace);
+    setIsWorkspaceModalOpen(false);
+  }, [setWorkspace]);
 
   // Debug logging - intentionally logging mount-time values only
   React.useEffect(() => {
@@ -121,19 +127,6 @@ const CoderWindowContent: React.FC = () => {
   const handleResetFile = useCallback(() => {
     resetFile();
   }, [resetFile]);
-
-  const handleWorkspaceSelected = useCallback(async (path: string) => {
-    logger.info('[CODER_WINDOW] workspace selected', { path });
-    await setWorkspace(path);
-    setIsWorkspaceModalOpen(false);
-  }, [setWorkspace]);
-
-  const handleCloseModal = useCallback(() => {
-    // Only allow closing if workspace is already set
-    if (hasWorkspace) {
-      setIsWorkspaceModalOpen(false);
-    }
-  }, [hasWorkspace]);
 
   // Configure Monaco once before it mounts
   const handleEditorWillMount = useCallback((monaco: any) => {
@@ -188,18 +181,6 @@ const CoderWindowContent: React.FC = () => {
 
   return (
     <div className="coder-window-v2">
-      {/* Workspace Picker Modal */}
-      <AnimatePresence>
-        {isWorkspaceModalOpen && (
-          <WorkspacePickerModal
-            isOpen={isWorkspaceModalOpen}
-            onClose={handleCloseModal}
-            onWorkspaceSelected={handleWorkspaceSelected}
-            chatId={chatId}
-          />
-        )}
-      </AnimatePresence>
-
       {/* Error Banner */}
       <AnimatePresence>
         {error && (
@@ -221,6 +202,14 @@ const CoderWindowContent: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Workspace Picker Modal - shown as fallback if no workspace */}
+      <WorkspacePickerModal
+        isOpen={isWorkspaceModalOpen}
+        onClose={handleCloseModal}
+        onWorkspaceSelected={handleWorkspaceSelected}
+        chatId={chatId}
+      />
 
       {hasWorkspace && (
         <div className="coder-workbench-container">

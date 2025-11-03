@@ -690,6 +690,7 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
             assistant_message_id=assistant_message_id,
             workspace_path=workspace_path,
             event_callback=_domain_event_callback,
+            rate_limit_prechecked=True,
         )
 
         worker_logger.info("=" * 80)
@@ -995,6 +996,9 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         return
 
     try:
+        # Track if answer_start has been sent
+        answer_started = False
+
         if use_reasoning:
             db.update_chat_state(chat_id, "thinking")
             child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'thinking'})
@@ -1003,7 +1007,11 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
             db.update_chat_state(chat_id, "responding")
             child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
             current_state = "responding"
-        
+            # Optimistically notify clients that the answer stream is about to begin
+            child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+            answer_started = True
+            worker_logger.info(f"[UX_PERF][WORKER] optimistic_answer_start chat={chat_id}")
+
         streaming_usage_metadata = None  # Track usage from streaming
 
         for chunk in providers[provider].generate_text_stream(
@@ -1051,6 +1059,12 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     streaming_usage_metadata = usage_data
                     worker_logger.info(f"[CHAT-WORKER] Captured usage from stream: {streaming_usage_metadata}")
 
+            elif chunk.get("type") == "thoughts_start":
+                try:
+                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts_start', 'content': ''})
+                except Exception as pub_error:
+                    worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts_start: {pub_error}")
+
             elif chunk.get("type") == "thoughts":
                 full_thoughts += chunk.get("content", "")
                 current_content['full_thoughts'] = full_thoughts
@@ -1060,14 +1074,8 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                     worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts chunk: {pub_error}")
                 content_changed = True
 
-            elif chunk.get("type") == "answer":
-                full_text += chunk.get("content", "")
-                current_content['full_text'] = full_text
-                try:
-                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
-                except Exception as pub_error:
-                    worker_logger.warning(f"[CHAT-WORKER] Failed to send answer chunk: {pub_error}")
-
+            elif chunk.get("type") == "answer_start":
+                # Handle explicit answer_start from provider
                 if current_state == "thinking":
                     try:
                         db.update_chat_state(chat_id, "responding")
@@ -1075,6 +1083,38 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
                         current_state = "responding"
                     except Exception as state_error:
                         worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
+                if not answer_started:
+                    try:
+                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+                        answer_started = True
+                    except Exception as pub_error:
+                        worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+
+            elif chunk.get("type") == "answer":
+                full_text += chunk.get("content", "")
+                current_content['full_text'] = full_text
+
+                # Send answer_start if not already sent
+                if not answer_started:
+                    if current_state == "thinking":
+                        try:
+                            db.update_chat_state(chat_id, "responding")
+                            child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
+                            current_state = "responding"
+                        except Exception as state_error:
+                            worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
+                    try:
+                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+                        answer_started = True
+                    except Exception as pub_error:
+                        worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+
+                # Send answer content
+                try:
+                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
+                except Exception as pub_error:
+                    worker_logger.warning(f"[CHAT-WORKER] Failed to send answer chunk: {pub_error}")
+
                 content_changed = True
 
             if content_changed and assistant_message_id and (full_text or full_thoughts):
