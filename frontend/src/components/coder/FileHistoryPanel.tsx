@@ -25,15 +25,40 @@ export const FileHistoryPanel: React.FC<FileHistoryPanelProps> = ({ isOpen, onCl
   const { chatId, currentDocument, updateFileContent } = useCoderContext();
   const [history, setHistory] = useState<FileSnapshot[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedSnapshot, setSelectedSnapshot] = useState<FileSnapshot | null>(null);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
   const [showDiff, setShowDiff] = useState(false);
 
   useEffect(() => {
-    if (isOpen && filePath && chatId) {
-      loadHistory();
+    if (!isOpen || !filePath || !chatId) {
+      return;
     }
+
+    if (currentDocument && currentDocument.filePath !== filePath) {
+      return;
+    }
+
+    loadHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, filePath, chatId]);
+  }, [isOpen, filePath, chatId, currentDocument?.originalContent]);
+
+  useEffect(() => {
+    if (!showDiff || selectedSnapshotId === null) return;
+
+    const exists = history.some((snapshot) => snapshot.id === selectedSnapshotId);
+    if (!exists) {
+      setSelectedSnapshotId(null);
+      setShowDiff(false);
+    }
+  }, [history, selectedSnapshotId, showDiff]);
+
+  const selectedSnapshotIndex = selectedSnapshotId !== null
+    ? history.findIndex((snapshot) => snapshot.id === selectedSnapshotId)
+    : -1;
+
+  const selectedSnapshot = selectedSnapshotIndex >= 0 ? history[selectedSnapshotIndex] : null;
+  const previousSnapshot = selectedSnapshotIndex >= 0 && selectedSnapshotIndex + 1 < history.length
+    ? history[selectedSnapshotIndex + 1]
+    : null;
 
   const loadHistory = async () => {
     if (!chatId || !filePath) return;
@@ -62,14 +87,14 @@ export const FileHistoryPanel: React.FC<FileHistoryPanelProps> = ({ isOpen, onCl
 
     // Update the current editor content
     updateFileContent(snapshot.content);
-    setSelectedSnapshot(null);
+    setSelectedSnapshotId(null);
     setShowDiff(false);
     onClose();
     logger.info('[FILE_HISTORY] Reverted to snapshot:', snapshot.id);
   };
 
   const handlePreview = (snapshot: FileSnapshot) => {
-    setSelectedSnapshot(snapshot);
+    setSelectedSnapshotId(snapshot.id);
     setShowDiff(true);
   };
 
@@ -127,15 +152,21 @@ export const FileHistoryPanel: React.FC<FileHistoryPanelProps> = ({ isOpen, onCl
 
           {/* Content */}
           <div className="history-content">
-            {showDiff && selectedSnapshot && currentDocument ? (
+            {showDiff && selectedSnapshot ? (
               <div className="diff-preview">
                 <div className="diff-header">
-                  <button onClick={() => setShowDiff(false)} className="back-button">
+                  <button
+                    onClick={() => {
+                      setShowDiff(false);
+                      setSelectedSnapshotId(null);
+                    }}
+                    className="back-button"
+                  >
                     <Icons.Back className="w-4 h-4" />
                     Back to history
                   </button>
                   <button
-                    onClick={() => handleRevert(selectedSnapshot)}
+                    onClick={() => selectedSnapshot && handleRevert(selectedSnapshot)}
                     className="revert-button"
                   >
                     <Icons.Discard className="w-4 h-4" />
@@ -144,7 +175,7 @@ export const FileHistoryPanel: React.FC<FileHistoryPanelProps> = ({ isOpen, onCl
                 </div>
                 <div className="diff-content">
                   <DiffViewer
-                    original={currentDocument.content}
+                    original={previousSnapshot ? previousSnapshot.content : ''}
                     modified={selectedSnapshot.content}
                   />
                 </div>

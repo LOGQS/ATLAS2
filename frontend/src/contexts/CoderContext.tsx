@@ -803,9 +803,10 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     }, []);
 
   const saveFile = useCallback(async () => {
-    if (!chatId || !state.currentDocument) return;
+    const currentDoc = stateRef.current.currentDocument;
+    if (!chatId || !currentDoc) return;
 
-    const { filePath, content } = state.currentDocument;
+    const { filePath, content } = currentDoc;
     setState(prev => ({ ...prev, isLoading: true, error: '' }));
 
     try {
@@ -849,7 +850,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       logger.error('[CODER] Failed to save file:', err);
       setState(prev => ({ ...prev, error: 'Failed to save file', isLoading: false }));
     }
-  }, [chatId, state.currentDocument]);
+  }, [chatId]);
 
   const createFile = useCallback(async (parentPath: string, name: string) => {
     if (!chatId) return;
@@ -1003,11 +1004,11 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
   }, [chatId]);
 
   const resetFile = useCallback(async () => {
-    if (!state.currentDocument) return;
+    const currentDoc = stateRef.current.currentDocument;
+    if (!currentDoc) return;
 
-    // Revert to last checkpoint from history
-    await revertToSaved(state.currentDocument.filePath);
-  }, [state.currentDocument, revertToSaved]);
+    await revertToSaved(currentDoc.filePath);
+  }, [revertToSaved]); 
 
   const startCreatingFile = useCallback(() => {
     setState(prev => {
