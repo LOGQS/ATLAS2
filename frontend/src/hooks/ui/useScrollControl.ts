@@ -25,11 +25,18 @@ const SCROLL_CONFIG = {
 
 const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
 
-interface ScrollControlActions {
+export interface ExternalInteractionOptions {
+  direction?: 'up' | 'down';
+  disableAutoScroll?: boolean;
+  reason?: string;
+}
+
+export interface ScrollControlActions {
   shouldAutoScroll: () => boolean;
   onStreamStart: () => void;
   onStreamEnd: () => void;
   forceScrollToBottom: () => void;
+  notifyExternalInteraction: (options?: ExternalInteractionOptions) => void;
   isStreaming: boolean;
   isAutoScrollEnabled: boolean;
 }
@@ -363,6 +370,27 @@ export function useScrollControl({
     }
   }, [containerRef, maintainBottomLock, logState, updateAutoScrollEnabled]);
 
+  const notifyExternalInteraction = useCallback((options?: ExternalInteractionOptions) => {
+    const { direction, disableAutoScroll = false, reason } = options ?? {};
+    startUserInteraction();
+
+    const shouldDisable = disableAutoScroll || direction === 'up';
+    if (shouldDisable && isStreamingRef.current && autoScrollEnabledRef.current) {
+      updateAutoScrollEnabled(false);
+      logState('DISABLED_BY_EXTERNAL_INTERACTION', {
+        direction,
+        reason
+      });
+      return;
+    }
+
+    logState('EXTERNAL_INTERACTION', {
+      direction,
+      reason,
+      disableAutoScroll
+    }, 'debug');
+  }, [startUserInteraction, updateAutoScrollEnabled, logState]);
+
   const shouldAutoScroll = useCallback((): boolean => {
     const result = isStreamingRef.current && autoScrollEnabledRef.current;
     logState('SHOULD_AUTO_SCROLL_CHECK', {
@@ -452,9 +480,10 @@ export function useScrollControl({
     onStreamStart,
     onStreamEnd,
     forceScrollToBottom,
+    notifyExternalInteraction,
     isStreaming: isStreamingState,
     isAutoScrollEnabled: autoScrollEnabledState
-  }), [shouldAutoScroll, onStreamStart, onStreamEnd, forceScrollToBottom, isStreamingState, autoScrollEnabledState]);
+  }), [shouldAutoScroll, onStreamStart, onStreamEnd, forceScrollToBottom, notifyExternalInteraction, isStreamingState, autoScrollEnabledState]);
 }
 
 export default useScrollControl;

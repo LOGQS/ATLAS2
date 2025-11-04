@@ -1405,6 +1405,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
             }}
             chatId={chatId}
             embedded={true}
+            chatScrollControl={scrollControl}
           />
         )}
       </MessageWrapper>

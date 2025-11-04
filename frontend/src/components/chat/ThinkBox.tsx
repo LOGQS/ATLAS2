@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import MessageRenderer from '../message/MessageRenderer';
 import '../../styles/message/MessageRenderer.css';
 import logger from '../../utils/core/logger';
-import useScrollControl from '../../hooks/ui/useScrollControl';
+import useScrollControl, { type ScrollControlActions } from '../../hooks/ui/useScrollControl';
 
 interface ThinkBoxProps {
   thoughts: string;
@@ -11,12 +11,7 @@ interface ThinkBoxProps {
   isVisible?: boolean;
   chatId?: string;
   messageId?: string;
-  chatScrollControl?: {
-    shouldAutoScroll: () => boolean;
-    onStreamStart: () => void;
-    onStreamEnd: () => void;
-    forceScrollToBottom: () => void;
-  };
+  chatScrollControl?: ScrollControlActions;
 }
 
 const ThinkBox: React.FC<ThinkBoxProps> = ({ 

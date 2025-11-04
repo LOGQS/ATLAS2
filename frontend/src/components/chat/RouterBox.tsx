@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import '../../styles/chat/RouterBox.css';
 import logger from '../../utils/core/logger';
 import type { RouterDecision } from '../../types/messages';
+import type { ScrollControlActions } from '../../hooks/ui/useScrollControl';
 
 interface RouterBoxProps {
   routerDecision: RouterDecision | null;
@@ -10,12 +11,7 @@ interface RouterBoxProps {
   isVisible?: boolean;
   chatId?: string;
   messageId?: string;
-  chatScrollControl?: {
-    shouldAutoScroll: () => boolean;
-    onStreamStart: () => void;
-    onStreamEnd: () => void;
-    forceScrollToBottom: () => void;
-  };
+  chatScrollControl?: ScrollControlActions;
 }
 
 const RouterBox: React.FC<RouterBoxProps> = ({

@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiUrl } from '../../config/api';
 import { Icons, getProjectTypeIcon } from '../ui/Icons';
 import logger from '../../utils/core/logger';
 import '../../styles/components/WorkspacePickerModal.css';
+import type { ScrollControlActions } from '../../hooks/ui/useScrollControl';
 
 interface WorkspaceHistoryItem {
   path: string;
@@ -28,6 +29,7 @@ interface WorkspacePickerModalProps {
   onWorkspaceSelected: (path: string) => void;
   chatId?: string;
   embedded?: boolean; // When true, renders inline in chat instead of as modal
+  chatScrollControl?: ScrollControlActions;
 }
 
 export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
@@ -36,6 +38,7 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   onWorkspaceSelected,
   chatId,
   embedded = false,
+  chatScrollControl,
 }) => {
   const [workspaceHistory, setWorkspaceHistory] = useState<WorkspaceHistoryItem[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
@@ -56,6 +59,92 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
     initGit: false,
     autoInstallDeps: false,
   });
+  const touchStartYRef = useRef<number | null>(null);
+
+  const signalChatScrollControl = useCallback(({
+    direction,
+    source,
+    target,
+    disableOverride
+  }: {
+    direction?: 'up' | 'down';
+    source: 'wheel' | 'touch';
+    target: HTMLDivElement;
+    disableOverride?: boolean;
+  }) => {
+    if (!embedded || !chatScrollControl?.notifyExternalInteraction) {
+      return;
+    }
+
+    const { scrollTop, scrollHeight, clientHeight } = target;
+    const scrollableDistance = scrollHeight - clientHeight;
+    const isScrollable = scrollableDistance > 1;
+    const distanceFromBottom = scrollableDistance - scrollTop;
+    const atBottom = distanceFromBottom <= 1;
+
+    const disableAutoScroll = disableOverride ?? (
+      isScrollable && (
+        direction === 'up' ||
+        (!atBottom && direction === 'down')
+      )
+    );
+
+    chatScrollControl.notifyExternalInteraction({
+      direction,
+      reason: `workspace-picker:${source}`,
+      disableAutoScroll
+    });
+  }, [chatScrollControl, embedded]);
+
+  const handleBodyWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    const direction = event.deltaY < 0 ? 'up' : event.deltaY > 0 ? 'down' : undefined;
+    signalChatScrollControl({
+      direction,
+      source: 'wheel',
+      target: event.currentTarget
+    });
+  }, [signalChatScrollControl]);
+
+  const handleBodyTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    touchStartYRef.current = touch ? touch.clientY : null;
+    signalChatScrollControl({
+      direction: undefined,
+      source: 'touch',
+      target: event.currentTarget,
+      disableOverride: false
+    });
+  }, [signalChatScrollControl]);
+
+  const handleBodyTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+
+    const currentY = touch.clientY;
+    const startY = touchStartYRef.current;
+    let direction: 'up' | 'down' | undefined;
+
+    if (startY !== null) {
+      const delta = startY - currentY;
+      if (Math.abs(delta) > 0) {
+        direction = delta > 0 ? 'down' : 'up';
+      }
+    }
+
+    touchStartYRef.current = currentY;
+
+    signalChatScrollControl({
+      direction,
+      source: 'touch',
+      target: event.currentTarget
+    });
+  }, [signalChatScrollControl]);
+
+  const handleBodyTouchEnd = useCallback(() => {
+    touchStartYRef.current = null;
+  }, []);
 
   // Load workspace history
   useEffect(() => {
@@ -395,7 +484,14 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
         </AnimatePresence>
 
         {/* Modal Body - ALL SECTIONS VISIBLE */}
-        <div className="workspace-modal-body">
+        <div
+          className="workspace-modal-body"
+          onWheel={handleBodyWheel}
+          onTouchStart={handleBodyTouchStart}
+          onTouchMove={handleBodyTouchMove}
+          onTouchEnd={handleBodyTouchEnd}
+          onTouchCancel={handleBodyTouchEnd}
+        >
           {/* Recent Workspaces Section */}
           <div className="workspace-section">
             <div className="workspace-section-title">Recent Workspaces</div>

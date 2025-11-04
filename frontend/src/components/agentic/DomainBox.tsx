@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import '../../styles/agentic/DomainBox.css';
 import logger from '../../utils/core/logger';
-import useScrollControl from '../../hooks/ui/useScrollControl';
+import useScrollControl, { type ScrollControlActions } from '../../hooks/ui/useScrollControl';
 import type { DomainExecution, ContextSnapshot, ToolOperation } from '../../types/messages';
 import { apiUrl } from '../../config/api';
 import { Icons } from '../ui/Icons';
@@ -276,12 +276,7 @@ interface DomainBoxProps {
   isVisible?: boolean;
   chatId?: string;
   messageId?: string;
-  chatScrollControl?: {
-    shouldAutoScroll: () => boolean;
-    onStreamStart: () => void;
-    onStreamEnd: () => void;
-    forceScrollToBottom: () => void;
-  };
+  chatScrollControl?: ScrollControlActions;
 }
 
 const DomainBox: React.FC<DomainBoxProps> = ({
