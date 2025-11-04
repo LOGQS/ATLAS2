@@ -996,134 +996,209 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
         return
 
     try:
-        # Track if answer_start has been sent
+        # Stream with retry logic
+        from utils.retry_handler import RetryHandler
+
+        retry_handler = RetryHandler(max_retries=5)
+        attempt = 0
         answer_started = False
-
-        if use_reasoning:
-            db.update_chat_state(chat_id, "thinking")
-            child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'thinking'})
-            current_state = "thinking"
-        else:
-            db.update_chat_state(chat_id, "responding")
-            child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
-            current_state = "responding"
-            # Optimistically notify clients that the answer stream is about to begin
-            child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
-            answer_started = True
-            worker_logger.info(f"[UX_PERF][WORKER] optimistic_answer_start chat={chat_id}")
-
         streaming_usage_metadata = None  # Track usage from streaming
 
-        for chunk in providers[provider].generate_text_stream(
-            message, model=model, include_thoughts=use_reasoning,
-            chat_history=chat_history, file_attachments=file_attachments
-        ):
-            if child_conn.poll(0):
-                try:
-                    cmd_data = child_conn.recv()
-                    if isinstance(cmd_data, dict):
-                        cmd_id = cmd_data.get('command_id')
-                    else:
-                        cmd_id = None
+        while True:
+            error_message = None
+            streaming_succeeded = False
 
-                    if isinstance(cmd_data, dict) and cmd_data.get('command') == 'cancel':
-                        worker_logger.info(f"[CHAT-WORKER] Processing cancelled for {chat_id}")
-                        child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
-                        return
-                    elif isinstance(cmd_data, dict) and cmd_data.get('command') == 'stop':
-                        worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
-                        if assistant_message_id and (full_text or full_thoughts):
-                            current_content['full_text'] = full_text
-                            current_content['full_thoughts'] = full_thoughts
-                            _update_message_with_throttle(
-                                db,
-                                current_content,
-                                assistant_message_id,
-                                worker_logger,
-                                force=True
-                            )
-                        db.update_chat_state(chat_id, "static")
-                        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
-                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
-                        child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True, 'command_id': cmd_id})
-                        return
-                except:
-                    pass
-
-            content_changed = False
-
-            if chunk.get("type") == "usage":
-                # Capture usage metadata from streaming providers
-                usage_data = chunk.get("usage") or chunk.get("usage_metadata")
-                if usage_data:
-                    streaming_usage_metadata = usage_data
-                    worker_logger.info(f"[CHAT-WORKER] Captured usage from stream: {streaming_usage_metadata}")
-
-            elif chunk.get("type") == "thoughts_start":
-                try:
-                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts_start', 'content': ''})
-                except Exception as pub_error:
-                    worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts_start: {pub_error}")
-
-            elif chunk.get("type") == "thoughts":
-                full_thoughts += chunk.get("content", "")
-                current_content['full_thoughts'] = full_thoughts
-                try:
-                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts', 'content': chunk.get("content", "")})
-                except Exception as pub_error:
-                    worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts chunk: {pub_error}")
-                content_changed = True
-
-            elif chunk.get("type") == "answer_start":
-                # Handle explicit answer_start from provider
-                if current_state == "thinking":
-                    try:
-                        db.update_chat_state(chat_id, "responding")
-                        child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
-                        current_state = "responding"
-                    except Exception as state_error:
-                        worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
+            # Set initial state for (re)try
+            if use_reasoning:
+                db.update_chat_state(chat_id, "thinking")
+                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'thinking'})
+                current_state = "thinking"
+            else:
+                db.update_chat_state(chat_id, "responding")
+                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
+                current_state = "responding"
+                # Optimistically notify clients that the answer stream is about to begin
                 if not answer_started:
-                    try:
-                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
-                        answer_started = True
-                    except Exception as pub_error:
-                        worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+                    answer_started = True
+                    worker_logger.info(f"[UX_PERF][WORKER] optimistic_answer_start chat={chat_id} attempt={attempt + 1}")
 
-            elif chunk.get("type") == "answer":
-                full_text += chunk.get("content", "")
-                current_content['full_text'] = full_text
-
-                # Send answer_start if not already sent
-                if not answer_started:
-                    if current_state == "thinking":
+            try:
+                for chunk in providers[provider].generate_text_stream(
+                    message, model=model, include_thoughts=use_reasoning,
+                    chat_history=chat_history, file_attachments=file_attachments
+                ):
+                    # Check for cancel/stop commands
+                    if child_conn.poll(0):
                         try:
-                            db.update_chat_state(chat_id, "responding")
-                            child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
-                            current_state = "responding"
-                        except Exception as state_error:
-                            worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
-                    try:
-                        child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
-                        answer_started = True
-                    except Exception as pub_error:
-                        worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+                            cmd_data = child_conn.recv()
+                            if isinstance(cmd_data, dict):
+                                cmd_id = cmd_data.get('command_id')
+                            else:
+                                cmd_id = None
 
-                # Send answer content
-                try:
-                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
-                except Exception as pub_error:
-                    worker_logger.warning(f"[CHAT-WORKER] Failed to send answer chunk: {pub_error}")
+                            if isinstance(cmd_data, dict) and cmd_data.get('command') == 'cancel':
+                                worker_logger.info(f"[CHAT-WORKER] Processing cancelled for {chat_id}")
+                                child_conn.send({'success': True, 'cancelled': True, 'chat_id': chat_id, 'command_id': cmd_id})
+                                return
+                            elif isinstance(cmd_data, dict) and cmd_data.get('command') == 'stop':
+                                worker_logger.info(f"[CHAT-WORKER] Stop requested during streaming for {chat_id}")
+                                if assistant_message_id and (full_text or full_thoughts):
+                                    current_content['full_text'] = full_text
+                                    current_content['full_thoughts'] = full_thoughts
+                                    _update_message_with_throttle(
+                                        db,
+                                        current_content,
+                                        assistant_message_id,
+                                        worker_logger,
+                                        force=True
+                                    )
+                                db.update_chat_state(chat_id, "static")
+                                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'static'})
+                                child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'complete', 'content': ''})
+                                child_conn.send({'success': True, 'chat_id': chat_id, 'stopped_during_stream': True, 'command_id': cmd_id})
+                                return
+                        except:
+                            pass
 
-                content_changed = True
+                    content_changed = False
 
-            if content_changed and assistant_message_id and (full_text or full_thoughts):
-                _update_message_with_throttle(
-                    db,
-                    current_content,
-                    assistant_message_id,
-                    worker_logger
+                    if chunk.get("type") == "usage":
+                        # Capture usage metadata from streaming providers
+                        usage_data = chunk.get("usage") or chunk.get("usage_metadata")
+                        if usage_data:
+                            streaming_usage_metadata = usage_data
+                            worker_logger.info(f"[CHAT-WORKER] Captured usage from stream: {streaming_usage_metadata}")
+
+                    elif chunk.get("type") == "thoughts_start":
+                        try:
+                            child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts_start', 'content': ''})
+                        except Exception as pub_error:
+                            worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts_start: {pub_error}")
+
+                    elif chunk.get("type") == "thoughts":
+                        full_thoughts += chunk.get("content", "")
+                        current_content['full_thoughts'] = full_thoughts
+                        try:
+                            child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'thoughts', 'content': chunk.get("content", "")})
+                        except Exception as pub_error:
+                            worker_logger.warning(f"[CHAT-WORKER] Failed to send thoughts chunk: {pub_error}")
+                        content_changed = True
+
+                    elif chunk.get("type") == "answer_start":
+                        # Handle explicit answer_start from provider
+                        if current_state == "thinking":
+                            try:
+                                db.update_chat_state(chat_id, "responding")
+                                child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
+                                current_state = "responding"
+                            except Exception as state_error:
+                                worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
+                        if not answer_started:
+                            try:
+                                child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+                                answer_started = True
+                            except Exception as pub_error:
+                                worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+
+                    elif chunk.get("type") == "answer":
+                        full_text += chunk.get("content", "")
+                        current_content['full_text'] = full_text
+
+                        # Send answer_start if not already sent
+                        if not answer_started:
+                            if current_state == "thinking":
+                                try:
+                                    db.update_chat_state(chat_id, "responding")
+                                    child_conn.send({'type': 'state_update', 'chat_id': chat_id, 'state': 'responding'})
+                                    current_state = "responding"
+                                except Exception as state_error:
+                                    worker_logger.warning(f"[CHAT-WORKER] Failed to update state to responding: {state_error}")
+                            try:
+                                child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer_start', 'content': ''})
+                                answer_started = True
+                            except Exception as pub_error:
+                                worker_logger.warning(f"[CHAT-WORKER] Failed to send answer_start: {pub_error}")
+
+                        # Send answer content
+                        try:
+                            child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'answer', 'content': chunk.get("content", "")})
+                        except Exception as pub_error:
+                            worker_logger.warning(f"[CHAT-WORKER] Failed to send answer chunk: {pub_error}")
+
+                        content_changed = True
+
+                    elif chunk.get("type") == "error":
+                        error_message = chunk.get("content", "Unknown error")
+                        worker_logger.error(f"[CHAT-WORKER] Error from provider (attempt {attempt + 1}): {error_message}")
+                        break  # Exit chunk loop to handle retry
+
+                    if content_changed and assistant_message_id and (full_text or full_thoughts):
+                        _update_message_with_throttle(
+                            db,
+                            current_content,
+                            assistant_message_id,
+                            worker_logger
+                        )
+
+                # If we got content, streaming succeeded
+                if full_text or full_thoughts:
+                    streaming_succeeded = True
+                    break  # Exit retry loop
+
+                # No content and no error - check if error_message was set
+                if not error_message:
+                    # Streaming completed but no content (shouldn't happen)
+                    worker_logger.warning(f"[CHAT-WORKER] Streaming completed with no content for chat {chat_id}")
+                    streaming_succeeded = True
+                    break  # Exit retry loop
+
+            except Exception as e:
+                error_message = str(e)
+                worker_logger.error(f"[CHAT-WORKER] Exception during streaming (attempt {attempt + 1}): {error_message}")
+
+            # Handle retry logic if we have an error
+            if error_message and not streaming_succeeded:
+                # Helper to emit retry event
+                def publish_retry_event(retry_event):
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'model_retry',
+                        'content': '',
+                        'retry_data': retry_event['payload']
+                    })
+
+                should_retry, delay = retry_handler.should_retry(
+                    error_message,
+                    attempt,
+                    logger_instance=worker_logger,
+                    event_callback=publish_retry_event,
+                    event_context={'chat_id': chat_id},
+                    model=model
                 )
+
+                if should_retry:
+                    attempt += 1
+                    # Sleep synchronously
+                    retry_handler.sleep_with_logging(delay, worker_logger)
+                    # Reset state for retry
+                    full_text = ""
+                    full_thoughts = ""
+                    streaming_usage_metadata = None
+                    answer_started = False
+                    current_content['full_text'] = ''
+                    current_content['full_thoughts'] = ''
+                    current_content['last_db_update'] = 0.0
+                    continue  # Retry
+                else:
+                    # Not retryable or max retries exceeded
+                    worker_logger.error(f"[CHAT-WORKER] Giving up after {attempt + 1} attempts for chat {chat_id}")
+                    child_conn.send({'type': 'content', 'chat_id': chat_id, 'content_type': 'error', 'content': error_message})
+                    raise RuntimeError(error_message)
+
+            # Exit retry loop if no error
+            break
 
         db.update_chat_state(chat_id, "static")
 

@@ -1082,75 +1082,150 @@ async def _execute_async_streaming(
 
         logger.info("=" * 80)
 
-        # Stream the response
+        # Stream the response with retry logic
+        from utils.retry_handler import RetryHandler
+        import asyncio
+
+        retry_handler = RetryHandler(max_retries=5)
+        attempt = 0
         full_text = ""
         full_thoughts = ""
         captured_usage_data = None
         last_update_time = 0.0
         DB_UPDATE_THROTTLE_SECONDS = 0.25
 
-        async for chunk in provider_instance.generate_text_stream_async(
-            message,
-            model=model,
-            include_thoughts=include_reasoning,
-            chat_history=chat_history,
-            file_attachments=file_attachments
-        ):
-            chunk_type = chunk.get("type")
+        while True:
+            error_message = None
+            streaming_succeeded = False
 
-            if not first_chunk_logged:
-                logger.info(f"[UX_PERF][BACKEND] first_chunk_received chat={chat_id} chunk_type={chunk_type}")
-                first_chunk_logged = True
+            try:
+                async for chunk in provider_instance.generate_text_stream_async(
+                    message,
+                    model=model,
+                    include_thoughts=include_reasoning,
+                    chat_history=chat_history,
+                    file_attachments=file_attachments
+                ):
+                    chunk_type = chunk.get("type")
 
-            if chunk_type == "thoughts_start":
-                publish_content(chat_id, 'thoughts_start', '')
-            elif chunk_type == "thoughts":
-                content = chunk.get("content", "")
-                full_thoughts += content
-                publish_content(chat_id, 'thoughts', content)
-            elif chunk_type == "answer_start":
-                if current_state == "thinking":
-                    db.update_chat_state(chat_id, "responding")
-                    publish_state(chat_id, "responding")
-                    current_state = "responding"
-                if not answer_started:
-                    publish_content(chat_id, 'answer_start', '')
-                    answer_started = True
-            elif chunk_type == "answer":
-                content = chunk.get("content", "")
-                full_text += content
-                if not answer_started:
-                    if current_state == "thinking":
+                    if not first_chunk_logged:
+                        logger.info(f"[UX_PERF][BACKEND] first_chunk_received chat={chat_id} chunk_type={chunk_type} attempt={attempt + 1}")
+                        first_chunk_logged = True
+
+                    if chunk_type == "thoughts_start":
+                        publish_content(chat_id, 'thoughts_start', '')
+                    elif chunk_type == "thoughts":
+                        content = chunk.get("content", "")
+                        full_thoughts += content
+                        publish_content(chat_id, 'thoughts', content)
+                    elif chunk_type == "answer_start":
+                        if current_state == "thinking":
+                            db.update_chat_state(chat_id, "responding")
+                            publish_state(chat_id, "responding")
+                            current_state = "responding"
+                        if not answer_started:
+                            publish_content(chat_id, 'answer_start', '')
+                            answer_started = True
+                    elif chunk_type == "answer":
+                        content = chunk.get("content", "")
+                        full_text += content
+                        if not answer_started:
+                            if current_state == "thinking":
+                                db.update_chat_state(chat_id, "responding")
+                                publish_state(chat_id, "responding")
+                                current_state = "responding"
+                            publish_content(chat_id, 'answer_start', '')
+                            answer_started = True
+                        publish_content(chat_id, 'answer', content)
+                    elif chunk_type == "usage" or chunk_type == "usage_metadata":
+                        usage_data = chunk.get("usage") or chunk.get("usage_metadata")
+                        if usage_data:
+                            captured_usage_data = usage_data
+                            publish_content(chat_id, chunk_type, '', usage=usage_data)
+                    elif chunk_type == "error":
+                        error_message = chunk.get("content", "Unknown error")
+                        logger.error(f"[ASYNC-EXEC] Error from provider (attempt {attempt + 1}): {error_message}")
+                        break  # Exit chunk loop to handle retry
+
+                    # Throttled DB update during streaming (every 0.25s)
+                    import time
+                    now = time.time()
+                    if assistant_message_id and (full_text or full_thoughts) and (now - last_update_time) >= DB_UPDATE_THROTTLE_SECONDS:
+                        try:
+                            db.update_message(
+                                assistant_message_id,
+                                full_text,
+                                thoughts=full_thoughts if full_thoughts else None
+                            )
+                            last_update_time = now
+                        except Exception as db_error:
+                            logger.error(f"[ASYNC-EXEC] Error updating message in DB during stream: {db_error}")
+
+                # If we got content, streaming succeeded
+                if full_text or full_thoughts:
+                    streaming_succeeded = True
+                    break  # Exit retry loop
+
+                # No content and no error - check if error_message was set
+                if not error_message:
+                    # Streaming completed but no content (shouldn't happen)
+                    logger.warning(f"[ASYNC-EXEC] Streaming completed with no content for chat {chat_id}")
+                    streaming_succeeded = True
+                    break  # Exit retry loop
+
+            except Exception as e:
+                error_message = str(e)
+                logger.error(f"[ASYNC-EXEC] Exception during streaming (attempt {attempt + 1}): {error_message}")
+
+            # Handle retry logic if we have an error
+            if error_message and not streaming_succeeded:
+                # Helper to publish retry event
+                def publish_retry_event(retry_event):
+                    publish_content(
+                        chat_id,
+                        'model_retry',
+                        '',
+                        retry_data=retry_event['payload']
+                    )
+
+                should_retry, delay = retry_handler.should_retry(
+                    error_message,
+                    attempt,
+                    logger_instance=logger,
+                    event_callback=publish_retry_event,
+                    event_context={'chat_id': chat_id},
+                    model=model
+                )
+
+                if should_retry:
+                    attempt += 1
+                    # Sleep asynchronously
+                    await asyncio.sleep(delay)
+                    # Reset state for retry
+                    full_text = ""
+                    full_thoughts = ""
+                    captured_usage_data = None
+                    last_update_time = 0.0
+                    answer_started = False
+                    first_chunk_logged = False
+                    # Reset chat state for retry
+                    if include_reasoning:
+                        db.update_chat_state(chat_id, "thinking")
+                        publish_state(chat_id, "thinking")
+                        current_state = "thinking"
+                    else:
                         db.update_chat_state(chat_id, "responding")
                         publish_state(chat_id, "responding")
                         current_state = "responding"
-                    publish_content(chat_id, 'answer_start', '')
-                    answer_started = True
-                publish_content(chat_id, 'answer', content)
-            elif chunk_type == "usage" or chunk_type == "usage_metadata":
-                usage_data = chunk.get("usage") or chunk.get("usage_metadata")
-                if usage_data:
-                    captured_usage_data = usage_data
-                    publish_content(chat_id, chunk_type, '', usage=usage_data)
-            elif chunk_type == "error":
-                error_content = chunk.get("content", "Unknown error")
-                logger.error(f"[ASYNC-EXEC] Error from provider: {error_content}")
-                publish_content(chat_id, 'error', error_content)
-                return
+                    continue  # Retry
+                else:
+                    # Not retryable or max retries exceeded
+                    logger.error(f"[ASYNC-EXEC] Giving up after {attempt + 1} attempts for chat {chat_id}")
+                    publish_content(chat_id, 'error', error_message)
+                    return
 
-            # Throttled DB update during streaming (every 0.25s)
-            import time
-            now = time.time()
-            if assistant_message_id and (full_text or full_thoughts) and (now - last_update_time) >= DB_UPDATE_THROTTLE_SECONDS:
-                try:
-                    db.update_message(
-                        assistant_message_id,
-                        full_text,
-                        thoughts=full_thoughts if full_thoughts else None
-                    )
-                    last_update_time = now
-                except Exception as db_error:
-                    logger.error(f"[ASYNC-EXEC] Error updating message in DB during stream: {db_error}")
+            # Exit retry loop if no error
+            break
 
         # Update the assistant message in DB
         if user_message_id:

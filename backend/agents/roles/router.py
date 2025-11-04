@@ -133,7 +133,7 @@ class Router:
         return prompt
 
     def _call_router_model(self, prompt: str, providers=None, chat_id: Optional[str] = None) -> str:
-        """Call the router model with the prompt.
+        """Call the router model with the prompt, with automatic retry on retryable errors.
 
         Args:
             prompt: The complete router prompt
@@ -143,85 +143,118 @@ class Router:
         Returns:
             The router model's response
         """
-        # Track router token usage
         from agents.context.context_manager import context_manager
         from utils.rate_limiter import get_rate_limiter
+        from utils.retry_handler import RetryHandler
 
         router_provider = Config.get_router_provider()
-        token_estimate = context_manager.estimate_request_tokens(
-            role="router",
-            provider=router_provider,
-            model=self.router_model,
-            system_prompt=None,
-            chat_history=[],
-            current_message=prompt,
-            file_attachments=[]
-        )
-        estimated_tokens = token_estimate['estimated_tokens']['total']
-        logger.debug(f"Router estimated tokens: {estimated_tokens}")
+        retry_handler = RetryHandler(max_retries=5)
+        attempt = 0
 
-        limiter = get_rate_limiter()
-        try:
-            limiter.check_and_reserve(router_provider, self.router_model, estimated_tokens)
-            logger.info(f"[RATE-LIMIT] Reserved capacity for router {router_provider}:{self.router_model} (estimated {estimated_tokens} tokens)")
-        except Exception as rate_limit_error:
-            logger.error(f"[RATE-LIMIT] Router rate limit check failed: {rate_limit_error}")
-            raise
-
-        if providers and router_provider in providers and providers[router_provider].is_available():
-            response = providers[router_provider].generate_text(
-                prompt=prompt,
+        while True:
+            token_estimate = context_manager.estimate_request_tokens(
+                role="router",
+                provider=router_provider,
                 model=self.router_model,
-                include_thoughts=False,
+                system_prompt=None,
                 chat_history=[],
+                current_message=prompt,
                 file_attachments=[]
             )
-        else:
-            from chat.chat import Chat
-            import uuid
+            estimated_tokens = token_estimate['estimated_tokens']['total']
+            logger.debug(f"Router estimated tokens: {estimated_tokens} (attempt {attempt + 1})")
 
-            temp_chat_id = f"router_temp_{uuid.uuid4()}"
-            chat = Chat(chat_id=temp_chat_id)
-
-            response = chat.generate_text(
-                message=prompt,
-                provider=router_provider,
-                model=self.router_model,
-                include_reasoning=False,
-                use_router=False
-            )
-
-        # Extract actual token usage
-        actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, router_provider)
-        actual_tokens = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
-        if actual_tokens_data:
-            logger.info(f"Router actual tokens: {actual_tokens}")
-
-        # Finalize rate limit with actual tokens
-        if actual_tokens > 0:
+            limiter = get_rate_limiter()
             try:
-                limiter.finalize_tokens(router_provider, self.router_model, estimated_tokens, actual_tokens)
-                logger.info(f"[RATE-LIMIT] Finalized router token usage: estimated={estimated_tokens}, actual={actual_tokens}")
-            except Exception as finalize_error:
-                logger.warning(f"[RATE-LIMIT] Failed to finalize router tokens: {finalize_error}")
+                limiter.check_and_reserve(router_provider, self.router_model, estimated_tokens)
+                logger.info(f"[RATE-LIMIT] Reserved capacity for router {router_provider}:{self.router_model} (estimated {estimated_tokens} tokens, attempt {attempt + 1})")
+            except Exception as rate_limit_error:
+                logger.error(f"[RATE-LIMIT] Router rate limit check failed: {rate_limit_error}")
+                raise
 
-        # Save token usage to database if chat_id provided
-        if chat_id and not chat_id.startswith("router_temp_"):
-            from utils.db_utils import db
-            # Save both estimated and actual tokens (actual may be 0 if not available)
-            db.save_token_usage(
-                chat_id=chat_id,
-                role='router',
-                provider=router_provider,
-                model=self.router_model,
-                estimated_tokens=estimated_tokens,
-                actual_tokens=actual_tokens
-            )
-            logger.info(f"[TokenUsage] Saved router token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens}")
+            response = None
+            error_message = None
 
-        if response.get("error"):
-            raise ValueError(f"Router model error: {response['error']}")
+            try:
+                if providers and router_provider in providers and providers[router_provider].is_available():
+                    response = providers[router_provider].generate_text(
+                        prompt=prompt,
+                        model=self.router_model,
+                        include_thoughts=False,
+                        chat_history=[],
+                        file_attachments=[]
+                    )
+                else:
+                    from chat.chat import Chat
+                    import uuid
 
-        return response.get("text", "")
+                    temp_chat_id = f"router_temp_{uuid.uuid4()}"
+                    chat = Chat(chat_id=temp_chat_id)
+
+                    response = chat.generate_text(
+                        message=prompt,
+                        provider=router_provider,
+                        model=self.router_model,
+                        include_reasoning=False,
+                        use_router=False
+                    )
+
+                # Check for error in response
+                if response.get("error"):
+                    error_message = response["error"]
+                else:
+                    # Success - extract tokens and return
+                    actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, router_provider)
+                    actual_tokens = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
+                    if actual_tokens_data:
+                        logger.info(f"Router actual tokens: {actual_tokens}")
+
+                    # Finalize rate limit with actual tokens
+                    if actual_tokens > 0:
+                        try:
+                            limiter.finalize_tokens(router_provider, self.router_model, estimated_tokens, actual_tokens)
+                            logger.info(f"[RATE-LIMIT] Finalized router token usage: estimated={estimated_tokens}, actual={actual_tokens}")
+                        except Exception as finalize_error:
+                            logger.warning(f"[RATE-LIMIT] Failed to finalize router tokens: {finalize_error}")
+
+                    # Save token usage to database if chat_id provided
+                    if chat_id and not chat_id.startswith("router_temp_"):
+                        from utils.db_utils import db
+                        db.save_token_usage(
+                            chat_id=chat_id,
+                            role='router',
+                            provider=router_provider,
+                            model=self.router_model,
+                            estimated_tokens=estimated_tokens,
+                            actual_tokens=actual_tokens
+                        )
+                        logger.info(f"[TokenUsage] Saved router token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens}")
+
+                    return response.get("text", "")
+
+            except Exception as e:
+                error_message = str(e)
+
+            # If we got here, there was an error - check if retryable
+            if error_message:
+                should_retry, delay = retry_handler.should_retry(
+                    error_message,
+                    attempt,
+                    logger_instance=logger,
+                    event_callback=None,  # Router doesn't emit events to frontend
+                    event_context=None,
+                    model=self.router_model
+                )
+
+                if should_retry:
+                    attempt += 1
+                    retry_handler.sleep_with_logging(delay, logger)
+                    continue  # Retry
+                else:
+                    # Not retryable or max retries exceeded
+                    raise ValueError(f"Router model error: {error_message}")
+
+            # No error and no success - shouldn't happen
+            raise ValueError("Router model returned empty response")
 
 router = Router()

@@ -1045,16 +1045,14 @@ class SingleDomainExecutor:
     def _call_agent(self, state: DomainTaskState, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
         from utils.config import infer_provider_from_model
+        from utils.retry_handler import RetryHandler
 
         agent = state.agent
         model = agent.model_preference or "gemini-2.5-flash-preview-09-2025"
         provider = infer_provider_from_model(model)
 
         temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
-
-        # Retry limits: max 5 for both, but different delay strategies
-        max_retries = 5
-        retry_delays = [1, 2, 4, 8, 16]  # seconds for overload errors (exponential backoff)
+        retry_handler = RetryHandler(max_retries=5)
 
         attempt = 0
 
@@ -1087,10 +1085,6 @@ class SingleDomainExecutor:
 
             full_text = ""
             error_message = None
-            is_retryable_error = False
-            retry_reason = None
-            api_provided_delay = None
-            is_rate_limit = False
 
             try:
                 for chunk in temp_chat.generate_text_stream(
@@ -1111,113 +1105,57 @@ class SingleDomainExecutor:
                 # Success - return result
                 if full_text.strip():
                     return full_text
+
+                # Handle error from chunk
                 if error_message:
-                    # Check if it's a rate limit error (highest priority since API gives us delay)
-                    if ("429" in error_message or "RESOURCE_EXHAUSTED" in error_message or
-                        "exceeded your current quota" in error_message.lower() or
-                        "quota exceeded" in error_message.lower()):
-                        is_retryable_error = True
-                        is_rate_limit = True
-                        retry_reason = "Rate limit exceeded"
-                        # Extract retry delay from message: "Please retry in 29.64243146s" or "Please retry in 92.795152ms"
-                        match = re.search(r"retry in ([\d.]+)(m?s)", error_message, re.IGNORECASE)
-                        if match:
-                            delay_value = float(match.group(1))
-                            unit = match.group(2).lower()
-                            # Convert milliseconds to seconds
-                            api_provided_delay = delay_value / 1000.0 if unit == 'ms' else delay_value
-                    # Check if it's an overload error
-                    elif "overloaded" in error_message.lower() or "503" in error_message:
-                        is_retryable_error = True
-                        retry_reason = "Model overloaded"
+                    # Check if retryable
+                    event_context = {
+                        "task_id": state.context.task_id,
+                        "domain_id": state.context.domain_id,
+                    }
+                    should_retry, delay = retry_handler.should_retry(
+                        error_message,
+                        attempt,
+                        logger_instance=self.logger,
+                        event_callback=state.event_callback,
+                        event_context=event_context,
+                        model=model
+                    )
+
+                    if should_retry:
+                        attempt += 1
+                        retry_handler.sleep_with_logging(delay, self.logger)
+                        continue  # Retry
                     else:
+                        # Not retryable or max retries exceeded
                         raise RuntimeError(error_message)
 
             except Exception as e:
                 error_str = str(e)
-                # Check if it's a rate limit error (highest priority since API gives us delay)
-                if ("429" in error_str or "RESOURCE_EXHAUSTED" in error_str or
-                    "exceeded your current quota" in error_str.lower() or
-                    "quota exceeded" in error_str.lower()):
-                    is_retryable_error = True
-                    is_rate_limit = True
-                    retry_reason = "Rate limit exceeded"
-                    error_message = error_str
-                    # Extract retry delay from message: "Please retry in 29.64243146s" or "Please retry in 92.795152ms"
-                    match = re.search(r"retry in ([\d.]+)(m?s)", error_str, re.IGNORECASE)
-                    if match:
-                        delay_value = float(match.group(1))
-                        unit = match.group(2).lower()
-                        # Convert milliseconds to seconds
-                        api_provided_delay = delay_value / 1000.0 if unit == 'ms' else delay_value
-                # Check if it's an overload error
-                elif "overloaded" in error_str.lower() or "503" in error_str or "UNAVAILABLE" in error_str:
-                    is_retryable_error = True
-                    retry_reason = "Model overloaded"
-                    error_message = error_str
+
+                # Check if retryable
+                event_context = {
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                }
+                should_retry, delay = retry_handler.should_retry(
+                    error_str,
+                    attempt,
+                    logger_instance=self.logger,
+                    event_callback=state.event_callback,
+                    event_context=event_context,
+                    model=model
+                )
+
+                if should_retry:
+                    attempt += 1
+                    retry_handler.sleep_with_logging(delay, self.logger)
+                    continue  # Retry
                 else:
+                    # Not retryable or max retries exceeded
                     raise RuntimeError(f"Error during streaming text generation: {e}")
 
-            # Handle retryable error with retry
-            if is_retryable_error:
-                # Check if we've exceeded max retries
-                if attempt >= max_retries:
-                    raise RuntimeError(
-                        f"{retry_reason} persisted after {max_retries} retry attempts. Please try again later."
-                    )
-
-                attempt += 1
-
-                if is_rate_limit:
-                    # Rate limit: Use API-provided delay + tolerance buffer
-                    if api_provided_delay is None:
-                        raise RuntimeError(
-                            f"Rate limit error encountered but could not extract retry delay from API response. Error: {error_message}"
-                        )
-                    # Add 1.5s tolerance buffer to avoid immediate re-trigger
-                    tolerance_buffer = 1.5
-                    delay = api_provided_delay + tolerance_buffer
-                    delay_str = f"{delay:.1f}s (API: {api_provided_delay:.1f}s + {tolerance_buffer}s buffer)"
-
-                    self.logger.warning(
-                        f"[RETRY] {retry_reason}, retrying in {delay_str} (attempt {attempt}/{max_retries})"
-                    )
-                else:
-                    # Overload: Use exponential backoff
-                    delay_idx = min(attempt - 1, len(retry_delays) - 1)
-                    delay = retry_delays[delay_idx]
-                    delay_str = f"{delay}s (exponential backoff)"
-
-                    self.logger.warning(
-                        f"[RETRY] {retry_reason}, retrying in {delay_str} (attempt {attempt}/{max_retries})"
-                    )
-
-                # Emit retry event to frontend
-                if state.event_callback:
-                    retry_event = {
-                        "event": "model_retry",
-                        "payload": {
-                            "attempt": attempt,
-                            "max_attempts": max_retries,
-                            "delay_seconds": delay,
-                            "model": model,
-                            "reason": retry_reason,
-                        },
-                        "task_id": state.context.task_id,
-                        "domain_id": state.context.domain_id,
-                    }
-                    try:
-                        state.event_callback(retry_event)
-                    except Exception as cb_error:
-                        self.logger.warning(f"Failed to emit retry event: {cb_error}")
-
-                time.sleep(delay)
-                continue  # Retry
-
-            # No retryable error and no success - shouldn't happen but handle it
-            if error_message:
-                raise RuntimeError(error_message)
-
+            # No error and no success - shouldn't happen but handle it
             return ""
 
     def _build_agent_prompt(self, state: DomainTaskState) -> str:
