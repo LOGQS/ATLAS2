@@ -1233,6 +1233,25 @@ class CoderWorkspaceRoute:
                 self._add_to_history(path)
 
                 logger.info("[CODER_WORKSPACE] Set workspace for chat %s: %s", chat_id, path)
+
+                # Resume any pending async execution that was waiting for workspace selection
+                # This is critical for the async execution flow where coder domain tasks
+                # pause to prompt user for workspace before executing
+                try:
+                    from chat.chat import send_workspace_selected
+                    resume_result = send_workspace_selected(chat_id)
+
+                    if resume_result.get('success'):
+                        logger.info("[CODER_WORKSPACE] Successfully resumed execution for chat %s after workspace selection", chat_id)
+                    else:
+                        # Not necessarily an error - chat might not have been waiting for workspace
+                        logger.debug("[CODER_WORKSPACE] No pending execution to resume for chat %s: %s",
+                                   chat_id, resume_result.get('error', 'No pending state'))
+                except Exception as resume_err:
+                    # Log but don't fail the workspace setting - the workspace is still set correctly
+                    logger.error("[CODER_WORKSPACE] Failed to resume execution for chat %s: %s",
+                               chat_id, resume_err, exc_info=True)
+
                 return jsonify({
                     "success": True,
                     "workspace_path": str(path),
@@ -1798,6 +1817,22 @@ class CoderWorkspaceRoute:
                 self._add_to_history(temp_ws_path)
 
                 logger.info("[CODER_WORKSPACE] Created quick start workspace for chat %s: %s", chat_id, temp_ws_path)
+
+                # Resume any pending async execution that was waiting for workspace selection
+                # Same logic as set_workspace - quick start is another way to provide a workspace
+                try:
+                    from chat.chat import send_workspace_selected
+                    resume_result = send_workspace_selected(chat_id)
+
+                    if resume_result.get('success'):
+                        logger.info("[CODER_WORKSPACE] Successfully resumed execution for chat %s after quick start", chat_id)
+                    else:
+                        logger.debug("[CODER_WORKSPACE] No pending execution to resume for chat %s after quick start: %s",
+                                   chat_id, resume_result.get('error', 'No pending state'))
+                except Exception as resume_err:
+                    logger.error("[CODER_WORKSPACE] Failed to resume execution for chat %s after quick start: %s",
+                               chat_id, resume_err, exc_info=True)
+
                 return jsonify({
                     "success": True,
                     "workspace_path": str(temp_ws_path),

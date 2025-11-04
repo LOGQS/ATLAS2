@@ -141,7 +141,7 @@ ROUTE_MODEL_MAP = {
 
     # Single domains
     "web_researcher": "gemini-2.5-flash-preview-09-2025",   # Research with iteration
-    "coder": "gemini-2.5-flash-preview-09-2025",              # Code generation needs strong model
+    "coder": "gemini-2.5-pro",              # Code generation needs strong model
     "web_controller": "gemini-2.5-flash-preview-09-2025",   # Browser automation
     "data_processor": "gemini-2.5-flash-preview-09-2025",   # Data operations can use fast model
     "memory": "gemini-2.5-flash-preview-09-2025",           # Memory operations are straightforward
