@@ -17,6 +17,7 @@ from agents.context.context_manager import context_manager
 from chat.async_engine import (
     start_async_chat_processing,
     cancel_async_chat,
+    stop_async_chat,
     is_async_chat_processing,
     cleanup_async_chat,
     has_async_domain_session,
@@ -393,7 +394,20 @@ def send_workspace_selected(chat_id: str) -> Dict[str, Any]:
     return failure_payload
 
 def stop_chat_process(chat_id: str) -> bool:
-    """Stop a running background process for a chat and finalize the stream."""
+    """Stop a running background process or async task for a chat and finalize the stream."""
+
+    # First check if it's an async task
+    if is_async_chat_processing(chat_id):
+        logger.info(f"[STOP] Stopping async chat {chat_id}")
+        success = stop_async_chat(chat_id)
+        if success:
+            # Async engine handles state updates and cleanup internally
+            logger.info(f"[STOP] Successfully stopped async chat {chat_id}")
+        else:
+            logger.info(f"[STOP] No active async task found for {chat_id}")
+        return success
+
+    # Otherwise handle multiprocessing path
     with _chat_processes_lock:
         process = _chat_processes.get(chat_id)
         has_conn = chat_id in _chat_process_connections
