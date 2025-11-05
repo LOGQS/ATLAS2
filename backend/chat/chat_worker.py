@@ -631,6 +631,15 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                         'content': json.dumps(payload),
                         'task_id': task_id,
                     })
+                elif event_type == "coder_stream" and payload:
+                    # Forward coder stream events for live streaming UI
+                    child_conn.send({
+                        'type': 'content',
+                        'chat_id': chat_id,
+                        'content_type': 'coder_stream',
+                        'content': json.dumps(payload),
+                        'task_id': task_id,
+                    })
                 elif event_type == "tool_execution" and payload:
                     operation_payload = {
                         'task_id': task_id,

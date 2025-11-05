@@ -47,6 +47,10 @@
   border-color: rgba(255, 205, 139, 0.35);
 }
 
+.exec-activity-feed__stream-card--executing {
+  border-color: rgba(97, 166, 250, 0.35);
+}
+
 .exec-activity-feed__stream-header {
   display: flex;
   align-items: center;
@@ -87,6 +91,21 @@
 .exec-activity-feed__stream-pill--pending {
   background: rgba(255, 205, 139, 0.18);
   color: rgba(255, 205, 139, 0.9);
+}
+
+.exec-activity-feed__stream-pill--executing {
+  background: rgba(97, 166, 250, 0.18);
+  color: rgba(97, 166, 250, 0.9);
+}
+
+.exec-activity-feed__waiting-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(97, 166, 250, 0.2);
+  background: rgba(10, 13, 24, 0.6);
 }
 
 .exec-activity-feed__stream-body {

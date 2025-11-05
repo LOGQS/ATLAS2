@@ -80,6 +80,9 @@ interface ToolProposalCardProps {
   isWaitingForUser: boolean;
   isFirstPending: boolean;
   totalPending: number;
+  isExecuting: boolean;
+  isCompleted: boolean;
+  onDecision: (callId: string) => void;
 }
 
 const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
@@ -91,6 +94,9 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   isWaitingForUser,
   isFirstPending,
   totalPending,
+  isExecuting,
+  isCompleted,
+  onDecision,
 }) => {
   const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -99,9 +105,35 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   const hasPending = Boolean(pendingTool && chatId && taskId);
   const callId = pendingTool?.call_id ?? null;
 
+  // If already executing or completed, show different UI
+  if (isExecuting && !isCompleted) {
+    return (
+      <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--executing">
+        <div className="exec-activity-feed__stream-header">
+          <Icons.Activity className="w-4 h-4 text-blue-400 animate-spin" />
+          <div className="exec-activity-feed__stream-header-text">
+            <span>Executing Tool · Iteration {segment.iteration}</span>
+            <span className="exec-activity-feed__stream-subtitle">{segment.tool || pendingTool?.tool || 'Tool'}</span>
+          </div>
+          <span className="exec-activity-feed__stream-pill exec-activity-feed__stream-pill--executing">Executing...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Don't show if completed (will be shown in tool_history instead)
+  if (isCompleted) {
+    return null;
+  }
+
   const submitDecision = useCallback(async (decision: 'accept' | 'reject', batchMode: boolean) => {
     if (!chatId || !taskId) return;
     if (!batchMode && !callId) return;
+
+    // Optimistically update UI immediately
+    if (decision === 'accept' && callId) {
+      onDecision(callId);
+    }
 
     const pendingState = decision === 'accept' ? 'accepting' : 'rejecting';
     setDecisionState(pendingState);
@@ -128,7 +160,7 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
     } finally {
       setDecisionState('idle');
     }
-  }, [chatId, taskId, callId, totalPending]);
+  }, [chatId, taskId, callId, totalPending, onDecision]);
 
   useEffect(() => {
     if (!autoAcceptEnabled || !hasPending || !isWaitingForUser || decisionState !== 'idle') {
@@ -262,6 +294,8 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
   autoAcceptEnabled = false,
 }) => {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [executingTools, setExecutingTools] = useState<Set<string>>(new Set());
+  const [completedToolsFromExecution, setCompletedToolsFromExecution] = useState<Set<string>>(new Set());
 
   const toggleExpanded = useCallback((id: string) => {
     setExpandedItems(prev => {
@@ -273,6 +307,33 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
       }
       return next;
     });
+  }, []);
+
+  // Track when tools complete execution via domain_execution updates
+  useEffect(() => {
+    if (!domainExecution?.tool_history) return;
+
+    const completedCallIds = new Set(domainExecution.tool_history.map(t => t.call_id));
+
+    // Remove from executing set if now in tool_history
+    setExecutingTools(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const callId of Array.from(prev)) {
+        if (completedCallIds.has(callId)) {
+          next.delete(callId);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    setCompletedToolsFromExecution(completedCallIds);
+  }, [domainExecution?.tool_history]);
+
+  const handleToolDecision = useCallback((callId: string) => {
+    // Optimistically add to executing set to hide proposal immediately
+    setExecutingTools(prev => new Set(prev).add(callId));
   }, []);
 
   const hasStream = coderStream.length > 0;
@@ -343,6 +404,9 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
           const isLatestIteration = currentIteration !== null && segment.iteration === currentIteration;
           const pendingTool = isLatestIteration ? pendingTools[segment.toolIndex] : undefined;
           const totalPending = isLatestIteration ? pendingTools.length : 0;
+          const callId = pendingTool?.call_id;
+          const isExecuting = callId ? executingTools.has(callId) : false;
+          const isCompleted = callId ? completedToolsFromExecution.has(callId) : false;
 
           return (
             <ToolProposalCard
@@ -355,9 +419,20 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
               isWaitingForUser={Boolean(isWaitingForUser && isLatestIteration)}
               isFirstPending={Boolean(isLatestIteration && segment.toolIndex === 0)}
               totalPending={totalPending}
+              isExecuting={isExecuting}
+              isCompleted={isCompleted}
+              onDecision={handleToolDecision}
             />
           );
         })}
+
+        {/* Show waiting state if tools executed but no new iteration yet */}
+        {isWaitingForUser === false && pendingTools.length === 0 && domainExecution?.tool_history && domainExecution.tool_history.length > 0 && coderStream.length > 0 && (
+          <div className="exec-activity-feed__waiting-state">
+            <div className="exec-activity-feed__spinner" />
+            <span className="text-sm text-white/60">Waiting for model response...</span>
+          </div>
+        )}
 
         {isProcessing && coderStream.length === 0 && (
           <div className="exec-activity-feed__processing-placeholder">
