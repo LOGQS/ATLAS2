@@ -42,8 +42,8 @@ available_routes = [
     # Capability-based routes (no tools needed)
     {
         "route_name": "creative_writing",
-        "route_description": "Creative content generation",
-        "route_context": "Stories, poems, marketing copy, creative narratives. Native capabilities sufficient."
+        "route_description": "Literary and artistic text creation",
+        "route_context": "Stories, poems, essays, articles, marketing copy, scripts, creative narratives. Focused on written content and artistic expression. Native capabilities sufficient."
     },
     {
         "route_name": "math_reasoning",
@@ -81,8 +81,8 @@ available_routes = [
     },
     {
         "route_name": "coder",
-        "route_description": "Complex software development requiring multiple operations",
-        "route_context": "Multi-step file operations: editing files, running tests, debugging, refactoring, building projects. Requires planning and sequential execution across multiple files or tools."
+        "route_description": "Software development and code file operations",
+        "route_context": "Working with code files on disk: creating new projects, websites, applications, scripts; modifying existing code; testing, debugging, refactoring. Handles both simple file creation and complex multi-file development."
     },
     {
         "route_name": "web_controller",

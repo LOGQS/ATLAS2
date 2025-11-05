@@ -83,12 +83,12 @@ Examples: "coder", "direct", "web_researcher", "general_conversation"
 ## EXAMPLES:
 
 **Example 1: Task requiring external tools**
-Request: "Modify the config file at /app/settings.conf to enable debug mode"
+Request: "Create a Python script that validates JSON files and outputs error reports"
 
 <ROUTE>
-<TOOL_REASONING>Request requires file system access to read and modify a configuration file. Native model cannot directly access or modify files on the file system.</TOOL_REASONING>
+<TOOL_REASONING>Request requires creating a new code file on disk. Native model cannot create or save files to the file system.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
-<EXECUTION_REASONING>Based on the need for file operations and modification, selecting the coder route which handles file manipulation tasks.</EXECUTION_REASONING>
+<EXECUTION_REASONING>Task involves creating new software that needs to be saved as an executable file. The coder route handles code file creation and development work.</EXECUTION_REASONING>
 <EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
 <DOMAIN>coder</DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
