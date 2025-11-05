@@ -44,6 +44,45 @@ type PaneId = 'primary' | 'secondary';
 
 type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
 
+interface DiffChunk {
+  startLine: number;
+  endLine: number;
+  type: 'added' | 'removed' | 'modified';
+}
+
+interface DiffData {
+  toolCallId: string;
+  filePath: string;
+  chunks: DiffChunk[];
+  before: string;
+  after: string;
+}
+
+interface Checkpoint {
+  id: string;
+  timestamp: string;
+  operation: string;
+  tool: string;
+  filePath: string;
+  changes: Array<{
+    id: string;
+    diff: string;
+    linesAdded: number;
+    linesRemoved: number;
+  }>;
+  callId?: string;
+}
+
+interface Plan {
+  description: string;
+  steps: Array<{
+    id: string;
+    description: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    result?: string;
+  }>;
+}
+
 interface CoderState {
   chatId?: string;
   workspacePath: string;
@@ -78,6 +117,15 @@ interface CoderState {
   // Git integration
   isGitRepo: boolean;
   gitStatus: Record<string, GitFileStatus>;
+  // Diff tracking for inline overlays
+  pendingDiffs: Map<string, DiffData>;
+  appliedChanges: Set<string>;
+  // Checkpoint system
+  checkpoints: Checkpoint[];
+  // Plan tracking
+  currentPlan: Plan | null;
+  // Activity panel state
+  activityPanelTab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline';
 }
 
 const findNodeByPath = (root: FileNode | null, targetPath: string): FileNode | null => {
@@ -154,6 +202,20 @@ interface CoderActions {
   closeSplit: () => void;
   switchPane: (paneId: PaneId) => void;
   openTabInPane: (path: string, paneId: PaneId) => Promise<void>;
+  // Diff management
+  addPendingDiff: (toolCallId: string, diff: DiffData) => void;
+  acceptDiff: (toolCallId: string) => void;
+  rejectDiff: (toolCallId: string) => void;
+  acceptAllDiffs: () => void;
+  rejectAllDiffs: () => void;
+  // Checkpoint management
+  addCheckpoint: (data: Omit<Checkpoint, 'id' | 'timestamp'>) => void;
+  revertToCheckpoint: (checkpointId: string) => Promise<void>;
+  // Plan management
+  updatePlan: (plan: Plan | null) => void;
+  updateStepStatus: (stepId: string, status: 'pending' | 'in_progress' | 'completed' | 'failed', result?: string) => void;
+  // Activity panel
+  setActivityPanelTab: (tab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline') => void;
 }
 
 const CoderContext = createContext<(CoderState & CoderActions) | undefined>(undefined);
@@ -169,9 +231,10 @@ export const useCoderContext = () => {
 interface CoderProviderProps {
   chatId?: string;
   children: React.ReactNode;
+  onWorkspaceReady?: () => void;
 }
 
-export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }) => {
+export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, onWorkspaceReady }) => {
   const [state, setState] = useState<CoderState>({
     chatId,
     workspacePath: '',
@@ -212,6 +275,15 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     // Git integration state
     isGitRepo: false,
     gitStatus: {},
+    // Diff tracking state
+    pendingDiffs: new Map(),
+    appliedChanges: new Set(),
+    // Checkpoint system state
+    checkpoints: [],
+    // Plan tracking state
+    currentPlan: null,
+    // Activity panel state
+    activityPanelTab: 'activity',
   });
   const stateRef = React.useRef(state);
   React.useEffect(() => {
@@ -369,6 +441,12 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
             logger.error('[CODER_CTX] Failed to notify worker of workspace selection:', notifyError);
           }
         }
+
+        // Signal that workspace is fully loaded and ready
+        if (onWorkspaceReady) {
+          logger.info('[CODER_CTX] Calling onWorkspaceReady callback');
+          onWorkspaceReady();
+        }
       } else {
         logger.warn('[CODER_CTX] setWorkspace failed', { error: data.error });
         setState(prev => ({ ...prev, error: data.error || 'Failed to set workspace', isLoading: false }));
@@ -377,7 +455,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
       logger.error('[CODER] Failed to set workspace:', err);
       setState(prev => ({ ...prev, error: 'Failed to set workspace', isLoading: false }));
     }
-  }, [chatId, loadFileTree]);
+  }, [chatId, loadFileTree, onWorkspaceReady]);
 
   const toggleFolder = useCallback((path: string) => {
     setState(prev => {
@@ -1392,6 +1470,158 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     }
   }, [chatId, state.tabDocuments, state.workspacePath]);
 
+  // Diff management functions
+  const addPendingDiff = useCallback((toolCallId: string, diff: DiffData) => {
+    setState(prev => {
+      const newPendingDiffs = new Map(prev.pendingDiffs);
+      newPendingDiffs.set(toolCallId, diff);
+      return { ...prev, pendingDiffs: newPendingDiffs };
+    });
+    logger.info('[CODER] Added pending diff:', toolCallId);
+  }, []);
+
+  const acceptDiff = useCallback((toolCallId: string) => {
+    setState(prev => {
+      const newPendingDiffs = new Map(prev.pendingDiffs);
+      newPendingDiffs.delete(toolCallId);
+      const newAppliedChanges = new Set(prev.appliedChanges);
+      newAppliedChanges.add(toolCallId);
+      return {
+        ...prev,
+        pendingDiffs: newPendingDiffs,
+        appliedChanges: newAppliedChanges,
+      };
+    });
+    logger.info('[CODER] Accepted diff:', toolCallId);
+  }, []);
+
+  const rejectDiff = useCallback(async (toolCallId: string) => {
+    const diff = state.pendingDiffs.get(toolCallId);
+    if (!diff || !chatId) return;
+
+    // Revert the file content to before state
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          path: diff.filePath,
+          content: diff.before,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        // Update the document if it's open
+        setState(prev => {
+          const newPendingDiffs = new Map(prev.pendingDiffs);
+          newPendingDiffs.delete(toolCallId);
+
+          if (prev.tabDocuments[diff.filePath]) {
+            const updatedDoc = {
+              ...prev.tabDocuments[diff.filePath],
+              content: diff.before,
+              originalContent: diff.before,
+            };
+            return {
+              ...prev,
+              pendingDiffs: newPendingDiffs,
+              tabDocuments: {
+                ...prev.tabDocuments,
+                [diff.filePath]: updatedDoc,
+              },
+              currentDocument: prev.activeTabPath === diff.filePath ? updatedDoc : prev.currentDocument,
+            };
+          }
+
+          return { ...prev, pendingDiffs: newPendingDiffs };
+        });
+        logger.info('[CODER] Rejected diff:', toolCallId);
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to reject diff:', err);
+    }
+  }, [chatId, state.pendingDiffs]);
+
+  const acceptAllDiffs = useCallback(() => {
+    setState(prev => {
+      const newAppliedChanges = new Set(prev.appliedChanges);
+      prev.pendingDiffs.forEach((_, toolCallId) => {
+        newAppliedChanges.add(toolCallId);
+      });
+      return {
+        ...prev,
+        pendingDiffs: new Map(),
+        appliedChanges: newAppliedChanges,
+      };
+    });
+    logger.info('[CODER] Accepted all diffs');
+  }, []);
+
+  const rejectAllDiffs = useCallback(async () => {
+    const diffsToReject = Array.from(state.pendingDiffs.entries());
+    for (const [toolCallId] of diffsToReject) {
+      await rejectDiff(toolCallId);
+    }
+    logger.info('[CODER] Rejected all diffs');
+  }, [state.pendingDiffs, rejectDiff]);
+
+  // Checkpoint management functions
+  const addCheckpoint = useCallback((data: Omit<Checkpoint, 'id' | 'timestamp'>) => {
+    const checkpoint: Checkpoint = {
+      ...data,
+      id: `checkpoint_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: new Date().toISOString(),
+    };
+    setState(prev => ({
+      ...prev,
+      checkpoints: [...prev.checkpoints, checkpoint],
+    }));
+    logger.info('[CODER] Added checkpoint:', checkpoint.id);
+  }, []);
+
+  const revertToCheckpoint = useCallback(async (checkpointId: string) => {
+    // This would revert files to the state at the checkpoint
+    // Implementation depends on how we store checkpoint data
+    logger.info('[CODER] Reverting to checkpoint:', checkpointId);
+    // TODO: Implement full checkpoint revert logic
+  }, []);
+
+  // Plan management functions
+  const updatePlan = useCallback((plan: Plan | null) => {
+    setState(prev => ({ ...prev, currentPlan: plan }));
+    logger.info('[CODER] Updated plan:', plan?.description);
+  }, []);
+
+  const updateStepStatus = useCallback((
+    stepId: string,
+    status: 'pending' | 'in_progress' | 'completed' | 'failed',
+    result?: string
+  ) => {
+    setState(prev => {
+      if (!prev.currentPlan) return prev;
+
+      const updatedSteps = prev.currentPlan.steps.map(step =>
+        step.id === stepId ? { ...step, status, result } : step
+      );
+
+      return {
+        ...prev,
+        currentPlan: {
+          ...prev.currentPlan,
+          steps: updatedSteps,
+        },
+      };
+    });
+    logger.info('[CODER] Updated step status:', stepId, status);
+  }, []);
+
+  // Activity panel management
+  const setActivityPanelTab = useCallback((tab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline') => {
+    setState(prev => ({ ...prev, activityPanelTab: tab }));
+  }, []);
+
   // Listen for file changes from coder agent
   useEffect(() => {
     if (!chatId) return;
@@ -1544,13 +1774,19 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
               hasWorkspace: true,
             }));
             await loadFileTree();
+
+            // Signal that workspace is fully loaded and ready
+            if (onWorkspaceReady) {
+              logger.info('[CODER_CTX] Workspace loaded on mount, calling onWorkspaceReady callback');
+              onWorkspaceReady();
+            }
           }
         } catch (err) {
           logger.error('[CODER] Failed to load workspace:', err);
         }
       })();
     }
-  }, [chatId, loadFileTree]);
+  }, [chatId, loadFileTree, onWorkspaceReady]);
 
   const value: CoderState & CoderActions = {
     ...state,
@@ -1593,6 +1829,20 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children }
     closeSplit,
     switchPane,
     openTabInPane,
+    // Diff management actions
+    addPendingDiff,
+    acceptDiff,
+    rejectDiff,
+    acceptAllDiffs,
+    rejectAllDiffs,
+    // Checkpoint actions
+    addCheckpoint,
+    revertToCheckpoint,
+    // Plan actions
+    updatePlan,
+    updateStepStatus,
+    // Activity panel actions
+    setActivityPanelTab,
   };
 
   return <CoderContext.Provider value={value}>{children}</CoderContext.Provider>;

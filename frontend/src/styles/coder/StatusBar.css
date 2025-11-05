@@ -1,0 +1,77 @@
+/* StatusBar - All classes namespaced with status-bar__ prefix */
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+  background: #2d2d30;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 12px;
+  font-size: 11px;
+  color: rgba(212, 212, 212, 0.8);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.status-bar__left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status-bar__right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.status-bar__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: background 0.15s;
+  cursor: default;
+}
+
+.status-bar__item--clickable {
+  cursor: pointer;
+}
+
+.status-bar__item--clickable:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.status-bar__item svg {
+  flex-shrink: 0;
+}
+
+.status-bar__workspace {
+  color: #61a6fa;
+}
+
+.status-bar__git-branch {
+  color: #4ec9b0;
+}
+
+.status-bar__file-count {
+  color: rgba(212, 212, 212, 0.6);
+}
+
+.status-bar__unsaved {
+  color: #f48771;
+}
+
+.status-bar__model {
+  color: #dcdcaa;
+}
+
+.status-bar__error {
+  color: #f48771;
+}
+
+.status-bar__warning {
+  color: #dcdcaa;
+}

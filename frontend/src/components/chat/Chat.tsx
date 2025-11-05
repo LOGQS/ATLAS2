@@ -8,6 +8,7 @@ import RouterBox from './RouterBox';
 import DomainBox from '../agentic/DomainBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
+import { AnimatePresence } from 'framer-motion';
 import { WorkspacePickerModal } from '../coder/WorkspacePickerModal';
 import { liveStore } from '../../utils/chat/LiveStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
@@ -55,6 +56,7 @@ interface ChatProps {
   firstMessage?: string;
   showWorkspacePicker?: boolean;
   onWorkspaceSelected?: (chatId: string, workspacePath: string) => void;
+  onWorkspaceLoadingStart?: () => void;
 }
 
 interface ChatLive {
@@ -89,7 +91,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   autoTTSActive = false,
   firstMessage,
   showWorkspacePicker = false,
-  onWorkspaceSelected
+  onWorkspaceSelected,
+  onWorkspaceLoadingStart
 }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [firstMessageSent, setFirstMessageSent] = useState(false);
@@ -1394,20 +1397,24 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
 
         {/* Render workspace picker for the last assistant message when needed */}
-        {isLastAssistantMessage && showWorkspacePicker && (
-          <WorkspacePickerModal
-            isOpen={true}
-            onClose={() => {}}
-            onWorkspaceSelected={(workspace: string) => {
-              if (onWorkspaceSelected && chatId) {
-                onWorkspaceSelected(chatId, workspace);
-              }
-            }}
-            chatId={chatId}
-            embedded={true}
-            chatScrollControl={scrollControl}
-          />
-        )}
+        <AnimatePresence initial={false} mode="popLayout">
+          {isLastAssistantMessage && showWorkspacePicker && (
+            <WorkspacePickerModal
+              key={`workspace-picker-${chatId}`}
+              isOpen={true}
+              onClose={() => {}}
+              onWorkspaceSelected={(workspace: string) => {
+                if (onWorkspaceSelected && chatId) {
+                  onWorkspaceSelected(chatId, workspace);
+                }
+              }}
+              onLoadingStart={onWorkspaceLoadingStart}
+              chatId={chatId}
+              embedded={true}
+              chatScrollControl={scrollControl}
+            />
+          )}
+        </AnimatePresence>
       </MessageWrapper>
     );
   }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected]);

@@ -4,6 +4,8 @@ import { FileBreadcrumb } from './FileBreadcrumb';
 import { PanelHeader } from '../ui/PanelHeader';
 import { PanelHeaderButton } from '../ui/PanelHeaderButton';
 import { Icons } from '../ui/Icons';
+import { InlineDiffOverlay } from './InlineDiffOverlay';
+import { useCoderContext } from '../../contexts/CoderContext';
 import type * as Monaco from 'monaco-editor';
 
 type EditorOnMount = NonNullable<React.ComponentProps<typeof Editor>['onMount']>;
@@ -41,6 +43,8 @@ export const EditorPane = memo<EditorPaneProps>(({
   onPaneClick,
   chatId,
 }) => {
+  const { pendingDiffs, acceptDiff, rejectDiff, acceptAllDiffs, rejectAllDiffs } = useCoderContext();
+
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (value !== undefined) {
       onContentChange(value);
@@ -122,6 +126,12 @@ export const EditorPane = memo<EditorPaneProps>(({
     resizeObserverRef.current = observer;
   }, [onSave, scheduleEditorLayout]);
 
+  // Filter diffs for current file
+  const currentFileDiffs = document
+    ? Array.from(pendingDiffs.values()).filter(diff => diff.filePath === document.filePath)
+    : [];
+  const hasDiffs = currentFileDiffs.length > 0;
+
   if (!document) {
     return (
       <div
@@ -155,6 +165,18 @@ export const EditorPane = memo<EditorPaneProps>(({
               History
             </PanelHeaderButton>
           </div>
+          {hasDiffs && (
+            <>
+              <PanelHeaderButton onClick={acceptAllDiffs}>
+                <Icons.Check className="w-3.5 h-3.5" />
+                Accept All ({currentFileDiffs.length})
+              </PanelHeaderButton>
+              <PanelHeaderButton onClick={rejectAllDiffs}>
+                <Icons.Close className="w-3.5 h-3.5" />
+                Reject All
+              </PanelHeaderButton>
+            </>
+          )}
           {isUnsaved && (
             <>
               <PanelHeaderButton onClick={onSave}>
@@ -201,6 +223,14 @@ export const EditorPane = memo<EditorPaneProps>(({
             bracketPairColorization: { enabled: true },
           }}
         />
+        {hasDiffs && (
+          <InlineDiffOverlay
+            diffs={currentFileDiffs}
+            editor={editorRef.current}
+            onAccept={acceptDiff}
+            onReject={rejectDiff}
+          />
+        )}
       </div>
     </div>
   );

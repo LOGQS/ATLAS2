@@ -34,6 +34,22 @@ import {
   VscRocket,
   VscInfo,
   VscEye,
+  VscComment,
+  VscCode,
+  VscPulse,
+  VscChecklist,
+  VscAccount,
+  VscHubot,
+  VscSymbolKeyword,
+  VscDebugRestart,
+  VscBook,
+  VscShield,
+  VscLightbulb,
+  VscPassFilled,
+  VscSourceControl,
+  VscDebugStepBack,
+  VscDebugStepOver,
+  VscPlay,
 } from 'react-icons/vsc';
 import {
   SiJavascript,
@@ -82,9 +98,14 @@ export const Icons = {
   Delete: createIconComponent(VscTrash),
   Edit: createIconComponent(VscEdit),
   Check: createIconComponent(VscCheck),
+  CheckCircle: createIconComponent(VscPassFilled),
   Add: createIconComponent(VscAdd),
   Zap: createIconComponent(VscFlame),
   Rocket: createIconComponent(VscRocket),
+  Undo: createIconComponent(VscDebugRestart),
+  Play: createIconComponent(VscPlay),
+  SkipBack: createIconComponent(VscDebugStepBack),
+  SkipForward: createIconComponent(VscDebugStepOver),
 
   // File Tree
   ChevronDown: createIconComponent(VscChevronDown),
@@ -118,6 +139,25 @@ export const Icons = {
   PHP: createIconComponent(SiPhp),
   CSharp: createIconComponent(SiDotnet),
   Vue: createIconComponent(SiVuedotjs),
+
+  // Communication
+  Chat: createIconComponent(VscComment),
+  MessageCircle: createIconComponent(VscComment),
+  Send: createIconComponent(VscSymbolKeyword),
+  User: createIconComponent(VscAccount),
+  Bot: createIconComponent(VscHubot),
+  Paperclip: createIconComponent(VscSymbolKeyword),
+
+  // Code & Development
+  Code: createIconComponent(VscCode),
+  Activity: createIconComponent(VscPulse),
+  List: createIconComponent(VscChecklist),
+  GitBranch: createIconComponent(VscSourceControl),
+
+  // Learning & Knowledge
+  Book: createIconComponent(VscBook),
+  Shield: createIconComponent(VscShield),
+  Lightbulb: createIconComponent(VscLightbulb),
 };
 
 export const getFileIcon = (fileName: string): IconComponent => {

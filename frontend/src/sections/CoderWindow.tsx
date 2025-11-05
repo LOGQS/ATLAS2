@@ -11,15 +11,22 @@ import { WorkspaceHistoryPanel } from '../components/coder/WorkspaceHistoryPanel
 import { QuickFileSearch } from '../components/coder/QuickFileSearch';
 import { CommandPalette } from '../components/coder/CommandPalette';
 import { EditorPane } from '../components/coder/EditorPane';
+import { IDEMenuBar } from '../components/coder/IDEMenuBar';
+import { StatusBar } from '../components/coder/StatusBar';
+import { ActivityChatPanel } from '../components/coder/ActivityChatPanel';
 import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
 import { configureMonaco } from '../config/monaco';
 import '../styles/sections/CoderWindow.css';
 import logger from '../utils/core/logger';
+import { liveStore } from '../utils/chat/LiveStore';
 
 interface CoderWindowProps {
-  isOpen: boolean;
+  isOpen?: boolean;
   chatId?: string;
+  fullscreen?: boolean;
+  onBackToChat?: () => void;
+  onWorkspaceReady?: () => void;
 }
 
 type ViewType = 'code' | 'preview';
@@ -36,10 +43,16 @@ const sliderOptions: SliderOptions<ViewType> = {
 };
 
 
-const CoderWindowContent: React.FC = () => {
+interface CoderWindowContentProps {
+  fullscreen?: boolean;
+  onBackToChat?: () => void;
+}
+
+const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = false, onBackToChat }) => {
   const {
     chatId,
     hasWorkspace,
+    workspaceName,
     currentDocument,
     activeTabPath,
     unsavedFiles,
@@ -49,6 +62,11 @@ const CoderWindowContent: React.FC = () => {
     splitMode,
     activePaneId,
     panes,
+    openTabs,
+    isGitRepo,
+    checkpoints,
+    currentPlan,
+    pendingDiffs,
     setWorkspace,
     updateFileContent,
     saveFile,
@@ -60,6 +78,8 @@ const CoderWindowContent: React.FC = () => {
     splitEditorVertical,
     closeSplit,
     switchPane,
+    acceptAllDiffs,
+    rejectAllDiffs,
   } = useCoderContext();
 
   const [selectedView, setSelectedView] = React.useState<ViewType>('code');
@@ -71,6 +91,8 @@ const CoderWindowContent: React.FC = () => {
   const [autoAcceptTools, setAutoAcceptTools] = useState(() => {
     return localStorage.getItem('coder-auto-accept') === 'true';
   });
+  const [domainExecution, setDomainExecution] = useState<any>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
   const monacoConfigured = useRef(false);
   const sidebarDefaultSize = 22;
   const editorDefaultSize = 100 - sidebarDefaultSize;
@@ -113,6 +135,18 @@ const CoderWindowContent: React.FC = () => {
   React.useEffect(() => {
     logger.info('[CoderWindow] State changed:', { hasWorkspace, currentDocument: !!currentDocument, showTerminal });
   }, [hasWorkspace, currentDocument, showTerminal]);
+
+  // Subscribe to execution data from liveStore
+  React.useEffect(() => {
+    if (!chatId) return;
+
+    const unsubscribe = liveStore.subscribe(chatId, (id, snap) => {
+      setDomainExecution(snap.domainExecution);
+      setIsProcessing(snap.state === 'thinking' || snap.state === 'responding');
+    });
+
+    return unsubscribe;
+  }, [chatId]);
 
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (value !== undefined) {
@@ -180,7 +214,18 @@ const CoderWindowContent: React.FC = () => {
   logger.info('[CoderWindow] About to render, hasWorkspace:', hasWorkspace);
 
   return (
-    <div className="coder-window-v2">
+    <div className={`coder-window-v2 ${fullscreen ? 'coder-window-fullscreen' : ''}`}>
+      {/* IDE Menu Bar */}
+      {onBackToChat && (
+        <IDEMenuBar
+          onBackToChat={onBackToChat}
+          workspace={workspaceName}
+          onOpenWorkspace={() => setIsWorkspaceModalOpen(true)}
+          onSave={currentDocument && isFileUnsaved ? handleSaveFile : undefined}
+          onToggleTerminal={toggleTerminal}
+        />
+      )}
+
       {/* Error Banner */}
       <AnimatePresence>
         {error && (
@@ -294,43 +339,51 @@ const CoderWindowContent: React.FC = () => {
 
             {/* Main Content Area with Panels */}
             <div className="flex-1 overflow-hidden">
-              <PanelGroup direction="vertical">
-                {/* Editor/Terminal Split */}
+              <PanelGroup direction="horizontal">
+                {/* Left Side: Sidebar + Editor + Terminal */}
                 <Panel
-                  id="editor-area"
+                  id="main-content"
                   order={1}
-                  defaultSize={showTerminal ? 70 : 100}
-                  minSize={20}
+                  defaultSize={70}
+                  minSize={40}
                 >
-                  <PanelGroup
-                    key={panelGroupKey}
-                    direction="horizontal"
-                  >
-                    {/* Sidebar Panel */}
+                  <PanelGroup direction="vertical">
+                    {/* Editor/Terminal Split */}
                     <Panel
-                      id="sidebar"
+                      id="editor-area"
                       order={1}
-                      defaultSize={sidebarDefaultSize}
-                      minSize={15}
-                      collapsible
-                      className="border-r border-bolt-elements-borderColor"
-                    >
-                      <div className="h-full flex flex-col bg-bolt-elements-background-depth-2">
-                        <TabbedSidebar />
-                      </div>
-                    </Panel>
-
-                    {/* Resize Handle */}
-                    <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
-
-                    {/* Editor Panel */}
-                    <Panel
-                      id="editor"
-                      order={2}
-                      defaultSize={editorDefaultSize}
+                      defaultSize={showTerminal ? 70 : 100}
                       minSize={20}
-                      className="flex flex-col"
                     >
+                      <PanelGroup
+                        key={panelGroupKey}
+                        direction="horizontal"
+                      >
+                        {/* Sidebar Panel */}
+                        <Panel
+                          id="sidebar"
+                          order={1}
+                          defaultSize={sidebarDefaultSize}
+                          minSize={15}
+                          collapsible
+                          className="border-r border-bolt-elements-borderColor"
+                        >
+                          <div className="h-full flex flex-col bg-bolt-elements-background-depth-2">
+                            <TabbedSidebar />
+                          </div>
+                        </Panel>
+
+                        {/* Resize Handle */}
+                        <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
+
+                        {/* Editor Panel */}
+                        <Panel
+                          id="editor"
+                          order={2}
+                          defaultSize={editorDefaultSize}
+                          minSize={20}
+                          className="flex flex-col"
+                        >
                       <div className="h-full flex flex-col" style={{background: 'var(--bolt-elements-bg-depth-1)'}}>
                         {/* Tab Bar */}
                         <TabBar />
@@ -423,6 +476,32 @@ const CoderWindowContent: React.FC = () => {
                   </>
                 )}
               </PanelGroup>
+            </Panel>
+
+            {/* Resize Handle */}
+            <PanelResizeHandle className="w-1 bg-bolt-elements-borderColor hover:bg-blue-500 transition-colors" />
+
+            {/* Right Side: Activity & Chat Panel */}
+            <Panel
+              id="activity-panel"
+              order={2}
+              defaultSize={30}
+              minSize={20}
+              maxSize={50}
+            >
+              <ActivityChatPanel
+                chatId={chatId}
+                currentPlan={currentPlan}
+                checkpoints={checkpoints}
+                pendingDiffsCount={pendingDiffs.size}
+                onAcceptAllDiffs={acceptAllDiffs}
+                onRejectAllDiffs={rejectAllDiffs}
+                domainExecution={domainExecution}
+                isProcessing={isProcessing}
+                autoAcceptEnabled={autoAcceptTools}
+              />
+            </Panel>
+          </PanelGroup>
             </div>
           </div>
 
@@ -454,16 +533,29 @@ const CoderWindowContent: React.FC = () => {
           />
         </div>
       )}
+
+      {/* Status Bar */}
+      {hasWorkspace && (
+        <StatusBar
+          workspace={workspaceName}
+          isGitRepo={isGitRepo}
+          gitBranch="main"
+          fileCount={openTabs.length}
+          unsavedCount={unsavedFiles.size}
+          modelName="gemini-2.5-pro"
+          onWorkspaceClick={() => setIsWorkspaceModalOpen(true)}
+        />
+      )}
     </div>
   );
 };
 
-const CoderWindow: React.FC<CoderWindowProps> = ({ isOpen, chatId }) => {
+const CoderWindow: React.FC<CoderWindowProps> = ({ isOpen = true, chatId, fullscreen = true, onBackToChat, onWorkspaceReady }) => {
   if (!isOpen) return null;
 
   return (
-    <CoderProvider chatId={chatId}>
-      <CoderWindowContent />
+    <CoderProvider chatId={chatId} onWorkspaceReady={onWorkspaceReady}>
+      <CoderWindowContent fullscreen={fullscreen} onBackToChat={onBackToChat} />
     </CoderProvider>
   );
 };

@@ -30,6 +30,7 @@ interface WorkspacePickerModalProps {
   chatId?: string;
   embedded?: boolean; // When true, renders inline in chat instead of as modal
   chatScrollControl?: ScrollControlActions;
+  onLoadingStart?: () => void; // Called when workspace operations begin
 }
 
 export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
@@ -39,6 +40,7 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   chatId,
   embedded = false,
   chatScrollControl,
+  onLoadingStart,
 }) => {
   const [workspaceHistory, setWorkspaceHistory] = useState<WorkspaceHistoryItem[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
@@ -199,6 +201,11 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
       return;
     }
 
+    // Trigger loading screen immediately
+    if (onLoadingStart) {
+      onLoadingStart();
+    }
+
     try {
       setError('');
 
@@ -298,6 +305,11 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
       return;
     }
 
+    // Trigger loading screen immediately
+    if (onLoadingStart) {
+      onLoadingStart();
+    }
+
     try {
       setError('');
       setIsCreating(true);
@@ -364,6 +376,11 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   };
 
   const handleValidateAndOpen = async (path: string) => {
+    // Trigger loading screen immediately
+    if (onLoadingStart) {
+      onLoadingStart();
+    }
+
     try {
       setError('');
 
@@ -763,13 +780,27 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   if (embedded) {
     return (
       <motion.div
-        className="workspace-modal workspace-modal-embedded"
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -10 }}
-        transition={{ duration: 0.3, ease: 'easeOut' }}
+        className="workspace-modal-embedded-wrapper"
+        initial={{ height: 0, opacity: 0 }}
+        animate={{ height: 'auto', opacity: 1 }}
+        exit={{ height: 0, opacity: 0 }}
+        transition={{
+          height: { duration: 0.8, ease: [0.16, 1, 0.3, 1] },
+          opacity: { duration: 0.6 }
+        }}
+        style={{ overflow: 'hidden' }}
+        layout
       >
-        {workspaceContent}
+        <motion.div
+          className="workspace-modal workspace-modal-embedded"
+          initial={{ y: 24, scale: 0.96, filter: 'blur(12px)' }}
+          animate={{ y: 0, scale: 1, filter: 'blur(0px)' }}
+          exit={{ y: -16, scale: 0.97, filter: 'blur(8px)' }}
+          transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+          layout
+        >
+          {workspaceContent}
+        </motion.div>
       </motion.div>
     );
   }

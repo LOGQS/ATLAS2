@@ -1209,3 +1209,114 @@ body.chat-active .main-content {
   color: rgba(100, 200, 255, 0.5);
 }
 
+/* View Mode System - Namespace: app-view-mode__ */
+
+/* Coder mode adjustments */
+.app--coder-mode .main-area {
+  overflow: hidden;
+}
+
+/* Coder view container - full screen */
+.coder-view {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  position: relative;
+}
+
+/* Loading state for view transitions */
+.app-view-mode__loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(20, 20, 20, 0.8);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: app-view-mode-fade-in 0.2s ease-out;
+}
+
+@keyframes app-view-mode-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.app-view-mode__loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid rgba(97, 166, 250, 0.2);
+  border-top-color: #61a6fa;
+  border-radius: 50%;
+  animation: app-view-mode-spin 0.8s linear infinite;
+}
+
+@keyframes app-view-mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app-view-mode__loading-text {
+  margin-top: 16px;
+  color: rgba(212, 212, 212, 0.8);
+  font-size: 14px;
+  animation: app-view-mode-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes app-view-mode-pulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Optimistic update indicator */
+.app-view-mode__optimistic-indicator {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 12px 16px;
+  background: rgba(97, 166, 250, 0.15);
+  border: 1px solid rgba(97, 166, 250, 0.3);
+  border-radius: 8px;
+  color: #61a6fa;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10000;
+  animation: app-view-mode-slide-in 0.3s ease-out;
+}
+
+@keyframes app-view-mode-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.app-view-mode__optimistic-icon {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #61a6fa;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: app-view-mode-spin 0.6s linear infinite;
+}
+

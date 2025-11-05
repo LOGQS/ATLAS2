@@ -1,6 +1,7 @@
 // status: complete
 
 import React, { useState, useRef, useEffect, useCallback, useMemo} from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import './styles/app/App.css';
 import LeftSidebar from './components/layout/LeftSidebar';
 import RightSidebar from './components/layout/RightSidebar';
@@ -21,6 +22,7 @@ import SettingsWindow from './sections/SettingsWindow';
 import WorkspaceWindow from './sections/WorkspaceWindow';
 import SourcesWindow from './sections/SourcesWindow';
 import CoderWindow from './sections/CoderWindow';
+import { WorkspaceLoadingOverlay } from './components/coder/WorkspaceLoadingOverlay';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
 import { performanceTracker } from './utils/core/performanceTracker';
@@ -106,6 +108,8 @@ type SendMessageOptions = {
   clearAttachments?: boolean;
   source?: 'manual' | 'voice';
 };
+
+type ViewMode = 'chat' | 'coder';
 
 const PENDING_FIRST_MESSAGES_STORAGE_KEY = 'atlas_pending_first_messages_v1';
 const PENDING_CHAT_META_STORAGE_KEY = 'atlas_pending_chat_meta_v1';
@@ -258,6 +262,11 @@ function App() {
     }
     return null;
   });
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+
+  // View mode state for chat/coder switching
+  const [viewMode, setViewMode] = useState<ViewMode>('chat');
+  const [coderChatId, setCoderChatId] = useState<string | null>(null);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -641,7 +650,6 @@ function App() {
   }, [activeChatId]);
 
   const { activeModal, handleOpenModal, handleCloseModal } = useAppState();
-  const isCoderVisible = activeModal === 'coder';
   const {
     attachedFiles,
     fileInputRef,
@@ -1536,15 +1544,32 @@ function App() {
     logger.info('[MANUAL_SWITCH] ===== MANUAL CHAT SWITCH COMPLETED =====');
   }, [activeChatId, hasMessageBeenSent, chats, syncActiveChat, loadChatsFromDatabase]);
 
+  const handleWorkspaceLoadingStart = useCallback(() => {
+    logger.info('[WORKSPACE_LOADING] Loading started');
+    setWorkspaceLoading(true);
+  }, []);
+
+  const handleWorkspaceReady = useCallback(() => {
+    logger.info('[WORKSPACE_LOADING] Loading completed, workspace ready');
+    setWorkspaceLoading(false);
+  }, []);
+
   const handleWorkspaceSelected = useCallback((chatId: string, workspacePath: string) => {
     logger.info('[WORKSPACE_SELECTION] Workspace selected in chat:', { chatId, workspacePath });
 
     // Clear the workspace selection prompt
     clearWorkspaceSelection();
 
-    // Open the CoderWindow
-    handleOpenModal('coder');
-  }, [handleOpenModal, clearWorkspaceSelection]);
+    // Switch to coder view mode (loading screen will remain visible until workspace ready)
+    setCoderChatId(chatId);
+    setViewMode('coder');
+    logger.info('[VIEW_MODE] Switched to coder view for chat:', chatId);
+  }, [clearWorkspaceSelection]);
+
+  const handleBackToChat = useCallback(() => {
+    setViewMode('chat');
+    logger.info('[VIEW_MODE] Switched back to chat view');
+  }, []);
 
   useEffect(() => {
     const handleCoderPrompt = (event: Event) => {
@@ -1557,7 +1582,7 @@ function App() {
           void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-workspace-prompt' });
         }
 
-        // Show workspace picker in chat instead of immediately opening CoderWindow
+        // Show workspace picker in chat (stay in chat view mode)
         setWorkspaceSelectionForChat(targetChatId);
       }
     };
@@ -1575,14 +1600,17 @@ function App() {
         void handleChatSelect(targetChatId, { trigger: 'system', reason: 'coder-operation' });
       }
 
-      if (!isCoderVisible) {
-        handleOpenModal('coder');
+      // Switch to coder view if not already in it
+      if (viewMode !== 'coder') {
+        setCoderChatId(targetChatId || activeChatId);
+        setViewMode('coder');
+        logger.info('[VIEW_MODE] Switched to coder view for operation');
       }
     };
 
     window.addEventListener('coderOperation', handleCoderOperationEvent as EventListener);
     return () => window.removeEventListener('coderOperation', handleCoderOperationEvent as EventListener);
-  }, [activeChatId, handleChatSelect, handleOpenModal, isCoderVisible]);
+  }, [activeChatId, handleChatSelect, viewMode]);
 
   const handleChatSwitch = useCallback(async (newChatId: string) => {
     const switchToken = chatSwitchTokenRef.current + 1;
@@ -1980,7 +2008,7 @@ function App() {
   // END_TEST_FRAMEWORK_CONDITIONAL
 
   return (
-    <div className={`app ${isCoderVisible ? 'coder-docked' : ''}`}>
+    <div className={`app ${viewMode === 'coder' ? 'app--coder-mode' : 'app--chat-mode'}`}>
       <LeftSidebar
         chats={chats}
         activeChat={activeChatId}
@@ -2003,8 +2031,17 @@ function App() {
       {DEBUG_TOOLS_CONFIG.showTriggerLog && <TriggerLog activeChatId={activeChatId} />}
 
       <div className="main-area">
-        <div className="main-content">
-        <div className="chat-container">
+        <AnimatePresence mode="wait">
+          {viewMode === 'chat' && (
+            <motion.div
+              key="chat-view"
+              className="main-content"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="chat-container">
           <h1 className={`title ${centerFading ? 'fading' : ''} ${hasMessageBeenSent ? 'hidden' : ''}`}>
             How can I help you?
           </h1>
@@ -2103,6 +2140,7 @@ function App() {
               onChatSwitch={handleChatSwitch}
               showWorkspacePicker={workspaceSelectionChatId === activeChatId}
               onWorkspaceSelected={handleWorkspaceSelected}
+              onWorkspaceLoadingStart={handleWorkspaceLoadingStart}
             />
             
             <div
@@ -2198,25 +2236,26 @@ function App() {
             )}
           </>
         )}
-        </div>
-        {isCoderVisible && (
-          <aside className="coder-dock">
-            <div className="coder-dock__header">
-              <span className="coder-dock__title">Coder</span>
-              <button
-                className="coder-dock__close"
-                onClick={handleCloseModal}
-                aria-label="Close coder workspace"
-              >
-                <Icons.Close className="coder-dock__close-icon" />
-              </button>
-            </div>
-            <CoderWindow
-              isOpen={true}
-              chatId={activeChatId !== 'none' ? activeChatId : undefined}
-            />
-          </aside>
+          </motion.div>
         )}
+
+        {viewMode === 'coder' && (
+            <motion.div
+              key="coder-view"
+              className="coder-view"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <CoderWindow
+                chatId={coderChatId || (activeChatId !== 'none' ? activeChatId : undefined)}
+                onBackToChat={handleBackToChat}
+                onWorkspaceReady={handleWorkspaceReady}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
       <RightSidebar 
         onOpenModal={handleOpenModal} 
@@ -2271,6 +2310,9 @@ function App() {
         subrenderer={globalViewerSubrenderer}
         onClose={handleCloseGlobalViewer}
       />
+
+      {/* Workspace Loading Overlay */}
+      <WorkspaceLoadingOverlay isVisible={workspaceLoading} />
     </div>
   );
 }

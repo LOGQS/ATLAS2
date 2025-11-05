@@ -1,0 +1,214 @@
+/* ToolApprovalPanel - All classes namespaced with tool-approval-panel__ */
+
+.tool-approval-panel {
+  margin: 16px 0;
+  background: rgba(255, 193, 7, 0.08);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tool-approval-panel__header {
+  padding: 16px;
+  border-bottom: 1px solid rgba(255, 193, 7, 0.2);
+  background: rgba(255, 193, 7, 0.05);
+}
+
+.tool-approval-panel__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffc107;
+  margin-bottom: 8px;
+}
+
+.tool-approval-panel__message {
+  font-size: 13px;
+  color: rgba(212, 212, 212, 0.9);
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+.tool-approval-panel__body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-approval-panel__item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.tool-approval-panel__item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.tool-approval-panel__item-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #61a6fa;
+}
+
+.tool-number {
+  color: rgba(212, 212, 212, 0.6);
+  font-weight: 500;
+}
+
+.tool-approval-panel__item-id {
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  color: rgba(212, 212, 212, 0.5);
+}
+
+.tool-approval-panel__item-reason {
+  font-size: 12px;
+  color: rgba(212, 212, 212, 0.9);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.tool-approval-panel__item-reason strong {
+  color: #dcdcaa;
+}
+
+.tool-approval-panel__item-description {
+  font-size: 12px;
+  color: rgba(212, 212, 212, 0.7);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.tool-approval-panel__item-params {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tool-approval-panel__params-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(212, 212, 212, 0.6);
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.tool-approval-panel__param {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 4px;
+}
+
+.tool-approval-panel__param-key {
+  color: rgba(212, 212, 212, 0.6);
+  flex-shrink: 0;
+}
+
+.tool-approval-panel__param-value {
+  color: rgba(212, 212, 212, 0.9);
+  word-break: break-all;
+  flex: 1;
+}
+
+.tool-approval-panel__param-more {
+  font-size: 11px;
+  color: rgba(212, 212, 212, 0.5);
+  font-style: italic;
+  margin-top: 4px;
+}
+
+.tool-approval-panel__error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(244, 67, 54, 0.1);
+  border-top: 1px solid rgba(244, 67, 54, 0.3);
+  color: #f48771;
+  font-size: 12px;
+}
+
+.tool-approval-panel__actions {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid rgba(255, 193, 7, 0.2);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tool-approval-panel__button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+}
+
+.tool-approval-panel__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tool-approval-panel__button--accept {
+  background: rgba(78, 201, 176, 0.15);
+  color: #4ec9b0;
+  border-color: rgba(78, 201, 176, 0.3);
+}
+
+.tool-approval-panel__button--accept:hover:not(:disabled) {
+  background: rgba(78, 201, 176, 0.25);
+  border-color: rgba(78, 201, 176, 0.5);
+}
+
+.tool-approval-panel__button--accept.tool-approval-panel__button--confirmed {
+  background: rgba(78, 201, 176, 0.3);
+  border-color: #4ec9b0;
+}
+
+.tool-approval-panel__button--reject {
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+  border-color: rgba(244, 135, 113, 0.3);
+}
+
+.tool-approval-panel__button--reject:hover:not(:disabled) {
+  background: rgba(244, 135, 113, 0.25);
+  border-color: rgba(244, 135, 113, 0.5);
+}
+
+.tool-approval-panel__button--reject.tool-approval-panel__button--confirmed {
+  background: rgba(244, 135, 113, 0.3);
+  border-color: #f48771;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
