@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Icons } from '../ui/Icons';
+import { IterationContainer } from './IterationContainer';
 import type { DomainExecution, ToolOperation } from '../../types/messages';
 import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
 import { apiUrl } from '../../config/api';
@@ -15,6 +16,17 @@ interface ExecutionActivityFeedProps {
 
 type ToolCallSegment = Extract<CoderStreamSegment, { type: 'tool_call' }>;
 type PendingTool = NonNullable<DomainExecution['pending_tools']>[number];
+type ToolExecutionRecord = NonNullable<DomainExecution['tool_history']>[number];
+
+interface IterationGroup {
+  number: number;
+  thoughts?: Extract<CoderStreamSegment, { type: 'thoughts' }>;
+  response?: Extract<CoderStreamSegment, { type: 'agent_response' }>;
+  toolCalls: ToolCallSegment[];
+  executedTools: ToolExecutionRecord[];
+  status: 'streaming' | 'waiting_user' | 'executing' | 'completed';
+  summary: string;
+}
 
 const getToolIcon = (toolName?: string) => {
   if (!toolName) return Icons.Info;
@@ -50,6 +62,44 @@ const getStatusColor = (status: string): string => {
     default:
       return 'text-gray-400';
   }
+};
+
+const generateIterationSummary = (group: IterationGroup): string => {
+  const toolCount = group.executedTools.length;
+  const toolCallCount = group.toolCalls.length;
+
+  if (toolCount === 0 && toolCallCount > 0) {
+    // Tools proposed but not executed yet
+    return `Proposed ${toolCallCount} tool${toolCallCount !== 1 ? 's' : ''}`;
+  }
+
+  if (toolCount === 0) {
+    return 'Thinking...';
+  }
+
+  // Calculate stats from executed tools
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  const toolNames = new Set<string>();
+
+  for (const tool of group.executedTools) {
+    toolNames.add(tool.tool);
+    if (tool.ops) {
+      for (const op of tool.ops) {
+        if (op.lines_added !== undefined) totalAdded += op.lines_added;
+        if (op.lines_removed !== undefined) totalRemoved += op.lines_removed;
+      }
+    }
+  }
+
+  const toolSummary = Array.from(toolNames).slice(0, 2).join(', ');
+  const moreSuffix = toolNames.size > 2 ? ` +${toolNames.size - 2} more` : '';
+
+  if (totalAdded > 0 || totalRemoved > 0) {
+    return `✅ ${toolSummary}${moreSuffix} (+${totalAdded}, -${totalRemoved})`;
+  }
+
+  return `✅ ${toolCount} tool${toolCount !== 1 ? 's' : ''} executed`;
 };
 
 const truncate = (value: string, maxLength = 80) => {
@@ -98,33 +148,13 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   isCompleted,
   onDecision,
 }) => {
+  // All hooks must be called before any conditional returns
   const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
   const [error, setError] = useState<string | null>(null);
   const autoAcceptMarker = useRef<string | null>(null);
 
   const hasPending = Boolean(pendingTool && chatId && taskId);
   const callId = pendingTool?.call_id ?? null;
-
-  // If already executing or completed, show different UI
-  if (isExecuting && !isCompleted) {
-    return (
-      <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--executing">
-        <div className="exec-activity-feed__stream-header">
-          <Icons.Activity className="w-4 h-4 text-blue-400 animate-spin" />
-          <div className="exec-activity-feed__stream-header-text">
-            <span>Executing Tool · Iteration {segment.iteration}</span>
-            <span className="exec-activity-feed__stream-subtitle">{segment.tool || pendingTool?.tool || 'Tool'}</span>
-          </div>
-          <span className="exec-activity-feed__stream-pill exec-activity-feed__stream-pill--executing">Executing...</span>
-        </div>
-      </div>
-    );
-  }
-
-  // Don't show if completed (will be shown in tool_history instead)
-  if (isCompleted) {
-    return null;
-  }
 
   const submitDecision = useCallback(async (decision: 'accept' | 'reject', batchMode: boolean) => {
     if (!chatId || !taskId) return;
@@ -194,6 +224,26 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
       value: normalizeParamValue(value),
     }));
   }, [pendingTool?.params, segment.params]);
+
+  // Conditional returns after all hooks
+  if (isExecuting && !isCompleted) {
+    return (
+      <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--executing">
+        <div className="exec-activity-feed__stream-header">
+          <Icons.Activity className="w-4 h-4 text-blue-400 animate-spin" />
+          <div className="exec-activity-feed__stream-header-text">
+            <span>Executing Tool · Iteration {segment.iteration}</span>
+            <span className="exec-activity-feed__stream-subtitle">{segment.tool || pendingTool?.tool || 'Tool'}</span>
+          </div>
+          <span className="exec-activity-feed__stream-pill exec-activity-feed__stream-pill--executing">Executing...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isCompleted) {
+    return null;
+  }
 
   return (
     <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--tool">
@@ -336,6 +386,105 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
     setExecutingTools(prev => new Set(prev).add(callId));
   }, []);
 
+  // Extract all data before any conditional returns (hooks must be called unconditionally)
+  const actions = domainExecution?.actions ?? [];
+  const toolHistory = useMemo(() => domainExecution?.tool_history ?? [], [domainExecution?.tool_history]);
+  const plan = domainExecution?.plan;
+  const taskId = domainExecution?.task_id;
+  const currentIterationNumber = domainExecution?.metadata?.iterations ?? null;
+  const pendingTools = useMemo(() => domainExecution?.pending_tools ?? [], [domainExecution?.pending_tools]);
+  const isWaitingForUser = domainExecution?.status === 'waiting_user';
+
+  // Group streaming segments and tool history by iteration
+  const iterationGroups = useMemo((): IterationGroup[] => {
+    const groups = new Map<number, IterationGroup>();
+
+    // Group coderStream segments by iteration
+    for (const segment of coderStream) {
+      if (!groups.has(segment.iteration)) {
+        groups.set(segment.iteration, {
+          number: segment.iteration,
+          toolCalls: [],
+          executedTools: [],
+          status: 'streaming',
+          summary: '',
+        });
+      }
+
+      const group = groups.get(segment.iteration)!;
+
+      if (segment.type === 'thoughts') {
+        group.thoughts = segment;
+      } else if (segment.type === 'agent_response') {
+        group.response = segment;
+      } else if (segment.type === 'tool_call') {
+        group.toolCalls.push(segment);
+      }
+    }
+
+    // Match tool_history items to iterations
+    // Strategy: Match by tool name and approximate sequential order
+    const sortedHistory = [...toolHistory].sort((a, b) =>
+      new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
+    );
+
+    for (const executedTool of sortedHistory) {
+      // Find matching iteration by tool name
+      let matched = false;
+
+      for (const [, group] of Array.from(groups.entries()).sort((a, b) => a[0] - b[0])) {
+        const matchingToolCall = group.toolCalls.find(tc =>
+          tc.tool === executedTool.tool &&
+          !group.executedTools.some(et => et.call_id === executedTool.call_id)
+        );
+
+        if (matchingToolCall) {
+          group.executedTools.push(executedTool);
+          matched = true;
+          break;
+        }
+      }
+
+      // If no match found, add to the earliest iteration with tool calls
+      if (!matched && groups.size > 0) {
+        const firstGroupWithTools = Array.from(groups.values()).find(g => g.toolCalls.length > 0);
+        if (firstGroupWithTools) {
+          firstGroupWithTools.executedTools.push(executedTool);
+        }
+      }
+    }
+
+    // Determine status for each iteration
+    for (const group of Array.from(groups.values())) {
+      const isCurrentIter = currentIterationNumber !== null && group.number === currentIterationNumber;
+      const hasStreamingSegment =
+        (group.thoughts?.status === 'streaming') ||
+        (group.response?.status === 'streaming') ||
+        group.toolCalls.some((tc: ToolCallSegment) => tc.status === 'streaming');
+
+      if (isCurrentIter) {
+        if (isWaitingForUser && pendingTools.length > 0) {
+          group.status = 'waiting_user';
+        } else if (hasStreamingSegment) {
+          group.status = 'streaming';
+        } else if (group.toolCalls.length > 0 && group.executedTools.length === 0) {
+          group.status = 'executing';
+        } else {
+          group.status = 'executing';
+        }
+      } else {
+        group.status = 'completed';
+      }
+
+      // Generate summary
+      group.summary = generateIterationSummary(group);
+    }
+
+    // Sort by iteration number (oldest first = chronological order)
+    return Array.from(groups.values()).sort((a, b) => a.number - b.number);
+  }, [coderStream, toolHistory, currentIterationNumber, isWaitingForUser, pendingTools]);
+
+  // Early return check after all hooks
   const hasStream = coderStream.length > 0;
   if (!domainExecution && !hasStream) {
     return (
@@ -349,80 +498,123 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
     );
   }
 
-  const actions = domainExecution?.actions ?? [];
-  const toolHistory = domainExecution?.tool_history ?? [];
-  const plan = domainExecution?.plan;
-  const taskId = domainExecution?.task_id;
-  const currentIteration = domainExecution?.metadata?.iterations ?? null;
-  const pendingTools = domainExecution?.pending_tools ?? [];
-  const isWaitingForUser = domainExecution?.status === 'waiting_user';
-
   return (
     <div className="exec-activity-feed">
       <div className="exec-activity-feed__stream">
-        {coderStream.map(segment => {
-          if (segment.type === 'thoughts') {
-            const fallbackText = segment.status === 'complete'
-              ? 'No reasoning was shared for this step.'
-              : 'Gathering thoughts...';
-            return (
-              <div key={segment.id} className="exec-activity-feed__stream-card exec-activity-feed__stream-card--thoughts">
-                <div className="exec-activity-feed__stream-header">
-                  <Icons.Lightbulb className="w-4 h-4 text-sky-300" />
-                  <div className="exec-activity-feed__stream-header-text">
-                    <span>Agent Thoughts · Iteration {segment.iteration}</span>
-                  </div>
-                  {segment.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
-                </div>
-                <pre className="exec-activity-feed__stream-text">
-                  {segment.text || fallbackText}
-                </pre>
-              </div>
-            );
-          }
-
-          if (segment.type === 'agent_response') {
-            const fallbackText = segment.status === 'complete'
-              ? 'Agent response is empty.'
-              : 'Composing response...';
-            return (
-              <div key={segment.id} className="exec-activity-feed__stream-card exec-activity-feed__stream-card--response">
-                <div className="exec-activity-feed__stream-header">
-                  <Icons.Bot className="w-4 h-4 text-emerald-300" />
-                  <div className="exec-activity-feed__stream-header-text">
-                    <span>Agent Response · Iteration {segment.iteration}</span>
-                  </div>
-                  {segment.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
-                </div>
-                <pre className="exec-activity-feed__stream-text">
-                  {segment.text || fallbackText}
-                </pre>
-              </div>
-            );
-          }
-
-          const isLatestIteration = currentIteration !== null && segment.iteration === currentIteration;
-          const pendingTool = isLatestIteration ? pendingTools[segment.toolIndex] : undefined;
-          const totalPending = isLatestIteration ? pendingTools.length : 0;
-          const callId = pendingTool?.call_id;
-          const isExecuting = callId ? executingTools.has(callId) : false;
-          const isCompleted = callId ? completedToolsFromExecution.has(callId) : false;
+        {/* Render iterations in chronological order (oldest first) */}
+        {iterationGroups.map((group) => {
+          const isCurrentIter = currentIterationNumber !== null && group.number === currentIterationNumber;
 
           return (
-            <ToolProposalCard
-              key={segment.id}
-              segment={segment as ToolCallSegment}
-              pendingTool={pendingTool}
-              chatId={chatId}
-              taskId={taskId}
-              autoAcceptEnabled={autoAcceptEnabled}
-              isWaitingForUser={Boolean(isWaitingForUser && isLatestIteration)}
-              isFirstPending={Boolean(isLatestIteration && segment.toolIndex === 0)}
-              totalPending={totalPending}
-              isExecuting={isExecuting}
-              isCompleted={isCompleted}
-              onDecision={handleToolDecision}
-            />
+            <IterationContainer
+              key={group.number}
+              iterationNumber={group.number}
+              isCurrentIteration={isCurrentIter}
+              status={group.status}
+              summary={group.summary}
+            >
+              {/* Agent Thoughts */}
+              {group.thoughts && (
+                <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--thoughts">
+                  <div className="exec-activity-feed__stream-header">
+                    <Icons.Lightbulb className="w-4 h-4 text-sky-300" />
+                    <div className="exec-activity-feed__stream-header-text">
+                      <span>Agent Thoughts</span>
+                    </div>
+                    {group.thoughts.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
+                  </div>
+                  <pre className="exec-activity-feed__stream-text">
+                    {group.thoughts.text || (group.thoughts.status === 'complete' ? 'No reasoning shared.' : 'Gathering thoughts...')}
+                  </pre>
+                </div>
+              )}
+
+              {/* Agent Response */}
+              {group.response && (
+                <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--response">
+                  <div className="exec-activity-feed__stream-header">
+                    <Icons.Bot className="w-4 h-4 text-emerald-300" />
+                    <div className="exec-activity-feed__stream-header-text">
+                      <span>Agent Response</span>
+                    </div>
+                    {group.response.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
+                  </div>
+                  <pre className="exec-activity-feed__stream-text">
+                    {group.response.text || (group.response.status === 'complete' ? 'Agent response is empty.' : 'Composing response...')}
+                  </pre>
+                </div>
+              )}
+
+              {/* Tool Proposals */}
+              {group.toolCalls.map((toolCall) => {
+                const pendingTool = isCurrentIter ? pendingTools[toolCall.toolIndex] : undefined;
+                const totalPending = isCurrentIter ? pendingTools.length : 0;
+                const callId = pendingTool?.call_id;
+                const isExecuting = callId ? executingTools.has(callId) : false;
+                const isCompleted = callId ? completedToolsFromExecution.has(callId) : false;
+
+                return (
+                  <ToolProposalCard
+                    key={toolCall.id}
+                    segment={toolCall}
+                    pendingTool={pendingTool}
+                    chatId={chatId}
+                    taskId={taskId}
+                    autoAcceptEnabled={autoAcceptEnabled}
+                    isWaitingForUser={Boolean(isWaitingForUser && isCurrentIter)}
+                    isFirstPending={Boolean(isCurrentIter && toolCall.toolIndex === 0)}
+                    totalPending={totalPending}
+                    isExecuting={isExecuting}
+                    isCompleted={isCompleted}
+                    onDecision={handleToolDecision}
+                  />
+                );
+              })}
+
+              {/* Executed Tools Results */}
+              {group.executedTools.map((executedTool) => (
+                <div
+                  key={executedTool.call_id}
+                  className={`iteration-container__execution-result ${executedTool.error ? 'iteration-container__execution-error' : ''}`}
+                >
+                  <div className="iteration-container__execution-header">
+                    {executedTool.error ? (
+                      <Icons.Info className="w-4 h-4" />
+                    ) : (
+                      <Icons.Check className="w-4 h-4" />
+                    )}
+                    <span>Executed: {executedTool.tool}</span>
+                  </div>
+                  {executedTool.ops && executedTool.ops.length > 0 && (
+                    <div className="iteration-container__execution-stats">
+                      {executedTool.ops[0].path && (
+                        <span>
+                          <Icons.FileCode className="w-3 h-3" />
+                          {executedTool.ops[0].path}
+                        </span>
+                      )}
+                      {(executedTool.ops[0].lines_added !== undefined || executedTool.ops[0].lines_removed !== undefined) && (
+                        <span>
+                          <span className="text-green-400">+{executedTool.ops[0].lines_added || 0}</span>
+                          {' / '}
+                          <span className="text-red-400">-{executedTool.ops[0].lines_removed || 0}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {executedTool.result_summary && (
+                    <div className="iteration-container__execution-summary">
+                      {executedTool.result_summary}
+                    </div>
+                  )}
+                  {executedTool.error && (
+                    <div className="iteration-container__execution-summary">
+                      Error: {executedTool.error}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </IterationContainer>
           );
         })}
 

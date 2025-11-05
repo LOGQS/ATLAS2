@@ -1417,7 +1417,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </AnimatePresence>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected]);
+  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected, onWorkspaceLoadingStart]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));

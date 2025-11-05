@@ -5,6 +5,8 @@
 import React from 'react';
 import { render, waitFor, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import SettingsWindow from '../SettingsWindow';
+import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 
 // Mock the API module
 jest.mock('../../config/api', () => ({
@@ -13,10 +15,6 @@ jest.mock('../../config/api', () => ({
 
 // Mock BrowserStorage - create all mocks inline
 jest.mock('../../utils/storage/BrowserStorage');
-
-// Import after mocks
-import SettingsWindow from '../SettingsWindow';
-import { BrowserStorage } from '../../utils/storage/BrowserStorage';
 
 describe('SettingsWindow Rate Limit Storage Integration', () => {
   let mockFetch: jest.Mock;

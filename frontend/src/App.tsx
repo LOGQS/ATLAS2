@@ -11,7 +11,6 @@ import GlobalFileViewer from './components/ui/GlobalFileViewer';
 import AttachedFiles from './components/files/AttachedFiles';
 import ChatVersionsWindow from './components/chat/ChatVersionsWindow';
 import ContextWindow from './components/chat/ContextWindow';
-import { Icons } from './components/ui/Icons';
 import SendButton from './components/input/SendButton';
 import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
