@@ -5,6 +5,44 @@ import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
 import type { RouterDecision, DomainExecution } from '../../types/messages';
 
+export type CoderStreamSegment =
+  | {
+      id: string;
+      iteration: number;
+      type: 'thoughts';
+      text: string;
+      status: 'streaming' | 'complete';
+    }
+  | {
+      id: string;
+      iteration: number;
+      type: 'agent_response';
+      text: string;
+      status: 'streaming' | 'complete';
+    }
+  | {
+      id: string;
+      iteration: number;
+      type: 'tool_call';
+      toolIndex: number;
+      status: 'streaming' | 'complete';
+      tool?: string;
+      reason?: string;
+      params: Array<{ name: string; value: string }>;
+    };
+
+type CoderStreamPayload = {
+  iteration: number;
+  segment: 'thoughts' | 'agent_response' | 'tool_call';
+  action: 'start' | 'append' | 'complete' | 'field' | 'param';
+  text?: string;
+  field?: 'tool' | 'reason';
+  value?: string;
+  name?: string;
+  tool_index?: number;
+  toolIndex?: number;
+};
+
 type ChatLive = {
   state: 'thinking' | 'responding' | 'static';
   lastAssistantId: string | null;
@@ -12,6 +50,7 @@ type ChatLive = {
   thoughtsBuf: string;
   routerDecision: RouterDecision | null;
   domainExecution: DomainExecution | null;
+  coderStream: CoderStreamSegment[];
   error: {
     message: string;
     receivedAt: number;
@@ -118,6 +157,12 @@ interface CoderFileChangeEvent extends BaseSSEEvent {
   previous_path?: string;
 }
 
+interface CoderStreamEvent extends BaseSSEEvent {
+  type: 'coder_stream';
+  content?: string;
+  task_id?: string;
+}
+
 type SSEEvent =
   | ChatStateEvent
   | ContentEvent
@@ -132,7 +177,8 @@ type SSEEvent =
   | ModelRetryEvent
   | CoderOperationEvent
   | CoderWorkspacePromptEvent
-  | CoderFileChangeEvent;
+  | CoderFileChangeEvent
+  | CoderStreamEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -385,6 +431,160 @@ class LiveStore {
     return next;
   }
 
+  private handleCoderStreamEvent(chatId: string, ev: CoderStreamEvent, cur: ChatLive): ChatLive {
+    if (!ev.content) {
+      logger.warn(`[CODER-STREAM] Missing content payload for chat ${chatId}`);
+      return cur;
+    }
+
+    let payload: CoderStreamPayload;
+    try {
+      payload = JSON.parse(ev.content) as CoderStreamPayload;
+    } catch (err) {
+      logger.error(`[CODER-STREAM] Failed to parse payload for ${chatId}`, err);
+      return cur;
+    }
+
+    const iteration = payload.iteration;
+    const segment = payload.segment;
+    const action = payload.action;
+
+    if (typeof iteration !== 'number' || !segment || !action) {
+      logger.warn(`[CODER-STREAM] Invalid payload structure for ${chatId}: ${ev.content}`);
+      return cur;
+    }
+
+    const toolIndex = payload.toolIndex ?? payload.tool_index ?? 0;
+    const next: ChatLive = {
+      ...cur,
+      coderStream: [...cur.coderStream],
+    };
+    let changed = false;
+
+    const ensureSegment = (id: string, factory: () => CoderStreamSegment) => {
+      const existingIdx = next.coderStream.findIndex(seg => seg.id === id);
+      if (existingIdx !== -1) {
+        return { segment: next.coderStream[existingIdx], index: existingIdx };
+      }
+      const created = factory();
+      next.coderStream.push(created);
+      changed = true;
+      return { segment: created, index: next.coderStream.length - 1 };
+    };
+
+    const updateSegment = (index: number, updated: CoderStreamSegment) => {
+      changed = true;
+      next.coderStream = [
+        ...next.coderStream.slice(0, index),
+        updated,
+        ...next.coderStream.slice(index + 1),
+      ];
+    };
+
+    if (segment === 'thoughts') {
+      const id = `iter-${iteration}-thoughts`;
+      const { segment: seg, index } = ensureSegment(id, () => ({
+        id,
+        iteration,
+        type: 'thoughts',
+        text: '',
+        status: 'streaming',
+      }));
+      const thoughtSeg = seg as Extract<CoderStreamSegment, { type: 'thoughts' }>;
+
+      if (action === 'start') {
+        if (thoughtSeg.status !== 'streaming') {
+          const updated = { ...thoughtSeg, status: 'streaming' } as typeof thoughtSeg;
+          updateSegment(index, updated);
+        }
+      } else if (action === 'append' && payload.text) {
+        const updated = { ...thoughtSeg, text: thoughtSeg.text + payload.text } as typeof thoughtSeg;
+        updateSegment(index, updated);
+      } else if (action === 'complete') {
+        if (thoughtSeg.status !== 'complete') {
+          const updated = { ...thoughtSeg, status: 'complete' } as typeof thoughtSeg;
+          updateSegment(index, updated);
+        }
+      }
+    } else if (segment === 'agent_response') {
+      const id = `iter-${iteration}-response`;
+      const { segment: seg, index } = ensureSegment(id, () => ({
+        id,
+        iteration,
+        type: 'agent_response',
+        text: '',
+        status: 'streaming',
+      }));
+      const responseSeg = seg as Extract<CoderStreamSegment, { type: 'agent_response' }>;
+
+      if (action === 'start') {
+        if (responseSeg.status !== 'streaming') {
+          const updated = { ...responseSeg, status: 'streaming' } as typeof responseSeg;
+          updateSegment(index, updated);
+        }
+      } else if (action === 'append' && payload.text) {
+        const updated = { ...responseSeg, text: responseSeg.text + payload.text } as typeof responseSeg;
+        updateSegment(index, updated);
+      } else if (action === 'complete') {
+        if (responseSeg.status !== 'complete') {
+          const updated = { ...responseSeg, status: 'complete' } as typeof responseSeg;
+          updateSegment(index, updated);
+        }
+      }
+    } else if (segment === 'tool_call') {
+      const id = `iter-${iteration}-tool-${toolIndex}`;
+      const { segment: seg, index } = ensureSegment(id, () => ({
+        id,
+        iteration,
+        type: 'tool_call',
+        toolIndex,
+        status: 'streaming',
+        params: [],
+      }));
+      const toolSeg = seg as Extract<CoderStreamSegment, { type: 'tool_call' }>;
+
+      if (toolSeg.type !== 'tool_call') {
+        logger.warn(`[CODER-STREAM] Segment type mismatch for tool call ${id} on chat ${chatId}`);
+        return cur;
+      }
+
+      if (action === 'start') {
+        if (toolSeg.status !== 'streaming') {
+          const updated = { ...toolSeg, status: 'streaming' } as typeof toolSeg;
+          updateSegment(index, updated);
+        }
+      } else if (action === 'field') {
+        if (payload.field === 'tool') {
+          if ((payload.value || '') !== (toolSeg.tool || '')) {
+            const updated = { ...toolSeg, tool: payload.value || '' } as typeof toolSeg;
+            updateSegment(index, updated);
+          }
+        } else if (payload.field === 'reason') {
+          if ((payload.value || '') !== (toolSeg.reason || '')) {
+            const updated = { ...toolSeg, reason: payload.value || '' } as typeof toolSeg;
+            updateSegment(index, updated);
+          }
+        }
+      } else if (action === 'param' && payload.name) {
+        const params = toolSeg.params || [];
+        const exists = params.some(p => p.name === payload.name && p.value === (payload.value || ''));
+        if (!exists) {
+          const updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
+          const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
+          updateSegment(index, updated);
+        }
+      } else if (action === 'complete') {
+        if (toolSeg.status !== 'complete') {
+          const updated = { ...toolSeg, status: 'complete' } as typeof toolSeg;
+          updateSegment(index, updated);
+        }
+      }
+    }
+
+    next.version = changed ? cur.version + 1 : cur.version;
+    return next;
+  }
+
   private handleModelRetryEvent(chatId: string, ev: ModelRetryEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     logger.info(`[MODEL-RETRY] Retry event for ${chatId}`);
@@ -495,16 +695,17 @@ class LiveStore {
           return;
         }
 
-        const cur = this.byChat.get(chatId) ?? {
+        const cur: ChatLive = this.byChat.get(chatId) ?? ({
           state: 'static',
           lastAssistantId: null,
           contentBuf: '',
           thoughtsBuf: '',
           routerDecision: null,
           domainExecution: null,
+          coderStream: [],
           error: null,
           version: 0
-        };
+        } as ChatLive);
 
         if (ev.type === 'router_decision') {
           const next = this.handleRouterDecisionEvent(chatId, ev as RouterDecisionEvent, cur);
@@ -533,6 +734,9 @@ class LiveStore {
             break;
           case 'answer':
             next = this.handleAnswerEvent(chatId, ev as ContentEvent, cur);
+            break;
+          case 'coder_stream':
+            next = this.handleCoderStreamEvent(chatId, ev as CoderStreamEvent, cur);
             break;
           case 'domain_execution':
             next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionEvent, cur);
@@ -587,16 +791,17 @@ class LiveStore {
   }
 
   beginLocalStream(chatId: string): void {
-    const cur = this.byChat.get(chatId) ?? {
+    const cur: ChatLive = this.byChat.get(chatId) ?? ({
       state: 'static',
       lastAssistantId: null,
       contentBuf: '',
       thoughtsBuf: '',
       routerDecision: null,
       domainExecution: null,
+      coderStream: [],
       error: null,
       version: 0
-    };
+    } as ChatLive);
     if (cur.state !== 'static') {
       return; 
     }

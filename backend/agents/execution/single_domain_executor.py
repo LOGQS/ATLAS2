@@ -27,6 +27,7 @@ from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_re
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
 from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from chat.coder_stream_parser import CoderStreamParser
 from utils.coder_session_logger import (
     create_coder_session_logger,
     get_coder_session_logger,
@@ -1056,6 +1057,8 @@ class SingleDomainExecutor:
 
         attempt = 0
 
+        include_reasoning = state.context.domain_id == "coder"
+
         while True:
             limiter = get_rate_limiter()
             if state.metadata.get("rate_limit_prechecked"):
@@ -1085,22 +1088,39 @@ class SingleDomainExecutor:
 
             full_text = ""
             error_message = None
+            parser: Optional[CoderStreamParser] = None
 
             try:
+                if include_reasoning and state.event_callback:
+                    parser = CoderStreamParser(
+                        iteration=state.metadata.get("iterations", 0),
+                        emitter=lambda payload: self._emit_coder_stream_event(state, payload),
+                    )
+
                 for chunk in temp_chat.generate_text_stream(
                     message=prompt,
                     provider=provider,
                     model=model,
-                    include_reasoning=False,
+                    include_reasoning=include_reasoning,
                     use_router=False,
                 ):
                     chunk_type = chunk.get("type")
                     if chunk_type == "error":
                         error_message = chunk.get("content", "Unknown error")
                         break
+                    elif chunk_type == "thoughts":
+                        content = chunk.get("content", "")
+                        if parser:
+                            parser.handle_thoughts(content)
                     elif chunk_type == "answer":
-                        full_text += chunk.get("content", "")
-                    # Ignore other chunk types like "thoughts" since include_reasoning=False
+                        content = chunk.get("content", "")
+                        full_text += content
+                        if parser:
+                            parser.feed_answer(content)
+                    # Ignore other chunk types like "usage" for streaming UI
+
+                if parser:
+                    parser.finalize()
 
                 # Success - return result
                 if full_text.strip():
@@ -1131,6 +1151,8 @@ class SingleDomainExecutor:
                         raise RuntimeError(error_message)
 
             except Exception as e:
+                if parser:
+                    parser.finalize()
                 error_str = str(e)
 
                 # Check if retryable
@@ -1774,6 +1796,31 @@ class SingleDomainExecutor:
         state.context_snapshots.append(snapshot)
         if len(state.context_snapshots) > 20:
             state.context_snapshots = state.context_snapshots[-20:]
+
+    def _emit_coder_stream_event(
+        self,
+        state: "DomainTaskState",
+        payload: Dict[str, Any],
+    ) -> None:
+        if not state.event_callback:
+            return
+
+        try:
+            state.event_callback(
+                {
+                    "event": "coder_stream",
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                    "payload": payload,
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            self.logger.debug(
+                "Failed to emit coder_stream event for task %s: %s",
+                state.context.task_id,
+                exc,
+            )
 
     def _emit_event(
         self,

@@ -19,7 +19,7 @@ import { Icons } from '../components/ui/Icons';
 import { configureMonaco } from '../config/monaco';
 import '../styles/sections/CoderWindow.css';
 import logger from '../utils/core/logger';
-import { liveStore } from '../utils/chat/LiveStore';
+import { liveStore, type CoderStreamSegment } from '../utils/chat/LiveStore';
 
 interface CoderWindowProps {
   isOpen?: boolean;
@@ -93,6 +93,7 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
   });
   const [domainExecution, setDomainExecution] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [coderStream, setCoderStream] = useState<CoderStreamSegment[]>([]);
   const monacoConfigured = useRef(false);
   const sidebarDefaultSize = 22;
   const editorDefaultSize = 100 - sidebarDefaultSize;
@@ -143,6 +144,7 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
     const unsubscribe = liveStore.subscribe(chatId, (id, snap) => {
       setDomainExecution(snap.domainExecution);
       setIsProcessing(snap.state === 'thinking' || snap.state === 'responding');
+      setCoderStream(snap.coderStream);
     });
 
     return unsubscribe;
@@ -499,6 +501,7 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
                 domainExecution={domainExecution}
                 isProcessing={isProcessing}
                 autoAcceptEnabled={autoAcceptTools}
+                coderStream={coderStream}
               />
             </Panel>
           </PanelGroup>

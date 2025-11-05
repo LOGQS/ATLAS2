@@ -1,15 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Icons } from '../ui/Icons';
-import { ToolApprovalPanel } from './ToolApprovalPanel';
 import type { DomainExecution, ToolOperation } from '../../types/messages';
+import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
+import { apiUrl } from '../../config/api';
 import '../../styles/coder/ExecutionActivityFeed.css';
 
 interface ExecutionActivityFeedProps {
   domainExecution: DomainExecution | null;
+  coderStream: CoderStreamSegment[];
   isProcessing?: boolean;
   chatId?: string;
   autoAcceptEnabled?: boolean;
 }
+
+type ToolCallSegment = Extract<CoderStreamSegment, { type: 'tool_call' }>;
+type PendingTool = NonNullable<DomainExecution['pending_tools']>[number];
 
 const getToolIcon = (toolName?: string) => {
   if (!toolName) return Icons.Info;
@@ -47,15 +52,218 @@ const getStatusColor = (status: string): string => {
   }
 };
 
+const truncate = (value: string, maxLength = 80) => {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}...`;
+};
+
+const normalizeParamValue = (value: any, maxLength = 100) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return truncate(value, maxLength);
+  }
+  try {
+    return truncate(JSON.stringify(value), maxLength);
+  } catch {
+    return truncate(String(value), maxLength);
+  }
+};
+
+interface ToolProposalCardProps {
+  segment: ToolCallSegment;
+  pendingTool?: PendingTool;
+  chatId?: string;
+  taskId?: string;
+  autoAcceptEnabled?: boolean;
+  isWaitingForUser: boolean;
+  isFirstPending: boolean;
+  totalPending: number;
+}
+
+const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
+  segment,
+  pendingTool,
+  chatId,
+  taskId,
+  autoAcceptEnabled = false,
+  isWaitingForUser,
+  isFirstPending,
+  totalPending,
+}) => {
+  const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const autoAcceptMarker = useRef<string | null>(null);
+
+  const hasPending = Boolean(pendingTool && chatId && taskId);
+  const callId = pendingTool?.call_id ?? null;
+
+  const submitDecision = useCallback(async (decision: 'accept' | 'reject', batchMode: boolean) => {
+    if (!chatId || !taskId) return;
+    if (!batchMode && !callId) return;
+
+    const pendingState = decision === 'accept' ? 'accepting' : 'rejecting';
+    setDecisionState(pendingState);
+    setError(null);
+
+    try {
+      const target = batchMode ? 'batch_all' : callId!;
+      const response = await fetch(apiUrl(`/api/chats/${chatId}/domain/${taskId}/tool/${target}/decision`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          decision,
+          batch_mode: batchMode,
+          assistant_message_id: null,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data?.success === false) {
+        throw new Error(data?.error || `Failed to ${decision} tool${batchMode && totalPending > 1 ? 's' : ''}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDecisionState('idle');
+    }
+  }, [chatId, taskId, callId, totalPending]);
+
+  useEffect(() => {
+    if (!autoAcceptEnabled || !hasPending || !isWaitingForUser || decisionState !== 'idle') {
+      return;
+    }
+
+    const marker = callId || 'batch_all';
+    if (autoAcceptMarker.current === marker) {
+      return;
+    }
+
+    autoAcceptMarker.current = marker;
+    submitDecision('accept', totalPending > 1);
+  }, [autoAcceptEnabled, hasPending, isWaitingForUser, decisionState, callId, totalPending, submitDecision]);
+
+  const displayTool = pendingTool?.tool || segment.tool || 'Tool proposal';
+  const displayReason = pendingTool?.reason || segment.reason || '';
+  const displayDescription = pendingTool?.tool_description || '';
+  const streaming = segment.status === 'streaming' && !pendingTool;
+  const disableActions = !hasPending || !isWaitingForUser || decisionState !== 'idle';
+
+  const params = useMemo(() => {
+    if (pendingTool?.params && pendingTool.params.length > 0) {
+      return pendingTool.params.map(([key, value]) => ({
+        name: key,
+        value: normalizeParamValue(value),
+      }));
+    }
+    return segment.params.map(({ name, value }) => ({
+      name,
+      value: normalizeParamValue(value),
+    }));
+  }, [pendingTool?.params, segment.params]);
+
+  return (
+    <div className="exec-activity-feed__stream-card exec-activity-feed__stream-card--tool">
+      <div className="exec-activity-feed__stream-header">
+        <Icons.Activity className="w-4 h-4 text-amber-300" />
+        <div className="exec-activity-feed__stream-header-text">
+          <span>Tool Proposal · Iteration {segment.iteration}</span>
+          <span className="exec-activity-feed__stream-subtitle">{displayTool}</span>
+        </div>
+        {streaming && <span className="exec-activity-feed__stream-pill">Streaming</span>}
+        {!streaming && isWaitingForUser && <span className="exec-activity-feed__stream-pill exec-activity-feed__stream-pill--pending">Awaiting decision</span>}
+      </div>
+
+      <div className="exec-activity-feed__stream-body">
+        {displayReason && (
+          <div className="exec-activity-feed__stream-section">
+            <p className="exec-activity-feed__stream-label">Reason</p>
+            <p className="exec-activity-feed__stream-text">{displayReason}</p>
+          </div>
+        )}
+        {displayDescription && (
+          <div className="exec-activity-feed__stream-section">
+            <p className="exec-activity-feed__stream-label">Description</p>
+            <p className="exec-activity-feed__stream-text">{displayDescription}</p>
+          </div>
+        )}
+        {params.length > 0 && (
+          <div className="exec-activity-feed__stream-section">
+            <p className="exec-activity-feed__stream-label">Parameters</p>
+            <div className="exec-activity-feed__stream-params">
+              {params.map(param => (
+                <div key={`${segment.id}-${param.name}-${param.value}`} className="exec-activity-feed__param">
+                  <span className="exec-activity-feed__param-key">{param.name}</span>
+                  <span className="exec-activity-feed__param-value">{param.value || '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {isWaitingForUser && (
+        <div className="exec-activity-feed__tool-actions">
+          <button
+            type="button"
+            className="exec-activity-feed__tool-button exec-activity-feed__tool-button--accept"
+            onClick={() => submitDecision('accept', false)}
+            disabled={disableActions}
+          >
+            {decisionState === 'accepting' ? 'Accepting…' : 'Accept'}
+          </button>
+          <button
+            type="button"
+            className="exec-activity-feed__tool-button exec-activity-feed__tool-button--reject"
+            onClick={() => submitDecision('reject', false)}
+            disabled={disableActions}
+          >
+            {decisionState === 'rejecting' ? 'Rejecting…' : 'Reject'}
+          </button>
+          {totalPending > 1 && isFirstPending && (
+            <>
+              <button
+                type="button"
+                className="exec-activity-feed__tool-button exec-activity-feed__tool-button--accept-all"
+                onClick={() => submitDecision('accept', true)}
+                disabled={disableActions}
+              >
+                {decisionState === 'accepting' ? 'Accepting…' : `Accept All (${totalPending})`}
+              </button>
+              <button
+                type="button"
+                className="exec-activity-feed__tool-button exec-activity-feed__tool-button--reject-all"
+                onClick={() => submitDecision('reject', true)}
+                disabled={disableActions}
+              >
+                {decisionState === 'rejecting' ? 'Rejecting…' : `Reject All (${totalPending})`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="exec-activity-feed__tool-error">
+          <Icons.Info className="w-4 h-4" />
+          <span>{error}</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
   domainExecution,
+  coderStream,
   isProcessing = false,
   chatId,
   autoAcceptEnabled = false,
 }) => {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 
-  const toggleExpanded = (id: string) => {
+  const toggleExpanded = useCallback((id: string) => {
     setExpandedItems(prev => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -65,25 +273,100 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
       }
       return next;
     });
-  };
+  }, []);
 
-  if (!domainExecution) {
+  const hasStream = coderStream.length > 0;
+  if (!domainExecution && !hasStream) {
     return (
       <div className="exec-activity-feed__empty">
         <Icons.Activity className="w-12 h-12 opacity-30" />
         <p className="text-sm text-white/60 mt-4">No execution activity yet</p>
         <p className="text-xs text-white/40 mt-2">
-          Agent actions and outputs will appear here
+          Agent thoughts, responses, and tool calls will appear here.
         </p>
       </div>
     );
   }
 
-  const { actions = [], tool_history = [], plan, agent_message } = domainExecution;
+  const actions = domainExecution?.actions ?? [];
+  const toolHistory = domainExecution?.tool_history ?? [];
+  const plan = domainExecution?.plan;
+  const taskId = domainExecution?.task_id;
+  const currentIteration = domainExecution?.metadata?.iterations ?? null;
+  const pendingTools = domainExecution?.pending_tools ?? [];
+  const isWaitingForUser = domainExecution?.status === 'waiting_user';
 
   return (
     <div className="exec-activity-feed">
-      {/* Current Plan - if exists */}
+      <div className="exec-activity-feed__stream">
+        {coderStream.map(segment => {
+          if (segment.type === 'thoughts') {
+            const fallbackText = segment.status === 'complete'
+              ? 'No reasoning was shared for this step.'
+              : 'Gathering thoughts...';
+            return (
+              <div key={segment.id} className="exec-activity-feed__stream-card exec-activity-feed__stream-card--thoughts">
+                <div className="exec-activity-feed__stream-header">
+                  <Icons.Lightbulb className="w-4 h-4 text-sky-300" />
+                  <div className="exec-activity-feed__stream-header-text">
+                    <span>Agent Thoughts · Iteration {segment.iteration}</span>
+                  </div>
+                  {segment.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
+                </div>
+                <pre className="exec-activity-feed__stream-text">
+                  {segment.text || fallbackText}
+                </pre>
+              </div>
+            );
+          }
+
+          if (segment.type === 'agent_response') {
+            const fallbackText = segment.status === 'complete'
+              ? 'Agent response is empty.'
+              : 'Composing response...';
+            return (
+              <div key={segment.id} className="exec-activity-feed__stream-card exec-activity-feed__stream-card--response">
+                <div className="exec-activity-feed__stream-header">
+                  <Icons.Bot className="w-4 h-4 text-emerald-300" />
+                  <div className="exec-activity-feed__stream-header-text">
+                    <span>Agent Response · Iteration {segment.iteration}</span>
+                  </div>
+                  {segment.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
+                </div>
+                <pre className="exec-activity-feed__stream-text">
+                  {segment.text || fallbackText}
+                </pre>
+              </div>
+            );
+          }
+
+          const isLatestIteration = currentIteration !== null && segment.iteration === currentIteration;
+          const pendingTool = isLatestIteration ? pendingTools[segment.toolIndex] : undefined;
+          const totalPending = isLatestIteration ? pendingTools.length : 0;
+
+          return (
+            <ToolProposalCard
+              key={segment.id}
+              segment={segment as ToolCallSegment}
+              pendingTool={pendingTool}
+              chatId={chatId}
+              taskId={taskId}
+              autoAcceptEnabled={autoAcceptEnabled}
+              isWaitingForUser={Boolean(isWaitingForUser && isLatestIteration)}
+              isFirstPending={Boolean(isLatestIteration && segment.toolIndex === 0)}
+              totalPending={totalPending}
+            />
+          );
+        })}
+
+        {isProcessing && coderStream.length === 0 && (
+          <div className="exec-activity-feed__processing-placeholder">
+            <div className="exec-activity-feed__spinner" />
+            <span className="text-sm text-white/60">Agent is preparing a response…</span>
+          </div>
+        )}
+      </div>
+
       {plan && (
         <div className="exec-activity-feed__plan-box">
           <div className="exec-activity-feed__plan-header">
@@ -108,16 +391,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
         </div>
       )}
 
-      {/* Tool Approval Panel - displayed when tools need approval */}
-      {chatId && domainExecution && (
-        <ToolApprovalPanel
-          chatId={chatId}
-          domainExecution={domainExecution}
-          autoAcceptEnabled={autoAcceptEnabled}
-        />
-      )}
-
-      {/* Actions Timeline */}
       <div className="exec-activity-feed__timeline">
         {actions.map((action, idx) => {
           const isExpanded = expandedItems.has(action.action_id);
@@ -155,8 +428,7 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
           );
         })}
 
-        {/* Tool History */}
-        {tool_history.map((tool, idx) => {
+        {toolHistory.map((tool, idx) => {
           const isExpanded = expandedItems.has(tool.call_id);
           const ToolIcon = getToolIcon(tool.tool);
           const hasOps = tool.ops && tool.ops.length > 0;
@@ -184,7 +456,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                 <Icons.ChevronRight className={`exec-activity-feed__chevron ${isExpanded ? 'exec-activity-feed__chevron--expanded' : ''}`} />
               </summary>
               <div className="exec-activity-feed__item-content">
-                {/* Tool parameters */}
                 {tool.params && tool.params.length > 0 && (
                   <div className="exec-activity-feed__section">
                     <p className="exec-activity-feed__section-label">PARAMETERS:</p>
@@ -199,11 +470,15 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                           </span>
                         </div>
                       ))}
+                      {tool.params.length > 3 && (
+                        <div className="exec-activity-feed__param-more">
+                          +{tool.params.length - 3} more parameter{tool.params.length - 3 !== 1 ? 's' : ''}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* File operations */}
                 {hasOps && (
                   <div className="exec-activity-feed__section">
                     <p className="exec-activity-feed__section-label">CHANGES:</p>
@@ -220,12 +495,16 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                             Checkpoint #{op.before_checkpoint_id} created
                           </p>
                         )}
+                        {op.after_checkpoint_id && (
+                          <p className="exec-activity-feed__checkpoint-info">
+                            Checkpoint #{op.after_checkpoint_id} saved
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
 
-                {/* Result */}
                 {tool.result_summary && (
                   <div className="exec-activity-feed__section">
                     <p className="exec-activity-feed__section-label">RESULT:</p>
@@ -233,7 +512,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                   </div>
                 )}
 
-                {/* Error */}
                 {tool.error && (
                   <div className="exec-activity-feed__section">
                     <p className="exec-activity-feed__section-label text-red-400">ERROR:</p>
@@ -244,31 +522,14 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
             </details>
           );
         })}
-
-        {/* Agent Message - if exists */}
-        {agent_message && (
-          <details className="exec-activity-feed__item" open>
-            <summary className="exec-activity-feed__item-summary">
-              <Icons.Bot className="w-4 h-4 text-blue-400" />
-              <div className="exec-activity-feed__item-info">
-                <span className="exec-activity-feed__item-title">Agent Response</span>
-              </div>
-              <Icons.ChevronRight className="exec-activity-feed__chevron exec-activity-feed__chevron--expanded" />
-            </summary>
-            <div className="exec-activity-feed__item-content">
-              <p className="exec-activity-feed__agent-message">{agent_message}</p>
-            </div>
-          </details>
-        )}
-
-        {/* Processing indicator */}
-        {isProcessing && (
-          <div className="exec-activity-feed__processing">
-            <div className="exec-activity-feed__spinner" />
-            <span className="text-sm text-white/60">Processing...</span>
-          </div>
-        )}
       </div>
+
+      {isProcessing && (
+        <div className="exec-activity-feed__processing">
+          <div className="exec-activity-feed__spinner" />
+          <span className="text-sm text-white/60">Processing...</span>
+        </div>
+      )}
     </div>
   );
 };

@@ -12,6 +12,7 @@ import {
   MemoryProposalBar
 } from './MockFeatureSections';
 import type { DomainExecution } from '../../types/messages';
+import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
 import logger from '../../utils/core/logger';
 import '../../styles/coder/ActivityChatPanel.css';
 
@@ -25,6 +26,7 @@ interface ActivityChatPanelProps {
   domainExecution?: DomainExecution | null;
   isProcessing?: boolean;
   autoAcceptEnabled?: boolean;
+  coderStream?: CoderStreamSegment[];
 }
 
 export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
@@ -37,6 +39,7 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
   domainExecution,
   isProcessing = false,
   autoAcceptEnabled = false,
+  coderStream = [],
 }) => {
   const [activeTab, setActiveTab] = useState<'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline' | 'learn' | 'constraints' | 'patterns'>('activity');
   const [message, setMessage] = useState('');
@@ -159,6 +162,7 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
               isProcessing={isProcessing}
               chatId={chatId}
               autoAcceptEnabled={autoAcceptEnabled}
+              coderStream={coderStream}
             />
           </div>
         )}

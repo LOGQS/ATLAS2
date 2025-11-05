@@ -629,6 +629,13 @@ async def _execute_async_domain_task(
                         logger.warning(
                             f"[ASYNC-DOMAIN-EXEC] Failed to derive file change events for chat {chat_id}: {file_event_error}"
                         )
+                elif event_type == "coder_stream" and payload:
+                    publish_content(
+                        chat_id,
+                        'coder_stream',
+                        json.dumps(payload),
+                        task_id=task_id
+                    )
             except Exception as callback_error:
                 logger.error(
                     f"[ASYNC-DOMAIN-EXEC] Failed to dispatch domain event for chat {chat_id}: {callback_error}"
