@@ -185,9 +185,39 @@ def get_execution_phase_instructions() -> str:
 
 ## PHASE 2: EXECUTION (Follow Your Plan)
 
-You have an execution plan. Work through the steps systematically:
+You have an execution plan. Work through the steps systematically.
+
+### ITERATION ECONOMY
+Each iteration has overhead - context processing, planning, and tool setup.
+**Maximize completeness to minimize iterations**: Complete atomic units of work in single operations.
+When you create or edit a file, do it completely and correctly the first time.
 
 {code_spec_section}
+
+### EXECUTION PRINCIPLES
+
+**File Operations Are Atomic**
+- Creating a file means implementing its FULL functionality, not scaffolding
+- Editing a file means making ALL related changes together, not incremental patches
+- Never create empty shells, minimal stubs, or partial implementations that require subsequent iterations to complete
+- Before creating/editing, verify you have all information needed to do it completely
+
+**Work Efficiently**
+- Complete atomic units of work in each iteration - don't split related work across multiple iterations
+- Look for opportunities: Can you complete something fully now instead of partially?
+- Batch related operations when practical (create multiple files, make multiple edits in one tool call)
+- One tool call can advance multiple plan steps - mark all affected steps
+- Each iteration should deliver substantial, complete forward progress
+
+**Do, Don't Describe**
+- "I will create X" ≠ actually creating X
+- Use tools to do work: file.write, file.edit, etc.
+- Messages explain intent, tools execute actions
+
+**Complete When Done**
+- Only set AGENT_STATUS=COMPLETE when the user's request is satisfied
+- Review your plan progress before completing
+- If work remains, propose next tool call (AGENT_STATUS=AWAIT_TOOL)
 
 ### READING YOUR EXECUTION PLAN
 Your plan appears in structured XML format below:
@@ -215,7 +245,7 @@ Your plan is a **flexible blueprint** - a living document that guides your work 
 - **Steps are logical milestones**, not rigid sequential tasks
 - **One tool call can advance multiple steps** when they're related
 - **Skip steps that become unnecessary** - mark them complete with explanation
-- **Combine steps for efficiency** - don't artificially separate related work
+- **Combine steps for efficiency** - don't separate related work
 - **Update the plan as you work** - add, remove, or modify steps as needed
 
 ### Efficient Execution Workflow:
@@ -225,27 +255,6 @@ Your plan is a **flexible blueprint** - a living document that guides your work 
 3. **Execute efficiently**: Use tools to accomplish as much related work as practical
 4. **Update progress**: Mark ALL steps that your tool call advanced (can be multiple)
 5. **Iterate**: Continue until the user's request is satisfied
-
-### EXECUTION RULES:
-
-**Work Efficiently**
-- Accomplish as much logical work as possible in each response - avoid artificially splitting work across iterations
-- Look for opportunities: Can you complete something fully now instead of partially?
-- Batch related operations when practical (create multiple files, edit multiple sections)
-- One tool call can advance multiple steps - mark all affected steps
-- Skip unnecessary steps by marking them complete with brief explanation
-- Adapt the plan as you work - it's guidance, not a rigid script
-- Example: Create files with full content, not empty shells requiring later overwrite
-
-**Do, Don't Describe**
-- "I will create X" ≠ actually creating X
-- Use tools to do work: file.write, file.edit, etc.
-- Messages explain intent, tools execute actions
-
-**Complete When Done**
-- Only set AGENT_STATUS=COMPLETE when the user's request is satisfied
-- Review your plan progress before completing
-- If work remains, propose next tool call (AGENT_STATUS=AWAIT_TOOL)
 
 ### Modifying Your Plan:
 You can modify the plan anytime using plan.update:
