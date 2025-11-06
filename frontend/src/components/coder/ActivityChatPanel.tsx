@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Icons } from '../ui/Icons';
 import { ExecutionActivityFeed } from './ExecutionActivityFeed';
 import { PlanViewer } from './PlanViewer';
@@ -14,6 +14,7 @@ import {
 } from './MockFeatureSections';
 import type { DomainExecution } from '../../types/messages';
 import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
+import useScrollControl from '../../hooks/ui/useScrollControl';
 import logger from '../../utils/core/logger';
 import '../../styles/coder/ActivityChatPanel.css';
 
@@ -44,8 +45,26 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline' | 'learn' | 'constraints' | 'patterns'>('activity');
   const [message, setMessage] = useState('');
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const activityFeedRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Determine streaming state based on isProcessing and active stream segments
+  const streamingState: 'thinking' | 'responding' | 'static' = useMemo(() => {
+    if (!isProcessing) return 'static';
+    // If we have any streaming segments, we're responding
+    const hasStreamingSegments = coderStream.some(seg => seg.status === 'streaming');
+    return hasStreamingSegments ? 'responding' : 'thinking';
+  }, [isProcessing, coderStream]);
+
+  const scrollControl = useScrollControl({
+    chatId: `activity-chat-${chatId}`,
+    streamingState,
+    containerRef: activityFeedRef,
+    scrollType: 'activity-chat'
+  });
+
+  const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
 
   const handleSendMessage = async () => {
     if (!message.trim() || !chatId) return;
@@ -78,6 +97,19 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
     // TODO: Implement file attachment
     logger.info('[ACTIVITY_CHAT] Attachment clicked');
   };
+
+  const handleScrollToBottom = useCallback(() => {
+    scrollControl.forceScrollToBottom();
+  }, [scrollControl]);
+
+  // Show/hide scroll button based on autoscroll state
+  useEffect(() => {
+    if (activeTab === 'activity' && scrollControlStreaming) {
+      setShowScrollButton(!scrollControlEnabled);
+    } else {
+      setShowScrollButton(false);
+    }
+  }, [activeTab, scrollControlStreaming, scrollControlEnabled]);
 
   return (
     <div className="activity-chat-panel">
@@ -249,6 +281,37 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Scroll to bottom button */}
+      {showScrollButton && (
+        <button
+          className="activity-chat-panel__scroll-button"
+          onClick={handleScrollToBottom}
+          aria-label="Scroll to bottom"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 20 20"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M10 3L10 14M10 14L6 10M10 14L14 10"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M4 17L16 17"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
       )}
     </div>
   );

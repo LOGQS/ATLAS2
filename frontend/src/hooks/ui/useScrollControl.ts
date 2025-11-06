@@ -45,7 +45,7 @@ interface UseScrollControlOptions {
   chatId?: string;
   streamingState: 'thinking' | 'responding' | 'static';
   containerRef: RefObject<HTMLElement | null>;
-  scrollType?: 'chat' | 'thinkbox';
+  scrollType?: 'chat' | 'thinkbox' | 'activity-chat';
   isIsolated?: boolean;
 }
 

@@ -85,8 +85,10 @@
 .activity-chat-panel__feed {
   flex: 1;
   overflow-y: auto;
+  scroll-behavior: auto;
   padding: 16px;
-  padding-bottom: 520px; /* Reserve space for plan overlay when expanded (max-height 500px + bottom spacing) */
+  padding-bottom: 80px; /* Small breathing room at bottom - PlanOverlay is absolutely positioned and overlays content */
+  position: relative;
 }
 
 .activity-chat-panel__empty {
@@ -297,4 +299,60 @@
 .activity-chat-panel__diff-button--reject:hover {
   background: rgba(244, 135, 113, 0.15);
   border-color: rgba(244, 135, 113, 0.5);
+}
+
+/* Scroll to bottom button */
+.activity-chat-panel__scroll-button {
+  position: absolute;
+  bottom: 80px; /* Position above the message input area */
+  right: 20px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.9);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: activity-chat-panel-scroll-button-fade-in 0.3s ease-out;
+  z-index: 100;
+}
+
+.activity-chat-panel__scroll-button:hover {
+  background: rgba(0, 0, 0, 0.95);
+  transform: scale(1.08);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+  color: #ffffff;
+}
+
+.activity-chat-panel__scroll-button:active {
+  transform: scale(0.95);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.activity-chat-panel__scroll-button svg {
+  width: 20px;
+  height: 20px;
+  transition: transform 0.2s ease;
+}
+
+.activity-chat-panel__scroll-button:hover svg {
+  transform: translateY(2px);
+}
+
+@keyframes activity-chat-panel-scroll-button-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
