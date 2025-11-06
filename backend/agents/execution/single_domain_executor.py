@@ -918,10 +918,11 @@ class SingleDomainExecutor:
                 if state.context.domain_id == "coder":
                     coder_logger = get_coder_session_logger(state.context.task_id)
                     if coder_logger:
-                        coder_logger.log_completion(
+                        coder_logger.log_session_end(
                             "completed",
                             state.metadata.get("iterations", 0),
-                            state.metadata.get("tool_calls", 0)
+                            state.metadata.get("tool_calls", 0),
+                            state.output or state.agent_message or ""
                         )
 
                 # Emit final state
