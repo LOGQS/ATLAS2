@@ -916,14 +916,7 @@ class SingleDomainExecutor:
 
                 # Log completion for coder tasks
                 if state.context.domain_id == "coder":
-                    coder_logger = get_coder_session_logger(state.context.task_id)
-                    if coder_logger:
-                        coder_logger.log_session_end(
-                            "completed",
-                            state.metadata.get("iterations", 0),
-                            state.metadata.get("tool_calls", 0),
-                            state.output or state.agent_message or ""
-                        )
+                    self._log_coder_session_end(state)
 
                 # Emit final state
                 serialized_state = self._serialize_state(state)
