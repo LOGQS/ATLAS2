@@ -473,6 +473,13 @@ class SingleDomainExecutor:
         self.logger.info(f"[PARSE-DEBUG] Extracted status: '{parsed.get('status', 'NONE')}'")
         self.logger.info(f"[PARSE-DEBUG] Tool calls found: {len(parsed.get('tool_calls', []))}")
 
+        # Extract code spec if present (planning phase for coder domain)
+        if state.context.domain_id == "coder" and not state.plan:
+            code_spec = self._extract_code_spec(response_text)
+            if code_spec:
+                state.metadata["code_spec"] = code_spec
+                self.logger.info(f"[CODE-SPEC] Extracted {len(code_spec)} chars of specification")
+
         state.last_agent_response = response_text
         state.agent_message = parsed.get("message", "").strip() or parsed.get("raw", "").strip()
         state.pending_tools = []  # Clear any previous pending tools
@@ -1110,7 +1117,24 @@ class SingleDomainExecutor:
         from utils.retry_handler import RetryHandler
 
         agent = state.agent
-        model = agent.model_preference or "gemini-2.5-flash-preview-09-2025"
+
+        # Dynamic model selection for two-model spec-driven development (coder domain only)
+        if state.context.domain_id == "coder":
+            # Check if we're in planning phase (no plan exists yet)
+            is_planning_phase = state.plan is None
+
+            if is_planning_phase:
+                # Use planner model (Gemini 2.5 Pro) for initial planning + spec generation
+                model = getattr(agent, 'planner_model', None) or agent.model_preference or "gemini-2.5-pro"
+                self.logger.info(f"[CODER-PLANNING] Using planner model: {model}")
+            else:
+                # Use writer model for code execution
+                model = getattr(agent, 'writer_model', None) or agent.model_preference or "minimax/minimax-m2:free"
+                self.logger.info(f"[CODER-EXECUTION] Using writer model: {model}")
+        else:
+            # Non-coder domains use existing logic
+            model = agent.model_preference or "gemini-2.5-flash-preview-09-2025"
+
         provider = infer_provider_from_model(model)
 
         temp_chat = Chat(chat_id=f"domain_temp_{uuid.uuid4().hex[:8]}")
@@ -1254,6 +1278,35 @@ class SingleDomainExecutor:
             )
             if state.plan:
                 domain_instructions = get_execution_phase_instructions()
+
+                # Inject code spec if available
+                code_spec = state.metadata.get("code_spec")
+                if code_spec:
+                    code_spec_section = f"""
+## CODE SPECIFICATION
+
+The planner generated this comprehensive specification to guide your implementation:
+
+```json
+{code_spec}
+```
+
+**How to Use This Spec:**
+- Use it as guidance for what features to build
+- It lists comprehensive requirements to combat laziness
+- You can adapt and improve as you discover better approaches
+- Don't feel rigidly bound - leverage your coding expertise
+- Follow the general direction while optimizing implementation
+
+"""
+                else:
+                    code_spec_section = ""
+
+                # Replace placeholder in execution instructions
+                domain_instructions = domain_instructions.replace(
+                    "{code_spec_section}",
+                    code_spec_section
+                )
             else:
                 domain_instructions = get_planning_phase_instructions()
         else:
@@ -1912,6 +1965,19 @@ class SingleDomainExecutor:
 
     def _serialize_state(self, state: DomainTaskState) -> Dict[str, Any]:
         elapsed = time.time() - state.metadata.get("start_time", time.time())
+
+        # Determine current model for frontend display
+        current_model = None
+        if state.context.domain_id == "coder":
+            agent = state.agent
+            is_planning_phase = state.plan is None
+            if is_planning_phase:
+                current_model = getattr(agent, 'planner_model', None) or agent.model_preference or "gemini-2.5-pro"
+            else:
+                current_model = getattr(agent, 'writer_model', None) or agent.model_preference or "cerebras/qwen-3-235b-a22b-thinking-2507"
+        else:
+            current_model = state.agent.model_preference
+
         return {
             "task_id": state.context.task_id,
             "domain_id": state.context.domain_id,
@@ -1941,6 +2007,7 @@ class SingleDomainExecutor:
                 "iterations": state.metadata.get("iterations", 0),
                 "tool_calls": state.metadata.get("tool_calls", 0),
                 "elapsed_seconds": elapsed,
+                "current_model": current_model,
             },
             "assistant_message_id": state.context.assistant_message_id,
         }
@@ -2051,6 +2118,22 @@ class SingleDomainExecutor:
 
         # Fallback: return as plain string
         return stripped
+
+    def _extract_code_spec(self, response_text: str) -> Optional[str]:
+        """Extract code spec from <CODE_SPEC>...</CODE_SPEC> tags.
+
+        Used during planning phase to extract the detailed specification
+        that will guide the writer model during execution phase.
+        """
+        import re
+        match = re.search(
+            r"<CODE_SPEC>(.*?)</CODE_SPEC>",
+            response_text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if match:
+            return match.group(1).strip()
+        return None
 
     def _parse_nested_tags(self, content: str) -> Any:
         """Parse nested tag format into Python objects.

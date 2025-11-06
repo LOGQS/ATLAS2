@@ -41,7 +41,11 @@ class AgentSpec:
     system_prompt: str
     execution_mode: ExecutionMode
     default_budget: AgentBudget
-    model_preference: Optional[str] = None 
+    model_preference: Optional[str] = None
+    # Two-model spec-driven development (used by coder domain)
+    planner_model: Optional[str] = None  # Model for planning phase
+    writer_model: Optional[str] = None  # Model for execution phase
+    writer_fallback_models: Optional[List[str]] = None  # Fallback models for rate limits
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -58,6 +62,9 @@ class AgentSpec:
                 "max_context_tokens": self.default_budget.max_context_tokens,
             },
             "model_preference": self.model_preference,
+            "planner_model": self.planner_model,
+            "writer_model": self.writer_model,
+            "writer_fallback_models": self.writer_fallback_models,
         }
 
 

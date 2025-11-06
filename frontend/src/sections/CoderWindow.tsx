@@ -545,7 +545,7 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
           gitBranch="main"
           fileCount={openTabs.length}
           unsavedCount={unsavedFiles.size}
-          modelName="gemini-2.5-pro"
+          modelName={domainExecution?.metadata?.current_model || "gemini-2.5-pro"}
           onWorkspaceClick={() => setIsWorkspaceModalOpen(true)}
         />
       )}

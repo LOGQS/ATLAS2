@@ -10,11 +10,15 @@ def get_planning_phase_instructions() -> str:
 - Maintaining code quality and file coherency
 - Working within the designated workspace
 
-## PHASE 1: PLANNING (Create Your Plan First)
+## PHASE 1: PLANNING (Create Your Plan and Spec)
 
-You have not yet created an execution plan. You MUST start by creating one using the plan.write tool.
+You have not yet created an execution plan. You MUST start by creating BOTH:
+1. A structured implementation plan using the plan.write tool
+2. A comprehensive code specification to guide implementation
 
-### Steps to Create a Plan:
+These must be created TOGETHER in the same response.
+
+### Steps to Create Your Plan and Spec:
 
 1. **Analyze the Request**: Understand what needs to be done
 2. **Explore the Workspace**: Use file.list_dir and file.read to understand the codebase structure
@@ -41,6 +45,114 @@ Example plan.write call (use nested tag delimiters for arrays/objects):
 ```
 
 Note: Steps are simple text descriptions. System auto-assigns IDs (step_1, step_2, etc.) for later reference.
+
+## CODE SPECIFICATION GENERATION
+
+After creating your plan, generate a comprehensive CODE SPEC to guide the implementation phase.
+
+### Why Generate a Spec?
+Most models tend to be lazy when writing code - they'll create minimal implementations with basic features.
+A detailed spec combats this by explicitly listing ALL features, edge cases, and requirements upfront.
+This ensures the writer model implements everything thoroughly without cutting corners.
+
+### How to Generate the Spec:
+Wrap your specification in `<CODE_SPEC>...</CODE_SPEC>` tags in JSON format (syntax doesn't need to be perfect).
+
+Your spec should include:
+
+1. **Comprehensive Features List**: Enumerate EVERY feature the request needs (don't be lazy!)
+   - Include edge cases, error handling, validation
+   - Think about what users would actually expect
+   - List interactive elements, UI components, functionality
+
+2. **File Structure**: Which files to create/modify and their purposes
+
+3. **Implementation Details**:
+   - Key functions, classes, components
+   - Logic flows and algorithms
+   - State management approach
+
+4. **Dependencies**: What imports/connects to what for coherency
+
+5. **Technical Requirements**: Libraries, patterns, frameworks, constraints
+
+### Important Guidelines:
+- **Be Thorough**: Combat model laziness by being comprehensive
+- **Think User Needs**: What would make this actually useful/complete?
+- **Internal Only**: This spec is NOT shown to the user (it's for the writer model)
+- **Flexible Guidance**: The writer can adapt and improve this - it's not rigid
+- **JSON Format**: Use JSON-like structure but perfect syntax isn't required (we don't parse it)
+
+### Example:
+```
+<CODE_SPEC>
+{
+  "task_summary": "Create an interactive portfolio website",
+  "features": [
+    "Responsive navigation menu with smooth scrolling",
+    "Hero section with animated introduction",
+    "About section with profile image and bio",
+    "Projects gallery with hover effects and modals",
+    "Skills section with progress bars/icons",
+    "Contact form with email validation",
+    "Social media links in footer",
+    "Dark/light theme toggle",
+    "Mobile-responsive design (breakpoints for tablet/phone)",
+    "Accessibility features (ARIA labels, keyboard navigation)",
+    "Loading animations and transitions",
+    "SEO meta tags"
+  ],
+  "file_structure": {
+    "index.html": "Main HTML structure with semantic sections",
+    "styles.css": "Complete styling including responsive breakpoints, animations, theme variables",
+    "script.js": "All interactive features: navigation, form validation, theme toggle, smooth scroll, modal handlers",
+    "assets/": "Images and icons folder"
+  },
+  "implementation_details": {
+    "navigation": "Fixed header that changes on scroll, mobile hamburger menu",
+    "projects_gallery": "Grid layout with image, title, description. Click opens modal with full details",
+    "contact_form": "Real-time validation, prevents submission if invalid, shows success message",
+    "theme_toggle": "Switch between light/dark using CSS variables, persist preference in localStorage"
+  },
+  "dependencies": {
+    "styles.css": "Imported in index.html head",
+    "script.js": "Loaded at end of body in index.html",
+    "all_sections": "Linked via navigation anchors"
+  },
+  "technical_requirements": {
+    "no_frameworks": "Pure HTML/CSS/JavaScript",
+    "modern_css": "Use Flexbox/Grid, CSS variables, animations",
+    "vanilla_js": "No jQuery - use modern ES6+ features",
+    "browser_compatibility": "Modern browsers (ES6+)"
+  }
+}
+</CODE_SPEC>
+```
+
+### Where to Place the Code Spec:
+Place the `<CODE_SPEC>` section AFTER the `<MESSAGE>` block but BEFORE the `<TOOL_CALL>` block.
+
+Structure your response like this:
+```
+<AGENT_DECISION>
+<MESSAGE>
+I'll create a plan to implement [task description].
+
+[Brief description of your plan]
+</MESSAGE>
+
+<CODE_SPEC>
+{... your comprehensive specification here ...}
+</CODE_SPEC>
+
+<TOOL_CALL>
+<TOOL>plan.write</TOOL>
+...
+</TOOL_CALL>
+
+<AGENT_STATUS>AWAIT_TOOL</AGENT_STATUS>
+</AGENT_DECISION>
+```
 
 ## FILE COHERENCY
 When editing files, consider dependencies:
@@ -74,6 +186,8 @@ def get_execution_phase_instructions() -> str:
 ## PHASE 2: EXECUTION (Follow Your Plan)
 
 You have an execution plan. Work through the steps systematically:
+
+{code_spec_section}
 
 ### READING YOUR EXECUTION PLAN
 Your plan appears in structured XML format below:
