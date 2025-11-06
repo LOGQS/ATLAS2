@@ -712,20 +712,16 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     }
   }, [chatId]);
 
-  const closeTab = useCallback(async (filePath: string) => {
-    // Check if file has unsaved changes
-    const hasUnsaved = state.unsavedFiles.has(filePath);
-    const doc = state.tabDocuments[filePath];
-
-    // If unsaved, revert to original content (cancel changes)
-    if (hasUnsaved && doc) {
-      logger.info('[CODER] Closing tab with unsaved changes, reverting:', filePath);
-      // Don't write to disk, just discard the changes
-    }
-
+  const closeTab = useCallback((filePath: string) => {
     setState(prev => {
       const tabIndex = prev.openTabs.indexOf(filePath);
       if (tabIndex === -1) return prev; // Tab not found
+
+      // Check if file has unsaved changes (for logging only)
+      const hasUnsaved = prev.unsavedFiles.has(filePath);
+      if (hasUnsaved) {
+        logger.info('[CODER] Closing tab with unsaved changes, discarding:', filePath);
+      }
 
       const newOpenTabs = prev.openTabs.filter(path => path !== filePath);
 
@@ -768,7 +764,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
         unsavedFiles: newUnsavedFiles,
       };
     });
-  }, [state.unsavedFiles, state.tabDocuments]);
+  }, []);
 
   const switchToTab = useCallback((filePath: string) => {
     setState(prev => {

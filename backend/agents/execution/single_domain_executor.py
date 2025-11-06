@@ -538,7 +538,22 @@ class SingleDomainExecutor:
 
             self._register_pending_tools(state, pending_tool_calls)
         elif status == "COMPLETE":
-            # Validate completion is justified before accepting
+            # IMPORTANT: If agent sent COMPLETE with tool calls in the same response,
+            # we must register the tools first, wait for user decisions, execute them,
+            # and ONLY THEN complete. Otherwise tools get lost.
+            if pending_tool_calls:
+                self.logger.info(
+                    "[COMPLETE-WITH-TOOLS] Agent sent COMPLETE with %d tool call(s) - "
+                    "registering tools and deferring completion until after execution",
+                    len(pending_tool_calls)
+                )
+                self._register_pending_tools(state, pending_tool_calls)
+                # Mark that we should complete after all tools are decided and executed
+                state.metadata["deferred_completion"] = True
+                state.metadata["deferred_completion_message"] = state.agent_message
+                return
+
+            # No pending tools in this response, proceed with immediate completion validation
             completion_valid, rejection_reason = self._validate_completion(state)
 
             if not completion_valid:
@@ -858,11 +873,57 @@ class SingleDomainExecutor:
                 },
             )
 
-        # Clear pending tools after all executed
-        state.pending_tools = []
+        # Remove only the tools that were executed from pending tools
+        executed_call_ids = {p.call_id for p in proposals}
+        state.pending_tools = [t for t in state.pending_tools if t.call_id not in executed_call_ids]
 
-        # Continue with next iteration - agent needs tool output for next decision
-        self._run_agent_iteration(state)
+        # Only continue to next iteration if ALL pending tools have been decided
+        # If there are still tools awaiting decisions, keep status as waiting_user
+        if state.pending_tools:
+            self.logger.info(
+                f"[TOOL-DECISION] {len(state.pending_tools)} tool(s) still awaiting decisions - staying in waiting_user state"
+            )
+            state.status = "waiting_user"
+            # Emit state update so frontend shows remaining pending tools
+            serialized_state = self._serialize_state(state)
+            self._emit_event(state, "state", serialized_state)
+        else:
+            self.logger.info("[TOOL-DECISION] All pending tools decided and executed")
+
+            # Check if we deferred completion (agent sent COMPLETE with tools)
+            if state.metadata.get("deferred_completion"):
+                self.logger.info("[DEFERRED-COMPLETION] All tools executed, now completing as agent requested")
+                state.metadata.pop("deferred_completion", None)
+                deferred_message = state.metadata.pop("deferred_completion_message", None)
+
+                # Complete the task
+                state.status = "completed"
+                state.output = deferred_message or state.agent_message
+                self._append_action(
+                    state,
+                    action_type="task_completed",
+                    description="Domain task completed successfully",
+                    status="completed",
+                    metadata={"iterations": state.metadata["iterations"]},
+                )
+
+                # Log completion for coder tasks
+                if state.context.domain_id == "coder":
+                    coder_logger = get_coder_session_logger(state.context.task_id)
+                    if coder_logger:
+                        coder_logger.log_completion(
+                            "completed",
+                            state.metadata.get("iterations", 0),
+                            state.metadata.get("tool_calls", 0)
+                        )
+
+                # Emit final state
+                serialized_state = self._serialize_state(state)
+                self._emit_event(state, "state", serialized_state)
+            else:
+                # No deferred completion, continue with next iteration
+                self.logger.info("[TOOL-DECISION] Continuing to next iteration")
+                self._run_agent_iteration(state)
 
     def _execute_tool_call(
         self,
@@ -2087,6 +2148,9 @@ class SingleDomainExecutor:
             Tuple[bool, str]: (is_valid, rejection_reason)
                 - (True, "") if completion is valid
                 - (False, "reason") if completion should be rejected
+
+        Note: This is only called when COMPLETE status arrives WITHOUT tool calls.
+        If COMPLETE arrives WITH tool calls, we defer completion until tools are executed.
         """
         # Only validate coder domain
         if state.context.domain_id != "coder":

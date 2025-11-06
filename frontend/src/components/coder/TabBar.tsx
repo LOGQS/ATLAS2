@@ -87,10 +87,10 @@ function SortableTab({
       className={`tab ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''}`}
       onClick={() => onTabClick(filePath)}
       onMouseDown={(e) => onMouseDown(e, filePath)}
-      initial={{ opacity: 0, width: 0 }}
-      animate={{ opacity: 1, width: 'auto' }}
-      exit={{ opacity: 0, width: 0 }}
-      transition={{ duration: 0.2 }}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.08, ease: 'easeOut' }}
     >
       <div className="tab-icon" {...listeners}>
         {getFileIcon(fileName)}
@@ -134,7 +134,7 @@ export const TabBar: React.FC = () => {
     if (activeTabPath && tabBarRef.current) {
       const activeTabElement = tabBarRef.current.querySelector(`[data-tab-path="${activeTabPath}"]`);
       if (activeTabElement) {
-        activeTabElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        activeTabElement.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'center' });
       }
     }
   }, [activeTabPath]);

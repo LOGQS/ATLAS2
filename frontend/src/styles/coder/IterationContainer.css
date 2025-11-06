@@ -5,7 +5,7 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(10, 13, 24, 0.6);
   overflow: hidden;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .iteration-container--current {
@@ -99,18 +99,23 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  animation: slideDown 0.2s ease;
+  max-height: 2000px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+              padding 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
 }
 
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* Collapsed state */
+.iteration-container__content--collapsed {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-10px);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* Execution result card - shown after tool completes */

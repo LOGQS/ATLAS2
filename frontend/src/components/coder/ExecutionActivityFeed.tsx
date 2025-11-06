@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Icons } from '../ui/Icons';
 import { IterationContainer } from './IterationContainer';
-import type { DomainExecution, ToolOperation } from '../../types/messages';
+import type { DomainExecution } from '../../types/messages';
 import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
 import { apiUrl } from '../../config/api';
 import '../../styles/coder/ExecutionActivityFeed.css';
@@ -27,42 +27,6 @@ interface IterationGroup {
   status: 'streaming' | 'waiting_user' | 'executing' | 'completed';
   summary: string;
 }
-
-const getToolIcon = (toolName?: string) => {
-  if (!toolName) return Icons.Info;
-  const lower = toolName.toLowerCase();
-  if (lower.includes('file') || lower.includes('edit') || lower.includes('write')) {
-    return Icons.FileCode;
-  }
-  if (lower.includes('bash') || lower.includes('terminal') || lower.includes('cmd')) {
-    return Icons.Terminal;
-  }
-  if (lower.includes('git')) {
-    return Icons.History;
-  }
-  if (lower.includes('test')) {
-    return Icons.Check;
-  }
-  return Icons.Info;
-};
-
-const formatTimestamp = (isoString: string): string => {
-  const date = new Date(isoString);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-};
-
-const getStatusColor = (status: string): string => {
-  switch (status) {
-    case 'completed':
-      return 'text-green-400';
-    case 'failed':
-      return 'text-red-400';
-    case 'in_progress':
-      return 'text-blue-400';
-    default:
-      return 'text-gray-400';
-  }
-};
 
 const generateIterationSummary = (group: IterationGroup): string => {
   const toolCount = group.executedTools.length;
@@ -343,21 +307,8 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
   chatId,
   autoAcceptEnabled = false,
 }) => {
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [executingTools, setExecutingTools] = useState<Set<string>>(new Set());
   const [completedToolsFromExecution, setCompletedToolsFromExecution] = useState<Set<string>>(new Set());
-
-  const toggleExpanded = useCallback((id: string) => {
-    setExpandedItems(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
 
   // Track when tools complete execution via domain_execution updates
   useEffect(() => {
@@ -387,13 +338,32 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
   }, []);
 
   // Extract all data before any conditional returns (hooks must be called unconditionally)
-  const actions = domainExecution?.actions ?? [];
   const toolHistory = useMemo(() => domainExecution?.tool_history ?? [], [domainExecution?.tool_history]);
-  const plan = domainExecution?.plan;
   const taskId = domainExecution?.task_id;
-  const currentIterationNumber = domainExecution?.metadata?.iterations ?? null;
   const pendingTools = useMemo(() => domainExecution?.pending_tools ?? [], [domainExecution?.pending_tools]);
   const isWaitingForUser = domainExecution?.status === 'waiting_user';
+
+  // Determine current iteration: if streaming, use highest iteration number from stream
+  // If not streaming, fall back to metadata. This ensures "Current" badge appears immediately
+  // when streaming starts, not after the response completes.
+  // When execution is complete, there is no "current" iteration - all are historical.
+  const currentIterationNumber = useMemo(() => {
+    const isComplete = domainExecution?.status === 'completed' ||
+                       domainExecution?.status === 'failed' ||
+                       domainExecution?.status === 'aborted';
+
+    // If execution is complete, no iteration is "current"
+    if (isComplete) {
+      return null;
+    }
+
+    if (coderStream.length > 0) {
+      // Find the highest iteration number in the stream (the one being actively streamed)
+      return Math.max(...coderStream.map(s => s.iteration));
+    }
+    // No streaming, use metadata
+    return domainExecution?.metadata?.iterations ?? null;
+  }, [coderStream, domainExecution?.metadata?.iterations, domainExecution?.status]);
 
   // Group streaming segments and tool history by iteration
   const iterationGroups = useMemo((): IterationGroup[] => {
@@ -455,6 +425,10 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
     }
 
     // Determine status for each iteration
+    const executionCompleted = domainExecution?.status === 'completed' ||
+                                domainExecution?.status === 'failed' ||
+                                domainExecution?.status === 'aborted';
+
     for (const group of Array.from(groups.values())) {
       const isCurrentIter = currentIterationNumber !== null && group.number === currentIterationNumber;
       const hasStreamingSegment =
@@ -463,7 +437,10 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
         group.toolCalls.some((tc: ToolCallSegment) => tc.status === 'streaming');
 
       if (isCurrentIter) {
-        if (isWaitingForUser && pendingTools.length > 0) {
+        // If execution is complete, mark current iteration as completed
+        if (executionCompleted) {
+          group.status = 'completed';
+        } else if (isWaitingForUser && pendingTools.length > 0) {
           group.status = 'waiting_user';
         } else if (hasStreamingSegment) {
           group.status = 'streaming';
@@ -482,7 +459,7 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
 
     // Sort by iteration number (oldest first = chronological order)
     return Array.from(groups.values()).sort((a, b) => a.number - b.number);
-  }, [coderStream, toolHistory, currentIterationNumber, isWaitingForUser, pendingTools]);
+  }, [coderStream, toolHistory, currentIterationNumber, isWaitingForUser, pendingTools, domainExecution?.status]);
 
   // Early return check after all hooks
   const hasStream = coderStream.length > 0;
@@ -618,8 +595,15 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
           );
         })}
 
-        {/* Show waiting state if tools executed but no new iteration yet */}
-        {isWaitingForUser === false && pendingTools.length === 0 && domainExecution?.tool_history && domainExecution.tool_history.length > 0 && coderStream.length > 0 && (
+        {/* Show waiting state if tools executed but no new iteration yet (and execution not complete) */}
+        {isWaitingForUser === false &&
+         pendingTools.length === 0 &&
+         domainExecution?.tool_history &&
+         domainExecution.tool_history.length > 0 &&
+         coderStream.length > 0 &&
+         domainExecution?.status !== 'completed' &&
+         domainExecution?.status !== 'failed' &&
+         domainExecution?.status !== 'aborted' && (
           <div className="exec-activity-feed__waiting-state">
             <div className="exec-activity-feed__spinner" />
             <span className="text-sm text-white/60">Waiting for model response...</span>
@@ -632,163 +616,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
             <span className="text-sm text-white/60">Agent is preparing a response…</span>
           </div>
         )}
-      </div>
-
-      {plan && (
-        <div className="exec-activity-feed__plan-box">
-          <div className="exec-activity-feed__plan-header">
-            <Icons.List className="w-4 h-4 text-blue-400" />
-            <span className="exec-activity-feed__plan-title">
-              Current Plan: {plan.task_description}
-            </span>
-          </div>
-          <ul className="exec-activity-feed__plan-steps">
-            {plan.steps.map((step, idx) => (
-              <li key={step.step_id || idx} className="exec-activity-feed__plan-step">
-                <span className={`exec-activity-feed__step-status ${getStatusColor(step.status)}`}>
-                  {step.status === 'completed' && '✓'}
-                  {step.status === 'in_progress' && '⟳'}
-                  {step.status === 'pending' && '○'}
-                  {step.status === 'failed' && '✗'}
-                </span>
-                <span className="exec-activity-feed__step-text">{step.description}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="exec-activity-feed__timeline">
-        {actions.map((action, idx) => {
-          const isExpanded = expandedItems.has(action.action_id);
-          const ActionIcon = getToolIcon(action.action_type);
-
-          return (
-            <details
-              key={action.action_id || idx}
-              className="exec-activity-feed__item"
-              open={isExpanded}
-              onToggle={() => toggleExpanded(action.action_id)}
-            >
-              <summary className="exec-activity-feed__item-summary">
-                <ActionIcon className={`w-4 h-4 ${getStatusColor(action.status)}`} />
-                <div className="exec-activity-feed__item-info">
-                  <span className="exec-activity-feed__item-title">{action.description}</span>
-                  {action.timestamp && (
-                    <span className="exec-activity-feed__item-time">
-                      {formatTimestamp(action.timestamp)}
-                    </span>
-                  )}
-                </div>
-                <Icons.ChevronRight className={`exec-activity-feed__chevron ${isExpanded ? 'exec-activity-feed__chevron--expanded' : ''}`} />
-              </summary>
-              {action.result && (
-                <div className="exec-activity-feed__item-content">
-                  <pre className="exec-activity-feed__result">
-                    {typeof action.result === 'string'
-                      ? action.result
-                      : JSON.stringify(action.result, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </details>
-          );
-        })}
-
-        {toolHistory.map((tool, idx) => {
-          const isExpanded = expandedItems.has(tool.call_id);
-          const ToolIcon = getToolIcon(tool.tool);
-          const hasOps = tool.ops && tool.ops.length > 0;
-
-          return (
-            <details
-              key={tool.call_id || idx}
-              className="exec-activity-feed__item"
-              open={isExpanded}
-              onToggle={() => toggleExpanded(tool.call_id)}
-            >
-              <summary className="exec-activity-feed__item-summary">
-                <ToolIcon className="w-4 h-4 text-sky-400" />
-                <div className="exec-activity-feed__item-info">
-                  <span className="exec-activity-feed__item-title">
-                    {tool.tool}
-                    {hasOps && tool.ops?.[0]?.path && `: ${tool.ops[0].path}`}
-                  </span>
-                  {tool.executed_at && (
-                    <span className="exec-activity-feed__item-time">
-                      {formatTimestamp(tool.executed_at)}
-                    </span>
-                  )}
-                </div>
-                <Icons.ChevronRight className={`exec-activity-feed__chevron ${isExpanded ? 'exec-activity-feed__chevron--expanded' : ''}`} />
-              </summary>
-              <div className="exec-activity-feed__item-content">
-                {tool.params && tool.params.length > 0 && (
-                  <div className="exec-activity-feed__section">
-                    <p className="exec-activity-feed__section-label">PARAMETERS:</p>
-                    <div className="exec-activity-feed__params">
-                      {tool.params.slice(0, 3).map(([key, value], i) => (
-                        <div key={i} className="exec-activity-feed__param">
-                          <span className="exec-activity-feed__param-key">{key}:</span>
-                          <span className="exec-activity-feed__param-value">
-                            {typeof value === 'string' && value.length > 50
-                              ? `${value.slice(0, 50)}...`
-                              : String(value)}
-                          </span>
-                        </div>
-                      ))}
-                      {tool.params.length > 3 && (
-                        <div className="exec-activity-feed__param-more">
-                          +{tool.params.length - 3} more parameter{tool.params.length - 3 !== 1 ? 's' : ''}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {hasOps && (
-                  <div className="exec-activity-feed__section">
-                    <p className="exec-activity-feed__section-label">CHANGES:</p>
-                    {tool.ops?.map((op: ToolOperation, i: number) => (
-                      <div key={i} className="exec-activity-feed__changes">
-                        {op.lines_added !== undefined && op.lines_removed !== undefined && (
-                          <p className="exec-activity-feed__change-stats">
-                            <span className="text-green-400">+{op.lines_added}</span>{' '}
-                            <span className="text-red-400">-{op.lines_removed}</span> lines
-                          </p>
-                        )}
-                        {op.before_checkpoint_id && (
-                          <p className="exec-activity-feed__checkpoint-info">
-                            Checkpoint #{op.before_checkpoint_id} created
-                          </p>
-                        )}
-                        {op.after_checkpoint_id && (
-                          <p className="exec-activity-feed__checkpoint-info">
-                            Checkpoint #{op.after_checkpoint_id} saved
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {tool.result_summary && (
-                  <div className="exec-activity-feed__section">
-                    <p className="exec-activity-feed__section-label">RESULT:</p>
-                    <pre className="exec-activity-feed__result">{tool.result_summary}</pre>
-                  </div>
-                )}
-
-                {tool.error && (
-                  <div className="exec-activity-feed__section">
-                    <p className="exec-activity-feed__section-label text-red-400">ERROR:</p>
-                    <pre className="exec-activity-feed__result text-red-300">{tool.error}</pre>
-                  </div>
-                )}
-              </div>
-            </details>
-          );
-        })}
       </div>
 
       {isProcessing && (

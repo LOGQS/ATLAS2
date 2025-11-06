@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Icons } from '../ui/Icons';
 import '../../styles/coder/IterationContainer.css';
 
@@ -17,7 +17,13 @@ export const IterationContainer: React.FC<IterationContainerProps> = ({
   summary,
   children,
 }) => {
+  // Current iteration starts expanded, but all iterations can be toggled
   const [isExpanded, setIsExpanded] = useState(isCurrentIteration);
+
+  // Auto-expand current iteration, auto-collapse when it stops being current
+  useEffect(() => {
+    setIsExpanded(isCurrentIteration);
+  }, [isCurrentIteration]);
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded(prev => !prev);
@@ -53,14 +59,12 @@ export const IterationContainer: React.FC<IterationContainerProps> = ({
     }
   };
 
-  // Current iteration is always expanded and not manually collapsible
-  const canToggle = !isCurrentIteration;
-
+  // All iterations can be collapsed/expanded, including current one
   return (
     <div className={`iteration-container ${isCurrentIteration ? 'iteration-container--current' : ''}`}>
       <div
-        className={`iteration-container__header ${canToggle ? 'iteration-container__header--clickable' : ''}`}
-        onClick={canToggle ? toggleExpanded : undefined}
+        className="iteration-container__header iteration-container__header--clickable"
+        onClick={toggleExpanded}
       >
         <div className="iteration-container__header-left">
           {getStatusIcon()}
@@ -76,19 +80,15 @@ export const IterationContainer: React.FC<IterationContainerProps> = ({
           {status !== 'completed' && (
             <span className="iteration-container__status">{getStatusText()}</span>
           )}
-          {canToggle && (
-            <Icons.ChevronRight
-              className={`iteration-container__chevron ${isExpanded ? 'iteration-container__chevron--expanded' : ''}`}
-            />
-          )}
+          <Icons.ChevronRight
+            className={`iteration-container__chevron ${isExpanded ? 'iteration-container__chevron--expanded' : ''}`}
+          />
         </div>
       </div>
 
-      {isExpanded && (
-        <div className="iteration-container__content">
-          {children}
-        </div>
-      )}
+      <div className={`iteration-container__content ${!isExpanded ? 'iteration-container__content--collapsed' : ''}`}>
+        {children}
+      </div>
     </div>
   );
 };

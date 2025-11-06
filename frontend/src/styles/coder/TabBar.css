@@ -41,7 +41,9 @@
   border-radius: var(--radius-md);
   margin: 0 2px;
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-smooth);
+  transition: background var(--duration-fast) var(--ease-smooth),
+              border-color var(--duration-fast) var(--ease-smooth),
+              box-shadow var(--duration-fast) var(--ease-smooth);
   flex-shrink: 0;
   position: relative;
   user-select: none;

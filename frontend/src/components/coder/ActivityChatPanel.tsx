@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Icons } from '../ui/Icons';
 import { ExecutionActivityFeed } from './ExecutionActivityFeed';
 import { PlanViewer } from './PlanViewer';
+import { PlanOverlay } from './PlanOverlay';
 import { CheckpointTimeline } from './CheckpointTimeline';
 import { ContextPanel } from './ContextPanel';
 import { TimelinePanel } from './TimelinePanel';
@@ -127,44 +128,49 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
       {/* Tab Content */}
       <div className="activity-chat-panel__content">
         {activeTab === 'activity' && (
-          <div className="activity-chat-panel__feed" ref={activityFeedRef}>
-            {/* Bulk Diff Actions */}
-            {pendingDiffsCount > 0 && (
-              <div className="activity-chat-panel__diff-actions">
-                <div className="activity-chat-panel__diff-count">
-                  <Icons.Edit className="w-4 h-4" />
-                  <span>{pendingDiffsCount} pending change{pendingDiffsCount !== 1 ? 's' : ''}</span>
+          <>
+            <div className="activity-chat-panel__feed" ref={activityFeedRef}>
+              {/* Bulk Diff Actions */}
+              {pendingDiffsCount > 0 && (
+                <div className="activity-chat-panel__diff-actions">
+                  <div className="activity-chat-panel__diff-count">
+                    <Icons.Edit className="w-4 h-4" />
+                    <span>{pendingDiffsCount} pending change{pendingDiffsCount !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="activity-chat-panel__diff-buttons">
+                    <button
+                      className="activity-chat-panel__diff-button activity-chat-panel__diff-button--accept"
+                      onClick={onAcceptAllDiffs}
+                      title="Accept all pending changes"
+                    >
+                      <Icons.Check className="w-4 h-4" />
+                      <span>Accept All</span>
+                    </button>
+                    <button
+                      className="activity-chat-panel__diff-button activity-chat-panel__diff-button--reject"
+                      onClick={onRejectAllDiffs}
+                      title="Reject all pending changes"
+                    >
+                      <Icons.Close className="w-4 h-4" />
+                      <span>Reject All</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="activity-chat-panel__diff-buttons">
-                  <button
-                    className="activity-chat-panel__diff-button activity-chat-panel__diff-button--accept"
-                    onClick={onAcceptAllDiffs}
-                    title="Accept all pending changes"
-                  >
-                    <Icons.Check className="w-4 h-4" />
-                    <span>Accept All</span>
-                  </button>
-                  <button
-                    className="activity-chat-panel__diff-button activity-chat-panel__diff-button--reject"
-                    onClick={onRejectAllDiffs}
-                    title="Reject all pending changes"
-                  >
-                    <Icons.Close className="w-4 h-4" />
-                    <span>Reject All</span>
-                  </button>
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Execution Activity Feed - Real-time execution display */}
-            <ExecutionActivityFeed
-              domainExecution={domainExecution ?? null}
-              isProcessing={isProcessing}
-              chatId={chatId}
-              autoAcceptEnabled={autoAcceptEnabled}
-              coderStream={coderStream}
-            />
-          </div>
+              {/* Execution Activity Feed - Real-time execution display */}
+              <ExecutionActivityFeed
+                domainExecution={domainExecution ?? null}
+                isProcessing={isProcessing}
+                chatId={chatId}
+                autoAcceptEnabled={autoAcceptEnabled}
+                coderStream={coderStream}
+              />
+            </div>
+
+            {/* Persistent Plan Overlay - Shows current plan without blocking chat */}
+            <PlanOverlay plan={domainExecution?.plan} />
+          </>
         )}
 
         {activeTab === 'plan' && (
