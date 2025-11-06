@@ -168,75 +168,63 @@
 
 .activity-chat-panel__input {
   flex-shrink: 0;
-  padding: 12px;
+  padding: 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   background: #252526;
 }
 
-.activity-chat-panel__input-wrapper {
+.activity-chat-panel__input-container {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  background: #1e1e1e;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
-  padding: 8px;
-  transition: border-color 0.15s;
-}
-
-.activity-chat-panel__input-wrapper:focus-within {
-  border-color: #61a6fa;
-}
-
-.activity-chat-panel__input-button {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  display: flex;
+  gap: 15px;
   align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  color: rgba(212, 212, 212, 0.7);
-  cursor: pointer;
-  transition: all 0.15s;
+  width: 100%;
 }
 
-.activity-chat-panel__input-button:hover:not(.activity-chat-panel__input-button--disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  color: #d4d4d4;
-}
-
-.activity-chat-panel__send-button {
-  background: #61a6fa;
-  color: white;
-}
-
-.activity-chat-panel__send-button:hover:not(.activity-chat-panel__send-button--disabled) {
-  background: #5090e0;
-}
-
-.activity-chat-panel__send-button--disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.activity-chat-panel__message-textarea {
+/* Override main chat input-wrapper for activity panel context - Blue theme for code editor */
+.activity-chat-panel__input .input-wrapper {
   flex: 1;
-  background: transparent;
-  border: none;
-  color: #d4d4d4;
-  font-size: 13px;
-  font-family: inherit;
-  resize: none;
-  outline: none;
-  max-height: 120px;
-  line-height: 1.5;
 }
 
-.activity-chat-panel__message-textarea::placeholder {
-  color: rgba(212, 212, 212, 0.4);
+.activity-chat-panel__input .message-input {
+  min-height: 48px;
+  max-height: 150px;
+  background: rgba(30, 30, 30, 0.8);
+  border-color: rgba(97, 166, 250, 0.2);
+}
+
+.activity-chat-panel__input .message-input:focus {
+  border-color: rgba(97, 166, 250, 0.6);
+  background: rgba(30, 30, 30, 0.95);
+  box-shadow: 0 0 0 4px rgba(97, 166, 250, 0.15);
+}
+
+/* File attach button - Blue theme */
+.activity-chat-panel__input .add-file-button-inline {
+  background: rgba(30, 30, 30, 0.6);
+  border-color: rgba(97, 166, 250, 0.3);
+  color: rgba(97, 166, 250, 0.8);
+}
+
+.activity-chat-panel__input .add-file-button-inline:hover {
+  background: rgba(97, 166, 250, 0.15);
+  border-color: rgba(97, 166, 250, 0.5);
+  color: rgba(97, 166, 250, 1);
+}
+
+/* Send button - Blue gradient theme */
+.activity-chat-panel__input .send-button {
+  background: linear-gradient(135deg, #61a6fa 0%, #4a90e2 100%);
+  width: 48px;
+  height: 48px;
+}
+
+.activity-chat-panel__input .send-button:hover {
+  background: linear-gradient(135deg, #5090e0 0%, #3a7ac2 100%);
+  box-shadow: 0 6px 20px rgba(97, 166, 250, 0.35);
+}
+
+.activity-chat-panel__input .send-button.loading {
+  background: linear-gradient(135deg, #5090e0 0%, #3a7ac2 100%);
 }
 
 /* Bulk Diff Actions - Namespace: activity-chat-panel__diff-* */

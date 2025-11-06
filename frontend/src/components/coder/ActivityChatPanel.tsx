@@ -1,5 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Icons } from '../ui/Icons';
+import MessageInputArea from '../input/MessageInputArea';
+import SendButton from '../input/SendButton';
 import { ExecutionActivityFeed } from './ExecutionActivityFeed';
 import { PlanViewer } from './PlanViewer';
 import { PlanOverlay } from './PlanOverlay';
@@ -86,7 +88,7 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -96,6 +98,19 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
   const handleAttachment = () => {
     // TODO: Implement file attachment
     logger.info('[ACTIVITY_CHAT] Attachment clicked');
+  };
+
+  // Drag handlers for file drop (stubbed for now)
+  const dragHandlers = {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.preventDefault();
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+    }
   };
 
   const handleScrollToBottom = useCallback(() => {
@@ -254,31 +269,39 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
       {/* Message Input - Only shown in activity tab */}
       {activeTab === 'activity' && (
         <div className="activity-chat-panel__input">
-          <div className="activity-chat-panel__input-wrapper">
-            <button
-              className="activity-chat-panel__input-button activity-chat-panel__attach-button"
-              onClick={handleAttachment}
-              title="Attach file"
-            >
-              <Icons.Paperclip className="w-4 h-4" />
-            </button>
-            <textarea
-              ref={messageInputRef}
-              className="activity-chat-panel__message-textarea"
-              placeholder="Send a message..."
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
+          <div className="activity-chat-panel__input-container">
+            <MessageInputArea
+              inputRef={messageInputRef}
+              message={message}
+              onMessageChange={setMessage}
               onKeyDown={handleKeyDown}
-              rows={1}
+              onAddFileClick={handleAttachment}
+              isDragOver={false}
+              isVoiceChatMode={false}
+              isActiveChatStreaming={false}
+              dragHandlers={dragHandlers}
             />
-            <button
-              className={`activity-chat-panel__input-button activity-chat-panel__send-button ${!message.trim() ? 'activity-chat-panel__send-button--disabled' : ''}`}
+            <SendButton
               onClick={handleSendMessage}
-              disabled={!message.trim()}
-              title="Send message (Enter)"
-            >
-              <Icons.Send className="w-4 h-4" />
-            </button>
+              onHoldStart={() => {}}
+              onHoldEnd={() => {}}
+              isButtonHeld={false}
+              isRecording={false}
+              isSoundDetected={false}
+              isActiveChatStreaming={false}
+              hasUnreadyFiles={false}
+              message={message}
+              isVoiceChatMode={false}
+              isMicMuted={false}
+              isSendDisabled={!message.trim()}
+              isStopRequestInFlight={false}
+              activeStreamCount={0}
+              atConcurrencyLimit={false}
+              maxConcurrentStreams={1}
+              isProcessingSegment={false}
+              isSendingVoiceMessage={false}
+              isAwaitingResponse={false}
+            />
           </div>
         </div>
       )}
