@@ -19,8 +19,16 @@ class Cerebras:
     """
 
     AVAILABLE_MODELS = {
-        "llama-4-scout-17b-16e-instruct": {
-            "name": "Llama 4 Scout 17B",
+        "qwen-3-235b-a22b-thinking-2507": {
+            "name": "Qwen 3 235B Thinking",
+            "supports_reasoning": False
+        },
+        "qwen-3-235b-a22b-instruct-2507": {
+            "name": "Qwen 3 235B Instruct",
+            "supports_reasoning": False
+        },
+        "qwen-3-32b": {
+            "name": "Qwen 3 32B",
             "supports_reasoning": False
         },
         "llama3.1-8b": {
@@ -34,26 +42,6 @@ class Cerebras:
         "gpt-oss-120b": {
             "name": "OpenAI GPT OSS 120B",
             "supports_reasoning": True
-        },
-        "qwen-3-32b": {
-            "name": "Qwen 3 32B",
-            "supports_reasoning": False
-        },
-        "llama-4-maverick-17b-128e-instruct": {
-            "name": "Llama 4 Maverick 17B",
-            "supports_reasoning": False
-        },
-        "qwen-3-235b-a22b-instruct-2507": {
-            "name": "Qwen 3 235B Instruct",
-            "supports_reasoning": False
-        },
-        "qwen-3-235b-a22b-thinking-2507": {
-            "name": "Qwen 3 235B Thinking",
-            "supports_reasoning": False
-        },
-        "qwen-3-coder-480b": {
-            "name": "Qwen 3 Coder 480B",
-            "supports_reasoning": False
         }
     }
 
