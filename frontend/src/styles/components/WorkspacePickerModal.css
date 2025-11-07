@@ -47,6 +47,27 @@
 .workspace-modal-embedded-wrapper {
   width: 100%;
   margin: 16px 0;
+  overflow: visible;
+}
+
+.workspace-modal-embedded-wrapper--intro {
+  overflow: hidden;
+}
+
+.workspace-modal-embedded--intro {
+  transform: translateY(24px) scale(0.96);
+  filter: blur(12px);
+  opacity: 0;
+  transition:
+    transform 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.6s ease;
+}
+
+.workspace-modal-embedded--intro.workspace-modal-embedded--intro-visible {
+  transform: translateY(0) scale(1);
+  filter: blur(0);
+  opacity: 1;
 }
 
 /* Header */
@@ -542,6 +563,7 @@
     opacity: 1;
   }
 }
+
 
 /* Option Cards (Quick Start / Custom Location) */
 .workspace-options-grid {

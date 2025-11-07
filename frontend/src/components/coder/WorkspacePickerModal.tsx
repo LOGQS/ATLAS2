@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiUrl } from '../../config/api';
 import { Icons, getProjectTypeIcon } from '../ui/Icons';
@@ -53,6 +53,9 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [newWorkspaceParent, setNewWorkspaceParent] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [embeddedIntroPhase, setEmbeddedIntroPhase] = useState<'idle' | 'animating' | 'done'>('idle');
+  const [embeddedMeasuredHeight, setEmbeddedMeasuredHeight] = useState(0);
+  const embeddedContentRef = useRef<HTMLDivElement | null>(null);
 
   // Workspace settings
   const [settings, setSettings] = useState<WorkspaceSettings>({
@@ -147,6 +150,77 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
   const handleBodyTouchEnd = useCallback(() => {
     touchStartYRef.current = null;
   }, []);
+
+  const handleEmbeddedTransitionEnd = useCallback((event: React.TransitionEvent<HTMLDivElement>) => {
+    if (embeddedIntroPhase === 'done') {
+      return;
+    }
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.propertyName === 'max-height') {
+      setEmbeddedIntroPhase('done');
+    }
+  }, [embeddedIntroPhase]);
+
+  useLayoutEffect(() => {
+    if (!embedded || embeddedIntroPhase === 'done') {
+      return;
+    }
+
+    const contentEl = embeddedContentRef.current;
+    if (!contentEl) {
+      return;
+    }
+
+    const measure = () => {
+      const nextHeight = contentEl.scrollHeight;
+      if (!Number.isFinite(nextHeight)) {
+        return;
+      }
+      setEmbeddedMeasuredHeight(prev => (Math.abs(prev - nextHeight) > 1 ? nextHeight : prev));
+    };
+
+    measure();
+
+    let observer: ResizeObserver | null = null;
+    let resizeHandler: (() => void) | null = null;
+
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(measure);
+      observer.observe(contentEl);
+    } else {
+      resizeHandler = () => measure();
+      window.addEventListener('resize', resizeHandler);
+    }
+
+    return () => {
+      if (observer) {
+        observer.disconnect();
+      }
+      if (resizeHandler) {
+        window.removeEventListener('resize', resizeHandler);
+      }
+    };
+  }, [embedded, embeddedIntroPhase]);
+
+  useEffect(() => {
+    if (!embedded) {
+      return;
+    }
+    if (embeddedIntroPhase !== 'idle') {
+      return;
+    }
+    if (embeddedMeasuredHeight <= 0) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      setEmbeddedIntroPhase('animating');
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [embedded, embeddedIntroPhase, embeddedMeasuredHeight]);
 
   // Load workspace history
   useEffect(() => {
@@ -778,30 +852,41 @@ export const WorkspacePickerModal: React.FC<WorkspacePickerModalProps> = ({
 
   // Render as embedded inline component
   if (embedded) {
+    const wrapperClasses = ['workspace-modal-embedded-wrapper'];
+    if (embeddedIntroPhase !== 'done') {
+      wrapperClasses.push('workspace-modal-embedded-wrapper--intro');
+    }
+
+    const modalClasses = ['workspace-modal', 'workspace-modal-embedded'];
+    if (embeddedIntroPhase !== 'done') {
+      modalClasses.push('workspace-modal-embedded--intro');
+      if (embeddedIntroPhase === 'animating') {
+        modalClasses.push('workspace-modal-embedded--intro-visible');
+      }
+    }
+
+    const wrapperStyle = embeddedIntroPhase === 'done'
+      ? undefined
+      : {
+          maxHeight: embeddedIntroPhase === 'animating' ? `${embeddedMeasuredHeight}px` : 0,
+          opacity: embeddedIntroPhase === 'animating' ? 1 : 0,
+          transition: 'max-height 0.8s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.6s ease',
+          overflow: 'hidden'
+        };
+
     return (
-      <motion.div
-        className="workspace-modal-embedded-wrapper"
-        initial={{ height: 0, opacity: 0 }}
-        animate={{ height: 'auto', opacity: 1 }}
-        exit={{ height: 0, opacity: 0 }}
-        transition={{
-          height: { duration: 0.8, ease: [0.16, 1, 0.3, 1] },
-          opacity: { duration: 0.6 }
-        }}
-        style={{ overflow: 'hidden' }}
-        layout
+      <div
+        className={wrapperClasses.join(' ')}
+        style={wrapperStyle}
+        onTransitionEnd={handleEmbeddedTransitionEnd}
       >
-        <motion.div
-          className="workspace-modal workspace-modal-embedded"
-          initial={{ y: 24, scale: 0.96, filter: 'blur(12px)' }}
-          animate={{ y: 0, scale: 1, filter: 'blur(0px)' }}
-          exit={{ y: -16, scale: 0.97, filter: 'blur(8px)' }}
-          transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-          layout
+        <div
+          className={modalClasses.join(' ')}
+          ref={embeddedContentRef}
         >
           {workspaceContent}
-        </motion.div>
-      </motion.div>
+        </div>
+      </div>
     );
   }
 
