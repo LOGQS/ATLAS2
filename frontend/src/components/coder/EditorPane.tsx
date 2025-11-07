@@ -57,6 +57,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   }, [onContentChange]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [monacoEditor, setMonacoEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const layoutFrameRef = useRef<number | null>(null);
@@ -71,7 +72,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   const scrollControl = useMonacoScrollControl({
     chatId: `editor-${document?.filePath}`,
     streamingState,
-    editor: editorRef.current
+    editor: monacoEditor
   });
 
   const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
@@ -102,6 +103,7 @@ export const EditorPane = memo<EditorPaneProps>(({
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
       editorRef.current = null;
+      setMonacoEditor(null);
     };
   }, []);
 
@@ -111,6 +113,7 @@ export const EditorPane = memo<EditorPaneProps>(({
 
   const handleEditorMount = useCallback<EditorOnMount>((editorInstance, _monaco) => {
     editorRef.current = editorInstance;
+    setMonacoEditor(editorInstance);
     scheduleEditorLayout();
 
     console.log('[STREAMING_DIFF][EDITOR] Editor mounted, checking for pending diff');

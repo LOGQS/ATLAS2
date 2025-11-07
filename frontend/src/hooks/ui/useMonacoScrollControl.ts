@@ -443,6 +443,28 @@ export function useMonacoScrollControl({
     }
   }, [streamingState, onStreamStart, onStreamEnd]);
 
+  useEffect(() => {
+    if (!editor) {
+      logState('EDITOR_UNAVAILABLE', undefined, 'debug');
+      return;
+    }
+
+    logState('EDITOR_READY', {
+      autoScrollEnabled: autoScrollEnabledRef.current,
+      isStreaming: isStreamingRef.current
+    }, 'debug');
+
+    if (isStreamingRef.current && autoScrollEnabledRef.current) {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+      rafIdRef.current = requestAnimationFrame(() => {
+        scrollToBottom();
+        maintainBottomLock();
+      });
+    }
+  }, [editor, maintainBottomLock, scrollToBottom, logState]);
+
   // Cleanup on unmount
   useEffect(() => {
     mountedRef.current = true;
