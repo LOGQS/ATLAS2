@@ -181,7 +181,6 @@ interface CoderActions {
   resetFile: () => Promise<void>;
   revertToSaved: (filePath: string) => Promise<void>;
   saveSnapshot: (filePath: string, content: string) => Promise<void>;
-  writeFileContent: (filePath: string, content: string) => Promise<boolean>;
   createFile: (parentPath: string, name: string) => Promise<void>;
   createFolder: (parentPath: string, name: string) => Promise<void>;
   deleteNode: (path: string, isDirectory: boolean) => Promise<void>;
@@ -218,6 +217,39 @@ interface CoderActions {
   // Activity panel
   setActivityPanelTab: (tab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline') => void;
 }
+
+const EXTENSION_LANGUAGE_MAP: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.json': 'json',
+  '.html': 'html',
+  '.htm': 'html',
+  '.css': 'css',
+  '.md': 'markdown',
+  '.py': 'python',
+  '.rb': 'ruby',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.h': 'c',
+  '.hpp': 'cpp',
+};
+
+const inferLanguageFromPath = (filePath: string, fallback: string = 'plaintext'): string => {
+  const lower = filePath.toLowerCase();
+  const lastDot = lower.lastIndexOf('.');
+  if (lastDot === -1) {
+    return fallback;
+  }
+  const ext = lower.slice(lastDot);
+  return EXTENSION_LANGUAGE_MAP[ext] || fallback;
+};
 
 const CoderContext = createContext<(CoderState & CoderActions) | undefined>(undefined);
 
@@ -946,35 +978,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       });
     }, []);
 
-  const writeFileContent = useCallback(async (filePath: string, content: string): Promise<boolean> => {
-    if (!chatId) return false;
-
-    logger.info('[CODER][PRE-EXEC] Writing file content for pre-execution:', filePath);
-
-    try {
-      const response = await fetch(apiUrl('/api/coder-workspace/file'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, path: filePath, content })
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        logger.info('[CODER][PRE-EXEC] Successfully wrote file:', filePath);
-        // Refresh the file tree to show the file exists
-        await loadFileTree();
-        return true;
-      } else {
-        logger.error('[CODER][PRE-EXEC] Failed to write file:', { filePath, error: data.error });
-        return false;
-      }
-    } catch (err) {
-      logger.error('[CODER][PRE-EXEC] Exception writing file:', { filePath, error: err });
-      return false;
-    }
-  }, [chatId, loadFileTree]);
-
   const saveFile = useCallback(async () => {
     const currentDoc = stateRef.current.currentDocument;
     if (!chatId || !currentDoc) return;
@@ -1649,50 +1652,81 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     setState(prev => ({ ...prev, activityPanelTab: tab }));
   }, []);
 
-  // Listen for file changes from coder agent
+  // Listen for file changes streamed from the backend
   useEffect(() => {
     if (!chatId) return;
 
-    let refreshDebounceTimer: NodeJS.Timeout | null = null;
+    let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const scheduleFileTreeRefresh = () => {
-      // Debounce file tree refresh to avoid excessive API calls
+    const requestFileTreeRefresh = (forceImmediate = false) => {
+      if (forceImmediate) {
+        if (refreshDebounceTimer) {
+          clearTimeout(refreshDebounceTimer);
+          refreshDebounceTimer = null;
+        }
+        logger.info('[CODER_CTX] Immediate file tree refresh requested');
+        void loadFileTree();
+        return;
+      }
+
       if (refreshDebounceTimer) {
         clearTimeout(refreshDebounceTimer);
       }
 
+      logger.info('[CODER_CTX] Scheduling debounced file tree refresh');
       refreshDebounceTimer = setTimeout(() => {
-        logger.info('[CODER_CTX] Refreshing file tree after coder agent file operations');
-        loadFileTree();
+        logger.info('[CODER_CTX] Debounced file tree refresh');
+        void loadFileTree();
         refreshDebounceTimer = null;
-      }, 500); // 500ms debounce
+      }, 500);
     };
 
-    const handleCoderFileChange = (event: CustomEvent) => {
-      const detail = event.detail;
+    const normalizePath = (input?: string | null): string | null => {
+      if (!input) {
+        return null;
+      }
+      const normalizedInput = input.replace(/\\/g, '/');
+      const workspaceRoot = stateRef.current.workspacePath?.replace(/\\/g, '/');
+      if (workspaceRoot) {
+        const normalizedRoot = workspaceRoot.endsWith('/') ? workspaceRoot : `${workspaceRoot}/`;
+        if (normalizedInput.toLowerCase().startsWith(normalizedRoot.toLowerCase())) {
+          const trimmed = normalizedInput.slice(normalizedRoot.length).replace(/^\/+/, '');
+          return trimmed || normalizedInput;
+        }
+      }
+      return normalizedInput.replace(/^\.\/+/, '').replace(/^\/+/, '');
+    };
 
-      // Only handle events for this chat's workspace
-      if (detail.chatId !== chatId) {
+    const updateStateForFileChange = ({
+      filePath,
+      operation,
+      previousPath,
+      newContent,
+      source,
+    }: {
+      filePath?: string;
+      operation?: string;
+      previousPath?: string | null;
+      newContent?: string | null;
+      source: 'coderFileChange' | 'coderFileOperation';
+    }) => {
+      const normalizedFilePath = normalizePath(filePath);
+      if (!normalizedFilePath || !operation) {
+        logger.warn('[CODER_CTX] Ignoring file change due to missing path/operation', {
+          rawPath: filePath,
+          operation,
+          source,
+        });
         return;
       }
-
-      const filePath = detail.filePath;
-      const operation = detail.operation;
-      const newContent = detail.content;
-
-      logger.info(`[CODER_CTX] File change detected: ${operation} -> ${filePath}`);
-
-      // Always refresh file tree for any file operation
-      scheduleFileTreeRefresh();
+      const normalizedPreviousPath = normalizePath(previousPath);
 
       setState(prev => {
-        // Handle file move/rename
-        if (operation === 'move' && detail.previousPath) {
-          const oldPath = detail.previousPath;
-          const newPath = filePath;
+        if (operation === 'move' && previousPath && previousPath !== filePath) {
+          const oldPath = normalizedPreviousPath || previousPath;
+          const newPath = normalizedFilePath;
 
-          // Update open tabs
-          const updatedTabs = prev.openTabs.map(tab => tab === oldPath ? newPath : tab);
+          const updatedTabs = prev.openTabs.map(tab => (tab === oldPath ? newPath : tab));
           const updatedTabDocs = { ...prev.tabDocuments };
 
           if (updatedTabDocs[oldPath]) {
@@ -1703,13 +1737,13 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             delete updatedTabDocs[oldPath];
           }
 
-          // Update active tab and current document if needed
           const newActiveTabPath = prev.activeTabPath === oldPath ? newPath : prev.activeTabPath;
-          const newCurrentDocument = prev.activeTabPath === oldPath && updatedTabDocs[newPath]
-            ? updatedTabDocs[newPath]
-            : prev.currentDocument;
+          const newCurrentDocument =
+            prev.activeTabPath === oldPath && updatedTabDocs[newPath]
+              ? updatedTabDocs[newPath]
+              : prev.currentDocument;
 
-          logger.info(`[CODER_CTX] File moved: ${oldPath} -> ${newPath}`);
+          logger.info(`[CODER_CTX] File moved (${source}): ${oldPath} -> ${newPath}`);
 
           return {
             ...prev,
@@ -1720,30 +1754,87 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           };
         }
 
-        // Handle file write/edit - update content if file is open
-        if ((operation === 'write' || operation === 'edit') && newContent !== null) {
-          const isFileOpen = prev.openTabs.includes(filePath);
+        if ((operation === 'write' || operation === 'edit') && typeof newContent === 'string') {
+          const isFileOpen = prev.openTabs.includes(normalizedFilePath);
 
           if (!isFileOpen) {
-            // File not open in editor, just refresh file tree (already scheduled above)
-            return prev;
+            const existingDoc = prev.tabDocuments[normalizedFilePath];
+            const language =
+              existingDoc?.language || inferLanguageFromPath(normalizedFilePath);
+            const newDoc: EditorDocument = {
+              filePath: normalizedFilePath,
+              content: newContent,
+              originalContent: newContent,
+              language,
+              isBinary: false,
+            };
+
+            const nextOpenTabs = prev.openTabs.includes(normalizedFilePath)
+              ? prev.openTabs
+              : [...prev.openTabs, normalizedFilePath];
+
+            const timestamp = Date.now();
+            const existingHistory = prev.fileHistory[normalizedFilePath];
+            const previousVersions = existingHistory?.versions ?? [];
+            const lastVersion = previousVersions[0];
+            const versions =
+              lastVersion && lastVersion.content === newContent
+                ? previousVersions
+                : [{ content: newContent, timestamp }, ...previousVersions];
+
+            const paneIds: PaneId[] = ['primary', 'secondary'];
+            const updatedPanes = paneIds.reduce((acc, paneId) => {
+              const pane = prev.panes[paneId];
+              if (!pane) {
+                return acc;
+              }
+              if (paneId === prev.activePaneId || pane.activeTabPath === normalizedFilePath) {
+                acc[paneId] = {
+                  activeTabPath: normalizedFilePath,
+                  currentDocument: newDoc,
+                };
+              } else {
+                acc[paneId] = pane;
+              }
+              return acc;
+            }, {} as typeof prev.panes);
+
+            logger.info(`[CODER_CTX] Created live document for ${normalizedFilePath} via ${source}`);
+
+            return {
+              ...prev,
+              openTabs: nextOpenTabs,
+              activeTabPath: normalizedFilePath,
+              selectedFile: normalizedFilePath,
+              currentDocument: newDoc,
+              tabDocuments: {
+                ...prev.tabDocuments,
+                [normalizedFilePath]: newDoc,
+              },
+              fileHistory: {
+                ...prev.fileHistory,
+                [normalizedFilePath]: {
+                  path: normalizedFilePath,
+                  versions,
+                  originalContent: newContent,
+                },
+              },
+              panes: updatedPanes,
+              isLoading: false,
+              error: '',
+            };
           }
 
-          const existingDoc = prev.tabDocuments[filePath];
+          const existingDoc = prev.tabDocuments[normalizedFilePath];
           if (!existingDoc) {
             return prev;
           }
 
-          // Check if user has unsaved changes
-          const hasUnsavedChanges = prev.unsavedFiles.has(filePath);
-
-          if (hasUnsavedChanges) {
-            // Don't overwrite user's unsaved changes, but log it
-            logger.warn(`[CODER_CTX] File ${filePath} was modified by coder agent, but user has unsaved changes`);
+          if (prev.unsavedFiles.has(normalizedFilePath)) {
+            logger.warn(`[CODER_CTX] Skipping live update for ${normalizedFilePath} due to unsaved changes`);
             return prev;
           }
 
-          // Update the document with new content from coder agent
           const updatedDoc: EditorDocument = {
             ...existingDoc,
             content: newContent,
@@ -1752,25 +1843,42 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
 
           const updatedTabDocs = {
             ...prev.tabDocuments,
-            [filePath]: updatedDoc,
+            [normalizedFilePath]: updatedDoc,
           };
 
-          // Update current document if it's the active one
-          const newCurrentDocument = prev.activeTabPath === filePath
-            ? updatedDoc
-            : prev.currentDocument;
+          const newCurrentDocument =
+            prev.activeTabPath === normalizedFilePath ? updatedDoc : prev.currentDocument;
 
-          // Clear unsaved state since AI edits are preaccepted
           const newUnsavedFiles = new Set(prev.unsavedFiles);
-          newUnsavedFiles.delete(filePath);
+          newUnsavedFiles.delete(normalizedFilePath);
 
-          logger.info(`[CODER_CTX] Updated file content live: ${filePath} (${newContent.length} chars)`);
+          const paneIds: PaneId[] = ['primary', 'secondary'];
+          const updatedPanes = paneIds.reduce((acc, paneId) => {
+            const pane = prev.panes[paneId];
+            if (!pane) {
+              return acc;
+            }
+            if (pane.activeTabPath === normalizedFilePath) {
+              acc[paneId] = {
+                activeTabPath: normalizedFilePath,
+                currentDocument: updatedDoc,
+              };
+            } else {
+              acc[paneId] = pane;
+            }
+            return acc;
+          }, {} as typeof prev.panes);
+
+          logger.info(
+            `[CODER_CTX] Updated file content via ${source}: ${filePath} (${newContent.length} chars)`
+          );
 
           return {
             ...prev,
             tabDocuments: updatedTabDocs,
             currentDocument: newCurrentDocument,
             unsavedFiles: newUnsavedFiles,
+            panes: updatedPanes,
           };
         }
 
@@ -1778,17 +1886,145 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       });
     };
 
+    const handleCoderFileChange = (event: CustomEvent<any>) => {
+      const detail = event.detail;
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      logger.info(
+        `[CODER_CTX] Legacy file change detected: ${detail.operation} -> ${detail.filePath}`
+      );
+
+      requestFileTreeRefresh();
+
+      updateStateForFileChange({
+        filePath: detail.filePath,
+        operation: detail.operation,
+        previousPath: detail.previousPath,
+        newContent: detail.content ?? null,
+        source: 'coderFileChange',
+      });
+    };
+
+    const handleCoderFileOperation = (event: CustomEvent<any>) => {
+      const detail = event.detail;
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      const normalizedOperation =
+        detail.operation === 'streaming_write'
+          ? 'write'
+          : detail.operation === 'streaming_edit'
+            ? 'edit'
+            : detail.operation;
+
+      logger.info(
+        `[CODER_CTX] Streaming file operation: ${detail.operation} -> ${detail.file_path}`,
+        {
+          normalizedPath: normalizedOperation === 'write' || normalizedOperation === 'edit'
+            ? normalizePath(detail.file_path)
+            : detail.file_path,
+          hasContent: typeof detail.content === 'string',
+          decorationCount: Array.isArray(detail.decorations) ? detail.decorations.length : 0,
+        }
+      );
+
+      requestFileTreeRefresh(true);
+
+      updateStateForFileChange({
+        filePath: detail.file_path,
+        operation: normalizedOperation,
+        newContent: typeof detail.content === 'string' ? detail.content : null,
+        source: 'coderFileOperation',
+      });
+    };
+
+    const handleCoderFileRevert = (event: CustomEvent<any>) => {
+      const { chatId: eventChatId, file_path, reverted_to, content } = event.detail;
+      if (eventChatId !== chatId) {
+        return;
+      }
+
+      const filePath = normalizePath(file_path);
+      if (!filePath) {
+        logger.warn('[CODER_CTX] File revert event missing file_path');
+        return;
+      }
+
+      logger.info(`[CODER_CTX] File reverted (${reverted_to}) -> ${filePath}`);
+
+      requestFileTreeRefresh(true);
+
+      if (reverted_to === 'deleted') {
+        closeTab(filePath);
+        return;
+      }
+
+      if (typeof content !== 'string') {
+        logger.warn(`[CODER_CTX] Revert event missing content for ${filePath}, skipping update`);
+        return;
+      }
+
+      setState(prev => {
+        if (!prev.openTabs.includes(filePath)) {
+          logger.warn('[CODER_CTX] Revert ignored because file not open', { filePath });
+          return prev;
+        }
+
+        const existingDoc = prev.tabDocuments[filePath];
+        if (!existingDoc) {
+          logger.warn('[CODER_CTX] Revert ignored because document missing', { filePath });
+          return prev;
+        }
+
+        if (prev.unsavedFiles.has(filePath)) {
+          logger.warn(`[CODER_CTX] Skipping revert update for ${filePath} due to unsaved changes`);
+          return prev;
+        }
+
+        const updatedDoc: EditorDocument = {
+          ...existingDoc,
+          content,
+          originalContent: content,
+        };
+
+        const updatedTabDocs = {
+          ...prev.tabDocuments,
+          [filePath]: updatedDoc,
+        };
+
+        const newCurrentDocument =
+          prev.activeTabPath === filePath ? updatedDoc : prev.currentDocument;
+
+        const newUnsavedFiles = new Set(prev.unsavedFiles);
+        newUnsavedFiles.delete(filePath);
+
+        return {
+          ...prev,
+          tabDocuments: updatedTabDocs,
+          currentDocument: newCurrentDocument,
+          unsavedFiles: newUnsavedFiles,
+        };
+      });
+    };
+
     window.addEventListener('coderFileChange', handleCoderFileChange as EventListener);
-    logger.info('[CODER_CTX] Listening for coder file changes');
+    window.addEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
+    window.addEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
+    logger.info('[CODER_CTX] Listening for coder file changes, operations, and reverts');
 
     return () => {
       if (refreshDebounceTimer) {
         clearTimeout(refreshDebounceTimer);
       }
       window.removeEventListener('coderFileChange', handleCoderFileChange as EventListener);
-      logger.info('[CODER_CTX] Stopped listening for coder file changes');
+      window.removeEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
+      window.removeEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
+      logger.info('[CODER_CTX] Stopped listening for coder file changes, operations, and reverts');
     };
-  }, [chatId, loadFileTree]);
+  }, [chatId, closeTab, loadFileTree]);
 
   // Load workspace on mount
   useEffect(() => {
@@ -1840,7 +2076,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     resetFile,
     revertToSaved,
     saveSnapshot,
-    writeFileContent,
     createFile,
     createFolder,
     deleteNode,

@@ -164,6 +164,44 @@ interface CoderStreamEvent extends BaseSSEEvent {
   task_id?: string;
 }
 
+interface CoderFileOperationEvent extends BaseSSEEvent {
+  type: 'coder_file_operation';
+  task_id: string;
+  domain_id: string;
+  payload: {
+    tool_call_id: string;
+    operation: 'streaming_write' | 'streaming_edit';
+    file_path: string;
+    file_existed: boolean;
+    decorations: Array<{
+      startLine: number;
+      endLine: number;
+      startColumn: number;
+      endColumn: number;
+      type: 'add' | 'remove' | 'modify';
+      className: string;
+    }>;
+    content: string;
+    metadata: {
+      file_size: string;
+      file_size_bytes: number;
+      lines_added: number;
+      lines_removed: number;
+    };
+  };
+}
+
+interface CoderFileRevertEvent extends BaseSSEEvent {
+  type: 'coder_file_revert';
+  task_id: string;
+  domain_id: string;
+  payload: {
+    file_path: string;
+    reverted_to: 'original' | 'deleted';
+    content: string;
+  };
+}
+
 type SSEEvent =
   | ChatStateEvent
   | ContentEvent
@@ -179,7 +217,9 @@ type SSEEvent =
   | CoderOperationEvent
   | CoderWorkspacePromptEvent
   | CoderFileChangeEvent
-  | CoderStreamEvent;
+  | CoderStreamEvent
+  | CoderFileOperationEvent
+  | CoderFileRevertEvent;
 
 class LiveStore {
   private es: EventSource | null = null;
@@ -645,6 +685,46 @@ class LiveStore {
     return next;
   }
 
+  private handleCoderFileOperationEvent(chatId: string, ev: CoderFileOperationEvent, cur: ChatLive): ChatLive {
+    logger.info(`[FILE-OP] Received file operation event for ${chatId}`, {
+      file: ev.payload?.file_path,
+      operation: ev.payload?.operation,
+      decorationCount: ev.payload?.decorations?.length || 0,
+      contentLength: ev.payload?.content?.length || 0,
+    });
+
+    // Emit custom event for file operation
+    const customEvent = new CustomEvent('coderFileOperation', {
+      detail: {
+        chatId,
+        ...ev.payload,
+      },
+    });
+    window.dispatchEvent(customEvent);
+
+    // Return unchanged state (file operations are handled by file system watchers)
+    return cur;
+  }
+
+  private handleCoderFileRevertEvent(chatId: string, ev: CoderFileRevertEvent, cur: ChatLive): ChatLive {
+    logger.info(`[FILE-REVERT] Received file revert event for ${chatId}`, {
+      file: ev.payload?.file_path,
+      revertedTo: ev.payload?.reverted_to,
+    });
+
+    // Emit custom event for file revert
+    const customEvent = new CustomEvent('coderFileRevert', {
+      detail: {
+        chatId,
+        ...ev.payload,
+      },
+    });
+    window.dispatchEvent(customEvent);
+
+    // Return unchanged state (file reverts are handled by file system watchers)
+    return cur;
+  }
+
   private handleMessageIdsEvent(chatId: string, ev: MessageIdsEvent): void {
     try {
       const messageIds = JSON.parse(ev.content || '{}');
@@ -754,6 +834,15 @@ class LiveStore {
 
         logger.info(`[LIVESTORE_SSE] Processing ${ev.type} event for chat: ${chatId}`);
 
+        // Debug log for file operation events
+        if (ev.type === 'coder_file_operation' || ev.type === 'coder_file_revert') {
+          logger.info(`[LIVESTORE_SSE] ${ev.type} event structure:`, {
+            hasTaskId: !!(ev as any).task_id,
+            hasDomainId: !!(ev as any).domain_id,
+            hasPayload: !!(ev as any).payload,
+            payloadKeys: (ev as any).payload ? Object.keys((ev as any).payload) : [],
+          });
+        }
 
         logger.info(`[LIVESTORE_SSE] Current state for ${chatId}: state=${cur.state}, content=${cur.contentBuf.length}chars, thoughts=${cur.thoughtsBuf.length}chars`);
 
@@ -771,6 +860,12 @@ class LiveStore {
             break;
           case 'coder_stream':
             next = this.handleCoderStreamEvent(chatId, ev as CoderStreamEvent, cur);
+            break;
+          case 'coder_file_operation':
+            next = this.handleCoderFileOperationEvent(chatId, ev as CoderFileOperationEvent, cur);
+            break;
+          case 'coder_file_revert':
+            next = this.handleCoderFileRevertEvent(chatId, ev as CoderFileRevertEvent, cur);
             break;
           case 'domain_execution':
             next = this.handleDomainExecutionEvent(chatId, ev as DomainExecutionEvent, cur);

@@ -13,13 +13,6 @@ interface ExecutionActivityFeedProps {
   isProcessing?: boolean;
   chatId?: string;
   autoAcceptEnabled?: boolean;
-  preExecutedTools?: Set<string>; // Tool IDs that were pre-executed by frontend
-  preExecutionState?: Map<string, {
-    toolId: string;
-    toolType: 'file.write' | 'file.edit';
-    filePath: string;
-    originalContent: string | null;
-  }>; // Original state for revert
 }
 
 type ToolCallSegment = Extract<CoderStreamSegment, { type: 'tool_call' }>;
@@ -106,13 +99,6 @@ interface ToolProposalCardProps {
   isCompleted: boolean;
   onDecision: (callId: string) => void;
   domainExecution: DomainExecution | null;
-  preExecutedTools: Set<string>;
-  preExecutionState: Map<string, {
-    toolId: string;
-    toolType: 'file.write' | 'file.edit';
-    filePath: string;
-    originalContent: string | null;
-  }>;
 }
 
 const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
@@ -128,8 +114,6 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   isCompleted,
   onDecision,
   domainExecution,
-  preExecutedTools,
-  preExecutionState,
 }) => {
   // All hooks must be called before any conditional returns
   const [decisionState, setDecisionState] = useState<'idle' | 'accepting' | 'rejecting'>('idle');
@@ -139,6 +123,19 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   const hasPending = Boolean(pendingTool && chatId && taskId);
   const callId = pendingTool?.call_id ?? null;
 
+  const params = useMemo(() => {
+    if (pendingTool?.params && pendingTool.params.length > 0) {
+      return pendingTool.params.map(([key, value]) => ({
+        name: key,
+        value: normalizeParamValue(value),
+      }));
+    }
+    return segment.params.map(({ name, value }) => ({
+      name,
+      value: normalizeParamValue(value),
+    }));
+  }, [pendingTool?.params, segment.params]);
+
   const submitDecision = useCallback(async (decision: 'accept' | 'reject', batchMode: boolean) => {
     if (!chatId || !taskId) return;
     if (!batchMode && !callId) return;
@@ -146,6 +143,18 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
     // Optimistically update UI immediately
     if (decision === 'accept' && callId) {
       onDecision(callId);
+
+      // Clear decorations for accepted file operations
+      const toolName = pendingTool?.tool || segment.tool;
+      if (toolName === 'file.write' || toolName === 'file.edit') {
+        const filePathParam = params.find(p => p.name === 'file_path');
+        if (filePathParam?.value) {
+          logger.info('[TOOL-ACCEPT] Dispatching clear decorations event for', filePathParam.value);
+          window.dispatchEvent(new CustomEvent('clearFileDecorations', {
+            detail: { file_path: filePathParam.value }
+          }));
+        }
+      }
     }
 
     const pendingState = decision === 'accept' ? 'accepting' : 'rejecting';
@@ -155,33 +164,7 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
     try {
       const target = batchMode ? 'batch_all' : callId!;
 
-      // Build pre_executed_calls map for all pending tools
-      const preExecutedCallsMap: Record<string, boolean> = {};
-      domainExecution?.pending_tools?.forEach(tool => {
-        preExecutedCallsMap[tool.call_id] = preExecutedTools.has(tool.call_id);
-      });
-
-      const preExecutedCount = Object.values(preExecutedCallsMap).filter(Boolean).length;
-      logger.info(`[APPROVAL] Preparing ${decision} for ${batchMode ? totalPending : 1} tool(s), ${preExecutedCount} pre-executed`);
-
-      // Build pre_execution_state for revert (includes tool params for inverse operations)
-      const preExecutionStateObj: Record<string, any> = {};
-      domainExecution?.pending_tools?.forEach(tool => {
-        const state = preExecutionState.get(tool.call_id);
-        if (state) {
-          preExecutionStateObj[tool.call_id] = {
-            tool_type: state.toolType,
-            file_path: state.filePath,
-            original_content: state.originalContent,
-            // Include full tool params for inverse operations (file.edit find_replace)
-            tool_params: tool.params
-          };
-
-          logger.info(`[APPROVAL] Tool ${tool.call_id} revert state: ${state.toolType} on ${state.filePath}, original=${state.originalContent !== null ? 'exists' : 'null'}`);
-        }
-      });
-
-      logger.info(`[TOOL-DECISION] Sending ${decision} decision with pre_executed_calls=${JSON.stringify(preExecutedCallsMap)}`);
+      logger.info(`[APPROVAL] Preparing ${decision} for ${batchMode ? totalPending : 1} tool(s)`);
 
       const response = await fetch(apiUrl(`/api/chats/${chatId}/domain/${taskId}/tool/${target}/decision`), {
         method: 'POST',
@@ -190,8 +173,6 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
           decision,
           batch_mode: batchMode,
           assistant_message_id: null,
-          pre_executed_calls: preExecutedCallsMap,
-          pre_execution_state: preExecutionStateObj,
         }),
       });
 
@@ -204,7 +185,7 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
     } finally {
       setDecisionState('idle');
     }
-  }, [chatId, taskId, callId, totalPending, onDecision, domainExecution, preExecutedTools, preExecutionState]);
+  }, [chatId, taskId, callId, totalPending, onDecision, pendingTool, segment, params]);
 
   useEffect(() => {
     if (!autoAcceptEnabled || !hasPending || !isWaitingForUser || decisionState !== 'idle') {
@@ -225,19 +206,6 @@ const ToolProposalCard: React.FC<ToolProposalCardProps> = ({
   const displayDescription = pendingTool?.tool_description || '';
   const streaming = segment.status === 'streaming' && !pendingTool;
   const disableActions = !hasPending || !isWaitingForUser || decisionState !== 'idle';
-
-  const params = useMemo(() => {
-    if (pendingTool?.params && pendingTool.params.length > 0) {
-      return pendingTool.params.map(([key, value]) => ({
-        name: key,
-        value: normalizeParamValue(value),
-      }));
-    }
-    return segment.params.map(({ name, value }) => ({
-      name,
-      value: normalizeParamValue(value),
-    }));
-  }, [pendingTool?.params, segment.params]);
 
   // Conditional returns after all hooks
   if (isExecuting && !isCompleted) {
@@ -356,8 +324,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
   isProcessing = false,
   chatId,
   autoAcceptEnabled = false,
-  preExecutedTools = new Set(),
-  preExecutionState = new Map(),
 }) => {
   const [executingTools, setExecutingTools] = useState<Set<string>>(new Set());
   const [completedToolsFromExecution, setCompletedToolsFromExecution] = useState<Set<string>>(new Set());
@@ -597,8 +563,6 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                     isCompleted={isCompleted}
                     onDecision={handleToolDecision}
                     domainExecution={domainExecution}
-                    preExecutedTools={preExecutedTools}
-                    preExecutionState={preExecutionState}
                   />
                 );
               })}

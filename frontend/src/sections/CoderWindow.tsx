@@ -17,11 +17,9 @@ import { ActivityChatPanel } from '../components/coder/ActivityChatPanel';
 import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
 import { configureMonaco } from '../config/monaco';
-import { apiUrl } from '../config/api';
 import '../styles/sections/CoderWindow.css';
 import logger from '../utils/core/logger';
 import { liveStore, type CoderStreamSegment } from '../utils/chat/LiveStore';
-import { computeStreamingDiff, isStreamingDiffForFile, type StreamingDiffData } from '../utils/coder/streamingDiff';
 
 interface CoderWindowProps {
   isOpen?: boolean;
@@ -82,10 +80,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
     switchPane,
     acceptAllDiffs,
     rejectAllDiffs,
-    openTab,
-    createFile,
-    createFolder,
-    writeFileContent,
   } = useCoderContext();
 
   const [selectedView, setSelectedView] = React.useState<ViewType>('code');
@@ -100,16 +94,7 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
   const [domainExecution, setDomainExecution] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [coderStream, setCoderStream] = useState<CoderStreamSegment[]>([]);
-  const [streamingDiff, setStreamingDiff] = useState<StreamingDiffData | null>(null);
   const monacoConfigured = useRef(false);
-  const openedStreamingFilesRef = useRef<Set<string>>(new Set());
-  const preExecutedToolsRef = useRef<Set<string>>(new Set()); // Track which tools were pre-executed
-  const preExecutionStateRef = useRef<Map<string, {
-    toolId: string;
-    toolType: 'file.write' | 'file.edit';
-    filePath: string;
-    originalContent: string | null; // null = file didn't exist, string = original content
-  }>>(new Map()); // Track original state for revert
   const sidebarDefaultSize = 22;
   const editorDefaultSize = 100 - sidebarDefaultSize;
   const panelGroupKey = 'coder-horizontal';
@@ -179,243 +164,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
 
     return unsubscribe;
   }, [chatId]);
-
-  // Auto-open files when file.write or file.edit tools are detected in streaming
-  React.useEffect(() => {
-    if (!chatId || !hasWorkspace) return;
-
-    const fileTools = coderStream.filter(
-      (seg): seg is Extract<CoderStreamSegment, { type: 'tool_call' }> =>
-        seg.type === 'tool_call' &&
-        (seg.tool === 'file.edit' || seg.tool === 'file.write') &&
-        seg.status === 'streaming'
-    );
-
-    fileTools.forEach(async (toolCall) => {
-      const filePathParam = toolCall.params.find((p) => p.name === 'file_path');
-
-      if (filePathParam?.value && !openedStreamingFilesRef.current.has(filePathParam.value)) {
-        logger.info('[STREAMING_DIFF] Auto-opening file for streaming diff:', filePathParam.value);
-        openedStreamingFilesRef.current.add(filePathParam.value);
-
-        try {
-          // For file.write, create empty file first if it doesn't exist
-          if (toolCall.tool === 'file.write') {
-            try {
-              // Split the file path into parent directory and filename
-              const filePath = filePathParam.value.replace(/\\/g, '/'); // Normalize to forward slashes
-              const lastSlashIndex = filePath.lastIndexOf('/');
-              const parentPath = lastSlashIndex >= 0 ? filePath.substring(0, lastSlashIndex) : '';
-              const fileName = lastSlashIndex >= 0 ? filePath.substring(lastSlashIndex + 1) : filePath;
-
-              logger.info('[STREAMING_DIFF] Creating file:', { filePath, parentPath, fileName });
-
-              // If there's a parent path with nested directories, we need to ensure they exist
-              if (parentPath) {
-                // Create parent directories recursively if needed
-                const pathParts = parentPath.split('/').filter(Boolean);
-                let currentPath = '';
-                for (const part of pathParts) {
-                  const prevPath = currentPath;
-                  currentPath = currentPath ? `${currentPath}/${part}` : part;
-                  try {
-                    await createFolder(prevPath, part);
-                    logger.debug('[STREAMING_DIFF] Created directory:', currentPath);
-                  } catch (error) {
-                    // Directory might already exist
-                    logger.debug('[STREAMING_DIFF] Directory might exist:', currentPath);
-                  }
-                }
-              }
-
-              await createFile(parentPath, fileName);
-              logger.info('[STREAMING_DIFF] Created empty file for file.write:', filePathParam.value);
-            } catch (error) {
-              // File might already exist, that's okay - openTab will handle it
-              logger.error('[STREAMING_DIFF] Failed to create file:', error);
-            }
-          }
-
-          // Open the file in editor
-          await openTab(filePathParam.value);
-        } catch (error) {
-          logger.error('[STREAMING_DIFF] Failed to open file:', error);
-        }
-      }
-    });
-
-    // Clean up tracking when tools complete
-    const activeFilePaths = new Set(
-      fileTools
-        .map((t) => t.params.find((p) => p.name === 'file_path')?.value)
-        .filter((val): val is string => Boolean(val))
-    );
-
-    // Remove from tracking if tool completed
-    const pathsArray = Array.from(openedStreamingFilesRef.current);
-    for (const path of pathsArray) {
-      if (!activeFilePaths.has(path)) {
-        openedStreamingFilesRef.current.delete(path);
-      }
-    }
-  }, [coderStream, chatId, hasWorkspace, openTab, createFile, createFolder]);
-
-  // Write file content in REAL-TIME as it streams (pre-execution)
-  React.useEffect(() => {
-    if (!chatId || !hasWorkspace) return;
-
-    // Find file.write and file.edit tools that are streaming
-    const fileTools = coderStream.filter(
-      (seg): seg is Extract<CoderStreamSegment, { type: 'tool_call' }> =>
-        seg.type === 'tool_call' &&
-        (seg.tool === 'file.write' || seg.tool === 'file.edit') &&
-        seg.status === 'streaming'
-    );
-
-    fileTools.forEach(async (toolCall) => {
-      const filePathParam = toolCall.params.find((p) => p.name === 'file_path');
-      const contentParam = toolCall.params.find((p) => p.name === 'content' || p.name === 'new_content');
-
-      if (filePathParam?.value && contentParam?.value) {
-        const filePath = filePathParam.value;
-        const content = contentParam.value;
-
-        try {
-          // Capture original content ONLY on first write for this tool
-          const isFirstWrite = !preExecutionStateRef.current.has(toolCall.id);
-
-          if (isFirstWrite) {
-            logger.info(`[PRE-EXEC] Starting pre-execution for tool ${toolCall.id} (${toolCall.tool}) on ${filePath}`);
-
-            let originalContent: string | null = null;
-            try {
-              const response = await fetch(apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`));
-              const data = await response.json();
-              if (data.success && !data.is_binary) {
-                originalContent = data.content;
-                logger.info(`[PRE-EXEC] Captured original file content (${originalContent?.length ?? 0} bytes) for potential revert`);
-              } else if (!data.success) {
-                logger.info(`[PRE-EXEC] File does not exist yet, will be created: ${filePath}`);
-              }
-            } catch (err) {
-              logger.info(`[PRE-EXEC] File does not exist (fetch failed), will be created: ${filePath}`);
-            }
-
-            // Store original state for potential revert (only once)
-            preExecutionStateRef.current.set(toolCall.id, {
-              toolId: toolCall.id,
-              toolType: toolCall.tool as 'file.write' | 'file.edit',
-              filePath,
-              originalContent
-            });
-
-            logger.info(`[PRE-EXEC] Stored revert state for tool ${toolCall.id}: originalExists=${originalContent !== null}`);
-          }
-
-          // Write the new content (EVERY TIME it updates)
-          logger.info(`[FILE-WRITE] Writing ${content.length} bytes to ${filePath} (streaming update #${Array.from(preExecutedToolsRef.current).filter(id => id === toolCall.id).length + 1})`);
-
-          const success = await writeFileContent(filePath, content);
-          if (success) {
-            // Mark this tool as pre-executed
-            preExecutedToolsRef.current.add(toolCall.id);
-            logger.info(`[PRE-EXEC] ✓ Successfully wrote file (tool: ${toolCall.id}, size: ${content.length} bytes)`);
-          } else {
-            logger.error(`[PRE-EXEC] ✗ Failed to write file ${filePath} - writeFileContent returned false`);
-          }
-        } catch (error) {
-          logger.error(`[PRE-EXEC] ✗ Exception during pre-execution write for ${filePath}:`, error);
-        }
-      }
-    });
-  }, [coderStream, chatId, hasWorkspace, writeFileContent]);
-
-  // Compute streaming diff for the active file
-  React.useEffect(() => {
-    logger.debug('[STREAMING_DIFF][EFFECT] Running diff computation effect', {
-      hasDocument: !!currentDocument,
-      documentPath: currentDocument?.filePath,
-      streamLength: coderStream.length
-    });
-
-    if (!currentDocument || !coderStream.length) {
-      if (streamingDiff) {
-        logger.debug('[STREAMING_DIFF][EFFECT] Clearing diff (no document or stream)');
-      }
-      setStreamingDiff(null);
-      return;
-    }
-
-    // Find streaming file.edit or file.write tool for the current document
-    const fileTool = coderStream.find(
-      seg => seg.type === 'tool_call' &&
-      (seg.tool === 'file.edit' || seg.tool === 'file.write') &&
-      seg.status === 'streaming' &&
-      seg.params.some(p => p.name === 'file_path' && isStreamingDiffForFile({
-        filePath: p.value,
-        toolCallId: seg.id,
-        editMode: 'find_replace',
-        decorations: []
-      }, currentDocument.filePath))
-    );
-
-    logger.debug('[STREAMING_DIFF][EFFECT] Found file tool:', {
-      found: !!fileTool,
-      tool: fileTool && fileTool.type === 'tool_call' ? fileTool.tool : undefined,
-      toolId: fileTool?.id,
-      status: fileTool?.status,
-      paramsCount: fileTool && fileTool.type === 'tool_call' ? fileTool.params?.length : 0
-    });
-
-    if (fileTool && fileTool.type === 'tool_call') {
-      logger.debug('[STREAMING_DIFF][EFFECT] Tool params:', fileTool.params.map(p => ({
-        name: p.name,
-        valueLength: p.value?.length || 0,
-        valuePreview: p.value?.substring(0, 50)
-      })));
-
-      logger.debug('[STREAMING_DIFF][EFFECT] Current document content length:', currentDocument.content.length);
-
-      // For file.write, use the STREAMED content directly (not currentDocument.content which is async)
-      // For file.edit, use the current document content to show diffs
-      let contentForDiff = currentDocument.content;
-
-      if (fileTool.tool === 'file.write') {
-        const contentParam = fileTool.params.find(p => p.name === 'content');
-        if (contentParam?.value) {
-          contentForDiff = contentParam.value;
-
-          // Update the document content in the editor
-          if (contentParam.value !== currentDocument.content) {
-            logger.debug('[STREAMING_DIFF][EFFECT] Updating document content for file.write', {
-              newLength: contentParam.value.length,
-              oldLength: currentDocument.content.length
-            });
-            updateFileContent(contentParam.value);
-          }
-        }
-      }
-
-      logger.debug('[STREAMING_DIFF][EFFECT] Computing diff with content length:', contentForDiff.length);
-
-      const diff = computeStreamingDiff(fileTool, contentForDiff);
-
-      logger.debug('[STREAMING_DIFF][EFFECT] Computed diff:', {
-        hasDiff: !!diff,
-        toolCallId: diff?.toolCallId,
-        editMode: diff?.editMode,
-        decorationsCount: diff?.decorations.length,
-        newContentLength: diff?.newContent?.length || 0
-      });
-
-      setStreamingDiff(diff);
-    } else {
-      if (streamingDiff) {
-        logger.debug('[STREAMING_DIFF][EFFECT] Clearing diff (no matching tool)');
-      }
-      setStreamingDiff(null);
-    }
-  }, [coderStream, currentDocument, updateFileContent, streamingDiff]);
 
   const handleEditorChange = useCallback((value: string | undefined) => {
     if (value !== undefined) {
@@ -673,7 +421,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
                               onEditorWillMount={handleEditorWillMount}
                               onPaneClick={() => {}}
                               chatId={chatId}
-                              streamingDiff={streamingDiff}
                             />
                           ) : (
                             /* Split Editor View */
@@ -701,7 +448,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
                                   onEditorWillMount={handleEditorWillMount}
                                   onPaneClick={() => switchPane('primary')}
                                   chatId={chatId}
-                                  streamingDiff={panes.primary.currentDocument && streamingDiff && isStreamingDiffForFile(streamingDiff, panes.primary.currentDocument.filePath) ? streamingDiff : null}
                                 />
                               </Panel>
 
@@ -727,7 +473,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
                                   onEditorWillMount={handleEditorWillMount}
                                   onPaneClick={() => switchPane('secondary')}
                                   chatId={chatId}
-                                  streamingDiff={panes.secondary.currentDocument && streamingDiff && isStreamingDiffForFile(streamingDiff, panes.secondary.currentDocument.filePath) ? streamingDiff : null}
                                 />
                               </Panel>
                             </PanelGroup>
@@ -772,8 +517,6 @@ const CoderWindowContent: React.FC<CoderWindowContentProps> = ({ fullscreen = fa
                 isProcessing={isProcessing}
                 autoAcceptEnabled={autoAcceptTools}
                 coderStream={coderStream}
-                preExecutedTools={preExecutedToolsRef.current}
-                preExecutionState={preExecutionStateRef.current}
               />
             </Panel>
           </PanelGroup>

@@ -23,9 +23,15 @@ class CoderStreamParser:
     still streaming.
     """
 
-    def __init__(self, iteration: int, emitter: Callable[[Dict[str, Any]], None]):
+    def __init__(
+        self,
+        iteration: int,
+        emitter: Callable[[Dict[str, Any]], None],
+        auto_exec_callback: Callable[[str, Dict[str, Any], str], None] = None,
+    ):
         self.iteration = iteration
         self._emit = emitter
+        self._auto_exec_callback = auto_exec_callback
         self._buffer: str = ""
 
         self._thoughts_started = False
@@ -38,6 +44,9 @@ class CoderStreamParser:
 
         self._tool_search_pos = 0
         self._tool_states: List[Dict[str, Any]] = []
+
+        # Tools that should be auto-executed
+        self._AUTO_EXECUTE_TOOLS = {"file.write", "file.edit"}
 
     # ------------------------------------------------------------------
     # Public API
@@ -170,6 +179,7 @@ class CoderStreamParser:
                 "fields_emitted": set(),  # type: Set[str]
                 "params_emitted": set(),  # type: Set[str]
                 "complete": False,
+                "collected_params": {},
             }
             self._tool_states.append(tool_state)
             self._tool_search_pos = content_start
@@ -212,6 +222,7 @@ class CoderStreamParser:
                     "tool_index": state["index"],
                 })
                 state["fields_emitted"].add("tool")
+                state["tool_name"] = tool_value  # Store for auto-execution check
 
         # Reason text
         if "reason" not in state["fields_emitted"]:
@@ -266,6 +277,9 @@ class CoderStreamParser:
                         "complete": False,
                     })
                     state["streaming_params"][param_name] = len(streaming_content)
+                    state["collected_params"][param_name] = streaming_content
+                    if param_name in {"file_path", "content", "new_content", "create_dirs"}:
+                        self._attempt_auto_exec(state, content)
                 break
             search_pos = param_close_pos + len('</PARAM>')
 
@@ -292,6 +306,9 @@ class CoderStreamParser:
                 "tool_index": state["index"],
                 "complete": True,
             })
+            state["collected_params"][param_name] = param_value
+            if param_name in {"file_path", "content", "new_content", "create_dirs"}:
+                self._attempt_auto_exec(state, content)
 
         if close_idx != -1 and not state.get("complete"):
             self._emit({
@@ -301,6 +318,51 @@ class CoderStreamParser:
                 "tool_index": state["index"],
             })
             state["complete"] = True
+
+            self._attempt_auto_exec(state, content, require_complete=True)
+
+    @staticmethod
+    def _preserve_whitespace(param_name: str) -> bool:
+        return param_name in {"content", "new_content"}
+
+    def _attempt_auto_exec(
+        self,
+        state: Dict[str, Any],
+        content: str,
+        require_complete: bool = False,
+    ) -> None:
+        if not self._auto_exec_callback:
+            return
+
+        if "tool" not in state.get("fields_emitted", set()):
+            return
+
+        tool_name = state.get("tool_name")
+        if not tool_name or tool_name not in self._AUTO_EXECUTE_TOOLS:
+            return
+
+        is_streaming_tool = tool_name == "file.write"
+        if not is_streaming_tool and not require_complete:
+            return
+
+        # Get params from PARAM tags only (no simplified tag support)
+        params_snapshot = dict(state.get("collected_params") or {})
+
+        file_path = params_snapshot.get("file_path")
+        if not file_path:
+            return
+
+        tool_call_id = f"auto_exec_iter{self.iteration}_tool{state['index']}"
+        logger.debug(
+            "[AUTO-EXEC-TRIGGER] Updating %s (id=%s) with params: %s",
+            tool_name,
+            tool_call_id,
+            list(params_snapshot.keys()),
+        )
+        try:
+            self._auto_exec_callback(tool_name, params_snapshot, tool_call_id)
+        except Exception as exc:
+            logger.error(f"[AUTO-EXEC-TRIGGER] Failed to trigger auto-execution: {exc}", exc_info=True)
 
     @staticmethod
     def _extract_tag(content: str, open_tag: str, close_tag: str) -> Any:

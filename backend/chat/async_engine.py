@@ -636,6 +636,32 @@ async def _execute_async_domain_task(
                         json.dumps(payload),
                         task_id=task_id
                     )
+                elif event_type == "coder_file_operation" and payload:
+                    logger.info(
+                        f"[ASYNC-DOMAIN-EXEC] Publishing coder_file_operation for {chat_id}: "
+                        f"file={payload.get('file_path')}, operation={payload.get('operation')}"
+                    )
+                    publish_content(
+                        chat_id,
+                        'coder_file_operation',
+                        '',
+                        task_id=task_id,
+                        domain_id=event.get("domain_id"),
+                        payload=payload
+                    )
+                elif event_type == "coder_file_revert" and payload:
+                    logger.info(
+                        f"[ASYNC-DOMAIN-EXEC] Publishing coder_file_revert for {chat_id}: "
+                        f"file={payload.get('file_path')}"
+                    )
+                    publish_content(
+                        chat_id,
+                        'coder_file_revert',
+                        '',
+                        task_id=task_id,
+                        domain_id=event.get("domain_id"),
+                        payload=payload
+                    )
             except Exception as callback_error:
                 logger.error(
                     f"[ASYNC-DOMAIN-EXEC] Failed to dispatch domain event for chat {chat_id}: {callback_error}"

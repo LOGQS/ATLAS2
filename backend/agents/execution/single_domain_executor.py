@@ -25,6 +25,7 @@ from agents.prompts.agent_prompt_templates import (
     get_domain_instructions,
 )
 from agents.tools.file_ops.file_utils import format_file_size, workspace_relative_path
+from agents.tools.file_ops.diff_computer import compute_streaming_decorations, compute_diff_stats
 from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
@@ -40,6 +41,9 @@ from utils.coder_session_logger import (
 logger = get_logger(__name__)
 
 TERMINAL_STATES = {"completed", "failed", "aborted"}
+
+# Tools that execute immediately during streaming (before user approval)
+AUTO_EXECUTE_TOOLS = {"file.write", "file.edit"}
 
 
 @dataclass
@@ -144,6 +148,8 @@ class SingleDomainExecutor:
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
         self._active_tasks: Dict[str, DomainTaskState] = {}
+        self._auto_exec_results: Dict[str, Dict[str, Any]] = {}  # Store auto-execution results: {tool_call_id: result}
+        self._auto_exec_initial_states: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -306,10 +312,20 @@ class SingleDomainExecutor:
         # Mark tools as pre-executed if frontend indicates so
         self.logger.info(f"[PRE-EXEC] Received pre_executed_calls map: {pre_executed_calls}")
         for tool in target_tools:
-            pre_exec_flag = bool(pre_executed_calls.get(tool.call_id))
-            tool.pre_executed = pre_exec_flag
-            tool.pre_execution_state = pre_execution_state.get(tool.call_id)
+            # Only update pre_executed flag if explicitly provided in request
+            if tool.call_id in pre_executed_calls:
+                pre_exec_flag = bool(pre_executed_calls.get(tool.call_id))
+                tool.pre_executed = pre_exec_flag
+                self.logger.debug(f"[PRE-EXEC] Updated pre_executed flag for {tool.call_id}: {pre_exec_flag}")
 
+            # Only overwrite pre_execution_state if request provides meaningful data
+            request_state = pre_execution_state.get(tool.call_id)
+            if request_state:
+                self.logger.debug(f"[PRE-EXEC] Overwriting pre_execution_state for {tool.call_id} with request data")
+                tool.pre_execution_state = request_state
+            # else: Preserve the state attached during registration (don't overwrite with None)
+
+            # Fallback for file operations if state is truly missing
             if tool.tool_name in {"file.write", "file.edit"}:
                 if not tool.pre_executed:
                     self.logger.info(
@@ -319,15 +335,22 @@ class SingleDomainExecutor:
                     )
                     tool.pre_executed = True
                 if not tool.pre_execution_state:
+                    self.logger.warning(
+                        "[PRE-EXEC][FALLBACK] Creating minimal pre_execution_state for %s - state was not preserved from registration",
+                        tool.call_id,
+                    )
                     tool.pre_execution_state = {
                         "tool_type": tool.tool_name,
                         "file_path": tool.params.get("file_path"),
                         "original_content": None,
                         "tool_params": tool.params,
+                        "created_dirs": [],
                     }
-            state_flag = "with" if tool.pre_execution_state else "without"
+
+            # Log the final state
+            state_flag = "with state" if tool.pre_execution_state else "without state"
             self.logger.info(
-                "[PRE-EXEC] Tool %s (%s) flagged=%s %s state snapshot",
+                "[PRE-EXEC] Tool %s (%s) flagged=%s %s",
                 tool.call_id,
                 tool.tool_name,
                 tool.pre_executed,
@@ -483,11 +506,11 @@ class SingleDomainExecutor:
         current_iteration = state.metadata["iterations"]
         state.status = "running"
 
-        # Clean up format errors that have been visible for 1 call already
-        # Parse errors should only persist for 1 call - remove errors from 2+ iterations ago
+        # Clean up format/parse errors that have been visible for 1 call already
+        # System errors should only persist for 1 call - remove errors from 2+ iterations ago
         state.tool_history = [
             record for record in state.tool_history
-            if not (record.error == "format_error" and
+            if not (record.error in ("format_error", "parse_error") and
                     self._is_old_format_error(record.call_id, current_iteration))
         ]
 
@@ -597,9 +620,11 @@ class SingleDomainExecutor:
         if status == "AWAIT_TOOL":
             if not pending_tool_calls:
                 # Agent said AWAIT_TOOL but no tools were extracted - this is a parse error!
+                # This typically happens due to typos in closing tags (e.g., </TOAL_CALL> instead of </TOOL_CALL>)
                 error_msg = (
                     "Agent set AGENT_STATUS=AWAIT_TOOL but no tool calls were found in response. "
                     "This indicates a parsing failure or malformed response. "
+                    "Common cause: typo in closing tag (e.g., </TOAL_CALL> instead of </TOOL_CALL>). "
                     "Ensure TOOL_CALL sections have proper TOOL/REASON/PARAM tags."
                 )
                 self.logger.error(f"[PARSE-ERROR] {error_msg}")
@@ -610,8 +635,25 @@ class SingleDomainExecutor:
                     if coder_logger:
                         coder_logger.log_error(error_msg)
 
-                self._mark_failure(state, error_msg)
-                return self._finalize_iteration_state(state)
+                # Add error feedback to tool history for next iteration (same pattern as format error)
+                parse_error_record = ToolExecutionRecord(
+                    call_id=f"parse_error_iter{state.metadata['iterations']}_{uuid.uuid4().hex[:6]}",
+                    tool_name="system.parse_validation",
+                    params={},
+                    param_entries=[],
+                    accepted=False,
+                    executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    result_summary=error_msg,
+                    raw_result={},
+                    error="parse_error",
+                )
+                state.tool_history.append(parse_error_record)
+
+                # Retry with error context (same pattern as format error)
+                self.logger.info("[PARSE-ERROR] Running corrective iteration to fix malformed tool call tags")
+                state.status = "running"
+                result = self._run_agent_iteration(state)
+                return result
 
             self._register_pending_tools(state, pending_tool_calls)
         elif status == "COMPLETE":
@@ -854,7 +896,9 @@ class SingleDomainExecutor:
 
     def _register_pending_tools(self, state: DomainTaskState, parsed_tools: List[Dict[str, Any]]) -> None:
         """Register multiple pending tool calls."""
-        for parsed_tool in parsed_tools:
+        iteration = state.metadata.get("iterations", 0)
+
+        for tool_index, parsed_tool in enumerate(parsed_tools):
             tool_name = parsed_tool["tool"]
             reason = parsed_tool.get("reason", "")
             param_entries = parsed_tool.get("param_entries", [])
@@ -887,7 +931,42 @@ class SingleDomainExecutor:
                 return
 
             params = {name: value for name, value in param_entries}
-            call_id = f"call_{uuid.uuid4().hex[:10]}"
+
+            # For auto-executable tools, use consistent ID to match auto-execution results
+            # For other tools, use random ID
+            if tool_name in AUTO_EXECUTE_TOOLS:
+                call_id = f"auto_exec_iter{iteration}_tool{tool_index}"
+            else:
+                call_id = f"call_{uuid.uuid4().hex[:10]}"
+
+            # Check if this tool was auto-executed during streaming
+            auto_exec_result = self._auto_exec_results.get(call_id)
+            pre_executed = auto_exec_result is not None
+            pre_execution_state = None
+
+            if pre_executed:
+                self.logger.info(f"[PROPOSAL] Tool {call_id} was auto-executed, attaching pre-execution state")
+
+                # Defensive check: warn if auto-exec result is missing file_path
+                file_path = auto_exec_result.get('file_path')
+                if not file_path:
+                    self.logger.error(f"[PROPOSAL] Auto-exec result for {call_id} missing file_path! Result keys: {list(auto_exec_result.keys())}")
+
+                # Store pre-execution state for potential revert
+                pre_execution_state = {
+                    'tool_type': tool_name,
+                    'file_path': file_path,
+                    'original_content': auto_exec_result.get('before_content'),
+                    'tool_params': params,
+                    'created_dirs': auto_exec_result.get('created_dirs', []),
+                }
+
+                self.logger.debug(
+                    f"[PROPOSAL] Attached state for {call_id}: file_path={file_path}, "
+                    f"has_before_content={bool(auto_exec_result.get('before_content'))}, "
+                    f"params_count={len(params)}"
+                )
+
             proposal = ToolCallProposal(
                 call_id=call_id,
                 tool_name=tool_name,
@@ -897,8 +976,16 @@ class SingleDomainExecutor:
                 message=state.agent_message,
                 created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 tool_description=tool_description,
+                pre_executed=pre_executed,
+                pre_execution_state=pre_execution_state,
             )
             state.pending_tools.append(proposal)
+
+            # Clean up auto-exec result after attaching to proposal
+            if pre_executed:
+                del self._auto_exec_results[call_id]
+                self._auto_exec_initial_states.pop(call_id, None)
+                self.logger.info(f"[PROPOSAL] Cleaned up auto-exec result for {call_id}")
 
             # Log tool proposal for coder tasks
             if state.context.domain_id == "coder":
@@ -936,19 +1023,22 @@ class SingleDomainExecutor:
         rejection_desc = f"{'Batch' if is_batch else 'Individual'} rejection of {len(proposals)} tool(s)"
         self.logger.info(f"[TOOL-REJECTION] {rejection_desc}")
 
-        # Revert pre-executed file operations
+        # Revert auto-executed file operations
         for proposal in proposals:
-            if proposal.pre_executed and proposal.tool_name in ("file.write", "file.edit"):
+            if proposal.tool_name in AUTO_EXECUTE_TOOLS:
                 if proposal.pre_execution_state:
                     self.logger.info(
-                        "[REVERT] Starting revert for pre-executed %s on %s",
+                        "[REVERT] Starting revert for auto-executed %s on %s",
                         proposal.tool_name,
                         proposal.pre_execution_state.get("file_path"),
                     )
-                    self._revert_pre_executed_file_op(state, proposal)
+                    revert_result = self._revert_pre_executed_file_op(state, proposal)
+                    if revert_result:
+                        # Emit revert event to frontend
+                        self._emit_file_revert_event(state, revert_result)
                 else:
                     self.logger.warning(
-                        "[REVERT] Tool %s marked pre_executed but missing state snapshot",
+                        "[REVERT] Tool %s marked auto-execute but missing state snapshot",
                         proposal.call_id,
                     )
 
@@ -990,24 +1080,40 @@ class SingleDomainExecutor:
         serialized_state = self._serialize_state(state)
         self._emit_event(state, "state", serialized_state)
 
-    def _revert_pre_executed_file_op(self, state: DomainTaskState, proposal: ToolCallProposal) -> None:
-        """Surgically revert ONLY the tool's changes, preserving any user edits."""
+    def _revert_pre_executed_file_op(self, state: DomainTaskState, proposal: ToolCallProposal) -> Optional[Dict[str, Any]]:
+        """
+        Surgically revert ONLY the tool's changes, preserving any user edits.
+
+        Returns:
+            Dict with revert metadata or None if revert failed:
+            {
+                'file_path': str,
+                'reverted_to': 'original' | 'deleted',
+                'content': str  # Reverted content (or empty if deleted)
+            }
+        """
         state_info = proposal.pre_execution_state or {}
 
         tool_type = state_info.get('tool_type') or proposal.tool_name
         file_path = state_info.get('file_path') or proposal.params.get('file_path')
         original_content = state_info.get('original_content')  # null = file didn't exist
+        created_dirs_rel = state_info.get('created_dirs') or []
 
         if not file_path:
             self.logger.error(f"[REVERT] No file_path data available for {proposal.call_id}")
-            return
+            return None
 
         if not state.context.workspace_path:
             self.logger.error(f"[REVERT] No workspace path available for {proposal.call_id}")
-            return
+            return None
 
         workspace_path = Path(state.context.workspace_path)
         full_path = workspace_path / file_path
+        created_dir_paths = [
+            workspace_path / Path(rel_path)
+            for rel_path in created_dirs_rel
+            if isinstance(rel_path, str) and rel_path and rel_path != "."
+        ]
 
         self.logger.info(f"[REVERT] Reverting pre-executed {tool_type} on {file_path}")
 
@@ -1029,11 +1135,23 @@ class SingleDomainExecutor:
                     if full_path.exists():
                         self.logger.info(f"[REVERT] Deleting pre-created file: {file_path}")
                         full_path.unlink()
+                        if created_dir_paths:
+                            self._cleanup_created_dirs(created_dir_paths)
+                        return {
+                            'file_path': str(file_path),
+                            'reverted_to': 'deleted',
+                            'content': ''
+                        }
                 else:
                     # File existed, restore original
                     self.logger.info(f"[REVERT] Restoring original content (file.write cannot preserve user edits): {file_path}")
                     with open(full_path, 'w', encoding='utf-8') as f:
                         f.write(original_content)
+                    return {
+                        'file_path': str(file_path),
+                        'reverted_to': 'original',
+                        'content': original_content
+                    }
 
             # CASE 2: file.edit - Can do surgical revert!
             elif tool_type == 'file.edit':
@@ -1075,6 +1193,11 @@ class SingleDomainExecutor:
                     self.logger.info(f"[REVERT] Performed inverse find_replace: found {occurrences} occurrence(s), reverted to original text")
                     with open(full_path, 'w', encoding='utf-8') as f:
                         f.write(reverted_content)
+                    return {
+                        'file_path': str(file_path),
+                        'reverted_to': 'original',
+                        'content': reverted_content
+                    }
 
                 # file.edit with line_range: Restore original lines
                 elif edit_mode == 'line_range':
@@ -1109,12 +1232,19 @@ class SingleDomainExecutor:
                     self.logger.info(f"[REVERT] Restored original lines {start_line}-{end_line}")
                     with open(full_path, 'w', encoding='utf-8') as f:
                         f.write(reverted_content)
+                    return {
+                        'file_path': str(file_path),
+                        'reverted_to': 'original',
+                        'content': reverted_content
+                    }
 
                 else:
                     self.logger.error(f"[REVERT] Unknown edit_mode: {edit_mode}")
+                    return None
 
         except Exception as err:
             self.logger.error(f"[REVERT] Failed to revert {file_path}: {err}", exc_info=True)
+            return None
 
     def _handle_acceptance(self, state: DomainTaskState, proposals: List[ToolCallProposal], is_batch: bool) -> None:
         """Handle acceptance and execution of tool call(s).
@@ -1137,9 +1267,10 @@ class SingleDomainExecutor:
             serialized_state = self._serialize_state(state)
             self._emit_event(state, "state", serialized_state)
 
-            if proposal.pre_executed and proposal.tool_name in {"file.write", "file.edit"}:
+            # For auto-execute tools, skip re-execution (already done during streaming)
+            if proposal.tool_name in AUTO_EXECUTE_TOOLS:
                 self.logger.info(
-                    "[PRE-EXEC] Finalizing pre-executed tool %s (%s)",
+                    "[AUTO-EXEC] Tool %s (%s) was auto-executed during streaming, skipping re-execution",
                     proposal.tool_name,
                     proposal.call_id,
                 )
@@ -1147,12 +1278,16 @@ class SingleDomainExecutor:
                     tool_result = self._build_preexecuted_tool_result(state, proposal)
                 except Exception as err:
                     self.logger.warning(
-                        "[PRE-EXEC] Failed to build synthetic result for %s (%s): %s -- falling back to actual execution",
+                        "[AUTO-EXEC] Failed to build synthetic result for %s (%s): %s",
                         proposal.tool_name,
                         proposal.call_id,
                         err,
                     )
-                    tool_result = self._execute_tool_call(state, proposal)
+                    # Return error result instead of falling back to re-execution
+                    tool_result = ToolResult(
+                        output={"error": f"Auto-execution result unavailable: {err}"},
+                        metadata={"status": "error"}
+                    )
             else:
                 self.logger.info(
                     "Executing tool %d/%d: %s for task %s",
@@ -1535,9 +1670,20 @@ class SingleDomainExecutor:
 
             try:
                 if include_reasoning and state.event_callback:
+                    # Create auto-execution callback that wraps the _auto_execute_streaming_tool method
+                    def auto_exec_callback(tool_name: str, params: Dict[str, Any], tool_call_id: str) -> None:
+                        result = self._auto_execute_streaming_tool(state, tool_name, params, tool_call_id)
+                        if result:
+                            # Store result for later matching with proposal
+                            self._auto_exec_results[tool_call_id] = result
+                            self.logger.info(f"[AUTO-EXEC] Stored execution result for {tool_call_id}")
+                            # Emit file operation event to frontend
+                            self._emit_file_operation_event(state, result)
+
                     parser = CoderStreamParser(
                         iteration=state.metadata.get("iterations", 0),
                         emitter=lambda payload: self._emit_coder_stream_event(state, payload),
+                        auto_exec_callback=auto_exec_callback,
                     )
 
                 for chunk in temp_chat.generate_text_stream(
@@ -1998,15 +2144,15 @@ The planner generated this comprehensive specification to guide your implementat
     # Utility helpers
     # ------------------------------------------------------------------
     def _is_old_format_error(self, call_id: str, current_iteration: int) -> bool:
-        """Check if a format_error record is old enough to be cleaned up.
+        """Check if a format_error or parse_error record is old enough to be cleaned up.
 
-        Format errors should persist for exactly 1 call:
+        System error records should persist for exactly 1 call:
         - Added in iteration N
         - Visible in iteration N+1
         - Removed in iteration N+2
 
         Args:
-            call_id: The call_id containing encoded iteration number (format: format_error_iterN_xxx)
+            call_id: The call_id containing encoded iteration number (format: format_error_iterN_xxx or parse_error_iterN_xxx)
             current_iteration: The current iteration number
 
         Returns:
@@ -2014,10 +2160,10 @@ The planner generated this comprehensive specification to guide your implementat
         """
         import re
 
-        # Extract iteration number from call_id
-        match = re.search(r'format_error_iter(\d+)', call_id)
+        # Extract iteration number from call_id (handles both format_error and parse_error)
+        match = re.search(r'(format_error|parse_error)_iter(\d+)', call_id)
         if match:
-            error_iteration = int(match.group(1))
+            error_iteration = int(match.group(2))
             # Remove errors from 2+ iterations ago (current - error >= 2)
             return current_iteration - error_iteration >= 2
 
@@ -2214,6 +2360,90 @@ The planner generated this comprehensive specification to guide your implementat
                 exc,
             )
 
+    def _emit_file_operation_event(
+        self,
+        state: "DomainTaskState",
+        result: Dict[str, Any],
+    ) -> None:
+        """
+        Emit a file operation event to the frontend with diff decorations.
+
+        Args:
+            state: Current domain execution state
+            result: Auto-execution result containing decorations, metadata, etc.
+        """
+        if not state.event_callback:
+            return
+
+        try:
+            self.logger.info(
+                f"[FILE-OP-EMIT] Emitting file operation event for {result.get('file_path')}"
+            )
+
+            state.event_callback(
+                {
+                    "event": "coder_file_operation",
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                    "payload": {
+                        "tool_call_id": result.get("tool_call_id"),
+                        "operation": "streaming_write" if result.get("operation_type") == "new" else "streaming_edit",
+                        "file_path": result.get("file_path"),
+                        "file_existed": result.get("file_existed"),
+                        "decorations": result.get("decorations", []),
+                        "content": result.get("after_content"),
+                        "metadata": result.get("metadata", {}),
+                    },
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            self.logger.error(
+                "Failed to emit file operation event for task %s: %s",
+                state.context.task_id,
+                exc,
+            )
+
+    def _emit_file_revert_event(
+        self,
+        state: "DomainTaskState",
+        result: Dict[str, Any],
+    ) -> None:
+        """
+        Emit a file revert event to the frontend.
+
+        Args:
+            state: Current domain execution state
+            result: Revert result containing file_path, reverted_to, content
+        """
+        if not state.event_callback:
+            return
+
+        try:
+            self.logger.info(
+                f"[FILE-REVERT-EMIT] Emitting file revert event for {result.get('file_path')}"
+            )
+
+            state.event_callback(
+                {
+                    "event": "coder_file_revert",
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                    "payload": {
+                        "file_path": result.get("file_path"),
+                        "reverted_to": result.get("reverted_to"),
+                        "content": result.get("content"),
+                    },
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+            )
+        except Exception as exc:
+            self.logger.error(
+                "Failed to emit file revert event for task %s: %s",
+                state.context.task_id,
+                exc,
+            )
+
     def _emit_event(
         self,
         state: DomainTaskState,
@@ -2240,6 +2470,289 @@ The planner generated this comprehensive specification to guide your implementat
                 state.context.task_id,
                 exc,
             )
+
+    def _create_missing_parent_dirs(self, workspace_path: Path, target_dir: Path) -> List[Path]:
+        """
+        Create any missing parent directories for a target file path.
+
+        Returns a list of directories that were actually created (shallow → deep order).
+        """
+        created: List[Path] = []
+
+        # Nothing to do if the parent already exists or target is the workspace root
+        if target_dir.exists() or target_dir == workspace_path:
+            return created
+
+        dirs_to_create: List[Path] = []
+        current = target_dir
+
+        # Walk up until we reach an existing directory or the workspace root
+        while current != workspace_path and not current.exists():
+            dirs_to_create.append(current)
+            current = current.parent
+
+        for directory in reversed(dirs_to_create):
+            directory.mkdir(exist_ok=True)
+            created.append(directory)
+            self.logger.debug(
+                "[AUTO-EXEC] Created parent directory for streaming write: %s",
+                workspace_relative_path(directory, str(workspace_path)),
+            )
+
+        return created
+
+    def _cleanup_created_dirs(self, directories: List[Path]) -> None:
+        """
+        Remove any empty directories that were created temporarily during auto execution.
+        """
+        for directory in reversed(directories):
+            try:
+                if directory.exists():
+                    if any(directory.iterdir()):
+                        # Directory now contains other files (perhaps user added something) – leave it alone.
+                        continue
+                    directory.rmdir()
+                    self.logger.debug(
+                        "[AUTO-EXEC] Removed empty directory created during streaming write: %s",
+                        directory.as_posix(),
+                    )
+            except Exception as cleanup_err:
+                self.logger.warning(
+                    "[AUTO-EXEC] Failed to clean up directory %s: %s",
+                    directory,
+                    cleanup_err,
+                )
+
+    def _auto_execute_streaming_tool(
+        self,
+        state: DomainTaskState,
+        tool_name: str,
+        params: Dict[str, Any],
+        tool_call_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Auto-execute file operations during streaming (before user approval).
+
+        Args:
+            state: Current domain execution state
+            tool_name: Name of the tool (file.write or file.edit)
+            params: Tool parameters
+            tool_call_id: Unique tool call identifier
+
+        Returns:
+            Dict with execution metadata or None if execution failed:
+            {
+                'before_content': str | None,  # None if file didn't exist
+                'after_content': str,
+                'file_existed': bool,
+                'decorations': [...],  # Monaco decoration specs
+                'operation_type': 'new' | 'edit',
+                'file_path': str,
+                'metadata': {...}
+            }
+        """
+        if tool_name not in AUTO_EXECUTE_TOOLS:
+            self.logger.warning(f"[AUTO-EXEC] Tool {tool_name} is not auto-executable")
+            return None
+
+        if not state.context.workspace_path:
+            self.logger.error(f"[AUTO-EXEC] No workspace path available for {tool_call_id}")
+            return None
+
+        created_dir_paths: List[Path] = []
+
+        try:
+            workspace_path = Path(state.context.workspace_path).resolve()
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            file_path = params.get("file_path")
+            if not file_path:
+                self.logger.error(f"[AUTO-EXEC] No file_path in params for {tool_call_id}")
+                return None
+
+            raw_path = Path(file_path)
+            if raw_path.is_absolute():
+                candidate_path = raw_path.resolve()
+            else:
+                candidate_path = (workspace_path / raw_path).resolve()
+
+            try:
+                relative_path = candidate_path.relative_to(workspace_path)
+            except ValueError:
+                self.logger.error(f"[AUTO-EXEC] Refusing to write outside workspace: {raw_path}")
+                return None
+
+            full_path = candidate_path
+            file_path = relative_path.as_posix()
+            params["file_path"] = file_path
+            self.logger.info(f"[AUTO-EXEC] Executing {tool_name} on {file_path}")
+
+            # Capture before-state
+            before_content = None
+            file_existed = full_path.exists()
+
+            if file_existed:
+                try:
+                    before_content = full_path.read_text(encoding="utf-8")
+                    self.logger.debug(f"[AUTO-EXEC] Captured before-state ({len(before_content)} bytes)")
+                except UnicodeDecodeError:
+                    self.logger.error(f"[AUTO-EXEC] Cannot auto-execute on binary file: {file_path}")
+                    return None
+
+            # Execute the tool
+            if tool_name == "file.write":
+                content = params.get("content", "")
+
+                # Always ensure parent directories exist because the frontend no longer pre-creates them.
+                created_dir_paths = self._create_missing_parent_dirs(workspace_path, full_path.parent)
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Write file
+                try:
+                    full_path.write_text(content, encoding="utf-8")
+                except Exception:
+                    # Clean up any directories we created before bubbling up the error
+                    self._cleanup_created_dirs(created_dir_paths)
+                    raise
+
+                after_content = content
+                self.logger.info(f"[AUTO-EXEC] Wrote {len(content)} bytes to {file_path}")
+
+            elif tool_name == "file.edit":
+                edit_mode = params.get("edit_mode")
+
+                if not file_existed:
+                    self.logger.error(f"[AUTO-EXEC] Cannot edit non-existent file: {file_path}")
+                    return None
+
+                if edit_mode == "find_replace":
+                    find_text = params.get("find_text", "")
+                    replace_text = params.get("replace_text", "")
+                    use_regex = params.get("use_regex", False)
+                    replace_all = params.get("replace_all", True)
+
+                    if not before_content:
+                        self.logger.error(f"[AUTO-EXEC] No content to edit in {file_path}")
+                        return None
+
+                    if use_regex:
+                        import re
+                        try:
+                            if replace_all:
+                                after_content = re.sub(find_text, replace_text, before_content)
+                            else:
+                                after_content = re.sub(find_text, replace_text, before_content, count=1)
+                        except re.error as e:
+                            self.logger.error(f"[AUTO-EXEC] Regex error: {e}")
+                            return None
+                    else:
+                        if replace_all:
+                            after_content = before_content.replace(find_text, replace_text)
+                        else:
+                            after_content = before_content.replace(find_text, replace_text, 1)
+
+                    full_path.write_text(after_content, encoding="utf-8")
+                    self.logger.info(f"[AUTO-EXEC] Applied find_replace to {file_path}")
+
+                elif edit_mode == "line_range":
+                    start_line = params.get("start_line")
+                    end_line = params.get("end_line", start_line)
+                    new_content = params.get("new_content", "")
+
+                    if not before_content:
+                        self.logger.error(f"[AUTO-EXEC] No content to edit in {file_path}")
+                        return None
+
+                    lines = before_content.splitlines(keepends=True)
+                    # Replace lines (1-indexed)
+                    before_section = lines[:start_line - 1]
+                    after_section = lines[end_line:]
+                    new_lines = new_content.splitlines(keepends=True) if new_content else []
+
+                    after_content = ''.join(before_section + new_lines + after_section)
+                    full_path.write_text(after_content, encoding="utf-8")
+                    self.logger.info(f"[AUTO-EXEC] Replaced lines {start_line}-{end_line} in {file_path}")
+
+                else:
+                    self.logger.error(f"[AUTO-EXEC] Unknown edit_mode: {edit_mode}")
+                    return None
+            else:
+                self.logger.error(f"[AUTO-EXEC] Unsupported tool: {tool_name}")
+                return None
+
+            initial_state = self._auto_exec_initial_states.get(tool_call_id)
+            relative_created_dirs: List[str] = []
+            if not initial_state:
+                relative_created_dirs = [
+                    workspace_relative_path(path, state.context.workspace_path)
+                    for path in created_dir_paths
+                ]
+                initial_state = {
+                    "before_content": before_content,
+                    "file_existed": file_existed,
+                    "created_dirs": relative_created_dirs,
+                }
+                self._auto_exec_initial_states[tool_call_id] = initial_state
+            else:
+                if created_dir_paths:
+                    new_dirs = [
+                        workspace_relative_path(path, state.context.workspace_path)
+                        for path in created_dir_paths
+                    ]
+                    existing_dirs = initial_state.setdefault("created_dirs", [])
+                    for rel_dir in new_dirs:
+                        if rel_dir not in existing_dirs:
+                            existing_dirs.append(rel_dir)
+                relative_created_dirs = initial_state.get("created_dirs", [])
+
+            base_before_content = initial_state.get("before_content")
+            base_file_existed = initial_state.get("file_existed", file_existed)
+
+            decorations = compute_streaming_decorations(
+                tool_name=tool_name,
+                params=params,
+                before_content=base_before_content,
+                after_content=after_content,
+            )
+
+            lines_added, lines_removed = compute_diff_stats(base_before_content, after_content)
+
+            operation_type = "new" if not base_file_existed else "edit"
+
+            # Build result metadata
+            file_size = full_path.stat().st_size
+            file_size_label = format_file_size(file_size)
+
+            result = {
+                "before_content": base_before_content,
+                "after_content": after_content,
+                "file_existed": base_file_existed,
+                "decorations": decorations,
+                "operation_type": operation_type,
+                "file_path": str(file_path),
+                "tool_call_id": tool_call_id,
+                "metadata": {
+                    "file_size": file_size_label,
+                    "file_size_bytes": file_size,
+                    "lines_added": lines_added,
+                    "lines_removed": lines_removed,
+                },
+            }
+
+            result["created_dirs"] = list(initial_state.get("created_dirs", []))
+
+            self.logger.info(
+                f"[AUTO-EXEC] Successfully executed {tool_name} on {file_path} "
+                f"({operation_type}, +{lines_added}/-{lines_removed} lines)"
+            )
+
+            return result
+
+        except Exception as exc:
+            if created_dir_paths:
+                self._cleanup_created_dirs(created_dir_paths)
+            self._auto_exec_initial_states.pop(tool_call_id, None)
+            self.logger.error(f"[AUTO-EXEC] Failed to execute {tool_name} on {file_path}: {exc}", exc_info=True)
+            return None
 
     def _serialize_state(self, state: DomainTaskState) -> Dict[str, Any]:
         elapsed = time.time() - state.metadata.get("start_time", time.time())

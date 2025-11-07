@@ -8,8 +8,8 @@ import { InlineDiffOverlay } from './InlineDiffOverlay';
 import { useCoderContext } from '../../contexts/CoderContext';
 import useMonacoScrollControl from '../../hooks/ui/useMonacoScrollControl';
 import type * as Monaco from 'monaco-editor';
-import type { StreamingDiffData } from '../../utils/coder/streamingDiff';
 import '../../styles/coder/StreamingDiff.css';
+import logger from '../../utils/core/logger';
 
 type EditorOnMount = NonNullable<React.ComponentProps<typeof Editor>['onMount']>;
 
@@ -31,7 +31,6 @@ interface EditorPaneProps {
   onEditorWillMount: BeforeMount;
   onPaneClick: () => void;
   chatId?: string;
-  streamingDiff?: StreamingDiffData | null;
 }
 
 export const EditorPane = memo<EditorPaneProps>(({
@@ -46,7 +45,6 @@ export const EditorPane = memo<EditorPaneProps>(({
   onEditorWillMount,
   onPaneClick,
   chatId,
-  streamingDiff,
 }) => {
   const { pendingDiffs, acceptDiff, rejectDiff, acceptAllDiffs, rejectAllDiffs } = useCoderContext();
 
@@ -62,11 +60,20 @@ export const EditorPane = memo<EditorPaneProps>(({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const layoutFrameRef = useRef<number | null>(null);
   const streamingDecorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
-  const pendingDiffRef = useRef<StreamingDiffData | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
+  // Track backend decorations for this file
+  const [backendDecorations, setBackendDecorations] = useState<Array<{
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+    type: 'add' | 'remove' | 'modify';
+    className: string;
+  }> | null>(null);
+
   // Auto-scroll control for streaming file content - uses Monaco API
-  const isStreamingContent = !!streamingDiff && streamingDiff.filePath === document?.filePath;
+  const isStreamingContent = !!backendDecorations && document?.filePath;
   const streamingState: 'thinking' | 'responding' | 'static' = isStreamingContent ? 'responding' : 'static';
 
   const scrollControl = useMonacoScrollControl({
@@ -116,21 +123,12 @@ export const EditorPane = memo<EditorPaneProps>(({
     setMonacoEditor(editorInstance);
     scheduleEditorLayout();
 
-    console.log('[STREAMING_DIFF][EDITOR] Editor mounted, checking for pending diff');
+    logger.info('[BACKEND-DECORATIONS] Editor mounted, checking for pending diff');
 
     // Initialize decorations collection now that editor is ready
     if (!streamingDecorationsRef.current) {
-      console.log('[STREAMING_DIFF][EDITOR] Creating decorations collection on mount');
+      logger.info('[BACKEND-DECORATIONS] Creating decorations collection on mount');
       streamingDecorationsRef.current = editorInstance.createDecorationsCollection();
-    }
-
-    // Apply any pending diff that arrived before editor was ready
-    if (pendingDiffRef.current) {
-      console.log('[STREAMING_DIFF][EDITOR] Applying pending diff after mount:', {
-        count: pendingDiffRef.current.decorations.length
-      });
-      streamingDecorationsRef.current.set(pendingDiffRef.current.decorations);
-      pendingDiffRef.current = null;
     }
 
     editorInstance.onKeyDown((e) => {
@@ -166,63 +164,101 @@ export const EditorPane = memo<EditorPaneProps>(({
     resizeObserverRef.current = observer;
   }, [onSave, scheduleEditorLayout]);
 
-  // Apply streaming diff decorations using modern decorations collection API
+  // Listen for backend file operation events
+  useEffect(() => {
+    if (!chatId || !document?.filePath) return;
+
+    const normalizePath = (path?: string | null) => {
+      if (!path) return null;
+      return path.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+    };
+
+    const documentPath = normalizePath(document.filePath);
+
+    const handleFileOperation = (event: CustomEvent) => {
+      const { file_path, decorations } = event.detail;
+      const eventPath = normalizePath(file_path);
+
+      if (eventPath && documentPath && eventPath === documentPath) {
+        logger.info('[BACKEND-DECORATIONS] Received decorations for file', file_path, {
+          decorationCount: Array.isArray(decorations) ? decorations.length : 0,
+        });
+        setBackendDecorations(decorations);
+      }
+    };
+
+    const handleClearDecorations = (event: CustomEvent) => {
+      const { file_path } = event.detail;
+      const eventPath = normalizePath(file_path);
+
+      if (eventPath && documentPath && eventPath === documentPath) {
+        logger.info('[BACKEND-DECORATIONS] Clearing decorations for accepted file', file_path);
+        setBackendDecorations(null);
+      }
+    };
+
+    window.addEventListener('coderFileOperation', handleFileOperation as EventListener);
+    window.addEventListener('clearFileDecorations', handleClearDecorations as EventListener);
+
+    return () => {
+      window.removeEventListener('coderFileOperation', handleFileOperation as EventListener);
+      window.removeEventListener('clearFileDecorations', handleClearDecorations as EventListener);
+    };
+  }, [chatId, document?.filePath]);
+
+  // Apply backend decorations to Monaco editor
   useEffect(() => {
     const editor = editorRef.current;
 
-    console.log('[STREAMING_DIFF][EDITOR] Decorations effect triggered', {
-      hasEditor: !!editor,
-      hasDiff: !!streamingDiff,
-      decorationsCount: streamingDiff?.decorations.length,
-      editMode: streamingDiff?.editMode,
-      filePath: streamingDiff?.filePath,
-      documentPath: document?.filePath
-    });
-
     if (!editor) {
-      console.log('[STREAMING_DIFF][EDITOR] No editor ref yet, saving diff for when editor mounts');
-      // Store the pending diff to apply when editor mounts
-      pendingDiffRef.current = streamingDiff ?? null;
+      logger.info('[BACKEND-DECORATIONS] No editor ref yet, decorations will be applied when editor mounts');
       return;
     }
 
     // Initialize decorations collection if not already created
     if (!streamingDecorationsRef.current) {
-      console.log('[STREAMING_DIFF][EDITOR] Creating new decorations collection');
+      logger.info('[BACKEND-DECORATIONS] Creating new decorations collection');
       streamingDecorationsRef.current = editor.createDecorationsCollection();
     }
 
-    // Check if we have a pending diff from before editor was ready
-    const diffToApply = streamingDiff ?? pendingDiffRef.current;
-    if (diffToApply) {
-      pendingDiffRef.current = null;
-    }
-
-    if (!diffToApply) {
-      // Clear streaming decorations if no diff
-      console.log('[STREAMING_DIFF][EDITOR] Clearing decorations (no diff)');
+    if (!backendDecorations || backendDecorations.length === 0) {
+      // Clear decorations if no backend decorations
+      logger.info('[BACKEND-DECORATIONS] Clearing decorations (no backend decorations)');
       streamingDecorationsRef.current.clear();
       return;
     }
 
-    // Apply streaming diff decorations
-    console.log('[STREAMING_DIFF][EDITOR] Applying decorations:', {
-      count: diffToApply.decorations.length,
-      decorations: diffToApply.decorations.map(d => ({
+    // Convert backend decoration format to Monaco decoration format
+    const monacoDecorations = backendDecorations.map((d: any) => ({
+      range: new (window as any).monaco.Range(
+        d.startLine,
+        d.startColumn,
+        d.endLine,
+        d.endColumn
+      ),
+      options: {
+        isWholeLine: d.endColumn === 1,
+        className: d.className,
+      },
+    }));
+
+    logger.info('[BACKEND-DECORATIONS] Applying decorations', {
+      count: monacoDecorations.length,
+      decorations: monacoDecorations.map((d: any) => ({
         startLine: d.range.startLineNumber,
         endLine: d.range.endLineNumber,
-        className: d.options.className
-      }))
+        className: d.options.className,
+      })),
     });
 
-    streamingDecorationsRef.current.set(diffToApply.decorations);
+    streamingDecorationsRef.current.set(monacoDecorations);
 
     return () => {
-      // Clean up on unmount or diff change
-      console.log('[STREAMING_DIFF][EDITOR] Cleanup: clearing decorations');
+      // Clean up on unmount or decoration change
+      logger.info('[BACKEND-DECORATIONS] Cleanup: clearing decorations');
       streamingDecorationsRef.current?.clear();
     };
-  }, [streamingDiff, document]);
+  }, [backendDecorations]);
 
   // Scroll to bottom handler
   const handleScrollToBottom = useCallback(() => {

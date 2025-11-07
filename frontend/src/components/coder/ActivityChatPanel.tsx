@@ -31,13 +31,6 @@ interface ActivityChatPanelProps {
   isProcessing?: boolean;
   autoAcceptEnabled?: boolean;
   coderStream?: CoderStreamSegment[];
-  preExecutedTools?: Set<string>;
-  preExecutionState?: Map<string, {
-    toolId: string;
-    toolType: 'file.write' | 'file.edit';
-    filePath: string;
-    originalContent: string | null;
-  }>;
 }
 
 export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
@@ -51,8 +44,6 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
   isProcessing = false,
   autoAcceptEnabled = false,
   coderStream = [],
-  preExecutedTools = new Set(),
-  preExecutionState = new Map(),
 }) => {
   const [activeTab, setActiveTab] = useState<'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline' | 'learn' | 'constraints' | 'patterns'>('activity');
   const [message, setMessage] = useState('');
@@ -221,8 +212,6 @@ export const ActivityChatPanel: React.FC<ActivityChatPanelProps> = ({
                 chatId={chatId}
                 autoAcceptEnabled={autoAcceptEnabled}
                 coderStream={coderStream}
-                preExecutedTools={preExecutedTools}
-                preExecutionState={preExecutionState}
               />
             </div>
 

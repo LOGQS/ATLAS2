@@ -38,9 +38,7 @@ const logger = {
   info: (message: string, ...args: any[]) => {
     // Allowlist of patterns for info logs to be surfaced in the console.
     // Keep concise to avoid spam; extend as needed for targeted modules.
-    const allowedPatterns = [
-      '[SCROLL_',         // Scroll control diagnostics
-    ];
+    const allowedPatterns = ['[]'];
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     if (shouldShow) {
       console.info(`[ATLAS]`, message, ...fmtArgs(...args));
