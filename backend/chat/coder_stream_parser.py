@@ -1,5 +1,8 @@
 import re
 from typing import Any, Callable, Dict, List, Set
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 MESSAGE_OPEN = "<MESSAGE>"
@@ -63,6 +66,7 @@ class CoderStreamParser:
             return
 
         self._buffer += text
+        logger.info(f"[PARSER-FEED] Received chunk: {len(text)}b, buffer now: {len(self._buffer)}b")
         self._process_message()
         self._process_tool_calls()
 
@@ -192,10 +196,13 @@ class CoderStreamParser:
 
         content = self._buffer[content_start:content_end]
 
+        logger.debug(f"[PARSER-TOOL] Processing tool index={state['index']}, content_size={len(content)}b")
+
         # Tool name
         if "tool" not in state["fields_emitted"]:
             tool_value = self._extract_tag(content, TOOL_OPEN, TOOL_CLOSE)
             if tool_value is not None:
+                logger.info(f"[PARSER-TOOL] Emitting tool name: {tool_value}")
                 self._emit({
                     "iteration": self.iteration,
                     "segment": "tool_call",
@@ -210,6 +217,7 @@ class CoderStreamParser:
         if "reason" not in state["fields_emitted"]:
             reason_value = self._extract_tag(content, REASON_OPEN, REASON_CLOSE)
             if reason_value is not None:
+                logger.info(f"[PARSER-TOOL] Emitting reason: {reason_value[:50]}...")
                 self._emit({
                     "iteration": self.iteration,
                     "segment": "tool_call",
@@ -220,14 +228,61 @@ class CoderStreamParser:
                 })
                 state["fields_emitted"].add("reason")
 
-        # Parameters
-        for match in PARAM_PATTERN.finditer(content):
+        # Parameters - find complete params
+        param_matches = list(PARAM_PATTERN.finditer(content))
+        if param_matches:
+            logger.info(f"[PARSER-TOOL] Found {len(param_matches)} complete PARAM tags")
+
+        # Track and emit STREAMING params (incomplete - waiting for </PARAM>)
+        # Initialize streaming_params tracking if not present
+        if "streaming_params" not in state:
+            state["streaming_params"] = {}  # type: Dict[str, int]
+
+        search_pos = 0
+        while True:
+            param_open_match = re.search(r'<PARAM\s+name="([^"]+)">', content[search_pos:])
+            if not param_open_match:
+                break
+            param_name = param_open_match.group(1)
+            param_start = search_pos + param_open_match.end()
+
+            # Check if there's a closing tag
+            param_close_pos = content.find('</PARAM>', param_start)
+            if param_close_pos == -1:
+                # INCOMPLETE - still streaming! Emit incremental updates
+                streaming_content = content[param_start:]
+                last_emitted_size = state["streaming_params"].get(param_name, 0)
+
+                # Only emit if content has grown since last time
+                if len(streaming_content) > last_emitted_size:
+                    logger.info(f"[PARSER-TOOL] 🔄 Emitting STREAMING param update: {param_name}, currently {len(streaming_content)}b")
+                    self._emit({
+                        "iteration": self.iteration,
+                        "segment": "tool_call",
+                        "action": "param_update",  # NEW ACTION for streaming params
+                        "name": param_name,
+                        "value": streaming_content,
+                        "tool_index": state["index"],
+                        "complete": False,
+                    })
+                    state["streaming_params"][param_name] = len(streaming_content)
+                break
+            search_pos = param_close_pos + len('</PARAM>')
+
+        # Emit COMPLETE params
+        for match in param_matches:
             raw = match.group(0)
             if raw in state["params_emitted"]:
                 continue
             param_name = match.group(1).strip()
             param_value = match.group(2).strip()
             state["params_emitted"].add(raw)
+
+            # Clear streaming tracking for this param
+            if param_name in state.get("streaming_params", {}):
+                del state["streaming_params"][param_name]
+
+            logger.info(f"[PARSER-TOOL] ✓ Emitting complete param: {param_name}={len(param_value)}b")
             self._emit({
                 "iteration": self.iteration,
                 "segment": "tool_call",
@@ -235,6 +290,7 @@ class CoderStreamParser:
                 "name": param_name,
                 "value": param_value,
                 "tool_index": state["index"],
+                "complete": True,
             })
 
         if close_idx != -1 and not state.get("complete"):

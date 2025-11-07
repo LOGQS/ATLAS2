@@ -262,6 +262,11 @@ def chat_worker(chat_id: str, child_conn) -> None:
                             decision_chat_id = command.get('chat_id', chat_id)
                             assistant_override = command.get('assistant_message_id')
                             batch_mode = command.get('batch_mode', True)  # Default to batch mode
+                            pre_executed_calls = command.get('pre_executed_calls', {})  # Map of call_id -> bool
+                            pre_execution_state = command.get('pre_execution_state', {})  # Map of call_id -> state
+
+                            pre_exec_count = sum(1 for v in pre_executed_calls.values() if v)
+                            worker_logger.info(f"[WORKER][PRE-EXEC] Forwarding {decision}: {pre_exec_count} pre-executed tools, {len(pre_execution_state)} revert states")
 
                             if not task_id or not call_id or not decision:
                                 child_conn.send({
@@ -283,7 +288,7 @@ def chat_worker(chat_id: str, child_conn) -> None:
                                 child_conn.send({'success': True, 'chat_id': decision_chat_id, 'command_id': command_id})
 
                                 worker_logger.info(f"[DOMAIN-DECISION] Handling decision '{decision}' (batch={batch_mode}) for task {task_id}, call {call_id}")
-                                result = single_domain_executor.handle_tool_decision(task_id, call_id, decision, batch_mode)
+                                result = single_domain_executor.handle_tool_decision(task_id, call_id, decision, batch_mode, pre_executed_calls, pre_execution_state)
 
                                 if result.get('error'):
                                     error_msg = result['error']

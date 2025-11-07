@@ -75,9 +75,21 @@ export const InlineDiffOverlay: React.FC<InlineDiffOverlayProps> = ({
     };
   }, [editor, diffs]);
 
-  // Apply Monaco decorations for diff highlighting
+  // Apply Monaco decorations for diff highlighting using modern decorations collection API
+  const decorationsCollectionRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
+
   useEffect(() => {
-    if (!editor || diffs.length === 0) {
+    if (!editor) {
+      return;
+    }
+
+    // Initialize decorations collection if not already created
+    if (!decorationsCollectionRef.current) {
+      decorationsCollectionRef.current = editor.createDecorationsCollection();
+    }
+
+    if (diffs.length === 0) {
+      decorationsCollectionRef.current.clear();
       return;
     }
 
@@ -110,10 +122,10 @@ export const InlineDiffOverlay: React.FC<InlineDiffOverlayProps> = ({
       });
     });
 
-    const decorationIds = editor.deltaDecorations([], decorations);
+    decorationsCollectionRef.current.set(decorations);
 
     return () => {
-      editor.deltaDecorations(decorationIds, []);
+      decorationsCollectionRef.current?.clear();
     };
   }, [editor, diffs]);
 

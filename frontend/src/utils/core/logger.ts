@@ -39,7 +39,13 @@ const logger = {
     // Allowlist of patterns for info logs to be surfaced in the console.
     // Keep concise to avoid spam; extend as needed for targeted modules.
     const allowedPatterns = [
-      '[]'
+      '[PRE-EXEC]',        // Pre-execution flow
+      '[APPROVAL]',        // Tool approvals
+      '[REVERT]',          // Revert operations
+      '[FILE-WRITE]',      // File write operations
+      '[TOOL-DECISION]',   // Tool decision flow
+      '[SSE-UPDATE]',      // SSE coderStream updates
+      '[SSE-RECV]',        // SSE event reception
     ];
     const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
     if (shouldShow) {

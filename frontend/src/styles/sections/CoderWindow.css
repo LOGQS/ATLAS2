@@ -489,9 +489,10 @@
 }
 
 /* Loading Overlay - iOS-like activity indicator */
+/* Positioned at top-right to avoid conflict with scroll button at bottom-right */
 .loading-overlay {
   position: absolute;
-  bottom: var(--spacing-4);
+  top: var(--spacing-4);
   right: var(--spacing-4);
   background: rgba(20, 20, 23, 0.95);
   backdrop-filter: blur(16px);

@@ -216,6 +216,21 @@ class Cerebras:
         total = getattr(usage, "total_tokens", None)
         return int(total) if total is not None else None
 
+    def _extract_error_message(self, error: Exception) -> str:
+        """Extract a user-friendly error message from Cerebras exceptions"""
+        error_str = str(error)
+
+        # Check for high traffic / queue exceeded errors
+        if "experiencing high traffic" in error_str.lower() or "queue_exceeded" in error_str.lower():
+            return "Cerebras is experiencing high traffic right now. Please try again soon."
+
+        # Check for other overload conditions
+        if "overloaded" in error_str.lower() or "503" in error_str:
+            return "Cerebras is temporarily overloaded. Please try again shortly."
+
+        # Return original error message if no specific pattern matched
+        return error_str if error_str else "Cerebras request failed. Please try again."
+
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Cerebras/OpenAI format"""
@@ -303,11 +318,12 @@ class Cerebras:
             }
 
         except Exception as e:
-            logger.error(f"Cerebras API request failed: {str(e)}")
+            error_message = self._extract_error_message(e)
+            logger.error(f"Cerebras API request failed: {error_message}")
             return {
                 "text": None,
                 "thoughts": None,
-                "error": str(e)
+                "error": error_message
             }
 
     def generate_text_stream(self, prompt: str, model: str = "",
@@ -386,8 +402,9 @@ class Cerebras:
             yield {"type": "complete"}
 
         except Exception as e:
-            logger.error(f"Cerebras streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
+            error_message = self._extract_error_message(e)
+            logger.error(f"Cerebras streaming API request failed: {error_message}")
+            raise RuntimeError(error_message) from e
 
     # ==================== ASYNC METHODS ====================
 
@@ -490,11 +507,12 @@ class Cerebras:
             }
 
         except Exception as e:
-            logger.error(f"Cerebras async API request failed: {str(e)}")
+            error_message = self._extract_error_message(e)
+            logger.error(f"Cerebras async API request failed: {error_message}")
             return {
                 "text": None,
                 "thoughts": None,
-                "error": str(e)
+                "error": error_message
             }
 
     async def generate_text_stream_async(self, prompt: str, model: str = "",
@@ -573,5 +591,6 @@ class Cerebras:
             yield {"type": "complete"}
 
         except Exception as e:
-            logger.error(f"Cerebras async streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
+            error_message = self._extract_error_message(e)
+            logger.error(f"Cerebras async streaming API request failed: {error_message}")
+            raise RuntimeError(error_message) from e

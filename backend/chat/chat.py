@@ -295,8 +295,14 @@ def cancel_chat_process(chat_id: str) -> bool:
 
 def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision: str,
                               assistant_message_id: Optional[int] = None,
-                              batch_mode: bool = True) -> Dict[str, Any]:
+                              batch_mode: bool = True,
+                              pre_executed_calls: Dict[str, bool] = None,
+                              pre_execution_state: Dict[str, Dict[str, Any]] = None) -> Dict[str, Any]:
     """Send a tool decision command to the chat worker for single-domain execution."""
+    if pre_executed_calls is None:
+        pre_executed_calls = {}
+    if pre_execution_state is None:
+        pre_execution_state = {}
 
     if is_async_chat_processing(chat_id) or has_async_domain_session(chat_id):
         async_response = handle_async_domain_tool_decision(
@@ -306,6 +312,8 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
             decision=decision,
             assistant_message_id=assistant_message_id,
             batch_mode=batch_mode,
+            pre_executed_calls=pre_executed_calls,
+            pre_execution_state=pre_execution_state,
         )
         if async_response is not None:
             logger.info(f"[DOMAIN-DECISION] Routed tool decision for {chat_id} through async engine")
@@ -320,7 +328,9 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
         'task_id': task_id,
         'call_id': call_id,
         'decision': decision,
-        'batch_mode': batch_mode
+        'batch_mode': batch_mode,
+        'pre_executed_calls': pre_executed_calls,
+        'pre_execution_state': pre_execution_state
     }
     if assistant_message_id is not None:
         payload['assistant_message_id'] = assistant_message_id

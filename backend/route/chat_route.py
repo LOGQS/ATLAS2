@@ -446,6 +446,11 @@ def register_chat_routes(app: Flask):
             decision = (payload.get('decision') or '').lower()
             assistant_message_id = payload.get('assistant_message_id')
             batch_mode = payload.get('batch_mode', True)  # Default to batch mode
+            pre_executed_calls = payload.get('pre_executed_calls', {})  # Map of call_id -> bool
+            pre_execution_state = payload.get('pre_execution_state', {})  # Map of call_id -> state
+
+            pre_exec_count = sum(1 for v in pre_executed_calls.values() if v)
+            logger.info(f"[ROUTE][PRE-EXEC] Received {decision} for task {task_id}: {pre_exec_count}/{len(pre_executed_calls)} tools pre-executed, {len(pre_execution_state)} revert states")
 
             if decision not in {'accept', 'reject'}:
                 return jsonify({'success': False, 'error': "decision must be 'accept' or 'reject'"}), 400
@@ -456,7 +461,9 @@ def register_chat_routes(app: Flask):
                 call_id=call_id,
                 decision=decision,
                 assistant_message_id=assistant_message_id,
-                batch_mode=batch_mode
+                batch_mode=batch_mode,
+                pre_executed_calls=pre_executed_calls,
+                pre_execution_state=pre_execution_state
             )
             status_code = 200 if response.get('success') else 400
             return jsonify(response), status_code

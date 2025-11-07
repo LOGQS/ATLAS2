@@ -1,4 +1,4 @@
-import React, { useCallback, memo, useEffect, useRef } from 'react';
+import React, { useCallback, memo, useEffect, useRef, useState } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import { FileBreadcrumb } from './FileBreadcrumb';
 import { PanelHeader } from '../ui/PanelHeader';
@@ -6,7 +6,10 @@ import { PanelHeaderButton } from '../ui/PanelHeaderButton';
 import { Icons } from '../ui/Icons';
 import { InlineDiffOverlay } from './InlineDiffOverlay';
 import { useCoderContext } from '../../contexts/CoderContext';
+import useMonacoScrollControl from '../../hooks/ui/useMonacoScrollControl';
 import type * as Monaco from 'monaco-editor';
+import type { StreamingDiffData } from '../../utils/coder/streamingDiff';
+import '../../styles/coder/StreamingDiff.css';
 
 type EditorOnMount = NonNullable<React.ComponentProps<typeof Editor>['onMount']>;
 
@@ -28,6 +31,7 @@ interface EditorPaneProps {
   onEditorWillMount: BeforeMount;
   onPaneClick: () => void;
   chatId?: string;
+  streamingDiff?: StreamingDiffData | null;
 }
 
 export const EditorPane = memo<EditorPaneProps>(({
@@ -42,6 +46,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   onEditorWillMount,
   onPaneClick,
   chatId,
+  streamingDiff,
 }) => {
   const { pendingDiffs, acceptDiff, rejectDiff, acceptAllDiffs, rejectAllDiffs } = useCoderContext();
 
@@ -55,6 +60,21 @@ export const EditorPane = memo<EditorPaneProps>(({
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const layoutFrameRef = useRef<number | null>(null);
+  const streamingDecorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
+  const pendingDiffRef = useRef<StreamingDiffData | null>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+
+  // Auto-scroll control for streaming file content - uses Monaco API
+  const isStreamingContent = !!streamingDiff && streamingDiff.filePath === document?.filePath;
+  const streamingState: 'thinking' | 'responding' | 'static' = isStreamingContent ? 'responding' : 'static';
+
+  const scrollControl = useMonacoScrollControl({
+    chatId: `editor-${document?.filePath}`,
+    streamingState,
+    editor: editorRef.current
+  });
+
+  const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
 
   const scheduleEditorLayout = useCallback(() => {
     if (!editorRef.current) {
@@ -93,6 +113,23 @@ export const EditorPane = memo<EditorPaneProps>(({
     editorRef.current = editorInstance;
     scheduleEditorLayout();
 
+    console.log('[STREAMING_DIFF][EDITOR] Editor mounted, checking for pending diff');
+
+    // Initialize decorations collection now that editor is ready
+    if (!streamingDecorationsRef.current) {
+      console.log('[STREAMING_DIFF][EDITOR] Creating decorations collection on mount');
+      streamingDecorationsRef.current = editorInstance.createDecorationsCollection();
+    }
+
+    // Apply any pending diff that arrived before editor was ready
+    if (pendingDiffRef.current) {
+      console.log('[STREAMING_DIFF][EDITOR] Applying pending diff after mount:', {
+        count: pendingDiffRef.current.decorations.length
+      });
+      streamingDecorationsRef.current.set(pendingDiffRef.current.decorations);
+      pendingDiffRef.current = null;
+    }
+
     editorInstance.onKeyDown((e) => {
       const key = e.browserEvent.key;
 
@@ -125,6 +162,78 @@ export const EditorPane = memo<EditorPaneProps>(({
     observer.observe(containerRef.current);
     resizeObserverRef.current = observer;
   }, [onSave, scheduleEditorLayout]);
+
+  // Apply streaming diff decorations using modern decorations collection API
+  useEffect(() => {
+    const editor = editorRef.current;
+
+    console.log('[STREAMING_DIFF][EDITOR] Decorations effect triggered', {
+      hasEditor: !!editor,
+      hasDiff: !!streamingDiff,
+      decorationsCount: streamingDiff?.decorations.length,
+      editMode: streamingDiff?.editMode,
+      filePath: streamingDiff?.filePath,
+      documentPath: document?.filePath
+    });
+
+    if (!editor) {
+      console.log('[STREAMING_DIFF][EDITOR] No editor ref yet, saving diff for when editor mounts');
+      // Store the pending diff to apply when editor mounts
+      pendingDiffRef.current = streamingDiff ?? null;
+      return;
+    }
+
+    // Initialize decorations collection if not already created
+    if (!streamingDecorationsRef.current) {
+      console.log('[STREAMING_DIFF][EDITOR] Creating new decorations collection');
+      streamingDecorationsRef.current = editor.createDecorationsCollection();
+    }
+
+    // Check if we have a pending diff from before editor was ready
+    const diffToApply = streamingDiff ?? pendingDiffRef.current;
+    if (diffToApply) {
+      pendingDiffRef.current = null;
+    }
+
+    if (!diffToApply) {
+      // Clear streaming decorations if no diff
+      console.log('[STREAMING_DIFF][EDITOR] Clearing decorations (no diff)');
+      streamingDecorationsRef.current.clear();
+      return;
+    }
+
+    // Apply streaming diff decorations
+    console.log('[STREAMING_DIFF][EDITOR] Applying decorations:', {
+      count: diffToApply.decorations.length,
+      decorations: diffToApply.decorations.map(d => ({
+        startLine: d.range.startLineNumber,
+        endLine: d.range.endLineNumber,
+        className: d.options.className
+      }))
+    });
+
+    streamingDecorationsRef.current.set(diffToApply.decorations);
+
+    return () => {
+      // Clean up on unmount or diff change
+      console.log('[STREAMING_DIFF][EDITOR] Cleanup: clearing decorations');
+      streamingDecorationsRef.current?.clear();
+    };
+  }, [streamingDiff, document]);
+
+  // Scroll to bottom handler
+  const handleScrollToBottom = useCallback(() => {
+    scrollControl.forceScrollToBottom();
+  }, [scrollControl]);
+
+  // Show/hide scroll button based on autoscroll state
+  useEffect(() => {
+    if (scrollControlStreaming) {
+      setShowScrollButton(!scrollControlEnabled);
+    } else {
+      setShowScrollButton(false);
+    }
+  }, [scrollControlStreaming, scrollControlEnabled]);
 
   // Filter diffs for current file
   const currentFileDiffs = document
@@ -230,6 +339,37 @@ export const EditorPane = memo<EditorPaneProps>(({
             onAccept={acceptDiff}
             onReject={rejectDiff}
           />
+        )}
+
+        {/* Scroll to bottom button */}
+        {showScrollButton && (
+          <button
+            className="editor-pane__scroll-button"
+            onClick={handleScrollToBottom}
+            aria-label="Scroll to bottom"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 20 20"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M10 3L10 14M10 14L6 10M10 14L14 10"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4 17L16 17"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
         )}
       </div>
     </div>

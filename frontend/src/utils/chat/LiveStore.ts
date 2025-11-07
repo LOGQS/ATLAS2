@@ -34,13 +34,14 @@ export type CoderStreamSegment =
 type CoderStreamPayload = {
   iteration: number;
   segment: 'thoughts' | 'agent_response' | 'tool_call';
-  action: 'start' | 'append' | 'complete' | 'field' | 'param';
+  action: 'start' | 'append' | 'complete' | 'field' | 'param' | 'param_update';
   text?: string;
   field?: 'tool' | 'reason';
   value?: string;
   name?: string;
   tool_index?: number;
   toolIndex?: number;
+  complete?: boolean;
 };
 
 type ChatLive = {
@@ -454,6 +455,14 @@ class LiveStore {
       return cur;
     }
 
+    // Log received event with details
+    const eventInfo = segment === 'tool_call' && (action === 'param' || action === 'param_update')
+      ? `${segment}.${action} (${payload.name}: ${payload.value?.length || 0}b)`
+      : segment === 'tool_call' && action === 'field'
+      ? `${segment}.${action} (${payload.field}=${payload.value})`
+      : `${segment}.${action}`;
+    logger.info(`[SSE-RECV] iter=${iteration}, event=${eventInfo}`);
+
     const toolIndex = payload.toolIndex ?? payload.tool_index ?? 0;
     const next: ChatLive = {
       ...cur,
@@ -567,12 +576,37 @@ class LiveStore {
         }
       } else if (action === 'param' && payload.name) {
         const params = toolSeg.params || [];
-        const exists = params.some(p => p.name === payload.name && p.value === (payload.value || ''));
-        if (!exists) {
-          const updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
-          const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
-          updateSegment(index, updated);
+        const existingIndex = params.findIndex(p => p.name === payload.name);
+        let updatedParams: Array<{ name: string; value: string }>;
+
+        if (existingIndex >= 0) {
+          // Update existing param (final complete value)
+          updatedParams = [...params];
+          updatedParams[existingIndex] = { name: payload.name, value: payload.value || '' };
+        } else {
+          // Add new param
+          updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
         }
+
+        const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
+        updateSegment(index, updated);
+      } else if (action === 'param_update' && payload.name) {
+        // Incremental parameter update (streaming content)
+        const params = toolSeg.params || [];
+        const existingIndex = params.findIndex(p => p.name === payload.name);
+        let updatedParams: Array<{ name: string; value: string }>;
+
+        if (existingIndex >= 0) {
+          // Update existing streaming param
+          updatedParams = [...params];
+          updatedParams[existingIndex] = { name: payload.name, value: payload.value || '' };
+        } else {
+          // First chunk of streaming param
+          updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
+        }
+
+        const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
+        updateSegment(index, updated);
       } else if (action === 'complete') {
         if (toolSeg.status !== 'complete') {
           const updated = { ...toolSeg, status: 'complete' } as typeof toolSeg;

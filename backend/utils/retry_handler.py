@@ -54,7 +54,8 @@ class RetryHandler:
             return True, retry_reason, api_provided_delay, True
 
         # Overload detection
-        elif "overloaded" in error_lower or "503" in error_message or "UNAVAILABLE" in error_message:
+        elif ("overloaded" in error_lower or "503" in error_message or "UNAVAILABLE" in error_message or
+              "experiencing high traffic" in error_lower or "queue_exceeded" in error_lower):
             retry_reason = "Model overloaded"
             return True, retry_reason, None, False
 

@@ -181,6 +181,7 @@ interface CoderActions {
   resetFile: () => Promise<void>;
   revertToSaved: (filePath: string) => Promise<void>;
   saveSnapshot: (filePath: string, content: string) => Promise<void>;
+  writeFileContent: (filePath: string, content: string) => Promise<boolean>;
   createFile: (parentPath: string, name: string) => Promise<void>;
   createFolder: (parentPath: string, name: string) => Promise<void>;
   deleteNode: (path: string, isDirectory: boolean) => Promise<void>;
@@ -945,6 +946,35 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       });
     }, []);
 
+  const writeFileContent = useCallback(async (filePath: string, content: string): Promise<boolean> => {
+    if (!chatId) return false;
+
+    logger.info('[CODER][PRE-EXEC] Writing file content for pre-execution:', filePath);
+
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, path: filePath, content })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        logger.info('[CODER][PRE-EXEC] Successfully wrote file:', filePath);
+        // Refresh the file tree to show the file exists
+        await loadFileTree();
+        return true;
+      } else {
+        logger.error('[CODER][PRE-EXEC] Failed to write file:', { filePath, error: data.error });
+        return false;
+      }
+    } catch (err) {
+      logger.error('[CODER][PRE-EXEC] Exception writing file:', { filePath, error: err });
+      return false;
+    }
+  }, [chatId, loadFileTree]);
+
   const saveFile = useCallback(async () => {
     const currentDoc = stateRef.current.currentDocument;
     if (!chatId || !currentDoc) return;
@@ -1010,10 +1040,11 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       if (data.success) {
         await loadFileTree();
       } else {
+        logger.error('[CODER] Failed to create file:', { parentPath, name, error: data.error });
         setState(prev => ({ ...prev, error: data.error, isLoading: false }));
       }
     } catch (err) {
-      logger.error('[CODER] Failed to create file:', err);
+      logger.error('[CODER] Failed to create file:', { parentPath, name, error: err });
       setState(prev => ({ ...prev, error: 'Failed to create file', isLoading: false }));
     }
   }, [chatId, loadFileTree]);
@@ -1729,12 +1760,17 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             ? updatedDoc
             : prev.currentDocument;
 
+          // Clear unsaved state since AI edits are preaccepted
+          const newUnsavedFiles = new Set(prev.unsavedFiles);
+          newUnsavedFiles.delete(filePath);
+
           logger.info(`[CODER_CTX] Updated file content live: ${filePath} (${newContent.length} chars)`);
 
           return {
             ...prev,
             tabDocuments: updatedTabDocs,
             currentDocument: newCurrentDocument,
+            unsavedFiles: newUnsavedFiles,
           };
         }
 
@@ -1804,6 +1840,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     resetFile,
     revertToSaved,
     saveSnapshot,
+    writeFileContent,
     createFile,
     createFolder,
     deleteNode,

@@ -655,6 +655,14 @@ async def _execute_async_domain_task(
             rate_limit_prechecked=True,
         )
 
+        if not isinstance(result, dict):
+            logger.error(
+                "[ASYNC-DOMAIN-EXEC] single_domain_executor returned unexpected result %r for chat %s",
+                result,
+                chat_id,
+            )
+            raise RuntimeError("Domain executor failed to produce a result")
+
         logger.info("=" * 80)
         logger.info(f"[ASYNC-DOMAIN-EXEC-RESULT] Status: {result.get('status')}")
         logger.info(f"[ASYNC-DOMAIN-EXEC-RESULT] Task ID: {result.get('task_id')}")
@@ -694,6 +702,8 @@ def handle_async_domain_tool_decision(
     *,
     assistant_message_id: Optional[int] = None,
     batch_mode: bool = True,
+    pre_executed_calls: Dict[str, bool] = None,
+    pre_execution_state: Dict[str, Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Handle a domain tool decision entirely within the async engine.
@@ -701,6 +711,10 @@ def handle_async_domain_tool_decision(
     Returns a response dict mirroring the worker response on success, or None if
     no async session is registered (caller should fall back to worker path).
     """
+    if pre_executed_calls is None:
+        pre_executed_calls = {}
+    if pre_execution_state is None:
+        pre_execution_state = {}
     session = _get_async_domain_session(chat_id)
     if not session:
         logger.debug(f"[ASYNC-DOMAIN] No async session found for chat {chat_id}, deferring to worker")
@@ -730,6 +744,8 @@ def handle_async_domain_tool_decision(
             call_id=call_id,
             decision=decision,
             batch_mode=batch_mode,
+            pre_executed_calls=pre_executed_calls,
+            pre_execution_state=pre_execution_state,
         )
     except Exception as exec_error:
         logger.error(f"[ASYNC-DOMAIN] Exception handling tool decision for {chat_id}: {exec_error}", exc_info=True)

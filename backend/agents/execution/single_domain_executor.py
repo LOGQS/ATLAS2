@@ -15,6 +15,7 @@ import time
 import re
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agents.domains.domain_registry import AgentSpec, DomainSpec, domain_registry
@@ -23,6 +24,7 @@ from agents.prompts.agent_prompt_templates import (
     BASE_AGENT_PROMPT,
     get_domain_instructions,
 )
+from agents.tools.file_ops.file_utils import format_file_size, workspace_relative_path
 from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_registry
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
@@ -91,6 +93,8 @@ class ToolCallProposal:
     message: str
     created_at: str
     tool_description: str
+    pre_executed: bool = False  # Frontend pre-executed this tool (e.g., wrote file for preview)
+    pre_execution_state: Optional[Dict[str, Any]] = None  # Snapshot captured by frontend for revert/finalization
 
 
 @dataclass
@@ -247,7 +251,9 @@ class SingleDomainExecutor:
         task_id: str,
         call_id: str,
         decision: str,
-        batch_mode: bool = True,  
+        batch_mode: bool = True,
+        pre_executed_calls: Dict[str, bool] = None,
+        pre_execution_state: Dict[str, Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Process a user decision for pending tool call(s).
 
@@ -256,7 +262,13 @@ class SingleDomainExecutor:
             call_id: The call_id being decided on (or special marker "batch_all")
             decision: "accept" or "reject"
             batch_mode: If True and multiple tools pending, accept/reject all at once
+            pre_executed_calls: Map of call_id -> bool indicating which tools were pre-executed by frontend
+            pre_execution_state: Map of call_id -> {tool_type, file_path, original_content} for revert
         """
+        if pre_executed_calls is None:
+            pre_executed_calls = {}
+        if pre_execution_state is None:
+            pre_execution_state = {}
 
         state = self._active_tasks.get(task_id)
         if not state:
@@ -291,19 +303,50 @@ class SingleDomainExecutor:
             target_tools = [t for t in state.pending_tools if t.call_id == call_id]
             is_batch = False
 
-            if not target_tools:
-                self.logger.info(
-                    "[STALE-APPROVAL] Decision for call %s not found in pending tools - ignoring gracefully",
-                    call_id,
-                )
-                serialized_state = self._serialize_state(state)
-                serialized_state.update(
-                    {
-                        "success": True,
-                        "warning": "Tool decision arrived after tool was removed from pending list",
+        # Mark tools as pre-executed if frontend indicates so
+        self.logger.info(f"[PRE-EXEC] Received pre_executed_calls map: {pre_executed_calls}")
+        for tool in target_tools:
+            pre_exec_flag = bool(pre_executed_calls.get(tool.call_id))
+            tool.pre_executed = pre_exec_flag
+            tool.pre_execution_state = pre_execution_state.get(tool.call_id)
+
+            if tool.tool_name in {"file.write", "file.edit"}:
+                if not tool.pre_executed:
+                    self.logger.info(
+                        "[PRE-EXEC][FALLBACK] Forcing pre-executed flag for %s (%s)",
+                        tool.tool_name,
+                        tool.call_id,
+                    )
+                    tool.pre_executed = True
+                if not tool.pre_execution_state:
+                    tool.pre_execution_state = {
+                        "tool_type": tool.tool_name,
+                        "file_path": tool.params.get("file_path"),
+                        "original_content": None,
+                        "tool_params": tool.params,
                     }
-                )
-                return serialized_state
+            state_flag = "with" if tool.pre_execution_state else "without"
+            self.logger.info(
+                "[PRE-EXEC] Tool %s (%s) flagged=%s %s state snapshot",
+                tool.call_id,
+                tool.tool_name,
+                tool.pre_executed,
+                state_flag,
+            )
+
+        if not target_tools:
+            self.logger.info(
+                "[STALE-APPROVAL] Decision for call %s not found in pending tools - ignoring gracefully",
+                call_id,
+            )
+            serialized_state = self._serialize_state(state)
+            serialized_state.update(
+                {
+                    "success": True,
+                    "warning": "Tool decision arrived after tool was removed from pending list",
+                }
+            )
+            return serialized_state
 
         decision_lower = decision.lower()
         if decision_lower not in {"accept", "reject"}:
@@ -541,7 +584,7 @@ class SingleDomainExecutor:
                 )
                 self.logger.error(f"[PARSE-ERROR] {error_msg}")
                 self._mark_failure(state, error_msg)
-                return
+                return self._finalize_iteration_state(state)
 
             self._register_pending_tools(state, pending_tool_calls)
         elif status == "COMPLETE":
@@ -558,7 +601,7 @@ class SingleDomainExecutor:
                 # Mark that we should complete after all tools are decided and executed
                 state.metadata["deferred_completion"] = True
                 state.metadata["deferred_completion_message"] = state.agent_message
-                return
+                return self._finalize_iteration_state(state)
 
             # No pending tools in this response, proceed with immediate completion validation
             completion_valid, rejection_reason = self._validate_completion(state)
@@ -650,6 +693,20 @@ class SingleDomainExecutor:
             },
         )
 
+        return self._finalize_iteration_state(state)
+
+    def _finalize_iteration_state(self, state: DomainTaskState) -> Dict[str, Any]:
+        """Finalize iteration by snapshotting, logging, emitting state, and returning it."""
+        self._append_snapshot(
+            state,
+            summary=f"Iteration {state.metadata['iterations']} -> {state.status.upper()}",
+            full_context={
+                "agent_message": state.agent_message,
+                "pending_tools": [self._serialize_tool_proposal(t) for t in state.pending_tools],
+                "status": state.status,
+            },
+        )
+
         # Log iteration end for coder tasks
         if state.context.domain_id == "coder":
             coder_logger = get_coder_session_logger(state.context.task_id)
@@ -658,6 +715,108 @@ class SingleDomainExecutor:
 
         serialized_state = self._serialize_state(state)
         self._emit_event(state, "state", serialized_state)
+        return serialized_state
+
+    def _build_preexecuted_tool_result(self, state: DomainTaskState, proposal: ToolCallProposal) -> ToolResult:
+        """Synthesize a ToolResult for a tool that was already executed on the frontend."""
+        state_info = proposal.pre_execution_state or {}
+        workspace_root = state.context.workspace_path
+        if not workspace_root:
+            raise RuntimeError("Workspace path unavailable for pre-executed tool finalization")
+
+        file_path = state_info.get("file_path") or proposal.params.get("file_path")
+        if not file_path:
+            raise RuntimeError(f"Missing file_path for pre-executed tool {proposal.call_id}")
+
+        full_path = (Path(workspace_root) / file_path).resolve()
+        if not full_path.exists():
+            raise FileNotFoundError(f"Pre-executed file not found: {file_path}")
+
+        try:
+            after_content = full_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as err:
+            raise ValueError(f"Cannot read pre-executed file {file_path}: {err}") from err
+
+        before_content = state_info.get("original_content")
+        relative_path = workspace_relative_path(full_path, workspace_root)
+        size_bytes = full_path.stat().st_size
+        size_label = format_file_size(size_bytes)
+
+        if proposal.tool_name == "file.write":
+            line_count = after_content.count("\n") + 1 if after_content else 1
+            ops = [
+                {
+                    "type": "file_write",
+                    "path": relative_path,
+                    "absolute_path": str(full_path),
+                    "before": before_content,
+                    "after": after_content,
+                    "overwrite": before_content is not None,
+                    "pre_executed": True,
+                }
+            ]
+            output = {
+                "status": "success",
+                "file_path": str(full_path),
+                "action": "overwritten" if before_content is not None else "created",
+                "metadata": {
+                    "file_size": size_label,
+                    "file_size_bytes": size_bytes,
+                    "line_count": line_count,
+                },
+                "pre_executed": True,
+            }
+            metadata = {"file_path": str(full_path), "size_bytes": size_bytes, "pre_executed": True}
+        else:
+            tool_params = state_info.get("tool_params") or proposal.params
+            edit_mode = tool_params.get("edit_mode")
+            lines_affected: Optional[str] = None
+
+            if edit_mode == "line_range":
+                start_line = tool_params.get("start_line")
+                end_line = tool_params.get("end_line") or start_line
+                if start_line is not None:
+                    lines_affected = f"{start_line}-{end_line}"
+            elif edit_mode == "find_replace":
+                find_text = tool_params.get("find_text")
+                replace_all = tool_params.get("replace_all", True)
+                if find_text:
+                    maybe_count = before_content.count(find_text) if before_content else None
+                    if maybe_count:
+                        suffix = "all" if replace_all else "first"
+                        lines_affected = f"{maybe_count} occurrence(s) ({suffix})"
+                if not lines_affected:
+                    lines_affected = "pattern replace"
+
+            ops = [
+                {
+                    "type": "file_edit",
+                    "path": relative_path,
+                    "absolute_path": str(full_path),
+                    "before": before_content,
+                    "after": after_content,
+                    "mode": edit_mode,
+                    "pre_executed": True,
+                }
+            ]
+            output = {
+                "status": "success",
+                "file_path": str(full_path),
+                "edit_mode": edit_mode,
+                "lines_affected": lines_affected,
+                "metadata": {
+                    "file_size": size_label,
+                    "file_size_bytes": size_bytes,
+                },
+                "pre_executed": True,
+            }
+            metadata = {
+                "file_path": str(full_path),
+                "edit_mode": edit_mode,
+                "pre_executed": True,
+            }
+
+        return ToolResult(output=output, metadata=metadata, ops=ops)
         return serialized_state
 
     def _register_pending_tools(self, state: DomainTaskState, parsed_tools: List[Dict[str, Any]]) -> None:
@@ -730,7 +889,22 @@ class SingleDomainExecutor:
         rejection_desc = f"{'Batch' if is_batch else 'Individual'} rejection of {len(proposals)} tool(s)"
         self.logger.info(f"[TOOL-REJECTION] {rejection_desc}")
 
+        # Revert pre-executed file operations
         for proposal in proposals:
+            if proposal.pre_executed and proposal.tool_name in ("file.write", "file.edit"):
+                if proposal.pre_execution_state:
+                    self.logger.info(
+                        "[REVERT] Starting revert for pre-executed %s on %s",
+                        proposal.tool_name,
+                        proposal.pre_execution_state.get("file_path"),
+                    )
+                    self._revert_pre_executed_file_op(state, proposal)
+                else:
+                    self.logger.warning(
+                        "[REVERT] Tool %s marked pre_executed but missing state snapshot",
+                        proposal.call_id,
+                    )
+
             action = self._find_action_by_call_id(state, proposal.call_id)
             if action:
                 action.status = "failed"
@@ -768,6 +942,132 @@ class SingleDomainExecutor:
         serialized_state = self._serialize_state(state)
         self._emit_event(state, "state", serialized_state)
 
+    def _revert_pre_executed_file_op(self, state: DomainTaskState, proposal: ToolCallProposal) -> None:
+        """Surgically revert ONLY the tool's changes, preserving any user edits."""
+        state_info = proposal.pre_execution_state or {}
+
+        tool_type = state_info.get('tool_type') or proposal.tool_name
+        file_path = state_info.get('file_path') or proposal.params.get('file_path')
+        original_content = state_info.get('original_content')  # null = file didn't exist
+
+        if not file_path:
+            self.logger.error(f"[REVERT] No file_path data available for {proposal.call_id}")
+            return
+
+        if not state.context.workspace_path:
+            self.logger.error(f"[REVERT] No workspace path available for {proposal.call_id}")
+            return
+
+        workspace_path = Path(state.context.workspace_path)
+        full_path = workspace_path / file_path
+
+        self.logger.info(f"[REVERT] Reverting pre-executed {tool_type} on {file_path}")
+
+        try:
+            # Read current file content
+            current_content = None
+            if full_path.exists():
+                try:
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        current_content = f.read()
+                except Exception as read_err:
+                    self.logger.warning(f"[REVERT] Could not read current file {file_path}: {read_err}")
+                    return
+
+            # CASE 1: file.write - Entire file replacement
+            if tool_type == 'file.write':
+                if original_content is None:
+                    # File didn't exist before, delete it
+                    if full_path.exists():
+                        self.logger.info(f"[REVERT] Deleting pre-created file: {file_path}")
+                        full_path.unlink()
+                else:
+                    # File existed, restore original
+                    self.logger.info(f"[REVERT] Restoring original content (file.write cannot preserve user edits): {file_path}")
+                    with open(full_path, 'w', encoding='utf-8') as f:
+                        f.write(original_content)
+
+            # CASE 2: file.edit - Can do surgical revert!
+            elif tool_type == 'file.edit':
+                # Use tool_params from state snapshot if provided, fallback to proposal.params
+                tool_params = state_info.get('tool_params') or proposal.params
+                edit_mode = tool_params.get('edit_mode')
+
+                # file.edit with find_replace: Do INVERSE operation
+                if edit_mode == 'find_replace':
+                    find_text = tool_params.get('find_text')
+                    replace_text = tool_params.get('replace_text')
+                    replace_all = tool_params.get('replace_all', True)
+
+                    if not find_text or replace_text is None:
+                        self.logger.error(f"[REVERT] Missing find_text/replace_text for find_replace revert")
+                        return
+
+                    if not current_content:
+                        self.logger.warning(f"[REVERT] File is empty, nothing to revert")
+                        return
+
+                    # INVERSE: Find where we replaced TO and change it back to original
+                    occurrences = current_content.count(replace_text)
+                    if occurrences == 0:
+                        self.logger.warning(f"[REVERT] Could not find tool's replace_text '{replace_text[:50]}...' in current file")
+                        # User might have edited it away, restore original as fallback
+                        if original_content is not None:
+                            with open(full_path, 'w', encoding='utf-8') as f:
+                                f.write(original_content)
+                        return
+
+                    # Perform inverse replacement
+                    if replace_all:
+                        reverted_content = current_content.replace(replace_text, find_text)
+                    else:
+                        # Only replace first occurrence (inverse of replace first)
+                        reverted_content = current_content.replace(replace_text, find_text, 1)
+
+                    self.logger.info(f"[REVERT] Performed inverse find_replace: found {occurrences} occurrence(s), reverted to original text")
+                    with open(full_path, 'w', encoding='utf-8') as f:
+                        f.write(reverted_content)
+
+                # file.edit with line_range: Restore original lines
+                elif edit_mode == 'line_range':
+                    start_line = tool_params.get('start_line')
+                    end_line = tool_params.get('end_line')
+
+                    if not current_content or original_content is None:
+                        self.logger.warning(f"[REVERT] Cannot revert line_range without original content")
+                        return
+
+                    # Split into lines
+                    current_lines = current_content.splitlines(keepends=True)
+                    original_lines = original_content.splitlines(keepends=True)
+
+                    # Validate line numbers
+                    if start_line < 1 or end_line < start_line:
+                        self.logger.error(f"[REVERT] Invalid line range: {start_line}-{end_line}")
+                        return
+
+                    # Extract original lines that should be restored
+                    original_section = original_lines[start_line-1:end_line]
+
+                    # Reconstruct file: before + original_section + after
+                    before = current_lines[:start_line-1]
+                    # Find where the edit ends in current file (might differ if user edited)
+                    # For safety, use end_line from params
+                    after = current_lines[end_line:]
+
+                    reverted_lines = before + original_section + after
+                    reverted_content = ''.join(reverted_lines)
+
+                    self.logger.info(f"[REVERT] Restored original lines {start_line}-{end_line}")
+                    with open(full_path, 'w', encoding='utf-8') as f:
+                        f.write(reverted_content)
+
+                else:
+                    self.logger.error(f"[REVERT] Unknown edit_mode: {edit_mode}")
+
+        except Exception as err:
+            self.logger.error(f"[REVERT] Failed to revert {file_path}: {err}", exc_info=True)
+
     def _handle_acceptance(self, state: DomainTaskState, proposals: List[ToolCallProposal], is_batch: bool) -> None:
         """Handle acceptance and execution of tool call(s).
 
@@ -789,15 +1089,31 @@ class SingleDomainExecutor:
             serialized_state = self._serialize_state(state)
             self._emit_event(state, "state", serialized_state)
 
-            self.logger.info(
-                "Executing tool %d/%d: %s for task %s",
-                idx + 1,
-                len(proposals),
-                proposal.tool_name,
-                state.context.task_id,
-            )
-
-            tool_result = self._execute_tool_call(state, proposal)
+            if proposal.pre_executed and proposal.tool_name in {"file.write", "file.edit"}:
+                self.logger.info(
+                    "[PRE-EXEC] Finalizing pre-executed tool %s (%s)",
+                    proposal.tool_name,
+                    proposal.call_id,
+                )
+                try:
+                    tool_result = self._build_preexecuted_tool_result(state, proposal)
+                except Exception as err:
+                    self.logger.warning(
+                        "[PRE-EXEC] Failed to build synthetic result for %s (%s): %s -- falling back to actual execution",
+                        proposal.tool_name,
+                        proposal.call_id,
+                        err,
+                    )
+                    tool_result = self._execute_tool_call(state, proposal)
+            else:
+                self.logger.info(
+                    "Executing tool %d/%d: %s for task %s",
+                    idx + 1,
+                    len(proposals),
+                    proposal.tool_name,
+                    state.context.task_id,
+                )
+                tool_result = self._execute_tool_call(state, proposal)
             ops_payload = self._ensure_serializable(tool_result.ops)
             result_payload = {
                 "output": self._ensure_serializable(tool_result.output),
@@ -945,7 +1261,7 @@ class SingleDomainExecutor:
                 ctx_id=state.context.task_id,  # Use task_id for persistent context across iterations
                 workspace_path=state.context.workspace_path,
             )
-            params = proposal.params
+            params = proposal.params.copy()  # Copy to avoid modifying original
             return tool_spec.fn(params, ctx)
         except Exception as exc:
             # Return error as a ToolResult so the agent can see it and retry
@@ -1913,6 +2229,21 @@ The planner generated this comprehensive specification to guide your implementat
         if not state.event_callback:
             return
 
+        # Log what we're emitting
+        segment = payload.get("segment", "unknown")
+        action = payload.get("action", "unknown")
+        extra_info = ""
+        if segment == "tool_call" and action == "field":
+            extra_info = f" field={payload.get('field')}"
+        elif segment == "tool_call" and action == "param":
+            param_name = payload.get('name', '')
+            param_value = payload.get('value', '')
+            extra_info = f" param={param_name}:{len(str(param_value))}b"
+
+        self.logger.info(
+            f"[SSE-EMIT] Emitting coder_stream: segment={segment}, action={action}{extra_info}"
+        )
+
         try:
             state.event_callback(
                 {
@@ -1924,7 +2255,7 @@ The planner generated this comprehensive specification to guide your implementat
                 }
             )
         except Exception as exc:
-            self.logger.debug(
+            self.logger.error(
                 "Failed to emit coder_stream event for task %s: %s",
                 state.context.task_id,
                 exc,

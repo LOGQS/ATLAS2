@@ -37,9 +37,9 @@ Always test changes and maintain backwards compatibility.""",
                     max_time_seconds=300,
                     max_context_tokens=25000,
                 ),
-                model_preference="gemini-2.5-pro",
+                model_preference="gpt-oss-120b",
                 # Two-model spec-driven development
-                planner_model="gemini-2.5-pro",  # Used for planning phase: generates high-level plan + detailed code spec
+                planner_model="gpt-oss-120b",  # Used for planning phase: generates high-level plan + detailed code spec
                 writer_model="minimax/minimax-m2:free",  # Used for execution phase: writes actual code (Cerebras)
                 writer_fallback_models=["gpt-oss-120b", "qwen-3-235b-a22b-thinking-2507", "moonshotai/kimi-k2-instruct-0905"],  # Fallback on rate limits
             )
