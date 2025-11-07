@@ -370,6 +370,13 @@ class SingleDomainExecutor:
             self._handle_acceptance(state, target_tools, is_batch)
         except Exception as exc:
             self.logger.exception("Unexpected error during tool acceptance handling: %s", exc)
+
+            # Log to coder session
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_error(f"System error during tool execution: {exc}")
+
             self._mark_failure(state, f"System error during execution: {exc}")
             self._active_tasks.pop(task_id, None)
             # Log session end for coder tasks
@@ -431,6 +438,13 @@ class SingleDomainExecutor:
             return result
         except Exception as exc:
             self.logger.exception("Error continuing task: %s", exc)
+
+            # Log to coder session
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_error(f"Error during task continuation: {exc}")
+
             self._mark_failure(state, f"Error during continuation: {exc}")
             self._active_tasks.pop(task_id, None)
             # Log session end for coder tasks
@@ -552,6 +566,12 @@ class SingleDomainExecutor:
         if status == "PARSE_ERROR":
             self.logger.error("[FORMAT-ERROR] Regex extraction failed - response format invalid")
 
+            # Log to coder session
+            if state.context.domain_id == "coder":
+                coder_logger = get_coder_session_logger(state.context.task_id)
+                if coder_logger:
+                    coder_logger.log_error("Agent response format error - regex extraction failed. Response must include <MESSAGE>, <TOOL_CALL>, and <AGENT_STATUS> tags.")
+
             # Add error feedback to tool history for next iteration
             # Encode the iteration number in call_id so we can track when to clean it up
             # Error will persist for exactly 1 call (visible in iteration N+1, removed in N+2)
@@ -583,6 +603,13 @@ class SingleDomainExecutor:
                     "Ensure TOOL_CALL sections have proper TOOL/REASON/PARAM tags."
                 )
                 self.logger.error(f"[PARSE-ERROR] {error_msg}")
+
+                # Log to coder session
+                if state.context.domain_id == "coder":
+                    coder_logger = get_coder_session_logger(state.context.task_id)
+                    if coder_logger:
+                        coder_logger.log_error(error_msg)
+
                 self._mark_failure(state, error_msg)
                 return self._finalize_iteration_state(state)
 
@@ -638,6 +665,12 @@ class SingleDomainExecutor:
                     error="completion_rejected",
                 )
                 state.tool_history.append(rejection_record)
+
+                # Log to coder session
+                if state.context.domain_id == "coder":
+                    coder_logger = get_coder_session_logger(state.context.task_id)
+                    if coder_logger:
+                        coder_logger.log_warning(f"Completion rejected: {rejection_reason}")
 
                 # Log the rejection
                 self._append_action(
@@ -828,6 +861,13 @@ class SingleDomainExecutor:
 
             if tool_name not in state.domain.tool_allowlist:
                 msg = f"Tool '{tool_name}' is not allowed for domain {state.domain.domain_id}"
+
+                # Log to coder session
+                if state.context.domain_id == "coder":
+                    coder_logger = get_coder_session_logger(state.context.task_id)
+                    if coder_logger:
+                        coder_logger.log_error(msg)
+
                 self._mark_failure(state, msg)
                 return
 
@@ -836,6 +876,13 @@ class SingleDomainExecutor:
                 tool_description = tool_spec.description
             except KeyError:
                 msg = f"Tool '{tool_name}' not found in registry"
+
+                # Log to coder session
+                if state.context.domain_id == "coder":
+                    coder_logger = get_coder_session_logger(state.context.task_id)
+                    if coder_logger:
+                        coder_logger.log_error(msg)
+
                 self._mark_failure(state, msg)
                 return
 
@@ -914,7 +961,8 @@ class SingleDomainExecutor:
             if state.context.domain_id == "coder":
                 coder_logger = get_coder_session_logger(state.context.task_id)
                 if coder_logger:
-                    coder_logger.log_tool_execution(proposal.tool_name, False, "User rejected tool call")
+                    rejection_summary = f"User rejected tool call (Proposed reason: {proposal.reason or 'none provided'})"
+                    coder_logger.log_tool_execution(proposal.tool_name, False, rejection_summary)
 
             state.tool_history.append(
                 ToolExecutionRecord(
