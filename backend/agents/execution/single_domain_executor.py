@@ -562,7 +562,7 @@ class SingleDomainExecutor:
                 param_entries=[],
                 accepted=False,
                 executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                result_summary="Response format error - regex extraction failed. Ensure proper <AGENT_DECISION> structure with <AGENT_STATUS> inside.",
+                result_summary="Response format error - regex extraction failed. Ensure response includes <MESSAGE>, <TOOL_CALL>, and <AGENT_STATUS> tags.",
                 raw_result={},
                 error="format_error",
             )
@@ -1977,104 +1977,10 @@ The planner generated this comprehensive specification to guide your implementat
         return False
 
     def _parse_agent_response(self, response_text: str) -> Dict[str, Any]:
-        import re
-
-        parsed: Dict[str, Any] = {
-            "message": response_text.strip(),
-            "raw": response_text,
-            "status": "PARSE_ERROR",  # Default to error - will be overridden if parsing succeeds
-            "tool_call": None,
-            "format_valid": False,
-        }
-        try:
-            # Extract content within AGENT_DECISION block
-            decision_match = re.search(
-                r"<AGENT_DECISION>(.*?)</AGENT_DECISION>",
-                response_text,
-                re.DOTALL | re.IGNORECASE,
-            )
-
-            if not decision_match:
-                self.logger.warning("[PARSE-ERROR] Missing AGENT_DECISION block - attempting fallback parsing")
-                fallback_result = self._fallback_parse_response(response_text)
-                if fallback_result["format_valid"]:
-                    self.logger.info("[PARSE-RECOVERY] Successfully recovered parsing using fallback logic")
-                    return fallback_result
-                return parsed
-
-            body = decision_match.group(1)
-
-            # Extract MESSAGE
-            message_match = re.search(
-                r"<MESSAGE>(.*?)</MESSAGE>", body, re.DOTALL | re.IGNORECASE
-            )
-            if message_match:
-                parsed["message"] = message_match.group(1).strip()
-
-            # Extract AGENT_STATUS
-            status_match = re.search(
-                r"<AGENT_STATUS>(.*?)</AGENT_STATUS>", body, re.DOTALL | re.IGNORECASE
-            )
-
-            if not status_match:
-                self.logger.warning("[PARSE-ERROR] Failed to extract AGENT_STATUS")
-                return parsed
-
-            # Parsing succeeded
-            parsed["status"] = status_match.group(1).strip().upper()
-            parsed["format_valid"] = True
-
-            # Extract TOOL_CALL sections
-            tool_section_matches = re.findall(
-                r"<TOOL_CALL>(.*?)</TOOL_CALL>", body, re.DOTALL | re.IGNORECASE
-            )
-
-            tool_calls = []
-            for tool_section in tool_section_matches:
-                tool_name_match = re.search(
-                    r"<TOOL>(.*?)</TOOL>", tool_section, re.DOTALL | re.IGNORECASE
-                )
-                reason_match = re.search(
-                    r"<REASON>(.*?)</REASON>", tool_section, re.DOTALL | re.IGNORECASE
-                )
-                param_matches = re.findall(
-                    r"<PARAM\s+name=\"([^\"]+)\">(.*?)</PARAM>",
-                    tool_section,
-                    re.DOTALL | re.IGNORECASE,
-                )
-
-                if tool_name_match:
-                    tool_name = tool_name_match.group(1).strip()
-                    param_entries: List[Tuple[str, Any]] = []
-                    for param_name, raw_value in param_matches:
-                        cleaned = raw_value.strip()
-                        param_entries.append((param_name, self._normalise_param_value(cleaned, tool_name, param_name)))
-
-                    tool_calls.append({
-                        "tool": tool_name_match.group(1).strip(),
-                        "reason": reason_match.group(1).strip() if reason_match else "",
-                        "param_entries": param_entries,
-                    })
-
-            parsed["tool_calls"] = tool_calls
-            parsed["tool_call"] = tool_calls[0] if tool_calls else None
-
-        except Exception as exc:
-            self.logger.warning(f"Parse exception: {exc}")
-
-        return parsed
-
-    def _fallback_parse_response(self, response_text: str) -> Dict[str, Any]:
         """
-        Fallback parser for malformed responses missing AGENT_DECISION wrapper.
+        Parse agent response extracting MESSAGE, TOOL_CALL sections, and AGENT_STATUS.
 
-        Attempts to extract:
-        1. Plain text message (before first tag)
-        2. TOOL_CALL sections directly from response
-        3. AGENT_STATUS tag if present
-
-        This provides resilience against LLM formatting errors while maintaining
-        functional extraction of the core information needed for execution.
+        Tags are extracted independently without requiring nested structure.
         """
         import re
 
@@ -2087,21 +1993,21 @@ The planner generated this comprehensive specification to guide your implementat
         }
 
         try:
-            # Try to extract AGENT_STATUS directly
+            # Extract AGENT_STATUS
             status_match = re.search(
                 r"<AGENT_STATUS>(.*?)</AGENT_STATUS>",
                 response_text,
                 re.DOTALL | re.IGNORECASE
             )
 
-            # Try to extract TOOL_CALL sections directly
+            # Extract TOOL_CALL sections
             tool_section_matches = re.findall(
                 r"<TOOL_CALL>(.*?)</TOOL_CALL>",
                 response_text,
                 re.DOTALL | re.IGNORECASE
             )
 
-            # Extract MESSAGE or use text before first tag as message
+            # Extract MESSAGE
             message_match = re.search(
                 r"<MESSAGE>(.*?)</MESSAGE>",
                 response_text,
@@ -2143,8 +2049,8 @@ The planner generated this comprehensive specification to guide your implementat
                     tool_name = tool_name_match.group(1).strip()
                     param_entries: List[Tuple[str, Any]] = []
                     for param_name, raw_value in param_matches:
-                        cleaned = raw_value.strip()
-                        param_entries.append((param_name, self._normalise_param_value(cleaned, tool_name, param_name)))
+                        # Don't strip - preserve literal whitespace as per format spec
+                        param_entries.append((param_name, self._normalise_param_value(raw_value, tool_name, param_name)))
 
                     tool_calls.append({
                         "tool": tool_name,
@@ -2159,27 +2065,26 @@ The planner generated this comprehensive specification to guide your implementat
                 parsed["format_valid"] = True
             elif tool_calls:
                 # Tool calls found but no status - infer AWAIT_TOOL
-                self.logger.info("[PARSE-RECOVERY] Found tool calls without status - inferring AWAIT_TOOL")
+                self.logger.info("[PARSE] Found tool calls without status - inferring AWAIT_TOOL")
                 parsed["status"] = "AWAIT_TOOL"
                 parsed["format_valid"] = True
             else:
-                # No status and no tool calls - cannot recover
-                self.logger.warning("[PARSE-RECOVERY] Cannot recover - no status or tool calls found")
+                # No status and no tool calls - cannot parse
+                self.logger.warning("[PARSE-ERROR] No status or tool calls found in response")
                 return parsed
 
             parsed["tool_calls"] = tool_calls
             parsed["tool_call"] = tool_calls[0] if tool_calls else None
 
-            # Log what we recovered
-            self.logger.info(
-                "[PARSE-RECOVERY] Extracted: status=%s, tool_calls=%d, message_length=%d",
+            self.logger.debug(
+                "[PARSE] Extracted: status=%s, tool_calls=%d, message_length=%d",
                 parsed["status"],
                 len(tool_calls),
                 len(parsed["message"])
             )
 
         except Exception as exc:
-            self.logger.warning(f"[PARSE-RECOVERY] Fallback parsing failed: {exc}")
+            self.logger.warning(f"[PARSE-ERROR] Parse exception: {exc}")
 
         return parsed
 
@@ -2377,10 +2282,6 @@ The planner generated this comprehensive specification to guide your implementat
         This respects the design principle: tags are regex delimiters, content is literal.
         Parsing only happens when the tool's schema explicitly expects structured data.
         """
-        stripped = value.strip()
-        if not stripped:
-            return ""
-
         # Look up tool schema to determine expected parameter type
         tool_spec = tool_registry.get(tool_name)
         expected_type = "string"  # Default to string (literal extraction)
@@ -2390,9 +2291,14 @@ The planner generated this comprehensive specification to guide your implementat
             param_schema = properties.get(param_name, {})
             expected_type = param_schema.get("type", "string")
 
-        # If parameter expects string type, return literally (no parsing)
+        # If parameter expects string type, return literally (preserve whitespace)
         if expected_type == "string":
-            return stripped
+            return value
+
+        # For non-string types, strip whitespace before parsing
+        stripped = value.strip()
+        if not stripped:
+            return ""
 
         # If parameter expects integer, parse as int
         if expected_type == "integer":

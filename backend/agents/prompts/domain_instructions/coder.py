@@ -32,6 +32,7 @@ Your plan should:
 
 Example plan.write call (use nested tag delimiters for arrays/objects):
 ```
+<TOOL_CALL>
 <TOOL>plan.write</TOOL>
 <REASON>Create structured implementation plan</REASON>
 <PARAM name="task_description">Implement authentication system</PARAM>
@@ -42,6 +43,7 @@ Example plan.write call (use nested tag delimiters for arrays/objects):
 <item>Create test_auth.py to test auth functions (depends on auth.py)</item>
 <item>Update main.py to integrate auth system (imports auth.py)</item>
 </PARAM>
+</TOOL_CALL>
 ```
 
 Note: Steps are simple text descriptions. System auto-assigns IDs (step_1, step_2, etc.) for later reference.
@@ -130,11 +132,10 @@ Your spec should include:
 ```
 
 ### Where to Place the Code Spec:
-Place the `<CODE_SPEC>` section AFTER the `<MESSAGE>` block but BEFORE the `<TOOL_CALL>` block.
+Place the `<CODE_SPEC>` section after the `<MESSAGE>` block.
 
 Structure your response like this:
 ```
-<AGENT_DECISION>
 <MESSAGE>
 I'll create a plan to implement [task description].
 
@@ -151,7 +152,6 @@ I'll create a plan to implement [task description].
 </TOOL_CALL>
 
 <AGENT_STATUS>AWAIT_TOOL</AGENT_STATUS>
-</AGENT_DECISION>
 ```
 
 ## FILE COHERENCY
@@ -287,12 +287,15 @@ Status updates:
 
 Example format:
 ```
+<TOOL_CALL>
 <TOOL>plan.update</TOOL>
+<REASON>Mark completed steps and update progress</REASON>
 <PARAM name="updates">
 <update_steps>
 <item><step_id>step_1</step_id><status>completed</status><result>Brief result</result></item>
 </update_steps>
 </PARAM>
+</TOOL_CALL>
 ```
 
 ## FILE COHERENCY

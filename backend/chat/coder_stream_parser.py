@@ -18,7 +18,7 @@ PARAM_PATTERN = re.compile(r'<PARAM\s+name="([^"]+)">(.*?)</PARAM>', re.DOTALL)
 
 class CoderStreamParser:
     """
-    Incrementally parse the coder domain's AGENT_DECISION payload and emit
+    Incrementally parse the coder domain's response and emit
     granular streaming events for the frontend while the model response is
     still streaming.
     """
