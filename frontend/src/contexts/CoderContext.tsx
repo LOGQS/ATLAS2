@@ -22,12 +22,6 @@ interface EditorDocument {
   isBinary: boolean;
 }
 
-interface FileHistory {
-  path: string;
-  versions: Array<{ content: string; timestamp: number }>;
-  originalContent: string;
-}
-
 interface CreatingNode {
   type: 'file' | 'folder';
   parentPath: string;
@@ -98,7 +92,6 @@ interface CoderState {
   activeTabPath: string | undefined; // Currently active tab's file path
   tabDocuments: Record<string, EditorDocument>; // Cache of loaded documents
   unsavedFiles: Set<string>;
-  fileHistory: Record<string, FileHistory>;
   isLoading: boolean;
   error: string;
   activeTab: 'files' | 'search';
@@ -283,7 +276,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     activeTabPath: undefined,
     tabDocuments: {},
     unsavedFiles: new Set(),
-    fileHistory: {},
     isLoading: false,
     error: '',
     activeTab: 'files',
@@ -487,7 +479,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           activeTabPath: undefined,
           tabDocuments: {},
           unsavedFiles: new Set(),
-          fileHistory: {},
           expandedFolders: new Set(),
         };
       }
@@ -673,22 +664,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           ? prev.openTabs
           : [...prev.openTabs, filePath];
 
-        const previousHistory = prev.fileHistory[filePath];
-        const historyEntry = previousHistory
-          ? {
-              ...previousHistory,
-              versions:
-                previousHistory.versions && previousHistory.versions.length > 0
-                  ? [...previousHistory.versions]
-                  : [{ content: cached.content, timestamp: Date.now() }],
-              originalContent: previousHistory.originalContent ?? cached.content,
-            }
-          : {
-              path: filePath,
-              versions: [{ content: cached.content, timestamp: Date.now() }],
-              originalContent: cached.content,
-            };
-
         return {
           ...prev,
           openTabs: nextOpenTabs,
@@ -701,10 +676,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           currentDocument: cachedDoc,
           isLoading: false,
           error: '',
-          fileHistory: {
-            ...prev.fileHistory,
-            [filePath]: historyEntry,
-          },
         };
       });
     } else {
@@ -746,40 +717,23 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             return prev;
           }
 
-          const nextOpenTabs = prev.openTabs.includes(filePath)
-            ? prev.openTabs
-            : [...prev.openTabs, filePath];
+        const nextOpenTabs = prev.openTabs.includes(filePath)
+          ? prev.openTabs
+          : [...prev.openTabs, filePath];
 
-          const existingHistory = prev.fileHistory[filePath];
-          const timestamp = Date.now();
-          const previousVersions = existingHistory?.versions ?? [];
-          const lastVersion = previousVersions[0];
-          const versions =
-            lastVersion && lastVersion.content === data.content
-              ? previousVersions
-              : [{ content: data.content, timestamp }, ...previousVersions];
-
-          return {
-            ...prev,
-            openTabs: nextOpenTabs,
-            activeTabPath: filePath,
-            tabDocuments: {
-              ...prev.tabDocuments,
-              [filePath]: doc,
-            },
-            selectedFile: filePath,
-            currentDocument: doc,
-            isLoading: false,
-            error: '',
-            fileHistory: {
-              ...prev.fileHistory,
-              [filePath]: {
-                path: filePath,
-                versions,
-                originalContent: data.content,
-              },
-            },
-          };
+        return {
+          ...prev,
+          openTabs: nextOpenTabs,
+          activeTabPath: filePath,
+          tabDocuments: {
+            ...prev.tabDocuments,
+            [filePath]: doc,
+          },
+          selectedFile: filePath,
+          currentDocument: doc,
+          isLoading: false,
+          error: '',
+        };
         });
 
         // Preload related files for better IntelliSense
@@ -1014,43 +968,26 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       const isUnsaved = content !== prev.currentDocument.originalContent;
 
       const newUnsavedFiles = new Set(prev.unsavedFiles);
-        if (isUnsaved) {
-          newUnsavedFiles.add(prev.currentDocument.filePath);
-        } else {
-          newUnsavedFiles.delete(prev.currentDocument.filePath);
-        }
+      if (isUnsaved) {
+        newUnsavedFiles.add(prev.currentDocument.filePath);
+      } else {
+        newUnsavedFiles.delete(prev.currentDocument.filePath);
+      }
 
-        const history = prev.fileHistory[prev.currentDocument.filePath];
-        let updatedHistoryMap = prev.fileHistory;
-        if (history) {
-          const lastEntry = history.versions[history.versions.length - 1];
-          if (!lastEntry || lastEntry.content !== content) {
-            const updatedHistory: FileHistory = {
-              ...history,
-              versions: [...history.versions, { content, timestamp: Date.now() }],
-            };
-            updatedHistoryMap = {
-              ...prev.fileHistory,
-              [prev.currentDocument.filePath]: updatedHistory,
-            };
-          }
-        }
+      // Update tab documents cache
+      const newTabDocuments = { ...prev.tabDocuments };
+      if (prev.currentDocument.filePath in newTabDocuments) {
+        newTabDocuments[prev.currentDocument.filePath] = updatedDoc;
+      }
 
-        // Update tab documents cache
-        const newTabDocuments = { ...prev.tabDocuments };
-        if (prev.currentDocument.filePath in newTabDocuments) {
-          newTabDocuments[prev.currentDocument.filePath] = updatedDoc;
-        }
-
-        return {
-          ...prev,
-          currentDocument: updatedDoc,
-          tabDocuments: newTabDocuments,
-          unsavedFiles: newUnsavedFiles,
-          fileHistory: updatedHistoryMap,
-        };
-      });
-    }, []);
+      return {
+        ...prev,
+        currentDocument: updatedDoc,
+        tabDocuments: newTabDocuments,
+        unsavedFiles: newUnsavedFiles,
+      };
+    });
+  }, []);
 
   const saveFile = useCallback(async () => {
     const currentDoc = stateRef.current.currentDocument;
@@ -1545,14 +1482,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
                 currentDocument: doc,
               },
             },
-            fileHistory: {
-              ...prev.fileHistory,
-              [filePath]: {
-                path: filePath,
-                versions: [{ content: data.content, timestamp: Date.now() }],
-                originalContent: data.content,
-              },
-            },
           };
         });
 
@@ -1854,15 +1783,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
               ? prev.openTabs
               : [...prev.openTabs, normalizedFilePath];
 
-            const timestamp = Date.now();
-            const existingHistory = prev.fileHistory[normalizedFilePath];
-            const previousVersions = existingHistory?.versions ?? [];
-            const lastVersion = previousVersions[0];
-            const versions =
-              lastVersion && lastVersion.content === newContent
-                ? previousVersions
-                : [{ content: newContent, timestamp }, ...previousVersions];
-
             const paneIds: PaneId[] = ['primary', 'secondary'];
             const updatedPanes = paneIds.reduce((acc, paneId) => {
               const pane = prev.panes[paneId];
@@ -1891,14 +1811,6 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
               tabDocuments: {
                 ...prev.tabDocuments,
                 [normalizedFilePath]: newDoc,
-              },
-              fileHistory: {
-                ...prev.fileHistory,
-                [normalizedFilePath]: {
-                  path: normalizedFilePath,
-                  versions,
-                  originalContent: newContent,
-                },
               },
               panes: updatedPanes,
               isLoading: false,

@@ -1297,7 +1297,8 @@ class SingleDomainExecutor:
                     state.context.task_id,
                 )
                 tool_result = self._execute_tool_call(state, proposal)
-            ops_payload = self._ensure_serializable(tool_result.ops)
+            trimmed_ops = self._strip_large_fields_from_ops(tool_result.ops)
+            ops_payload = self._ensure_serializable(trimmed_ops)
             result_payload = {
                 "output": self._ensure_serializable(tool_result.output),
                 "metadata": self._ensure_serializable(tool_result.metadata),
@@ -1616,6 +1617,24 @@ class SingleDomainExecutor:
                     "before": before_checkpoint.get('id') if before_checkpoint else None,
                     "after": after_checkpoint.get('id') if after_checkpoint else None,
                 }
+
+    @staticmethod
+    def _strip_large_fields_from_ops(ops: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Remove large textual fields from ops payloads before persisting them.
+        These fields are only needed for checkpointing (handled separately), so
+        trimming them keeps the in-memory task history lean.
+        """
+        if not ops or not isinstance(ops, list):
+            return []
+
+        large_keys = {"before", "after", "diff", "patch", "content", "raw", "original_content"}
+        trimmed_ops: List[Dict[str, Any]] = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            trimmed_ops.append({k: v for k, v in op.items() if k not in large_keys})
+        return trimmed_ops
 
     def _call_agent(self, state: DomainTaskState, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
