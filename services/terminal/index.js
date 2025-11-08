@@ -155,8 +155,6 @@ const createSession = (chatId, workspacePath) => {
     }
   }
 
-  activationCommands.push(`echo Atlas terminal ready in ${resolvedWorkspace}`);
-
   activationCommands.forEach((command) => {
     try {
       ptyProcess.write(`${command}${lineEnding}`);

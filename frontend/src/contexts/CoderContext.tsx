@@ -1742,6 +1742,14 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       return normalizedInput.replace(/^\.\/+/, '').replace(/^\/+/, '');
     };
 
+    const normalizeIncomingContent = (content?: string | null): string | null => {
+      if (typeof content !== 'string') {
+        return content ?? null;
+      }
+      // Monaco treats CR characters as visible glyphs, so ensure streamed content is LF only
+      return content.replace(/\r\n?/g, '\n');
+    };
+
     const updateStateForFileChange = ({
       filePath,
       operation,
@@ -1799,7 +1807,9 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           };
         }
 
-        if ((operation === 'write' || operation === 'edit') && typeof newContent === 'string') {
+        const normalizedContent = normalizeIncomingContent(newContent);
+
+        if ((operation === 'write' || operation === 'edit') && typeof normalizedContent === 'string') {
           const isFileOpen = prev.openTabs.includes(normalizedFilePath);
 
           if (!isFileOpen) {
@@ -1808,8 +1818,8 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
               existingDoc?.language || inferLanguageFromPath(normalizedFilePath);
             const newDoc: EditorDocument = {
               filePath: normalizedFilePath,
-              content: newContent,
-              originalContent: newContent,
+              content: normalizedContent,
+              originalContent: normalizedContent,
               language,
               isBinary: false,
             };
@@ -1858,7 +1868,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             return prev;
           }
 
-          if (existingDoc.content === newContent) {
+          if (existingDoc.content === normalizedContent) {
             logger.debug('[CODER_CTX] Ignoring duplicate live update (content unchanged)', { filePath });
             return prev;
           }
@@ -1870,8 +1880,8 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
 
           const updatedDoc: EditorDocument = {
             ...existingDoc,
-            content: newContent,
-            originalContent: newContent,
+            content: normalizedContent,
+            originalContent: normalizedContent,
           };
 
           const updatedTabDocs = {
@@ -1903,7 +1913,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           }, {} as typeof prev.panes);
 
           logger.info(
-            `[CODER_CTX] Updated file content via ${source}: ${filePath} (${newContent.length} chars)`
+            `[CODER_CTX] Updated file content via ${source}: ${filePath} (${normalizedContent.length} chars)`
           );
 
           return {
