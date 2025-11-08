@@ -63,6 +63,15 @@ export const EditorPane = memo<EditorPaneProps>(({
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Track backend decorations for this file
+  const decorationCacheRef = useRef<Map<string, Array<{
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+    type: 'add' | 'remove' | 'modify';
+    className: string;
+  }>>>(new Map());
+
   const [backendDecorations, setBackendDecorations] = useState<Array<{
     startLine: number;
     endLine: number;
@@ -117,6 +126,20 @@ export const EditorPane = memo<EditorPaneProps>(({
   useEffect(() => {
     scheduleEditorLayout();
   }, [scheduleEditorLayout, document?.filePath]);
+
+  useEffect(() => {
+    if (!document?.filePath) {
+      setBackendDecorations(null);
+      return;
+    }
+
+    const normalizePath = (path: string) =>
+      path.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+
+    const normalizedPath = normalizePath(document.filePath);
+    const cached = decorationCacheRef.current.get(normalizedPath) || null;
+    setBackendDecorations(cached);
+  }, [document?.filePath]);
 
   const handleEditorMount = useCallback<EditorOnMount>((editorInstance, _monaco) => {
     editorRef.current = editorInstance;
@@ -183,13 +206,26 @@ export const EditorPane = memo<EditorPaneProps>(({
         logger.info('[BACKEND-DECORATIONS] Received decorations for file', file_path, {
           decorationCount: Array.isArray(decorations) ? decorations.length : 0,
         });
-        setBackendDecorations(decorations);
+        if (Array.isArray(decorations) && decorations.length > 0) {
+          setBackendDecorations(decorations);
+        }
+      }
+
+      if (eventPath && Array.isArray(decorations) && decorations.length > 0) {
+        decorationCacheRef.current.set(eventPath, decorations);
+        if (!documentPath || eventPath !== documentPath) {
+          logger.debug('[BACKEND-DECORATIONS] Cached decorations for inactive file', eventPath);
+        }
       }
     };
 
     const handleClearDecorations = (event: CustomEvent) => {
       const { file_path } = event.detail;
       const eventPath = normalizePath(file_path);
+
+      if (eventPath) {
+        decorationCacheRef.current.delete(eventPath);
+      }
 
       if (eventPath && documentPath && eventPath === documentPath) {
         logger.info('[BACKEND-DECORATIONS] Clearing decorations for accepted file', file_path);
@@ -229,6 +265,8 @@ export const EditorPane = memo<EditorPaneProps>(({
     }
 
     // Convert backend decoration format to Monaco decoration format
+    const decorationStatusClass = 'streaming-diff--idle';
+
     const monacoDecorations = backendDecorations.map((d: any) => ({
       range: new (window as any).monaco.Range(
         d.startLine,
@@ -238,7 +276,7 @@ export const EditorPane = memo<EditorPaneProps>(({
       ),
       options: {
         isWholeLine: d.endColumn === 1,
-        className: d.className,
+        className: [d.className, decorationStatusClass].filter(Boolean).join(' '),
       },
     }));
 

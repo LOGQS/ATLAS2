@@ -16,7 +16,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from agents.domains.domain_registry import AgentSpec, DomainSpec, domain_registry
 from agents.prompts.agent_prompt_templates import (
@@ -1340,7 +1340,20 @@ class SingleDomainExecutor:
                 ops=ops_payload,
                 error=error,
             )
-            state.tool_history.append(executed_record)
+
+            # Ensure we never store duplicate call_ids in tool_history.
+            existing_record_index = next(
+                (idx for idx, record in enumerate(state.tool_history) if record.call_id == proposal.call_id),
+                None,
+            )
+            if existing_record_index is not None:
+                self.logger.warning(
+                    "[TOOL-HISTORY] Duplicate call_id %s detected; overwriting previous execution record",
+                    proposal.call_id,
+                )
+                state.tool_history[existing_record_index] = executed_record
+            else:
+                state.tool_history.append(executed_record)
             state.metadata["tool_calls"] = state.metadata.get("tool_calls", 0) + 1
 
             # Log tool execution for coder tasks
@@ -1676,7 +1689,6 @@ class SingleDomainExecutor:
                         if result:
                             # Store result for later matching with proposal
                             self._auto_exec_results[tool_call_id] = result
-                            self.logger.info(f"[AUTO-EXEC] Stored execution result for {tool_call_id}")
                             # Emit file operation event to frontend
                             self._emit_file_operation_event(state, result)
 
@@ -2339,10 +2351,6 @@ The planner generated this comprehensive specification to guide your implementat
             param_value = payload.get('value', '')
             extra_info = f" param={param_name}:{len(str(param_value))}b"
 
-        self.logger.info(
-            f"[SSE-EMIT] Emitting coder_stream: segment={segment}, action={action}{extra_info}"
-        )
-
         try:
             state.event_callback(
                 {
@@ -2376,10 +2384,6 @@ The planner generated this comprehensive specification to guide your implementat
             return
 
         try:
-            self.logger.info(
-                f"[FILE-OP-EMIT] Emitting file operation event for {result.get('file_path')}"
-            )
-
             state.event_callback(
                 {
                     "event": "coder_file_operation",
@@ -2584,7 +2588,6 @@ The planner generated this comprehensive specification to guide your implementat
             full_path = candidate_path
             file_path = relative_path.as_posix()
             params["file_path"] = file_path
-            self.logger.info(f"[AUTO-EXEC] Executing {tool_name} on {file_path}")
 
             # Capture before-state
             before_content = None
@@ -2593,7 +2596,6 @@ The planner generated this comprehensive specification to guide your implementat
             if file_existed:
                 try:
                     before_content = full_path.read_text(encoding="utf-8")
-                    self.logger.debug(f"[AUTO-EXEC] Captured before-state ({len(before_content)} bytes)")
                 except UnicodeDecodeError:
                     self.logger.error(f"[AUTO-EXEC] Cannot auto-execute on binary file: {file_path}")
                     return None
@@ -2603,8 +2605,17 @@ The planner generated this comprehensive specification to guide your implementat
                 content = params.get("content", "")
 
                 # Always ensure parent directories exist because the frontend no longer pre-creates them.
-                created_dir_paths = self._create_missing_parent_dirs(workspace_path, full_path.parent)
-                full_path.parent.mkdir(parents=True, exist_ok=True)
+                parent_dir = full_path.parent
+                if parent_dir.exists() and not parent_dir.is_dir():
+                    parent_rel = workspace_relative_path(parent_dir, str(workspace_path))
+                    self.logger.error(
+                        "[AUTO-EXEC] Cannot auto-execute file.write because parent path is a file: %s",
+                        parent_rel,
+                    )
+                    return None
+
+                created_dir_paths = self._create_missing_parent_dirs(workspace_path, parent_dir)
+                parent_dir.mkdir(parents=True, exist_ok=True)
 
                 # Write file
                 try:
@@ -2615,7 +2626,6 @@ The planner generated this comprehensive specification to guide your implementat
                     raise
 
                 after_content = content
-                self.logger.info(f"[AUTO-EXEC] Wrote {len(content)} bytes to {file_path}")
 
             elif tool_name == "file.edit":
                 edit_mode = params.get("edit_mode")
@@ -2740,11 +2750,6 @@ The planner generated this comprehensive specification to guide your implementat
 
             result["created_dirs"] = list(initial_state.get("created_dirs", []))
 
-            self.logger.info(
-                f"[AUTO-EXEC] Successfully executed {tool_name} on {file_path} "
-                f"({operation_type}, +{lines_added}/-{lines_removed} lines)"
-            )
-
             return result
 
         except Exception as exc:
@@ -2769,6 +2774,18 @@ The planner generated this comprehensive specification to guide your implementat
         else:
             current_model = state.agent.model_preference
 
+        # Deduplicate tool history records by call_id while preserving latest data.
+        deduped_history: List[ToolExecutionRecord] = []
+        seen_call_ids: Set[str] = set()
+        for record in reversed(state.tool_history):
+            if not record.call_id:
+                continue
+            if record.call_id in seen_call_ids:
+                continue
+            seen_call_ids.add(record.call_id)
+            deduped_history.append(record)
+        deduped_history.reverse()
+
         return {
             "task_id": state.context.task_id,
             "domain_id": state.context.domain_id,
@@ -2792,7 +2809,7 @@ The planner generated this comprehensive specification to guide your implementat
                     "ops": record.ops,
                     "error": record.error,
                 }
-                for record in state.tool_history
+                for record in deduped_history
             ],
             "metadata": {
                 "iterations": state.metadata.get("iterations", 0),

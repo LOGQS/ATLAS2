@@ -91,7 +91,6 @@ def _compute_file_write_decorations(
                 "type": "add",
                 "className": "streaming-diff__line-add",
             })
-        logger.debug(f"[DIFF] file.write on new file: {len(decorations)} added lines")
         return decorations
 
     # File existed - compute line-by-line diff
@@ -130,7 +129,6 @@ def _compute_file_write_decorations(
                     "className": "streaming-diff__line-add",
                 })
 
-    logger.debug(f"[DIFF] file.write on existing file: {len(decorations)} decorations")
     return decorations
 
 
@@ -193,7 +191,6 @@ def _compute_find_replace_decorations(
                 if not replace_all:
                     break
 
-    logger.debug(f"[DIFF] find_replace: {len(decorations)} modified lines")
     return decorations
 
 
@@ -230,7 +227,6 @@ def _compute_line_range_decorations(
             "className": "streaming-diff__line-modify",
         })
 
-    logger.debug(f"[DIFF] line_range: lines {start_line}-{end_line} modified")
     return decorations
 
 

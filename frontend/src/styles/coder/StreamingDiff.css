@@ -69,6 +69,10 @@
   }
 }
 
+.streaming-diff--idle {
+  animation: none !important;
+}
+
 /* Ensure decorations have higher z-index than regular content but lower than overlays */
 .monaco-editor .view-overlays .streaming-diff__line-remove,
 .monaco-editor .view-overlays .streaming-diff__inline-add,

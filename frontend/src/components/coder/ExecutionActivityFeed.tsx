@@ -416,18 +416,33 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
       new Date(a.executed_at).getTime() - new Date(b.executed_at).getTime()
     );
 
+    const processedCallIds = new Set<string>();
+
     for (const executedTool of sortedHistory) {
+      const callId = executedTool.call_id;
+
+      // Guard against malformed records
+      if (!callId) {
+        continue;
+      }
+
+      // Skip duplicate execution records that share the same call_id
+      if (processedCallIds.has(callId)) {
+        continue;
+      }
+
       // Find matching iteration by tool name
       let matched = false;
 
       for (const [, group] of Array.from(groups.entries()).sort((a, b) => a[0] - b[0])) {
         const matchingToolCall = group.toolCalls.find(tc =>
           tc.tool === executedTool.tool &&
-          !group.executedTools.some(et => et.call_id === executedTool.call_id)
+          !group.executedTools.some(et => et.call_id === callId)
         );
 
         if (matchingToolCall) {
           group.executedTools.push(executedTool);
+          processedCallIds.add(callId);
           matched = true;
           break;
         }
@@ -438,6 +453,7 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
         const firstGroupWithTools = Array.from(groups.values()).find(g => g.toolCalls.length > 0);
         if (firstGroupWithTools) {
           firstGroupWithTools.executedTools.push(executedTool);
+          processedCallIds.add(callId);
         }
       }
     }

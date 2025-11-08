@@ -637,10 +637,6 @@ async def _execute_async_domain_task(
                         task_id=task_id
                     )
                 elif event_type == "coder_file_operation" and payload:
-                    logger.info(
-                        f"[ASYNC-DOMAIN-EXEC] Publishing coder_file_operation for {chat_id}: "
-                        f"file={payload.get('file_path')}, operation={payload.get('operation')}"
-                    )
                     publish_content(
                         chat_id,
                         'coder_file_operation',

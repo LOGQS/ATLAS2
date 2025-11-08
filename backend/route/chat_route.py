@@ -167,6 +167,7 @@ def _drain_backlog_events() -> list[dict]:
 def _broadcast(event: dict):
     event_type = event.get('type', 'unknown')
     chat_id = event.get('chat_id', 'global')
+    high_volume_event = event_type in {'coder_stream', 'coder_file_operation'}
 
     with _sub_lock:
         if not _subscribers:
@@ -174,7 +175,8 @@ def _broadcast(event: dict):
             _store_backlog_event(event)
             return
         subscribers_snapshot = list(_subscribers)
-        logger.debug(f'[SSE_BROADCAST] Broadcasting {event_type} event to {len(subscribers_snapshot)} subscriber(s) (chat: {chat_id})')
+        if not high_volume_event:
+            logger.debug(f'[SSE_BROADCAST] Broadcasting {event_type} event to {len(subscribers_snapshot)} subscriber(s) (chat: {chat_id})')
 
     delivered = False
     to_remove = []
@@ -193,7 +195,8 @@ def _broadcast(event: dict):
         logger.warning(f'[SSE] Removed {len(to_remove)} stale subscriber(s) with full queues')
 
     if delivered:
-        logger.debug(f'[SSE_BROADCAST] Successfully delivered {event_type} event (chat: {chat_id})')
+        if not high_volume_event:
+            logger.debug(f'[SSE_BROADCAST] Successfully delivered {event_type} event (chat: {chat_id})')
     else:
         logger.warning(f'[SSE_BROADCAST] Failed to deliver {event_type} event (chat: {chat_id}), storing in backlog')
         _store_backlog_event(event)

@@ -40,6 +40,10 @@ class OpenRouter:
         "minimax/minimax-m2:free": {
             "name": "MiniMax M2",
             "supports_reasoning": True
+        },
+        "openrouter/polaris-alpha": {
+            "name": "Polaris Alpha",
+            "supports_reasoning": True
         }
     }
 

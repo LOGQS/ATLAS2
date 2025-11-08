@@ -75,7 +75,6 @@ class CoderStreamParser:
             return
 
         self._buffer += text
-        logger.info(f"[PARSER-FEED] Received chunk: {len(text)}b, buffer now: {len(self._buffer)}b")
         self._process_message()
         self._process_tool_calls()
 
@@ -144,6 +143,16 @@ class CoderStreamParser:
         close_idx = self._buffer.find(MESSAGE_CLOSE, self._message_start_offset)
         if close_idx == -1:
             content = self._buffer[self._message_start_offset:]
+            # Hold back potential partial closing tag to avoid emitting "</MES" etc.
+            # Find longest suffix of content that matches prefix of "</MESSAGE>"
+            holdback = 0
+            max_check = min(len(MESSAGE_CLOSE) - 1, len(content))
+            for i in range(max_check, 0, -1):
+                if MESSAGE_CLOSE.startswith(content[-i:]):
+                    holdback = i
+                    break
+            if holdback > 0:
+                content = content[:-holdback]
         else:
             content = self._buffer[self._message_start_offset:close_idx]
 
@@ -180,6 +189,9 @@ class CoderStreamParser:
                 "params_emitted": set(),  # type: Set[str]
                 "complete": False,
                 "collected_params": {},
+                "streaming_params": {},
+                "complete_params": set(),
+                "last_auto_exec_signature": None,
             }
             self._tool_states.append(tool_state)
             self._tool_search_pos = content_start
@@ -206,13 +218,11 @@ class CoderStreamParser:
 
         content = self._buffer[content_start:content_end]
 
-        logger.debug(f"[PARSER-TOOL] Processing tool index={state['index']}, content_size={len(content)}b")
-
         # Tool name
         if "tool" not in state["fields_emitted"]:
             tool_value = self._extract_tag(content, TOOL_OPEN, TOOL_CLOSE)
             if tool_value is not None:
-                logger.info(f"[PARSER-TOOL] Emitting tool name: {tool_value}")
+                logger.debug(f"[PARSER-TOOL] Emitting tool name: {tool_value}")
                 self._emit({
                     "iteration": self.iteration,
                     "segment": "tool_call",
@@ -228,21 +238,19 @@ class CoderStreamParser:
         if "reason" not in state["fields_emitted"]:
             reason_value = self._extract_tag(content, REASON_OPEN, REASON_CLOSE)
             if reason_value is not None:
-                logger.info(f"[PARSER-TOOL] Emitting reason: {reason_value[:50]}...")
-                self._emit({
-                    "iteration": self.iteration,
-                    "segment": "tool_call",
-                    "action": "field",
-                    "field": "reason",
-                    "value": reason_value,
-                    "tool_index": state["index"],
-                })
-                state["fields_emitted"].add("reason")
+                logger.debug(f"[PARSER-TOOL] Emitting reason: {reason_value[:50]}...")
+            self._emit({
+                "iteration": self.iteration,
+                "segment": "tool_call",
+                "action": "field",
+                "field": "reason",
+                "value": reason_value,
+                "tool_index": state["index"],
+            })
+            state["fields_emitted"].add("reason")
 
         # Parameters - find complete params
         param_matches = list(PARAM_PATTERN.finditer(content))
-        if param_matches:
-            logger.info(f"[PARSER-TOOL] Found {len(param_matches)} complete PARAM tags")
 
         # Track and emit STREAMING params (incomplete - waiting for </PARAM>)
         # Initialize streaming_params tracking if not present
@@ -266,7 +274,6 @@ class CoderStreamParser:
 
                 # Only emit if content has grown since last time
                 if len(streaming_content) > last_emitted_size:
-                    logger.info(f"[PARSER-TOOL] 🔄 Emitting STREAMING param update: {param_name}, currently {len(streaming_content)}b")
                     self._emit({
                         "iteration": self.iteration,
                         "segment": "tool_call",
@@ -278,7 +285,7 @@ class CoderStreamParser:
                     })
                     state["streaming_params"][param_name] = len(streaming_content)
                     state["collected_params"][param_name] = streaming_content
-                    if param_name in {"file_path", "content", "new_content", "create_dirs"}:
+                    if param_name in {"content", "new_content", "create_dirs"}:
                         self._attempt_auto_exec(state, content)
                 break
             search_pos = param_close_pos + len('</PARAM>')
@@ -296,7 +303,7 @@ class CoderStreamParser:
             if param_name in state.get("streaming_params", {}):
                 del state["streaming_params"][param_name]
 
-            logger.info(f"[PARSER-TOOL] ✓ Emitting complete param: {param_name}={len(param_value)}b")
+            logger.debug(f"[PARSER-TOOL] ✓ Emitting complete param: {param_name}={len(param_value)}b")
             self._emit({
                 "iteration": self.iteration,
                 "segment": "tool_call",
@@ -307,6 +314,7 @@ class CoderStreamParser:
                 "complete": True,
             })
             state["collected_params"][param_name] = param_value
+            state["complete_params"].add(param_name)
             if param_name in {"file_path", "content", "new_content", "create_dirs"}:
                 self._attempt_auto_exec(state, content)
 
@@ -352,13 +360,23 @@ class CoderStreamParser:
         if not file_path:
             return
 
+        if "file_path" in state.get("streaming_params", {}):
+            return
+
+        complete_params = state.get("complete_params", set())
+        if "file_path" not in complete_params:
+            return
+
+        if tool_name == "file.write":
+            content_value = params_snapshot.get("content")
+            if content_value is None:
+                return
+            signature = len(content_value)
+            if signature == state.get("last_auto_exec_signature"):
+                return
+            state["last_auto_exec_signature"] = signature
+
         tool_call_id = f"auto_exec_iter{self.iteration}_tool{state['index']}"
-        logger.debug(
-            "[AUTO-EXEC-TRIGGER] Updating %s (id=%s) with params: %s",
-            tool_name,
-            tool_call_id,
-            list(params_snapshot.keys()),
-        )
         try:
             self._auto_exec_callback(tool_name, params_snapshot, tool_call_id)
         except Exception as exc:

@@ -324,73 +324,147 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   }, [state]);
 
   const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
+  const fileTreeAbortControllerRef = React.useRef<AbortController | null>(null);
+  const fileTreeRequestRef = React.useRef<Promise<void> | null>(null);
+  const pendingFileTreeRefreshRef = React.useRef(false);
+  const lastImmediateRefreshRef = React.useRef(0);
 
   const setError = useCallback((error: string) => {
     setState(prev => ({ ...prev, error }));
   }, []);
 
+  const describeError = (err: unknown): string => {
+    if (err instanceof Error) {
+      return err.message;
+    }
+    if (typeof err === 'string') {
+      return err;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return 'Unknown error';
+    }
+  };
+
   const loadFileTree = useCallback(async () => {
     if (!chatId) return;
-    logger.info('[CODER_CTX] loadFileTree start', { chatId });
-    setState(prev => ({ ...prev, isLoading: true, error: '' }));
-    try {
-      const treePromise = fetch(apiUrl(`/api/coder-workspace/tree?chat_id=${chatId}`));
-      const gitStatusPromise = fetch(apiUrl(`/api/coder-git/status?chat_id=${chatId}`))
-        .then(res => res.json())
-        .catch(err => {
-          logger.warn('[CODER] Failed to load git status:', err);
-          return null;
-        });
-
-      const treeResponse = await treePromise;
-      const treeData = await treeResponse.json();
-
-      if (!treeData.success || !treeData.root) {
-        await gitStatusPromise;
-        setState(prev => ({ ...prev, error: treeData.error || 'Failed to load file tree', isLoading: false }));
-        return;
-      }
-
-      const rootNode: FileNode = treeData.root;
-      const directoryPaths = collectDirectoryPaths(rootNode, new Set<string>());
-      const rootPath = rootNode.path || '';
-
-      const applyTreeUpdate = (prev: CoderState, overrides: Partial<CoderState>) => {
-        const nextExpanded = new Set<string>();
-
-        prev.expandedFolders.forEach(path => {
-          if (directoryPaths.has(path)) {
-            nextExpanded.add(path);
-          }
-        });
-        nextExpanded.add(rootPath);
-
-        return {
-          ...prev,
-          fileTree: rootNode,
-          expandedFolders: nextExpanded,
-          isLoading: false,
-          ...overrides,
-        };
-      };
-
-      const gitData = await gitStatusPromise;
-      const gitOverrides: Partial<CoderState> = gitData?.success
-        ? {
-            isGitRepo: gitData.is_git_repo,
-            gitStatus: gitData.status || {},
-          }
-        : {
-            isGitRepo: false,
-            gitStatus: {},
-          };
-
-      setState(prev => applyTreeUpdate(prev, gitOverrides));
-      logger.info('[CODER_CTX] loadFileTree success', { hasGit: !!gitData?.success, isGitRepo: !!gitData?.is_git_repo });
-    } catch (err) {
-      logger.error('[CODER] Failed to load file tree:', err);
-      setState(prev => ({ ...prev, error: 'Failed to load file tree', isLoading: false }));
+    if (fileTreeRequestRef.current) {
+      pendingFileTreeRefreshRef.current = true;
+      logger.debug('[CODER_CTX] Coalescing file tree refresh while a request is in-flight');
+      return fileTreeRequestRef.current;
     }
+
+    logger.info('[CODER_CTX] loadFileTree start', { chatId });
+    setState(prev => (prev.isLoading ? prev : { ...prev, isLoading: true, error: '' }));
+
+    const controller = new AbortController();
+    fileTreeAbortControllerRef.current?.abort();
+    fileTreeAbortControllerRef.current = controller;
+
+    const requestPromise = (async () => {
+      try {
+        const treePromise = fetch(apiUrl(`/api/coder-workspace/tree?chat_id=${chatId}`), {
+          signal: controller.signal,
+        });
+        const gitStatusPromise = fetch(apiUrl(`/api/coder-git/status?chat_id=${chatId}`), {
+          signal: controller.signal,
+        })
+          .then(async res => {
+            if (!res.ok) {
+              const text = await res.text().catch(() => '');
+              throw new Error(text || `Git status request failed with ${res.status}`);
+            }
+            return res.json();
+          })
+          .catch(err => {
+            if (err instanceof DOMException && err.name === 'AbortError') {
+              logger.debug('[CODER] Git status fetch aborted due to a newer request');
+              return null;
+            }
+            logger.warn('[ATLAS] [CODER] Failed to load git status:', describeError(err));
+            return null;
+          });
+
+        const treeResponse = await treePromise;
+        if (!treeResponse.ok) {
+          const text = await treeResponse.text().catch(() => '');
+          throw new Error(text || `File tree request failed with ${treeResponse.status}`);
+        }
+        const treeData = await treeResponse.json();
+
+        if (!treeData.success || !treeData.root) {
+          await gitStatusPromise;
+          setState(prev => ({ ...prev, error: treeData.error || 'Failed to load file tree', isLoading: false }));
+          return;
+        }
+
+        const rootNode: FileNode = treeData.root;
+        const directoryPaths = collectDirectoryPaths(rootNode, new Set<string>());
+        const rootPath = rootNode.path || '';
+
+        const applyTreeUpdate = (prev: CoderState, overrides: Partial<CoderState>) => {
+          const nextExpanded = new Set<string>();
+
+          prev.expandedFolders.forEach(path => {
+            if (directoryPaths.has(path)) {
+              nextExpanded.add(path);
+            }
+          });
+          nextExpanded.add(rootPath);
+
+          return {
+            ...prev,
+            fileTree: rootNode,
+            expandedFolders: nextExpanded,
+            isLoading: false,
+            ...overrides,
+          };
+        };
+
+        const gitData = await gitStatusPromise;
+        const gitOverrides: Partial<CoderState> = gitData?.success
+          ? {
+              isGitRepo: gitData.is_git_repo,
+              gitStatus: gitData.status || {},
+            }
+          : {
+              isGitRepo: false,
+              gitStatus: {},
+            };
+
+        setState(prev => applyTreeUpdate(prev, gitOverrides));
+        logger.info('[CODER_CTX] loadFileTree success', { hasGit: !!gitData?.success, isGitRepo: !!gitData?.is_git_repo });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          logger.debug('[CODER_CTX] loadFileTree aborted due to a newer refresh request');
+          return;
+        }
+        logger.error('[CODER] Failed to load file tree:', describeError(err));
+        setState(prev => ({ ...prev, error: 'Failed to load file tree', isLoading: false }));
+      } finally {
+        if (fileTreeAbortControllerRef.current === controller) {
+          fileTreeAbortControllerRef.current = null;
+        }
+        fileTreeRequestRef.current = null;
+        if (pendingFileTreeRefreshRef.current) {
+          pendingFileTreeRefreshRef.current = false;
+          void loadFileTree();
+        }
+      }
+    })();
+
+    fileTreeRequestRef.current = requestPromise;
+    return requestPromise;
+  }, [chatId]);
+
+  useEffect(() => {
+    return () => {
+      fileTreeAbortControllerRef.current?.abort();
+      fileTreeAbortControllerRef.current = null;
+      fileTreeRequestRef.current = null;
+      pendingFileTreeRefreshRef.current = false;
+    };
   }, [chatId]);
 
   const setWorkspace = useCallback(async (path: string) => {
@@ -1657,9 +1731,16 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     if (!chatId) return;
 
     let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const IMMEDIATE_REFRESH_COOLDOWN_MS = 300;
 
     const requestFileTreeRefresh = (forceImmediate = false) => {
       if (forceImmediate) {
+        const now = Date.now();
+        if (now - lastImmediateRefreshRef.current < IMMEDIATE_REFRESH_COOLDOWN_MS) {
+          logger.debug('[CODER_CTX] Skipping immediate file tree refresh due to cooldown window');
+          return;
+        }
+        lastImmediateRefreshRef.current = now;
         if (refreshDebounceTimer) {
           clearTimeout(refreshDebounceTimer);
           refreshDebounceTimer = null;
