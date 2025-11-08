@@ -1,0 +1,191 @@
+.diff-viewer {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background: rgba(15, 15, 17, 0.98);
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  border-radius: var(--radius-lg);
+}
+
+.diff-container {
+  min-height: 100%;
+}
+
+.diff-line {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--spacing-3);
+  white-space: pre;
+  font-family: inherit;
+  transition: background var(--duration-fast) var(--ease-smooth);
+}
+
+.diff-line:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-line-number {
+  display: inline-block;
+  width: 48px;
+  text-align: right;
+  padding-right: var(--spacing-4);
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 0.75rem;
+  user-select: none;
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.diff-line-indicator {
+  display: inline-block;
+  width: 24px;
+  text-align: center;
+  font-weight: 700;
+  user-select: none;
+  flex-shrink: 0;
+  font-size: 0.875rem;
+}
+
+.diff-line-content {
+  flex: 1;
+  padding-left: var(--spacing-3);
+  overflow-x: auto;
+  font-size: 0.8125rem;
+}
+
+.diff-line-added {
+  background-color: rgba(34, 197, 94, 0.08);
+  border-left: 2px solid rgba(34, 197, 94, 0.6);
+}
+
+.diff-line-added .diff-line-indicator {
+  color: rgba(74, 222, 128, 0.95);
+}
+
+.diff-line-removed {
+  background-color: rgba(239, 68, 68, 0.08);
+  border-left: 2px solid rgba(239, 68, 68, 0.6);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.diff-line-removed .diff-line-indicator {
+  color: rgba(248, 113, 113, 0.95);
+}
+
+/* Scrollbar styling - iOS-like thin scrollbars */
+.diff-viewer::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.diff-viewer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.diff-viewer::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.diff-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  background-clip: padding-box;
+}
+
+/* Diff Header - View Mode Toggle */
+.diff-header {
+  display: flex;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4);
+  background: rgba(20, 20, 23, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(8px);
+}
+
+.diff-mode-btn {
+  padding: var(--spacing-2) var(--spacing-3);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--bolt-elements-textSecondary);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diff-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--bolt-elements-textPrimary);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.diff-mode-btn.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: rgba(96, 165, 250, 0.95);
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.15);
+}
+
+/* Split View Mode - Side by side comparison */
+.diff-container.split-mode {
+  display: flex;
+  flex-direction: column;
+}
+
+.split-diff-line {
+  display: flex;
+  min-height: 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background var(--duration-fast) var(--ease-smooth);
+}
+
+.split-diff-line:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.split-diff-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--spacing-3);
+  white-space: pre;
+  font-family: inherit;
+  overflow-x: auto;
+}
+
+.split-diff-side:first-child {
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.split-diff-unchanged {
+  background: rgba(15, 15, 17, 0.5);
+}
+
+.split-diff-added {
+  background-color: rgba(34, 197, 94, 0.08);
+  border-left: 2px solid rgba(34, 197, 94, 0.6);
+}
+
+.split-diff-added .diff-line-indicator {
+  color: rgba(74, 222, 128, 0.95);
+}
+
+.split-diff-removed {
+  background-color: rgba(239, 68, 68, 0.08);
+  border-left: 2px solid rgba(239, 68, 68, 0.6);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.split-diff-removed .diff-line-indicator {
+  color: rgba(248, 113, 113, 0.95);
+}

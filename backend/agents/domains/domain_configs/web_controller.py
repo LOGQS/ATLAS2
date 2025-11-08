@@ -37,7 +37,7 @@ Always wait for page loads and handle dynamic content properly.""",
                     max_time_seconds=200,
                     max_context_tokens=12000,
                 ),
-                model_preference="gemini-2.5-flash",
+                model_preference="gemini-2.5-flash-preview-09-2025",
             )
         ],
         tool_allowlist=[

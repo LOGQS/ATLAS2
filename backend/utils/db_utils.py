@@ -502,6 +502,73 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp)
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS coder_workspaces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL UNIQUE,
+                    workspace_path TEXT NOT NULL,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_coder_workspaces_chat ON coder_workspaces(chat_id)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS workspace_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_path TEXT NOT NULL,
+                    workspace_name TEXT NOT NULL,
+                    project_type TEXT,
+                    file_count INTEGER DEFAULT 0,
+                    last_opened TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    access_count INTEGER DEFAULT 1,
+                    metadata TEXT,
+                    UNIQUE(workspace_path)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workspace_history_last_opened ON workspace_history(last_opened DESC)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS file_edit_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_path TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    edit_type TEXT DEFAULT 'checkpoint' CHECK(edit_type IN ('checkpoint')),
+                    content_hash TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_edit_history_lookup
+                ON file_edit_history(workspace_path, file_path, timestamp DESC)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_edit_history_hash
+                ON file_edit_history(workspace_path, file_path, content_hash)
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS rate_limit_usage (
+                    scope_key TEXT NOT NULL,
+                    window TEXT NOT NULL CHECK(window IN ('minute', 'hour', 'day')),
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    token_count INTEGER NOT NULL DEFAULT 0,
+                    oldest_request_ts REAL,
+                    oldest_token_ts REAL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (scope_key, window)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rate_limit_updated
+                ON rate_limit_usage(updated_at)
+            """)
+
             # No migration logic required fresh schema creation only during development
 
             conn.commit()
@@ -565,7 +632,7 @@ class DatabaseManager:
                     thoughts: Optional[str] = None, provider: Optional[str] = None,
                     model: Optional[str] = None, attached_file_ids: Optional[List[str]] = None,
                     router_enabled: bool = False, router_decision: Optional[str] = None,
-                    plan_id: Optional[str] = None) -> Optional[str]:
+                    plan_id: Optional[str] = None, domain_execution: Optional[Any] = None) -> Optional[str]:
         """
         Save message to chat history with optional file attachments and router metadata.
 
@@ -587,14 +654,17 @@ class DatabaseManager:
         try:
             with self._connect() as conn:
                 cursor = conn.cursor()
+                domain_execution_json = None
+                if domain_execution is not None:
+                    domain_execution_json = self._ensure_json_text(domain_execution, 'message domain execution save')
 
                 message_id = self._generate_message_id(chat_id)
 
                 cursor.execute("""
-                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision, plan_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, chat_id, role, content, thoughts, provider, model, router_enabled, router_decision, domain_execution, plan_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (message_id, chat_id, role, content, thoughts, provider, model,
-                      1 if router_enabled else 0, router_decision, plan_id))
+                      1 if router_enabled else 0, router_decision, domain_execution_json, plan_id))
                 
                 if attached_file_ids:
                     for file_id in attached_file_ids:
@@ -874,7 +944,7 @@ class DatabaseManager:
                 LEFT JOIN message_files mf ON m.id = mf.message_id
                 LEFT JOIN files f ON mf.file_id = f.id
                 WHERE m.chat_id = ?
-                ORDER BY m.id ASC, mf.created_at ASC
+                ORDER BY m.timestamp ASC, mf.created_at ASC
             """, (chat_id,))
 
             messages_map = defaultdict(lambda: {
@@ -922,7 +992,7 @@ class DatabaseManager:
                     })
 
             messages = []
-            for message_id in sorted(messages_map.keys()):
+            for message_id in sorted(messages_map.keys(), key=lambda x: int(x.split('_')[-1])):
                 message = dict(messages_map[message_id])
                 if not message["attachedFiles"]:
                     del message["attachedFiles"]

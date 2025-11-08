@@ -23,17 +23,41 @@ from route.db_bulk_route import register_db_bulk_routes
 from route.db_versioning_route import register_db_versioning_routes
 from route.file_route import register_file_routes
 from route.file_browser_route import register_file_browser_routes
+from route.coder_workspace_route import register_coder_workspace_routes
+from route.folder_picker_route import register_folder_picker_routes
+from route.coder_git_route import coder_git_bp
 from route.stt_route import register_stt_routes
 from route.image_route import image_bp
+from route.rate_limit_route import register_rate_limit_routes
 from route.token_route import register_token_routes
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
+from utils import startup_state
 from file_utils.filesystem_watcher import start_filesystem_monitor, stop_filesystem_monitor
 from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
+from utils.rate_limit_store import load_rate_limit_overrides
+
+# Ensure built-in tools are registered during startup rather than first request
+from agents.tools import tool_registry as _tool_registry  # noqa: F401
 
 logger = get_logger(__name__)
+
+_DEBUG_TRUE_VALUES = {"1", "true", "t", "yes", "on"}
+
+
+def _get_debug_mode() -> bool:
+    """Resolve whether the backend should run in debug mode."""
+    debug_env = os.getenv("FLASK_DEBUG")
+    if debug_env is None:
+        inferred = "0" if os.getenv("FLASK_ENV", "").lower() == "production" else "1"
+        os.environ["FLASK_DEBUG"] = inferred
+        debug_env = inferred
+    return debug_env.strip().lower() in _DEBUG_TRUE_VALUES
+
+
+DEBUG_ENABLED = _get_debug_mode()
 
 _shutdown_handled = False
 _startup_lock = threading.Lock()
@@ -99,22 +123,30 @@ def _run_startup_housekeeping():
             logger.debug("Startup housekeeping already completed; skipping repeat run")
             return _startup_sync_result, _startup_reset_count
 
-        setup_filespace()
+        startup_state.mark_initializing()
 
-        sync_result = sync_files_with_database()
-        _startup_sync_result = sync_result
+        try:
+            setup_filespace()
 
-        if sync_result.get('success'):
-            logger.info("File sync completed: %s", sync_result['summary'])
-        else:
-            logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
+            sync_result = sync_files_with_database()
+            _startup_sync_result = sync_result
 
-        reset_count = db.set_all_chats_static()
-        _startup_reset_count = reset_count
-        if reset_count > 0:
-            logger.info("Startup: Reset %d chat(s) to static state", reset_count)
-        else:
-            logger.debug("Startup: No active chats to reset")
+            if sync_result.get('success'):
+                logger.info("File sync completed: %s", sync_result['summary'])
+            else:
+                logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
+
+            reset_count = db.set_all_chats_static()
+            _startup_reset_count = reset_count
+            if reset_count > 0:
+                logger.info("Startup: Reset %d chat(s) to static state", reset_count)
+            else:
+                logger.debug("Startup: No active chats to reset")
+
+            startup_state.set_housekeeping_result(sync_result, reset_count)
+        except Exception as exc:
+            startup_state.set_housekeeping_result({'success': False, 'error': str(exc)}, 0)
+            raise
 
         _startup_housekeeping_done = True
 
@@ -170,10 +202,13 @@ def handle_shutdown(signum=None, frame=None):
 def create_app():
     """Create and configure the Flask application"""
     app = Flask(__name__)
+    app.config["DEBUG"] = DEBUG_ENABLED
+    app.debug = DEBUG_ENABLED
     
     cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
     CORS(app, origins=[origin.strip() for origin in cors_origins])
     
+    load_rate_limit_overrides()
     _run_startup_housekeeping()
 
     register_chat_routes(app)
@@ -184,8 +219,12 @@ def create_app():
     register_db_versioning_routes(app)
     register_file_routes(app)
     register_file_browser_routes(app)
+    register_coder_workspace_routes(app)
+    register_folder_picker_routes(app)
+    app.register_blueprint(coder_git_bp)
     register_stt_routes(app)
     register_token_routes(app)
+    register_rate_limit_routes(app)
     app.register_blueprint(image_bp)
 
     try:
@@ -201,7 +240,17 @@ def create_app():
             'default_model': Config.get_default_model(),
             'default_streaming': Config.get_default_streaming()
         })
-    
+
+    @app.route('/api/config')
+    def api_config():
+        """Get client-side configuration values"""
+        return jsonify({
+            'maxConcurrentChats': Config.get_max_concurrent_chats(),
+            'executionMode': Config.get_chat_execution_mode(),
+            'defaultModel': Config.get_default_model(),
+            'defaultStreaming': Config.get_default_streaming()
+        })
+
     @app.route('/api')
     def api_info():
         return jsonify({
@@ -239,7 +288,11 @@ def create_app():
     return app
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn', force=True)
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError as e:
+        if "context has already been set" not in str(e):
+            raise
 
     logs_dir = Path("..") / "logs"
     logs_dir.mkdir(exist_ok=True)
@@ -252,34 +305,47 @@ if __name__ == '__main__':
 
     app = create_app()
 
-    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
-        logger.info("[POOL-INIT] Starting worker pool initialization in background...")
+    is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+    is_production = not DEBUG_ENABLED
 
-        def init_pool_background():
-            try:
-                from utils.config import Config
-                pool_size = Config.get_worker_pool_size()
-                logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
-                pool = initialize_pool(pool_size=pool_size)
+    # Check if worker pool should be initialized based on execution mode
+    if Config.should_init_worker_pool():
+        if is_reloader_child or is_production:
+            logger.info("[POOL-INIT] Starting worker pool initialization in background...")
+            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
 
-                stats = pool.get_stats()
-                logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
+            def init_pool_background():
+                try:
+                    from utils.config import Config
+                    pool_size = Config.get_worker_pool_size()
+                    logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
+                    pool = initialize_pool(pool_size=pool_size)
 
-                for i in range(6):
-                    time.sleep(5)
+                    if pool is None:
+                        logger.warning("[POOL-INIT] Pool initialization returned None - likely blocked in reloader parent")
+                        return
+
                     stats = pool.get_stats()
-                    logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
-                    if stats['ready_workers'] >= stats['target_size']:
-                        logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
-                        break
-            except Exception as e:
-                logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
-                logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
+                    logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
 
-        pool_thread = threading.Thread(target=init_pool_background, daemon=True)
-        pool_thread.start()
+                    for i in range(6):
+                        time.sleep(5)
+                        stats = pool.get_stats()
+                        logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
+                        if stats['ready_workers'] >= stats['target_size']:
+                            logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
+                            break
+                except Exception as e:
+                    logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
+                    logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
+
+            pool_thread = threading.Thread(target=init_pool_background, daemon=True)
+            pool_thread.start()
+        else:
+            logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
+            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
     else:
-        logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
+        logger.info("[POOL-INIT] Worker pool initialization skipped (execution mode: %s)", Config.get_chat_execution_mode())
 
     logger.info("Registering shutdown handlers...")
 
@@ -301,7 +367,7 @@ if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
         port=5000,
-        debug=True,
+        debug=DEBUG_ENABLED,
         threaded=True,
         reloader_type='stat',
         exclude_patterns=reloader_exclude_patterns

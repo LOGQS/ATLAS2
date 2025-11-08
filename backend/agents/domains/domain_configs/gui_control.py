@@ -35,7 +35,7 @@ Always verify UI state before actions and handle errors gracefully.""",
                     max_time_seconds=120,
                     max_context_tokens=8000,
                 ),
-                model_preference="gemini-2.5-flash",
+                model_preference="gemini-2.5-flash-preview-09-2025",
             )
         ],
         tool_allowlist=[

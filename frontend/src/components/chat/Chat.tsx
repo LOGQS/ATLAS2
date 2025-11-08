@@ -8,15 +8,14 @@ import RouterBox from './RouterBox';
 import DomainBox from '../agentic/DomainBox';
 import MessageRenderer from '../message/MessageRenderer';
 import MessageWrapper from '../message/MessageWrapper';
-import PlanMessage from '../agentic/PlanMessage';
+import { AnimatePresence } from 'framer-motion';
+import { WorkspacePickerModal } from '../coder/WorkspacePickerModal';
 import { liveStore } from '../../utils/chat/LiveStore';
-import { planStore } from '../../utils/agentic/PlanStore';
 import { chatHistoryCache } from '../../utils/chat/ChatHistoryCache';
 import { versionSwitchLoadingManager } from '../../utils/versioning/versionSwitchLoadingManager';
 import logger from '../../utils/core/logger';
 import { performanceTracker } from '../../utils/core/performanceTracker';
 import { BrowserStorage } from '../../utils/storage/BrowserStorage';
-import { usePlanExecution } from '../../hooks/agentic/usePlanExecution';
 import { apiUrl } from '../../config/api';
 import { computeIsScrollable, MessageDuplicateChecker } from '../../utils/chat/chatHelpers';
 import useScrollControl from '../../hooks/ui/useScrollControl';
@@ -34,12 +33,15 @@ import type { AttachedFile, Message } from '../../types/messages';
 
 const DUPLICATE_WINDOW_MS = 1000;
 const SKELETON_READY_DELAY_MS = 120;
-const LOAD_HISTORY_DEBOUNCE_MS = 50;
 const RECONCILE_AFTER_STREAM_DELAY_MS = 100;
+
+// Module-level storage to persist across component unmount/remount (React StrictMode)
+const loadHistoryGuard = new Map<string, boolean>();
+const optimisticMessagesStore = new Map<string, Message[]>();
 
 interface ChatProps {
   chatId?: string;
-  onMessageSent?: (message: string) => void;
+  onMessageSent?: (chatId: string, message: string) => void;
   onChatStateChange?: (chatId: string, state: 'thinking' | 'responding' | 'static') => void;
   onFirstMessageSent?: (chatId: string) => void;
   onActiveStateChange?: (chatId: string, isReallyActive: boolean) => void;
@@ -52,6 +54,9 @@ interface ChatProps {
   defaultModel?: string;
   autoTTSActive?: boolean;
   firstMessage?: string;
+  showWorkspacePicker?: boolean;
+  onWorkspaceSelected?: (chatId: string, workspacePath: string) => void;
+  onWorkspaceLoadingStart?: () => void;
 }
 
 interface ChatLive {
@@ -68,24 +73,26 @@ interface ChatLive {
     fastpathParams?: string | null;
   } | null;
   domainExecution: any | null;
-  planSummary: { planId: string; fingerprint: string; plan: any } | null;
   error: { message: string; receivedAt: number; messageId?: string | null } | null;
   version: number;
 }
 
-const Chat = React.memo(forwardRef<any, ChatProps>(({ 
-  chatId, 
-  onMessageSent, 
-  onChatStateChange, 
-  onFirstMessageSent, 
-  onActiveStateChange, 
+const Chat = React.memo(forwardRef<any, ChatProps>(({
+  chatId,
+  onMessageSent,
+  onChatStateChange,
+  onFirstMessageSent,
+  onActiveStateChange,
   onBusyStateChange,
   setIsMessageBeingSent,
   isSendInProgress = false,
   onChatSwitch,
-  isActive = true, 
-  autoTTSActive = false, 
-  firstMessage
+  isActive = true,
+  autoTTSActive = false,
+  firstMessage,
+  showWorkspacePicker = false,
+  onWorkspaceSelected,
+  onWorkspaceLoadingStart
 }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [firstMessageSent, setFirstMessageSent] = useState(false);
@@ -97,19 +104,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     thoughtsBuf: '',
     routerDecision: null,
     domainExecution: null,
-    planSummary: null,
     error: null,
     version: 0
   });
   const [dismissedErrorAt, setDismissedErrorAt] = useState<number | null>(null);
   const [persistingAfterStream, setPersistingAfterStream] = useState(false);
   const [wasStreaming, setWasStreaming] = useState(false);
-
-  const planState = usePlanExecution(chatId);
-  const planSummary = planState?.summary ?? null;
-  const planTasks = useMemo(() => planState ? Array.from(planState.tasks.values()) : [], [planState]);
-  const planToolCalls = useMemo(() => planState?.toolCalls ?? [], [planState]);
-  const planCommits = useMemo(() => planState?.contextCommits ?? [], [planState]);
 
   const [needsBottomAnchor, setNeedsBottomAnchor] = useState(false);
   const [notLoadingSettled, setNotLoadingSettled] = useState(false);
@@ -146,7 +146,24 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   }, [chatId]);
 
   useEffect(() => {
-    logger.info(`[MESSAGE_STATE] Chat ${chatId} messages changed - count: ${messages.length}, IDs: ${messages.map(m => `${m.id}(${m.role})`).join(', ')}`);
+    logger.info(`[CHAT_MESSAGES_STATE] ${chatId} count=${messages.length} ids=${messages.map(m => `${m.id}(${m.role})`).join(', ')}`);
+  }, [messages, chatId]);
+
+  useEffect(() => {
+    if (!chatId) {
+      return;
+    }
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+    if (lastAssistant) {
+      logger.info(
+        `[ROUTER_STATE_RENDER_CHECK] ${chatId} lastAssistant=${lastAssistant.id} ` +
+        `routerEnabled=${Boolean(lastAssistant.routerEnabled)} ` +
+        `hasDecision=${Boolean(lastAssistant.routerDecision?.route)} ` +
+        `route=${lastAssistant.routerDecision?.route ?? 'none'}`
+      );
+    } else if (messages.length > 0) {
+      logger.info(`[ROUTER_STATE_RENDER_CHECK] ${chatId} has ${messages.length} messages but no assistant entries`);
+    }
   }, [messages, chatId]);
 
   useEffect(() => {
@@ -160,6 +177,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   const initialLoadStrategyRef = useRef<'cached' | 'forced' | null>(null);
   const needsScrollRestoreRef = useRef<boolean>(true);
   const scrollRestoreBaselineRef = useRef<Message[]>(messages);
+  const resizeObserverFrameRef = useRef<number | null>(null);
+  const lastObservedContainerSizeRef = useRef<{ width: number; height: number; scrollHeight: number } | null>(null);
 
   const autoTtsPlayedRef = useRef<Set<string>>(new Set());
 
@@ -179,6 +198,14 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   });
   const { isStreaming: scrollControlStreaming, isAutoScrollEnabled: scrollControlEnabled } = scrollControl;
   const { isLoading, loadHistory } = useChatHistory({ chatId, setMessages, messages });
+
+  useEffect(() => {
+    logger.info(`[CHAT_LOAD_STATE] ${chatId} component isLoading=${isLoading}`);
+  }, [chatId, isLoading]);
+
+  useEffect(() => {
+    logger.info(`[CHAT_LOAD_STATE] ${chatId} notLoadingSettled=${notLoadingSettled} skeletonReady=${skeletonReady}`);
+  }, [chatId, notLoadingSettled, skeletonReady]);
 
   const sendMessageRef = useRef<((content: string, attachedFiles?: AttachedFile[]) => Promise<void>) | undefined>(undefined);
   
@@ -401,7 +428,6 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         thoughtsBuf: snap.thoughtsBuf,
         routerDecision: snap.routerDecision,
         domainExecution: snap.domainExecution,
-        planSummary: snap.planSummary,
         error: snap.error ?? null,
         version: snap.version
       });
@@ -419,27 +445,32 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
 
       if (snap.routerDecision && snap.routerDecision.selectedRoute) {
-        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-        if (lastAssistant && !lastAssistant.routerDecision) {
-          logger.info(`[ROUTER_DEBUG] Applying router decision to message ${lastAssistant.id}`);
-          setMessages(prev => prev.map(msg => {
-            if (msg.id === lastAssistant.id) {
-              return {
-                ...msg,
-                routerEnabled: true,
-                routerDecision: {
-                  route: snap.routerDecision!.selectedRoute!,
-                  available_routes: snap.routerDecision!.availableRoutes || [],
-                  selected_model: snap.routerDecision!.selectedModel,
-                  tools_needed: snap.routerDecision!.toolsNeeded ?? null,
-                  execution_type: snap.routerDecision!.executionType || null,
-                  fastpath_params: snap.routerDecision!.fastpathParams || null
-                }
-              };
-            }
-            return msg;
-          }));
-        }
+        // Use functional update to avoid messages dependency
+        // This prevents the subscription from re-registering on every message change
+        setMessages(prev => {
+          const lastAssistant = [...prev].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant && !lastAssistant.routerDecision) {
+            logger.info(`[ROUTER_DEBUG] Applying router decision to message ${lastAssistant.id}`);
+            return prev.map(msg => {
+              if (msg.id === lastAssistant.id) {
+                return {
+                  ...msg,
+                  routerEnabled: true,
+                  routerDecision: {
+                    route: snap.routerDecision!.selectedRoute!,
+                    available_routes: snap.routerDecision!.availableRoutes || [],
+                    selected_model: snap.routerDecision!.selectedModel,
+                    tools_needed: snap.routerDecision!.toolsNeeded ?? null,
+                    execution_type: snap.routerDecision!.executionType || null,
+                    fastpath_params: snap.routerDecision!.fastpathParams || null
+                  }
+                };
+              }
+              return msg;
+            });
+          }
+          return prev;
+        });
       }
 
 
@@ -447,46 +478,63 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         onChatStateChange(_id, snap.state);
       }
     });
-  }, [chatId, onChatStateChange, loadHistory, messages]);
+  }, [chatId, onChatStateChange, loadHistory]);
 
   const loadHistoryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const previousChatIdRef = useRef<string | undefined>(undefined);
 
+  // Restore optimistic messages from module storage on mount (React StrictMode remount)
   useEffect(() => {
     if (!chatId) return;
 
-    initialLoadStrategyRef.current = null;
-
-    try {
-      const hasCleanCache = chatHistoryCache.hasClean(chatId);
-      if (hasCleanCache) {
-        logger.info(`[CHAT_SWITCH] Using cached history for ${chatId} (background validation scheduled)`);
-        initialLoadStrategyRef.current = 'cached';
-        loadHistory({ silent: false }).catch(() => {});
-      } else {
-        logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
-        initialLoadStrategyRef.current = 'forced';
-        loadHistory({ forceReplace: true, silent: false }).catch(() => {});
-      }
-    } catch (error) {
-      logger.warn(`[CHAT_SWITCH] Initial load scheduling failed for ${chatId}:`, error);
+    const stored = optimisticMessagesStore.get(chatId);
+    if (stored && stored.length > 0) {
+      logger.debug(`[CHAT_SWITCH] Restoring ${stored.length} optimistic messages on remount`);
+      setMessages(stored);
     }
-  }, [chatId, loadHistory]);
+  }, [chatId]);
+
+  // Save optimistic messages to module storage to survive React StrictMode remounts
+  useEffect(() => {
+    if (!chatId) return;
+
+    const optimistic = messages.filter(m => m.id.startsWith('temp_') || m.clientId);
+    if (optimistic.length > 0) {
+      optimisticMessagesStore.set(chatId, optimistic);
+    } else {
+      optimisticMessagesStore.delete(chatId);
+    }
+  }, [chatId, messages]);
 
   useEffect(() => {
     if (chatId && chatId !== previousChatIdRef.current) {
-      logger.info(`[CHAT_SWITCH] ===== CHAT COMPONENT RECEIVED NEW CHATID =====`);
-      logger.info(`[CHAT_SWITCH] Previous chatId: ${previousChatIdRef.current}, New chatId: ${chatId}`);
-      logger.info(`[CHAT_SWITCH] Current messages count: ${messages.length}`);
-      logger.info(`[CHAT_SWITCH] isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
+      logger.info(`[CHAT_SWITCH] Chat changed: ${previousChatIdRef.current} → ${chatId}`);
+
+      if (previousChatIdRef.current) {
+        logger.info(`[CHAT_LOAD_GUARD] Before reset - prev=${previousChatIdRef.current} guard=${loadHistoryGuard.get(`${previousChatIdRef.current}_initial`)}, next=${chatId} guard=${loadHistoryGuard.get(`${chatId}_initial`)}`);
+        // Reset module-level storage when switching between chats
+        const oldGuardKey = `${previousChatIdRef.current}_initial`;
+        const newGuardKey = `${chatId}_initial`;
+        loadHistoryGuard.delete(oldGuardKey);
+        loadHistoryGuard.delete(newGuardKey);
+        optimisticMessagesStore.delete(previousChatIdRef.current);
+        logger.info(`[CHAT_LOAD_GUARD] After reset - deleted ${oldGuardKey} & ${newGuardKey}`);
+      }
 
       if (previousChatIdRef.current) {
         const shouldClearState = initialLoadStrategyRef.current !== 'cached';
-        logger.info(`[CHAT_SWITCH] Clearing state for fast switch (shouldClearState: ${shouldClearState})`);
         if (shouldClearState) {
-          setMessages([]);
+          // Preserve optimistic messages during state clear
+          setMessages(prev => {
+            const optimistic = prev.filter(m => m.id.startsWith('temp_') || m.clientId);
+            if (optimistic.length > 0) {
+              logger.debug(`[CHAT_SWITCH] Preserving ${optimistic.length} optimistic messages`);
+              return optimistic;
+            }
+            return [];
+          });
         }
-        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
+        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
         setDismissedErrorAt(null);
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
@@ -496,23 +544,10 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
       previousChatIdRef.current = chatId;
 
+      // Cancel any pending debounced loads
       if (loadHistoryTimeoutRef.current) {
         clearTimeout(loadHistoryTimeoutRef.current);
-        logger.info(`[DOUBLE_MOUNT] Cancelled pending loadHistory call due to rapid remount`);
-      }
-
-      const shouldScheduleDebouncedLoad = initialLoadStrategyRef.current !== 'cached';
-      if (shouldScheduleDebouncedLoad) {
-        loadHistoryTimeoutRef.current = setTimeout(() => {
-          logger.info(`[CHAT_SWITCH] Calling loadHistory() after debounce`);
-          loadHistory().then(() => {
-            logger.info(`[CHAT_SWITCH] loadHistory() completed for ${chatId}`);
-          }).catch((error) => {
-            logger.error(`[CHAT_SWITCH] loadHistory() failed for ${chatId}:`, error);
-          });
-        }, LOAD_HISTORY_DEBOUNCE_MS);
-      } else {
-        logger.info(`[CHAT_SWITCH] Debounced load skipped for ${chatId} (cache already hydrated)`);
+        loadHistoryTimeoutRef.current = undefined;
       }
     }
 
@@ -524,30 +559,98 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId]);
 
+  useEffect(() => {
+    if (!chatId) return;
+
+    const guardKey = `${chatId}_initial`;
+    const hasGuard = loadHistoryGuard.get(guardKey);
+    const shouldForceReload = hasGuard && messages.length === 0;
+    logger.info(`[CHAT_LOAD_GUARD] Load check for ${chatId}: guardKey=${guardKey}, hasGuard=${hasGuard}, shouldForceReload=${shouldForceReload}`);
+
+    if (hasGuard && shouldForceReload) {
+      const cached = chatHistoryCache.get(chatId);
+      if (cached) {
+        logger.info(`[CHAT_LOAD_GUARD] Restoring ${cached.messages.length} cached messages for ${chatId} instead of refetch`);
+        setMessages(cached.messages);
+        return;
+      }
+      logger.warn(`[CHAT_LOAD_GUARD] Guard present but no cache for ${chatId} - forcing reload`);
+      loadHistoryGuard.delete(guardKey);
+    }
+
+    // Prevent duplicate loadHistory calls using module-level guard
+    if (hasGuard && !shouldForceReload) {
+      logger.debug(`[CHAT_SWITCH] Skipping duplicate loadHistory for ${chatId}`);
+      return;
+    }
+
+    loadHistoryGuard.set(guardKey, true);
+    logger.info(`[CHAT_LOAD_GUARD] Guard set for ${chatId}`);
+    initialLoadStrategyRef.current = null;
+
+    try {
+      const hasCleanCache = chatHistoryCache.hasClean(chatId);
+      if (hasCleanCache) {
+        logger.info(`[CHAT_SWITCH] Using cached history for ${chatId} (background validation scheduled)`);
+        initialLoadStrategyRef.current = 'cached';
+        loadHistory({ silent: false }).then(() => {
+          logger.info(`[CHAT_LOAD_CALL] Cached load resolved for ${chatId}`);
+        }).catch((err) => {
+          logger.warn(`[CHAT_LOAD_CALL] Cached load failed for ${chatId}:`, err);
+        });
+      } else {
+        logger.info(`[CHAT_SWITCH] Immediate loadHistory(forceReplace: true) for ${chatId}`);
+        initialLoadStrategyRef.current = 'forced';
+        loadHistory({ forceReplace: true, silent: false }).then(() => {
+          logger.info(`[CHAT_LOAD_CALL] Forced load resolved for ${chatId}`);
+        }).catch((err) => {
+          logger.warn(`[CHAT_LOAD_CALL] Forced load failed for ${chatId}:`, err);
+        });
+      }
+    } catch (error) {
+      logger.warn(`[CHAT_SWITCH] Initial load scheduling failed for ${chatId}:`, error);
+    }
+  }, [chatId, messages.length, loadHistory]);
+
 
   useEffect(() => {
     logger.debug(`[FirstMessage] Effect triggered - chatId: ${chatId}, isActive: ${isActive}, firstMessage: ${!!firstMessage}, firstMessageSent: ${firstMessageSent}, isOperationLoading: ${isOperationLoading}`);
 
-    if (chatId && isActive && firstMessage && firstMessage.trim() && !firstMessageSent && !isOperationLoading) {
-      logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
+    if (!chatId || !isActive || !firstMessage || !firstMessage.trim() || firstMessageSent || isOperationLoading) {
+      return;
+    }
 
-      performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
+    let messageToSend: string | null = null;
+    let filesToSend: AttachedFile[] | undefined;
 
-      try {
-        const parsed = JSON.parse(firstMessage);
-        if (parsed.message && typeof parsed.message === 'string') {
-          handleNewMessage(parsed.message, parsed.files || []);
-        } else {
-          handleNewMessage(firstMessage);
+    try {
+      const parsed = JSON.parse(firstMessage);
+      if (parsed && typeof parsed === 'object' && typeof parsed.message === 'string') {
+        if (parsed.status && parsed.status !== 'pending') {
+          logger.debug(`[Chat] Skipping auto-send for ${chatId} because pending status is ${parsed.status}`);
+          return;
         }
-      } catch {
-        handleNewMessage(firstMessage);
+        messageToSend = parsed.message;
+        if (Array.isArray(parsed.files)) {
+          filesToSend = parsed.files;
+        }
+      } else {
+        messageToSend = firstMessage;
       }
+    } catch {
+      messageToSend = firstMessage;
+    }
 
-      setFirstMessageSent(true);
-      if (onFirstMessageSent) {
-        onFirstMessageSent(chatId);
-      }
+    if (!messageToSend || !messageToSend.trim()) {
+      return;
+    }
+
+    logger.debug(`[Chat] Sending first message for new chat ${chatId}`);
+    performanceTracker.mark(performanceTracker.MARKS.FIRST_MESSAGE_CHECK, chatId);
+    handleNewMessage(messageToSend, filesToSend);
+    setFirstMessageSent(true);
+    if (onFirstMessageSent) {
+      onFirstMessageSent(chatId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, isActive, firstMessage, firstMessageSent, isOperationLoading]);
@@ -581,11 +684,50 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
+
+    const updateScrollState = () => {
+      const containerEl = messagesContainerRef.current;
+      if (!containerEl) {
+        setNeedsBottomAnchor(false);
+        return;
+      }
+
+      const { clientWidth, clientHeight, scrollHeight } = containerEl;
+      const lastSize = lastObservedContainerSizeRef.current;
+
+      if (
+        lastSize &&
+        lastSize.width === clientWidth &&
+        lastSize.height === clientHeight &&
+        lastSize.scrollHeight === scrollHeight
+      ) {
+        return;
+      }
+
+      lastObservedContainerSizeRef.current = { width: clientWidth, height: clientHeight, scrollHeight };
+      setNeedsBottomAnchor(computeIsScrollable(containerEl));
+    };
+
     const ro = new ResizeObserver(() => {
-      setNeedsBottomAnchor(computeIsScrollable(container));
+      if (resizeObserverFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeObserverFrameRef.current);
+      }
+      resizeObserverFrameRef.current = window.requestAnimationFrame(() => {
+        resizeObserverFrameRef.current = null;
+        updateScrollState();
+      });
     });
+
     ro.observe(container);
-    return () => ro.disconnect();
+
+    return () => {
+      ro.disconnect();
+      if (resizeObserverFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeObserverFrameRef.current);
+        resizeObserverFrameRef.current = null;
+      }
+      lastObservedContainerSizeRef.current = null;
+    };
   }, [chatId]);
 
   useEffect(() => {
@@ -613,40 +755,27 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const rendered = useMemo(() => {
     const out = [...messages];
-    
-    logger.info(`[RENDER_COMPUTE] Computing rendered messages for ${chatId}:`);
-    logger.info(`[RENDER_COMPUTE] - Base messages: ${messages.length} (${messages.map(m => `${m.id}(${m.role})`).join(', ')})`);
-    logger.info(`[RENDER_COMPUTE] - Live overlay: content=${liveOverlay.contentBuf.length}chars, thoughts=${liveOverlay.thoughtsBuf.length}chars, state=${liveOverlay.state}`);
-    
+
     const lastIdx = [...out].reverse().findIndex(m => m.role === 'assistant');
-    
+
     if (liveOverlay.contentBuf || liveOverlay.thoughtsBuf) {
       if (lastIdx !== -1) {
         const idx = out.length - 1 - lastIdx;
         const m = out[idx];
-        const originalContent = m.content;
-        const originalThoughts = m.thoughts || '';
-        
         out[idx] = {
           ...m,
           content: m.content + liveOverlay.contentBuf,
           thoughts: (m.thoughts || '') + liveOverlay.thoughtsBuf
         };
-        
-        logger.info(`[RENDER_COMPUTE] - Applied live overlay to existing message ${m.id}:`);
-        logger.info(`[RENDER_COMPUTE]   - Content: "${originalContent}" + "${liveOverlay.contentBuf}" = "${out[idx].content}"`);
-        logger.info(`[RENDER_COMPUTE]   - Thoughts: "${originalThoughts}" + "${liveOverlay.thoughtsBuf}" = "${out[idx].thoughts}"`);
       } else {
         logger.info(`[CLEAN_STREAMING] Live content available but no existing assistant message - live overlay will handle display`);
         logger.info(`[CLEAN_STREAMING] Live content: ${liveOverlay.contentBuf.length}chars content, ${liveOverlay.thoughtsBuf.length}chars thoughts`);
         logger.info(`[CLEAN_STREAMING] ThinkBox component will display streaming content directly without virtual messages`);
       }
     }
-    
-    logger.info(`[RENDER_COMPUTE] Final rendered: ${out.length} messages (${out.map(m => `${m.id}(${m.role})`).join(', ')})`);
-    
+
     return out;
-  }, [messages, chatId, liveOverlay.contentBuf, liveOverlay.thoughtsBuf, liveOverlay.state]);
+  }, [messages, liveOverlay.contentBuf, liveOverlay.thoughtsBuf]);
 
   const recordAssistantStats = useCallback((message: Message | undefined | null) => {
 
@@ -958,7 +1087,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, planSummary: null, error: null, version: 0 });
+    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
     setDismissedErrorAt(null);
     liveStore.reset(chatId);
 
@@ -1012,7 +1141,12 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       try { await response.body?.cancel(); } catch {}
       try { controller.abort(); } catch {}
       logger.debug(`[Chat] Message kickoff acknowledged for ${chatId}`);
-      onMessageSent?.(content);
+      if (chatId) {
+        onMessageSent?.(chatId, content);
+      } else {
+        logger.warn('[Chat] Message acknowledged without chatId');
+        onMessageSent?.('', content);
+      }
     } catch (error) {
       const isAbortError = (error as any)?.name === 'AbortError';
       if (!isAbortError) {
@@ -1256,14 +1390,34 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         })()}
 
         <div className="response-content">
-          <MessageRenderer 
-            content={message.content} 
+          <MessageRenderer
+            content={message.content}
             showCursor={showCursor}
           />
         </div>
+
+        {/* Render workspace picker for the last assistant message when needed */}
+        <AnimatePresence initial={false} mode="popLayout">
+          {isLastAssistantMessage && showWorkspacePicker && (
+            <WorkspacePickerModal
+              key={`workspace-picker-${chatId}`}
+              isOpen={true}
+              onClose={() => {}}
+              onWorkspaceSelected={(workspace: string) => {
+                if (onWorkspaceSelected && chatId) {
+                  onWorkspaceSelected(chatId, workspace);
+                }
+              }}
+              onLoadingStart={onWorkspaceLoadingStart}
+              chatId={chatId}
+              embedded={true}
+              chatScrollControl={scrollControl}
+            />
+          )}
+        </AnimatePresence>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage]);
+  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected, onWorkspaceLoadingStart]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
@@ -1274,7 +1428,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
   const messageListContent = useMemo(() => {
     if (shouldShowSkeleton) {
-      logger.info(`[CHAT_RENDER] Rendering skeleton for ${chatId} - isLoading: ${isLoading}, isOperationLoading: ${isOperationLoading}`);
+      logger.info(`[CHAT_SKELETON_RENDER] ${chatId} isLoading=${isLoading} isOperationLoading=${isOperationLoading} skeletonReady=${skeletonReady}`);
       return (
         <div className="messages-skeleton">
           <div className="msg-skel" />
@@ -1282,69 +1436,13 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       );
     }
-
-    logger.info(`[CHAT_RENDER] Rendering ${rendered.length} messages for ${chatId}`);
-    logger.info(`[CHAT_RENDER] About to render message IDs: ${rendered.map(m => m.id).join(', ')}`);
-    logger.info(`[CHAT_RENDER] Message preview: ${rendered.map(m => `${m.id}: "${m.content.substring(0, 30)}..."`).join(' | ')}`);
-
+    
     const renderedComponents: React.ReactElement[] = [];
 
     rendered.forEach((message) => {
       const originalIndex = messageIndexMap.get(message.id) ?? -1;
-      logger.info(`[CHAT_RENDER] Rendering component for ${message.id} (${message.role}) - content: "${message.content.substring(0, 50)}..."`);
-
       renderedComponents.push(renderMessage(message, originalIndex));
-
-      if (message.planId && chatId) {
-        const messagePlanState = planStore.get(chatId);
-        if (messagePlanState && messagePlanState.summary?.planId === message.planId) {
-          renderedComponents.push(
-            <MessageWrapper
-              key={`plan-${message.planId}`}
-              messageId={`plan-${message.planId}`}
-              messageRole="assistant"
-              messageContent="Plan overview"
-              className="assistant-message agentic-plan-message-wrapper"
-              currentChatId={chatId}
-              isTTSSupported={false}
-            >
-              <PlanMessage
-                summary={messagePlanState.summary}
-                tasks={Array.from(messagePlanState.tasks.values())}
-                commits={messagePlanState.contextCommits}
-                toolCalls={messagePlanState.toolCalls}
-                chatId={chatId || ''}
-              />
-            </MessageWrapper>
-          );
-        }
-      }
     });
-
-    if (planSummary) {
-      const isAlreadyRendered = rendered.some(msg => msg.planId === planSummary.planId);
-      if (!isAlreadyRendered) {
-        renderedComponents.push(
-          <MessageWrapper
-            key={`plan-${planSummary.planId}`}
-            messageId={`plan-${planSummary.planId}`}
-            messageRole="assistant"
-            messageContent="Plan overview"
-            className="assistant-message agentic-plan-message-wrapper"
-            currentChatId={chatId}
-            isTTSSupported={false}
-          >
-            <PlanMessage
-              summary={planSummary}
-              tasks={planTasks}
-              commits={planCommits}
-              toolCalls={planToolCalls}
-              chatId={chatId || ''}
-            />
-          </MessageWrapper>
-        );
-      }
-    }
 
     if (showErrorNotice && activeError) {
       renderedComponents.push(
@@ -1366,10 +1464,8 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </div>
       );
     }
-
-    logger.info(`[CHAT_RENDER] Final render output: ${renderedComponents.length} React components for ${chatId}`);
     return renderedComponents;
-  }, [shouldShowSkeleton, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError, planSummary, planTasks, planCommits, planToolCalls]);
+  }, [shouldShowSkeleton, skeletonReady, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
 
   return (
     <>

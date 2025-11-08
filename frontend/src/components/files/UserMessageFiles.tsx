@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 
 import logger from '../../utils/core/logger';
 import { AttachedFile } from '../../utils/storage/BrowserStorage';
+import type { ScrollControlActions } from '../../hooks/ui/useScrollControl';
 
 import '../../styles/files/UserMessageFiles.css';
 
@@ -12,12 +13,7 @@ interface UserMessageFilesProps {
   isStatic?: boolean;
   chatId?: string;
   messageId?: string;
-  chatScrollControl?: {
-    shouldAutoScroll: () => boolean;
-    onStreamStart: () => void;
-    onStreamEnd: () => void;
-    forceScrollToBottom: () => void;
-  };
+  chatScrollControl?: ScrollControlActions;
 }
 
 const getFileIcon = (filename: string): string => {

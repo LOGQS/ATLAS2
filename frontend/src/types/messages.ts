@@ -41,15 +41,72 @@ export interface ContextSnapshot {
   full_context?: Record<string, any>;
 }
 
+export interface ToolOperation {
+  type: string;
+  path?: string;
+  absolute_path?: string;
+  before_checkpoint_id?: number | null;
+  before_checkpoint_created?: boolean;
+  after_checkpoint_id?: number | null;
+  after_checkpoint_created?: boolean;
+  checkpoint_created?: {
+    before: boolean;
+    after: boolean;
+  };
+  checkpoint_ids?: {
+    before: number | null;
+    after: number | null;
+  };
+  lines_added?: number;
+  lines_removed?: number;
+  linesAdded?: number;
+  linesRemoved?: number;
+  [key: string]: any;
+}
+
 export interface DomainExecution {
   task_id: string;
   domain_id: string;
   agent_id: string;
-  status: 'starting' | 'running' | 'completed' | 'failed';
+  status: 'starting' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'aborted';
   actions: ActionNode[];
   plan?: ExecutionPlan | null;
   context_snapshots: ContextSnapshot[];
   output?: string;
+  agent_message?: string;
+  pending_tools?: Array<{
+    call_id: string;
+    tool: string;
+    params: Array<[string, any]>;
+    reason: string;
+    message: string;
+    created_at: string;
+    tool_description?: string;
+  }>;
+  tool_history?: Array<{
+    call_id: string;
+    tool: string;
+    params: Array<[string, any]>;
+    accepted: boolean;
+    executed_at: string;
+    result_summary: string;
+    raw_result?: any;
+    error?: string | null;
+    ops?: ToolOperation[];
+  }>;
+  metadata?: {
+    iterations?: number;
+    tool_calls?: number;
+    elapsed_seconds?: number;
+  };
+  model_retry?: {
+    attempt: number;
+    max_attempts: number;
+    delay_seconds: number;
+    model: string;
+    reason: string;
+  };
+  assistant_message_id?: string | number | null;
 }
 
 export interface RouterDecision {
@@ -59,6 +116,7 @@ export interface RouterDecision {
   toolsNeeded?: boolean | null;
   executionType?: string | null;
   fastpathParams?: string | null;
+  error?: string | null;
 }
 
 export interface Message {

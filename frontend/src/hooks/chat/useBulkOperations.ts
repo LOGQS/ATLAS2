@@ -14,7 +14,8 @@ interface UseBulkOperationsProps {
   setChats: React.Dispatch<React.SetStateAction<ChatItem[]>>;
   setPendingFirstMessages: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   handleNewChat: () => void;
-  loadChatsFromDatabase: () => Promise<void>;
+  loadChatsFromDatabase: (options?: { expectedToken?: number }) => Promise<unknown>;
+  clearPendingChatMeta: (chatId?: string | null) => void;
 }
 
 interface UseBulkOperationsReturn {
@@ -27,7 +28,8 @@ export const useBulkOperations = ({
   setChats,
   setPendingFirstMessages,
   handleNewChat,
-  loadChatsFromDatabase
+  loadChatsFromDatabase,
+  clearPendingChatMeta
 }: UseBulkOperationsProps): UseBulkOperationsReturn => {
 
   const handleBulkDelete = useCallback(async (chatIds: string[]) => {
@@ -66,6 +68,10 @@ export const useBulkOperations = ({
         const data = await response.json();
         logger.info('Bulk delete completed:', data.message);
         logger.info(`[BULK_DELETE] Successfully deleted ${data.deleted_chats?.length || chatIds.length} chats (cascade: ${data.cascade_deleted})`);
+        chatIds.forEach(id => clearPendingChatMeta(id));
+        if (Array.isArray(data.deleted_chats)) {
+          data.deleted_chats.forEach((deletedId: string) => clearPendingChatMeta(deletedId));
+        }
 
         if (data.active_chat_cleared) {
           logger.info('[BULK_DELETE] Active chat was cleared by backend, creating new chat');
@@ -82,7 +88,7 @@ export const useBulkOperations = ({
       setChats(originalChats);
       setPendingFirstMessages(originalPendingMessages);
     }
-  }, [setChats, setPendingFirstMessages, handleNewChat]);
+  }, [clearPendingChatMeta, handleNewChat, setChats, setPendingFirstMessages]);
 
   const handleBulkExport = useCallback(async (chatIds: string[]) => {
     try {

@@ -79,6 +79,13 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ onOpenModal, chatId }) => {
                     <div className="sidebar-icon context-icon"></div>
                     Context
                   </div>
+                  <div
+                    className="sidebar-item"
+                    onClick={() => handleSubsectionClick('coder')}
+                  >
+                    <div className="sidebar-icon coder-icon"></div>
+                    Code Editor
+                  </div>
                 </div>
               </div>
             )}

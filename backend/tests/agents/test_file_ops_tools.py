@@ -66,6 +66,29 @@ class TestFileReadTool(unittest.TestCase):
         self.assertEqual(result.output["metadata"]["line_count"], 2)
         self.assertIn("file_size", result.output["metadata"])
 
+    def test_read_file_with_line_numbers(self):
+        """Should include content with line numbers for agent use."""
+        test_file = self.temp_path / "test.txt"
+        content = "Line 1\nLine 2\nLine 3"
+        test_file.write_text(content, encoding='utf-8')
+
+        result = _tool_read_file({"file_path": str(test_file)}, self.ctx)
+
+        self.assertEqual(result.output["status"], "success")
+        self.assertIn("content_with_line_numbers", result.output)
+
+        # Verify line-numbered content format (should be like cat -n)
+        numbered_content = result.output["content_with_line_numbers"]
+        self.assertIn("1\t", numbered_content)
+        self.assertIn("2\t", numbered_content)
+        self.assertIn("3\t", numbered_content)
+
+        # Verify the lines are in the correct format
+        lines = numbered_content.split('\n')
+        self.assertTrue(lines[0].startswith('1\t'))
+        self.assertTrue(lines[1].startswith('2\t'))
+        self.assertTrue(lines[2].startswith('3\t'))
+
     def test_read_nonexistent_file(self):
         """Should raise ValueError for nonexistent file."""
         with self.assertRaises(ValueError) as cm:

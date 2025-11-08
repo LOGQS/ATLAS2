@@ -212,7 +212,14 @@ def _tool_rag_index(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
 
     chunk_size = params.get("chunk_size", 4096)
     overlap = params.get("overlap", 200)
-    embed_model = params.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
+
+    # Handle speed parameter: if provided, use speed-based model; otherwise use embed_model
+    speed = params.get("speed")
+    if speed:
+        embed_model = speed
+    else:
+        embed_model = params.get("embed_model", "fast")
+
     incremental = params.get("incremental", True)
     max_workers = params.get("max_workers") or multiprocessing.cpu_count()
 
@@ -504,23 +511,23 @@ def _index_file_mode(
 rag_index_spec = ToolSpec(
     name="rag.index",
     version="1.0",
-    description="Index content or files with vector embeddings for semantic search",
+    description="Index content or files with vector embeddings for semantic search. Supports two modes: content mode (index a string) or file mode (index files/directories). Provide either 'content' OR 'file_paths', not both.",
     effects=["disk", "context"],
     in_schema={
         "type": "object",
         "properties": {
             "content": {
                 "type": "string",
-                "description": "Content to index (content mode)"
+                "description": "Content string to index (content mode). REQUIRED if file_paths is not provided. Use this OR file_paths, not both."
             },
             "file_paths": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "File or directory paths to index (file mode)"
+                "description": "File or directory paths to index (file mode). REQUIRED if content is not provided. Use this OR content, not both."
             },
             "index_name": {
                 "type": "string",
-                "description": "Index identifier"
+                "description": "Index identifier (optional, defaults to task-based name)"
             },
             "persist_dir": {
                 "type": "string",
@@ -536,10 +543,14 @@ rag_index_spec = ToolSpec(
                 "default": 200,
                 "description": "Overlap between chunks"
             },
+            "speed": {
+                "type": "string",
+                "description": "Embedding speed mode: 'fast' (e5-small-v2, 33MB) or 'slow' (gte-multilingual-base, 305MB). Overrides embed_model if provided."
+            },
             "embed_model": {
                 "type": "string",
-                "default": "sentence-transformers/all-MiniLM-L6-v2",
-                "description": "HuggingFace embedding model"
+                "default": "fast",
+                "description": "HuggingFace embedding model or speed alias (ignored if speed is provided)"
             },
             "incremental": {
                 "type": "boolean",

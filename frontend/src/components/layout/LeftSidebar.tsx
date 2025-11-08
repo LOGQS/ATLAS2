@@ -29,6 +29,8 @@ interface LeftSidebarProps {
   onChatReorder?: (reorderedChats: Chat[]) => void;
   onOpenModal?: (modalType: string) => void;
   activeChatId?: string;
+  activeStreamCount?: number;
+  maxConcurrentStreams?: number;
 }
 
 const LeftSidebar: React.FC<LeftSidebarProps> = ({
@@ -43,7 +45,9 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onBulkImport,
   onChatReorder,
   onOpenModal,
-  activeChatId
+  activeChatId,
+  activeStreamCount = 0,
+  maxConcurrentStreams = 20
 }) => {
   const [isToggled, setIsToggled] = useState(() => {
     const settings = BrowserStorage.getUISettings();
@@ -546,6 +550,18 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
         {/* Performance Monitor */}
         {DEBUG_TOOLS_CONFIG.showPerformanceMonitor && <PerformanceMonitor activeChatId={activeChatId || "none"} />}
+
+        {/* Stats Bar */}
+        <div
+          className="sidebar-stats-bar"
+          onClick={() => {/* Future stats expansion */}}
+          title={`Active concurrent chats: ${activeStreamCount} of ${maxConcurrentStreams} maximum`}
+        >
+          <div className="stats-content">
+            <span className="stats-label">Active Streams</span>
+            <span className="stats-value">{activeStreamCount}/{maxConcurrentStreams}</span>
+          </div>
+        </div>
 
         <DeleteModal
           isOpen={!!deletingChatId}

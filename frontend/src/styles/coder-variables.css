@@ -1,0 +1,109 @@
+/* Bolt.diy-inspired CSS Variables for Coder Window */
+/* Dark Theme - Modern, Professional, Easy on the Eyes */
+
+:root {
+  /* Border Colors - Softer, more elegant */
+  --bolt-elements-borderColor: rgba(255, 255, 255, 0.06);
+  --bolt-elements-borderColor-hover: rgba(255, 255, 255, 0.12);
+  --bolt-elements-borderColorActive: #0ea5e9;
+
+  /* Background Depths - Refined dark theme, not tiring on eyes */
+  --bolt-elements-bg-depth-1: #0f0f11;
+  --bolt-elements-background-depth-1: #0f0f11;
+  --bolt-elements-bg-depth-2: #18181b;
+  --bolt-elements-background-depth-2: #18181b;
+  --bolt-elements-bg-depth-3: #27272a;
+  --bolt-elements-background-depth-3: #27272a;
+  --bolt-elements-bg-depth-4: #3f3f46;
+  --bolt-elements-background-depth-4: #3f3f46;
+
+  /* Text Colors - Optimized for readability */
+  --bolt-elements-textPrimary: rgba(255, 255, 255, 0.95);
+  --bolt-elements-textSecondary: rgba(255, 255, 255, 0.7);
+  --bolt-elements-textTertiary: rgba(255, 255, 255, 0.5);
+  --bolt-elements-textQuaternary: rgba(255, 255, 255, 0.35);
+
+  /* Item Colors - iOS-inspired */
+  --bolt-elements-item-contentDefault: rgba(255, 255, 255, 0.6);
+  --bolt-elements-item-contentActive: rgba(255, 255, 255, 0.95);
+  --bolt-elements-item-contentAccent: #3b82f6;
+  --bolt-elements-item-contentDanger: #f87171;
+
+  --bolt-elements-item-backgroundDefault: transparent;
+  --bolt-elements-item-backgroundActive: rgba(255, 255, 255, 0.08);
+  --bolt-elements-item-backgroundAccent: rgba(59, 130, 246, 0.12);
+  --bolt-elements-item-backgroundDanger: rgba(248, 113, 113, 0.12);
+
+  /* Button Colors */
+  --bolt-elements-button-primary-background: rgba(59, 130, 246, 0.15);
+  --bolt-elements-button-primary-backgroundHover: rgba(59, 130, 246, 0.25);
+  --bolt-elements-button-primary-text: #60a5fa;
+
+  /* Accent Color - Softer blue, easier on eyes */
+  --accent-500: #3b82f6;
+  --accent-400: #60a5fa;
+  --accent-600: #2563eb;
+
+  /* Spacing Scale - 4px base unit system (iOS-like) */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+  --spacing-10: 40px;
+  --spacing-12: 48px;
+
+  /* Border Radius Scale */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* Shadow System - Subtle depth */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.15);
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.3);
+  --shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.35);
+
+  /* Animation Durations - iOS-like timing */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 350ms;
+
+  /* Easing Curves */
+  --ease-smooth: cubic-bezier(0.4, 0.0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0.0, 1, 1);
+  --ease-out: cubic-bezier(0.0, 0.0, 0.2, 1);
+
+  /* Layout Variables */
+  --header-height: 54px;
+}
+
+/* Custom Easing */
+.bolt-ease-cubic-bezier {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Modern Scrollbar */
+.modern-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.modern-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 100, 100, 0.3);
+  border-radius: 5px;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 100, 100, 0.5);
+}

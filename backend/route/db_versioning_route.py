@@ -218,7 +218,9 @@ class VersioningRoute:
                 model=message.get('model'),
                 attached_file_ids=attached_file_ids if attached_file_ids else None,
                 router_enabled=router_enabled,
-                router_decision=router_decision
+                router_decision=router_decision,
+                plan_id=message.get('planId') or message.get('plan_id'),
+                domain_execution=message.get('domainExecution') or message.get('domain_execution')
             )
 
             logger.debug(f"Copied message to version: {new_message_id}")

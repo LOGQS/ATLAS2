@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiUrl } from '../config/api';
 import '../styles/sections/SearchWindow.css';
+import logger from '../utils/core/logger';
 
 interface MessageMatch {
   id: string;
@@ -241,7 +242,7 @@ const SearchWindow: React.FC = () => {
   };
 
   const handleFileClick = (filePath: string) => {
-    console.log('Open file:', filePath);
+    logger.info('Open file:', filePath);
   };
 
   const totalResults = searchResults.chats.length + searchResults.files.length + searchResults.sources.length;

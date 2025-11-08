@@ -1,0 +1,160 @@
+/* IDEMenuBar - All classes namespaced with ide-menu-bar__ prefix */
+
+.ide-menu-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  background: #2d2d30;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 12px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.ide-menu-bar__left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ide-menu-bar__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ide-menu-bar__back-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: rgba(212, 212, 212, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.ide-menu-bar__back-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #d4d4d4;
+}
+
+.ide-menu-bar__separator {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 0 8px;
+}
+
+.ide-menu-bar__dropdown {
+  position: relative;
+}
+
+.ide-menu-bar__menu-button {
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  color: rgba(212, 212, 212, 0.9);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ide-menu-bar__menu-button:hover,
+.ide-menu-bar__menu-button--active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #d4d4d4;
+}
+
+.ide-menu-bar__dropdown-content {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 220px;
+  background: #252526;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+  margin-top: 4px;
+  z-index: 1000;
+  animation: ide-menu-bar-fade-in 0.15s ease-out;
+}
+
+@keyframes ide-menu-bar-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ide-menu-bar__menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: #d4d4d4;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ide-menu-bar__menu-item:hover:not(.ide-menu-bar__menu-item--disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ide-menu-bar__menu-item--disabled {
+  color: rgba(212, 212, 212, 0.4);
+  cursor: not-allowed;
+}
+
+.ide-menu-bar__menu-item-label {
+  flex: 1;
+}
+
+.ide-menu-bar__menu-item-shortcut {
+  color: rgba(212, 212, 212, 0.5);
+  font-size: 11px;
+  margin-left: 24px;
+}
+
+.ide-menu-bar__menu-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 8px;
+}
+
+.ide-menu-bar__workspace-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(97, 166, 250, 0.1);
+  border-radius: 4px;
+  color: #d4d4d4;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ide-menu-bar__workspace-indicator:hover {
+  background: rgba(97, 166, 250, 0.15);
+}
+
+.ide-menu-bar__workspace-indicator svg {
+  color: #61a6fa;
+  flex-shrink: 0;
+}

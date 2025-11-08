@@ -1,0 +1,224 @@
+/* MockFeatureSections - All classes namespaced with mock-feature__ prefix */
+
+.mock-feature {
+  opacity: 0.5;
+  pointer-events: none;
+  position: relative;
+}
+
+.mock-feature__badge {
+  padding: 3px 8px;
+  background: rgba(220, 220, 170, 0.2);
+  border: 1px solid rgba(220, 220, 170, 0.3);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #dcdcaa;
+  white-space: nowrap;
+}
+
+.mock-feature__badge--small {
+  padding: 2px 6px;
+  font-size: 9px;
+}
+
+/* Learning Mode Toggle */
+.mock-feature__learning-mode-toggle {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  margin: 12px;
+}
+
+.mock-feature__learning-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.mock-feature__learning-mode-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.mock-feature__learning-mode-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  font-size: 13px;
+  color: #d4d4d4;
+}
+
+.mock-feature__learning-mode-info {
+  color: rgba(212, 212, 212, 0.5);
+}
+
+/* Constraints Panel */
+.mock-feature__constraints-panel {
+  margin: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.mock-feature__constraints-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #d4d4d4;
+  cursor: pointer;
+  list-style: none;
+}
+
+.mock-feature__constraints-content {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mock-feature__constraint-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  font-size: 12px;
+  color: rgba(212, 212, 212, 0.8);
+}
+
+/* Learned Patterns Section */
+.mock-feature__learned-patterns-section {
+  margin: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.mock-feature__learned-patterns-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.mock-feature__learned-patterns-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #d4d4d4;
+}
+
+.mock-feature__learned-patterns-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mock-feature__learned-patterns-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mock-feature__count-number {
+  font-size: 24px;
+  font-weight: 700;
+  color: #d4d4d4;
+}
+
+.mock-feature__count-label {
+  font-size: 11px;
+  color: rgba(212, 212, 212, 0.6);
+}
+
+.mock-feature__learned-patterns-button {
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(212, 212, 212, 0.7);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mock-feature__learned-patterns-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #d4d4d4;
+}
+
+/* Memory Proposal Bar */
+.mock-feature__memory-proposal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 16px;
+  background: rgba(97, 166, 250, 0.1);
+  border-top: 1px solid rgba(97, 166, 250, 0.3);
+  border-bottom: 1px solid rgba(97, 166, 250, 0.3);
+}
+
+.mock-feature__memory-proposal-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  color: #d4d4d4;
+}
+
+.mock-feature__memory-proposal-text {
+  font-size: 12px;
+  flex: 1;
+}
+
+.mock-feature__memory-proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mock-feature__memory-action-button {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mock-feature__memory-action-button--approve {
+  color: #4ec9b0;
+  border-color: rgba(78, 201, 176, 0.3);
+}
+
+.mock-feature__memory-action-button--approve:hover:not(:disabled) {
+  background: rgba(78, 201, 176, 0.15);
+  border-color: rgba(78, 201, 176, 0.5);
+}
+
+.mock-feature__memory-action-button--reject {
+  color: #f48771;
+  border-color: rgba(244, 135, 113, 0.3);
+}
+
+.mock-feature__memory-action-button--reject:hover:not(:disabled) {
+  background: rgba(244, 135, 113, 0.15);
+  border-color: rgba(244, 135, 113, 0.5);
+}

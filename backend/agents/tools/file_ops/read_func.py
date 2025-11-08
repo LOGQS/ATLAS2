@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Dict
 
@@ -10,10 +11,34 @@ from .file_utils import (
     is_likely_binary,
     format_file_size,
     load_context_manifest,
-    save_context_manifest
+    save_context_manifest,
+    workspace_relative_path,
 )
 
 _logger = get_logger(__name__)
+
+
+def _compute_content_hash(content: str) -> str:
+    """Compute SHA-256 hash of file content for duplicate detection."""
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]  # Use first 16 chars for brevity
+
+
+def _format_content_with_line_numbers(content: str) -> str:
+    """Format file content with line numbers for agent visibility (cat -n style)."""
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return content
+
+    # Calculate padding for line numbers
+    max_line_num = len(lines)
+    padding = len(str(max_line_num))
+
+    formatted_lines = []
+    for i, line in enumerate(lines, start=1):
+        # Format: "     1\t" + line content (spaces + line number + tab)
+        formatted_lines.append(f"{i:>{padding}}\t{line}")
+
+    return ''.join(formatted_lines)
 
 
 def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
@@ -25,6 +50,7 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     - Checks if the file is textual (not binary)
     - Tracks read files in context to detect duplicates
     - Returns file content with metadata
+    - Provides line-numbered format for agent use
     """
     file_path = params.get("file_path")
     max_size_mb = params.get("max_size_mb", 10)
@@ -33,7 +59,12 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
     if not file_path:
         raise ValueError("file_path is required")
 
-    is_valid, error_msg, resolved_path = validate_file_path(file_path, must_exist=True, must_be_file=True)
+    is_valid, error_msg, resolved_path = validate_file_path(
+        file_path,
+        must_exist=True,
+        must_be_file=True,
+        workspace_root=ctx.workspace_path,
+    )
     if not is_valid:
         raise ValueError(f"Cannot read file: {error_msg}")
 
@@ -55,69 +86,10 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             f"Consider increasing max_size_mb parameter or using attach_file for large files."
         )
 
-    manifest = load_context_manifest(ctx.ctx_id)
-    read_files = manifest.get("read_files", [])
-    file_path_str = str(resolved_path)
-
-    if file_path_str in read_files and not force_reread:
-        _logger.info(f"File '{file_path}' already read in context {ctx.ctx_id}")
-        return ToolResult(
-            output={
-                "status": "duplicate",
-                "message": f"File '{file_path}' has already been read in this context. "
-                          "The file content is already available in the conversation history. "
-                          "Set force_reread=true if you need to read it again.",
-                "file_path": file_path,
-                "file_size": format_file_size(file_size)
-            },
-            metadata={"duplicate": True, "file_path": file_path_str}
-        )
-
+    # Read file content first to compute hash
     try:
         with open(resolved_path, 'r', encoding='utf-8') as f:
             content = f.read()
-
-        line_count = content.count('\n') + 1
-
-        lines = content.splitlines()
-        long_lines = [(i + 1, len(line)) for i, line in enumerate(lines) if len(line) > 200000]
-        warnings = []
-
-        if long_lines:
-            max_line_num, max_line_len = max(long_lines, key=lambda x: x[1])
-            estimated_tokens = max_line_len // 4
-            warnings.append(
-                f"File contains very long lines (longest: line {max_line_num} with {max_line_len} characters, ~{estimated_tokens:,} tokens). "
-                f"This may cause issues with LLM context windows. Consider breaking long lines or using attach_file."
-            )
-
-        if file_path_str not in read_files:
-            read_files.append(file_path_str)
-            manifest["read_files"] = read_files
-            save_context_manifest(ctx.ctx_id, manifest)
-
-        _logger.info(f"Successfully read file '{file_path}' ({format_file_size(file_size)}, {line_count} lines)")
-
-        result_output = {
-            "status": "success",
-            "file_path": file_path,
-            "content": content,
-            "metadata": {
-                "file_size": format_file_size(file_size),
-                "file_size_bytes": file_size,
-                "line_count": line_count,
-                "encoding": "utf-8"
-            }
-        }
-
-        if warnings:
-            result_output["warnings"] = warnings
-
-        return ToolResult(
-            output=result_output,
-            metadata={"file_path": file_path_str, "line_count": line_count, "has_warnings": bool(warnings)}
-        )
-
     except UnicodeDecodeError as e:
         raise ValueError(
             f"Cannot read '{file_path}': file contains invalid UTF-8 data. "
@@ -131,6 +103,90 @@ def _tool_read_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
         )
     except Exception as e:
         raise ValueError(f"Error reading file '{file_path}': {str(e)}")
+
+    # Compute content hash for smart duplicate detection
+    content_hash = _compute_content_hash(content)
+    file_path_str = str(resolved_path)
+
+    # Load manifest and check for duplicates based on BOTH path and content hash
+    manifest = load_context_manifest(ctx.ctx_id)
+    read_files = manifest.get("read_files", {})
+
+    # Convert old list format to dict format for backward compatibility
+    if isinstance(read_files, list):
+        read_files = {path: {"hash": None} for path in read_files}
+        manifest["read_files"] = read_files
+
+    previous_read = read_files.get(file_path_str)
+
+    # Only show duplicate message if BOTH path AND content match
+    if previous_read and previous_read.get("hash") == content_hash and not force_reread:
+        _logger.info(f"File '{file_path}' already read with identical content (hash: {content_hash})")
+        return ToolResult(
+            output={
+                "status": "duplicate",
+                "message": f"File '{file_path}' has already been read with identical content. "
+                          "The file content is already available in the conversation history. "
+                          "Set force_reread=true if you need to see it again.",
+                "file_path": file_path,
+                "file_size": format_file_size(file_size),
+                "content_hash": content_hash
+            },
+            metadata={"duplicate": True, "file_path": file_path_str, "content_hash": content_hash}
+        )
+
+    # File is either new or content has changed
+    if previous_read and previous_read.get("hash") != content_hash:
+        _logger.info(f"File '{file_path}' content changed (old hash: {previous_read.get('hash')}, new hash: {content_hash})")
+
+    # Content already read above, just compute line count and check for long lines
+    line_count = content.count('\n') + 1
+
+    lines = content.splitlines()
+    long_lines = [(i + 1, len(line)) for i, line in enumerate(lines) if len(line) > 200000]
+    warnings = []
+
+    if long_lines:
+        max_line_num, max_line_len = max(long_lines, key=lambda x: x[1])
+        estimated_tokens = max_line_len // 4
+        warnings.append(
+            f"File contains very long lines (longest: line {max_line_num} with {max_line_len} characters, ~{estimated_tokens:,} tokens). "
+            f"This may cause issues with LLM context windows. Consider breaking long lines or using attach_file."
+        )
+
+    # Update manifest with new hash
+    read_files[file_path_str] = {"hash": content_hash}
+    manifest["read_files"] = read_files
+    save_context_manifest(ctx.ctx_id, manifest)
+
+    _logger.info(f"Successfully read file '{file_path}' ({format_file_size(file_size)}, {line_count} lines, hash: {content_hash})")
+
+    # Format content with line numbers for agent use
+    content_with_line_numbers = _format_content_with_line_numbers(content)
+
+    result_output = {
+        "status": "success",
+        "file_path": file_path,
+        "resolved_path": str(resolved_path),
+        "workspace_path": workspace_relative_path(resolved_path, ctx.workspace_path),
+        "content": content,
+        "content_with_line_numbers": content_with_line_numbers,
+        "content_hash": content_hash,  # Include hash in output
+        "metadata": {
+            "file_size": format_file_size(file_size),
+            "file_size_bytes": file_size,
+            "line_count": line_count,
+            "encoding": "utf-8"
+        }
+    }
+
+    if warnings:
+        result_output["warnings"] = warnings
+
+    return ToolResult(
+        output=result_output,
+        metadata={"file_path": file_path_str, "line_count": line_count, "content_hash": content_hash, "has_warnings": bool(warnings)}
+    )
 
 
 read_file_spec = ToolSpec(

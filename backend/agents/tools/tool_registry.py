@@ -19,6 +19,7 @@ class ToolExecutionContext:
     plan_id: str
     task_id: str
     ctx_id: str
+    workspace_path: Optional[str] = None
 
 
 @dataclass

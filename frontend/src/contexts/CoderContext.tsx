@@ -1,0 +1,2173 @@
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { apiUrl } from '../config/api';
+import logger from '../utils/core/logger';
+import { filePreloader } from '../utils/filePreloader';
+import { stringInterner } from '../utils/text/StringInterner';
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  modified: string;
+  size?: number;
+  children?: FileNode[];
+  item_count?: number;
+  canLoadDeeper?: boolean; // True if folder is at max depth but has more content
+}
+
+interface EditorDocument {
+  filePath: string;
+  content: string;
+  originalContent: string;
+  language: string;
+  isBinary: boolean;
+}
+
+interface CreatingNode {
+  type: 'file' | 'folder';
+  parentPath: string;
+  depth: number;
+}
+
+interface EditorPane {
+  activeTabPath: string | undefined;
+  currentDocument: EditorDocument | undefined;
+}
+
+type SplitMode = 'none' | 'horizontal' | 'vertical';
+type PaneId = 'primary' | 'secondary';
+
+type GitFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+
+interface DiffChunk {
+  startLine: number;
+  endLine: number;
+  type: 'added' | 'removed' | 'modified';
+}
+
+interface DiffData {
+  toolCallId: string;
+  filePath: string;
+  chunks: DiffChunk[];
+  before: string;
+  after: string;
+}
+
+interface Checkpoint {
+  id: string;
+  timestamp: string;
+  operation: string;
+  tool: string;
+  filePath: string;
+  changes: Array<{
+    id: string;
+    diff: string;
+    linesAdded: number;
+    linesRemoved: number;
+  }>;
+  callId?: string;
+}
+
+interface Plan {
+  description: string;
+  steps: Array<{
+    id: string;
+    description: string;
+    status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    result?: string;
+  }>;
+}
+
+interface CoderState {
+  chatId?: string;
+  workspacePath: string;
+  workspaceName: string;
+  hasWorkspace: boolean;
+  fileTree: FileNode | null;
+  expandedFolders: Set<string>;
+  selectedFile: string | undefined;
+  multiSelectedFiles: Set<string>; // Multi-select support
+  lastSelectedIndex: number | null; // For shift-click range selection
+  currentDocument: EditorDocument | undefined;
+  openTabs: string[]; // Array of file paths that are open in tabs
+  activeTabPath: string | undefined; // Currently active tab's file path
+  tabDocuments: Record<string, EditorDocument>; // Cache of loaded documents
+  unsavedFiles: Set<string>;
+  isLoading: boolean;
+  error: string;
+  activeTab: 'files' | 'search';
+  searchQuery: string;
+  showTerminal: boolean;
+  terminalHeight: number;
+  sidebarWidth: number;
+  creatingNode: CreatingNode | null;
+  // Split editor support
+  splitMode: SplitMode;
+  activePaneId: PaneId;
+  panes: {
+    primary: EditorPane;
+    secondary: EditorPane;
+  };
+  // Git integration
+  isGitRepo: boolean;
+  gitStatus: Record<string, GitFileStatus>;
+  // Diff tracking for inline overlays
+  pendingDiffs: Map<string, DiffData>;
+  appliedChanges: Set<string>;
+  // Checkpoint system
+  checkpoints: Checkpoint[];
+  // Plan tracking
+  currentPlan: Plan | null;
+  // Activity panel state
+  activityPanelTab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline';
+}
+
+const findNodeByPath = (root: FileNode | null, targetPath: string): FileNode | null => {
+  if (!root) {
+    return null;
+  }
+  if (root.path === targetPath) {
+    return root;
+  }
+  if (!root.children) {
+    return null;
+  }
+  for (const child of root.children) {
+    const found = findNodeByPath(child, targetPath);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+};
+
+const collectDirectoryPaths = (node: FileNode | null, acc: Set<string> = new Set<string>()): Set<string> => {
+  if (!node) {
+    return acc;
+  }
+  if (node.type === 'directory') {
+    acc.add(node.path || '');
+    if (node.children) {
+      for (const child of node.children) {
+        collectDirectoryPaths(child, acc);
+      }
+    }
+  }
+  return acc;
+};
+
+interface CoderActions {
+  setWorkspace: (path: string) => Promise<void>;
+  loadFileTree: () => Promise<void>;
+  loadDeeper: (folderPath: string, currentDepth: number) => Promise<void>;
+  toggleFolder: (path: string) => void;
+  selectFile: (path: string) => Promise<void>;
+  selectNode: (path: string) => void;
+  toggleMultiSelect: (path: string) => void;
+  clearMultiSelect: () => void;
+  selectRange: (fromPath: string, toPath: string) => void;
+  openTab: (path: string) => Promise<void>;
+  closeTab: (path: string) => void;
+  switchToTab: (path: string) => void;
+  reorderTabs: (newOrder: string[]) => void;
+  updateFileContent: (content: string) => void;
+  saveFile: () => Promise<void>;
+  resetFile: () => Promise<void>;
+  revertToSaved: (filePath: string) => Promise<void>;
+  saveSnapshot: (filePath: string, content: string) => Promise<void>;
+  createFile: (parentPath: string, name: string) => Promise<void>;
+  createFolder: (parentPath: string, name: string) => Promise<void>;
+  deleteNode: (path: string, isDirectory: boolean) => Promise<void>;
+  deleteMultipleNodes: (paths: string[]) => Promise<void>;
+  renameNode: (oldPath: string, newName: string) => Promise<void>;
+  setActiveTab: (tab: 'files' | 'search') => void;
+  setSearchQuery: (query: string) => void;
+  toggleTerminal: () => void;
+  setTerminalHeight: (height: number) => void;
+  setSidebarWidth: (width: number) => void;
+  setError: (error: string) => void;
+  startCreatingFile: () => void;
+  startCreatingFolder: () => void;
+  cancelCreating: () => void;
+  finishCreating: (name: string) => Promise<void>;
+  // Split editor actions
+  splitEditorHorizontal: () => void;
+  splitEditorVertical: () => void;
+  closeSplit: () => void;
+  switchPane: (paneId: PaneId) => void;
+  openTabInPane: (path: string, paneId: PaneId) => Promise<void>;
+  // Diff management
+  addPendingDiff: (toolCallId: string, diff: DiffData) => void;
+  acceptDiff: (toolCallId: string) => void;
+  rejectDiff: (toolCallId: string) => void;
+  acceptAllDiffs: () => void;
+  rejectAllDiffs: () => void;
+  // Checkpoint management
+  addCheckpoint: (data: Omit<Checkpoint, 'id' | 'timestamp'>) => void;
+  revertToCheckpoint: (checkpointId: string) => Promise<void>;
+  // Plan management
+  updatePlan: (plan: Plan | null) => void;
+  updateStepStatus: (stepId: string, status: 'pending' | 'in_progress' | 'completed' | 'failed', result?: string) => void;
+  // Activity panel
+  setActivityPanelTab: (tab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline') => void;
+}
+
+const EXTENSION_LANGUAGE_MAP: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.json': 'json',
+  '.html': 'html',
+  '.htm': 'html',
+  '.css': 'css',
+  '.md': 'markdown',
+  '.py': 'python',
+  '.rb': 'ruby',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.h': 'c',
+  '.hpp': 'cpp',
+};
+
+const inferLanguageFromPath = (filePath: string, fallback: string = 'plaintext'): string => {
+  const lower = filePath.toLowerCase();
+  const lastDot = lower.lastIndexOf('.');
+  if (lastDot === -1) {
+    return fallback;
+  }
+  const ext = lower.slice(lastDot);
+  return EXTENSION_LANGUAGE_MAP[ext] || fallback;
+};
+
+const CoderContext = createContext<(CoderState & CoderActions) | undefined>(undefined);
+
+export const useCoderContext = () => {
+  const context = useContext(CoderContext);
+  if (!context) {
+    throw new Error('useCoderContext must be used within CoderProvider');
+  }
+  return context;
+};
+
+interface CoderProviderProps {
+  chatId?: string;
+  children: React.ReactNode;
+  onWorkspaceReady?: () => void;
+}
+
+export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, onWorkspaceReady }) => {
+  const [state, setState] = useState<CoderState>({
+    chatId,
+    workspacePath: '',
+    workspaceName: '',
+    hasWorkspace: false,
+    fileTree: null,
+    expandedFolders: new Set(),
+    selectedFile: undefined,
+    multiSelectedFiles: new Set(),
+    lastSelectedIndex: null,
+    currentDocument: undefined,
+    openTabs: [],
+    activeTabPath: undefined,
+    tabDocuments: {},
+    unsavedFiles: new Set(),
+    isLoading: false,
+    error: '',
+    activeTab: 'files',
+    searchQuery: '',
+    showTerminal: false,
+    terminalHeight: 300,
+    sidebarWidth: 280,
+    creatingNode: null,
+    // Split editor state
+    splitMode: 'none',
+    activePaneId: 'primary',
+    panes: {
+      primary: {
+        activeTabPath: undefined,
+        currentDocument: undefined,
+      },
+      secondary: {
+        activeTabPath: undefined,
+        currentDocument: undefined,
+      },
+    },
+    // Git integration state
+    isGitRepo: false,
+    gitStatus: {},
+    // Diff tracking state
+    pendingDiffs: new Map(),
+    appliedChanges: new Set(),
+    // Checkpoint system state
+    checkpoints: [],
+    // Plan tracking state
+    currentPlan: null,
+    // Activity panel state
+    activityPanelTab: 'activity',
+  });
+  const stateRef = React.useRef(state);
+  React.useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    stateRef.current.pendingDiffs.forEach(diff => releaseDiffStrings(diff));
+    setState(prev => ({
+      ...prev,
+      chatId,
+      openTabs: [],
+      activeTabPath: undefined,
+      currentDocument: undefined,
+      tabDocuments: {},
+      unsavedFiles: new Set(),
+      pendingDiffs: new Map(),
+      appliedChanges: new Set(),
+      panes: {
+        primary: { activeTabPath: undefined, currentDocument: undefined },
+        secondary: { activeTabPath: undefined, currentDocument: undefined },
+      },
+    }));
+  }, [chatId]);
+
+  const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
+  const fileTreeAbortControllerRef = React.useRef<AbortController | null>(null);
+  const fileTreeRequestRef = React.useRef<Promise<void> | null>(null);
+  const pendingFileTreeRefreshRef = React.useRef(false);
+  const lastImmediateRefreshRef = React.useRef(0);
+
+  const setError = useCallback((error: string) => {
+    setState(prev => ({ ...prev, error }));
+  }, []);
+
+  const describeError = (err: unknown): string => {
+    if (err instanceof Error) {
+      return err.message;
+    }
+    if (typeof err === 'string') {
+      return err;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return 'Unknown error';
+    }
+  };
+
+  const loadFileTree = useCallback(async () => {
+    if (!chatId) return;
+    if (fileTreeRequestRef.current) {
+      pendingFileTreeRefreshRef.current = true;
+      logger.debug('[CODER_CTX] Coalescing file tree refresh while a request is in-flight');
+      return fileTreeRequestRef.current;
+    }
+
+    logger.info('[CODER_CTX] loadFileTree start', { chatId });
+    setState(prev => (prev.isLoading ? prev : { ...prev, isLoading: true, error: '' }));
+
+    const controller = new AbortController();
+    fileTreeAbortControllerRef.current?.abort();
+    fileTreeAbortControllerRef.current = controller;
+
+    const requestPromise = (async () => {
+      try {
+        const treePromise = fetch(apiUrl(`/api/coder-workspace/tree?chat_id=${chatId}`), {
+          signal: controller.signal,
+        });
+        const gitStatusPromise = fetch(apiUrl(`/api/coder-git/status?chat_id=${chatId}`), {
+          signal: controller.signal,
+        })
+          .then(async res => {
+            if (!res.ok) {
+              const text = await res.text().catch(() => '');
+              throw new Error(text || `Git status request failed with ${res.status}`);
+            }
+            return res.json();
+          })
+          .catch(err => {
+            if (err instanceof DOMException && err.name === 'AbortError') {
+              logger.debug('[CODER] Git status fetch aborted due to a newer request');
+              return null;
+            }
+            logger.warn('[ATLAS] [CODER] Failed to load git status:', describeError(err));
+            return null;
+          });
+
+        const treeResponse = await treePromise;
+        if (!treeResponse.ok) {
+          const text = await treeResponse.text().catch(() => '');
+          throw new Error(text || `File tree request failed with ${treeResponse.status}`);
+        }
+        const treeData = await treeResponse.json();
+
+        if (!treeData.success || !treeData.root) {
+          await gitStatusPromise;
+          setState(prev => ({ ...prev, error: treeData.error || 'Failed to load file tree', isLoading: false }));
+          return;
+        }
+
+        const rootNode: FileNode = treeData.root;
+        const directoryPaths = collectDirectoryPaths(rootNode, new Set<string>());
+        const rootPath = rootNode.path || '';
+
+        const applyTreeUpdate = (prev: CoderState, overrides: Partial<CoderState>) => {
+          const nextExpanded = new Set<string>();
+
+          prev.expandedFolders.forEach(path => {
+            if (directoryPaths.has(path)) {
+              nextExpanded.add(path);
+            }
+          });
+          nextExpanded.add(rootPath);
+
+          return {
+            ...prev,
+            fileTree: rootNode,
+            expandedFolders: nextExpanded,
+            isLoading: false,
+            ...overrides,
+          };
+        };
+
+        const gitData = await gitStatusPromise;
+        const gitOverrides: Partial<CoderState> = gitData?.success
+          ? {
+              isGitRepo: gitData.is_git_repo,
+              gitStatus: gitData.status || {},
+            }
+          : {
+              isGitRepo: false,
+              gitStatus: {},
+            };
+
+        setState(prev => applyTreeUpdate(prev, gitOverrides));
+        logger.info('[CODER_CTX] loadFileTree success', { hasGit: !!gitData?.success, isGitRepo: !!gitData?.is_git_repo });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          logger.debug('[CODER_CTX] loadFileTree aborted due to a newer refresh request');
+          return;
+        }
+        logger.error('[CODER] Failed to load file tree:', describeError(err));
+        setState(prev => ({ ...prev, error: 'Failed to load file tree', isLoading: false }));
+      } finally {
+        if (fileTreeAbortControllerRef.current === controller) {
+          fileTreeAbortControllerRef.current = null;
+        }
+        fileTreeRequestRef.current = null;
+        if (pendingFileTreeRefreshRef.current) {
+          pendingFileTreeRefreshRef.current = false;
+          void loadFileTree();
+        }
+      }
+    })();
+
+    fileTreeRequestRef.current = requestPromise;
+    return requestPromise;
+  }, [chatId]);
+
+  useEffect(() => {
+    return () => {
+      fileTreeAbortControllerRef.current?.abort();
+      fileTreeAbortControllerRef.current = null;
+      fileTreeRequestRef.current = null;
+      pendingFileTreeRefreshRef.current = false;
+    };
+  }, [chatId]);
+
+  const setWorkspace = useCallback(async (path: string) => {
+    if (!chatId || !path.trim()) return;
+    logger.info('[CODER_CTX] setWorkspace start', { chatId, path });
+    // Check if we're switching to a different workspace
+    setState(prev => {
+      const isDifferentWorkspace = prev.workspacePath && prev.workspacePath !== path.trim();
+
+      // If switching workspaces, immediately clear old workspace state to prevent flash of old content
+      if (isDifferentWorkspace) {
+        return {
+          ...prev,
+          isLoading: true,
+          error: '',
+          currentDocument: undefined,
+          selectedFile: undefined,
+          fileTree: null,
+          openTabs: [],
+          activeTabPath: undefined,
+          tabDocuments: {},
+          unsavedFiles: new Set(),
+          expandedFolders: new Set(),
+        };
+      }
+
+      // Same workspace or first time, just set loading
+      return { ...prev, isLoading: true, error: '' };
+    });
+
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/set'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, workspace_path: path.trim() })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        logger.info('[CODER_CTX] setWorkspace success', { workspace_path: data.workspace_path });
+        setState(prev => ({
+          ...prev,
+          workspacePath: data.workspace_path,
+          workspaceName: data.workspace_name,
+          hasWorkspace: true,
+        }));
+        await loadFileTree();
+
+        // Notify the worker that workspace has been selected so it can continue
+        if (chatId) {
+          try {
+            const response = await fetch(apiUrl(`/api/chats/${chatId}/workspace_selected`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+
+            let result: any = null;
+            let parseError: unknown = null;
+            try {
+              result = await response.json();
+            } catch (error) {
+              parseError = error;
+            }
+
+            if (parseError) {
+              logger.debug('[CODER_CTX] workspace_selected response was not JSON', parseError);
+            }
+
+            const workerInactive = response.status === 400 && result?.error === 'Chat worker is not active';
+
+            if (response.ok && result?.success) {
+              logger.info('[CODER_CTX] Successfully notified worker of workspace selection');
+            } else if (workerInactive) {
+              logger.info('[CODER_CTX] Worker inactive; skipping workspace notification');
+            } else {
+              logger.warn('[CODER_CTX] Failed to notify worker', { status: response.status, error: result?.error });
+            }
+          } catch (notifyError) {
+            logger.error('[CODER_CTX] Failed to notify worker of workspace selection:', notifyError);
+          }
+        }
+
+        // Signal that workspace is fully loaded and ready
+        if (onWorkspaceReady) {
+          logger.info('[CODER_CTX] Calling onWorkspaceReady callback');
+          onWorkspaceReady();
+        }
+      } else {
+        logger.warn('[CODER_CTX] setWorkspace failed', { error: data.error });
+        setState(prev => ({ ...prev, error: data.error || 'Failed to set workspace', isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to set workspace:', err);
+      setState(prev => ({ ...prev, error: 'Failed to set workspace', isLoading: false }));
+    }
+  }, [chatId, loadFileTree, onWorkspaceReady]);
+
+  const toggleFolder = useCallback((path: string) => {
+    setState(prev => {
+      const next = new Set(prev.expandedFolders);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return { ...prev, expandedFolders: next };
+    });
+  }, []);
+
+  const loadDeeper = useCallback(async (folderPath: string, currentDepth: number) => {
+    if (!chatId) return;
+
+    logger.info('[CODER_CTX] loadDeeper start', { chatId, folderPath, currentDepth });
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+
+    try {
+      const response = await fetch(
+        apiUrl(`/api/coder-workspace/tree/load-deeper?chat_id=${chatId}&path=${encodeURIComponent(folderPath)}&current_depth=${currentDepth}`)
+      );
+      const data = await response.json();
+
+      if (!data.success || !data.children) {
+        setState(prev => ({ ...prev, error: data.error || 'Failed to load deeper content', isLoading: false }));
+        return;
+      }
+
+      // Find the target folder in the tree and update its children
+      const updateNodeChildren = (node: FileNode): FileNode => {
+        if (node.path === folderPath) {
+          // This is the folder to update
+          return {
+            ...node,
+            children: data.children,
+            item_count: data.children.length,
+            canLoadDeeper: false, // Remove the canLoadDeeper flag after loading
+          };
+        }
+
+        if (node.children) {
+          return {
+            ...node,
+            children: node.children.map(updateNodeChildren),
+          };
+        }
+
+        return node;
+      };
+
+      setState(prev => {
+        if (!prev.fileTree) return { ...prev, isLoading: false };
+
+        const updatedTree = updateNodeChildren(prev.fileTree);
+
+        // Ensure the folder is expanded
+        const nextExpanded = new Set(prev.expandedFolders);
+        nextExpanded.add(folderPath);
+
+        return {
+          ...prev,
+          fileTree: updatedTree,
+          expandedFolders: nextExpanded,
+          isLoading: false,
+        };
+      });
+
+      logger.info('[CODER_CTX] loadDeeper success', { folderPath, childrenCount: data.children.length });
+    } catch (err) {
+      logger.error('[CODER] Failed to load deeper content:', err);
+      setState(prev => ({ ...prev, error: 'Failed to load deeper content', isLoading: false }));
+    }
+  }, [chatId]);
+
+  const openTab = useCallback(async (filePath: string) => {
+    if (!chatId) return;
+
+    const snapshot = stateRef.current;
+    const existingDoc = snapshot.tabDocuments[filePath];
+    const tabAlreadyOpen = snapshot.openTabs.includes(filePath);
+
+    if (tabAlreadyOpen && existingDoc) {
+      setState(prev => ({
+        ...prev,
+        activeTabPath: filePath,
+        currentDocument: existingDoc,
+        selectedFile: filePath,
+      }));
+      return;
+    }
+
+    const cached = filePreloader.getCached(filePath);
+    if (cached) {
+      const cachedDoc: EditorDocument = {
+        filePath,
+        content: cached.content,
+        originalContent: cached.content,
+        language: cached.language,
+        isBinary: false,
+      };
+
+      filePreloader.primeCache(filePath, cached.content, cached.language);
+
+      setState(prev => {
+        const nextOpenTabs = prev.openTabs.includes(filePath)
+          ? prev.openTabs
+          : [...prev.openTabs, filePath];
+
+        return {
+          ...prev,
+          openTabs: nextOpenTabs,
+          activeTabPath: filePath,
+          tabDocuments: {
+            ...prev.tabDocuments,
+            [filePath]: cachedDoc,
+          },
+          selectedFile: filePath,
+          currentDocument: cachedDoc,
+          isLoading: false,
+          error: '',
+        };
+      });
+    } else {
+      setState(prev => ({
+        ...prev,
+        isLoading: true,
+        error: '',
+        selectedFile: filePath,
+      }));
+    }
+
+    const controller = new AbortController();
+    const previousRequest = activeFileRequestRef.current;
+    if (previousRequest) {
+      previousRequest.controller.abort();
+    }
+    activeFileRequestRef.current = { path: filePath, controller };
+
+    try {
+      const response = await fetch(
+        apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`),
+        { signal: controller.signal }
+      );
+      const data = await response.json();
+
+      if (data.success) {
+        const doc: EditorDocument = {
+          filePath,
+          content: data.content,
+          originalContent: data.content,
+          language: data.language,
+          isBinary: false,
+        };
+
+        filePreloader.primeCache(filePath, data.content, data.language);
+
+        setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+
+        const nextOpenTabs = prev.openTabs.includes(filePath)
+          ? prev.openTabs
+          : [...prev.openTabs, filePath];
+
+        return {
+          ...prev,
+          openTabs: nextOpenTabs,
+          activeTabPath: filePath,
+          tabDocuments: {
+            ...prev.tabDocuments,
+            [filePath]: doc,
+          },
+          selectedFile: filePath,
+          currentDocument: doc,
+          isLoading: false,
+          error: '',
+        };
+        });
+
+        // Preload related files for better IntelliSense
+        if (!activeFileRequestRef.current || activeFileRequestRef.current.path === filePath) {
+          filePreloader.preloadRelatedFiles(
+            filePath,
+            data.content,
+            data.language,
+            stateRef.current.workspacePath,
+            chatId,
+            apiUrl
+          ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+        }
+      } else {
+        setState(prev => {
+          if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+            return prev;
+          }
+          return { ...prev, error: data.error || 'Failed to load file', isLoading: false };
+        });
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
+      logger.error('[CODER] Failed to load file:', err);
+      setState(prev => {
+        if (activeFileRequestRef.current && activeFileRequestRef.current.path !== filePath) {
+          return prev;
+        }
+        return { ...prev, error: 'Failed to load file', isLoading: false };
+      });
+    } finally {
+      if (activeFileRequestRef.current && activeFileRequestRef.current.path === filePath) {
+        activeFileRequestRef.current = null;
+      }
+    }
+  }, [chatId]);
+
+  const closeTab = useCallback((filePath: string) => {
+    setState(prev => {
+      const tabIndex = prev.openTabs.indexOf(filePath);
+      if (tabIndex === -1) return prev; // Tab not found
+
+      // Check if file has unsaved changes (for logging only)
+      const hasUnsaved = prev.unsavedFiles.has(filePath);
+      if (hasUnsaved) {
+        logger.info('[CODER] Closing tab with unsaved changes, discarding:', filePath);
+      }
+
+      const newOpenTabs = prev.openTabs.filter(path => path !== filePath);
+
+      // Determine which tab to switch to
+      let newActiveTabPath = prev.activeTabPath;
+      let newCurrentDocument = prev.currentDocument;
+
+      if (prev.activeTabPath === filePath) {
+        // Closing the active tab, need to switch to another
+        if (newOpenTabs.length === 0) {
+          // No tabs left
+          newActiveTabPath = undefined;
+          newCurrentDocument = undefined;
+        } else if (tabIndex > 0) {
+          // Switch to previous tab
+          newActiveTabPath = newOpenTabs[tabIndex - 1];
+          newCurrentDocument = prev.tabDocuments[newActiveTabPath];
+        } else {
+          // Switch to next tab (now at index 0)
+          newActiveTabPath = newOpenTabs[0];
+          newCurrentDocument = prev.tabDocuments[newActiveTabPath];
+        }
+      }
+
+      // Clean up tab document cache
+      const newTabDocuments = { ...prev.tabDocuments };
+      delete newTabDocuments[filePath];
+
+      // Clean up unsaved files
+      const newUnsavedFiles = new Set(prev.unsavedFiles);
+      newUnsavedFiles.delete(filePath);
+
+      return {
+        ...prev,
+        openTabs: newOpenTabs,
+        activeTabPath: newActiveTabPath,
+        currentDocument: newCurrentDocument,
+        selectedFile: newActiveTabPath,
+        tabDocuments: newTabDocuments,
+        unsavedFiles: newUnsavedFiles,
+      };
+    });
+  }, []);
+
+  const switchToTab = useCallback((filePath: string) => {
+    setState(prev => {
+      if (!prev.openTabs.includes(filePath)) return prev;
+
+      return {
+        ...prev,
+        activeTabPath: filePath,
+        currentDocument: prev.tabDocuments[filePath],
+        selectedFile: filePath,
+      };
+    });
+  }, []);
+
+  const reorderTabs = useCallback((newOrder: string[]) => {
+    setState(prev => {
+      // Validate that all tabs in newOrder exist in openTabs
+      const allTabsValid = newOrder.every(path => prev.openTabs.includes(path));
+      if (!allTabsValid || newOrder.length !== prev.openTabs.length) {
+        logger.warn('[CODER] Invalid tab reorder attempted');
+        return prev;
+      }
+
+      return {
+        ...prev,
+        openTabs: newOrder,
+      };
+    });
+  }, []);
+
+  const selectFile = useCallback(async (filePath: string) => {
+    // Redirect to openTab for tab-based navigation
+    await openTab(filePath);
+  }, [openTab]);
+
+  const selectNode = useCallback((path: string) => {
+    // Just update selectedFile without opening a tab
+    // This is useful for selecting folders
+    setState(prev => ({ ...prev, selectedFile: path, multiSelectedFiles: new Set() }));
+  }, []);
+
+  const toggleMultiSelect = useCallback((path: string) => {
+    setState(prev => {
+      const newMultiSelected = new Set(prev.multiSelectedFiles);
+      if (newMultiSelected.has(path)) {
+        newMultiSelected.delete(path);
+      } else {
+        newMultiSelected.add(path);
+      }
+      return { ...prev, multiSelectedFiles: newMultiSelected, selectedFile: path };
+    });
+  }, []);
+
+  const clearMultiSelect = useCallback(() => {
+    setState(prev => ({ ...prev, multiSelectedFiles: new Set() }));
+  }, []);
+
+  const selectRange = useCallback((fromPath: string, toPath: string) => {
+    // This is a simplified implementation
+    // In a full implementation, you'd traverse the file tree to get all paths between fromPath and toPath
+    setState(prev => {
+      const newMultiSelected = new Set(prev.multiSelectedFiles);
+      newMultiSelected.add(fromPath);
+      newMultiSelected.add(toPath);
+      return { ...prev, multiSelectedFiles: newMultiSelected };
+    });
+  }, []);
+
+  const deleteMultipleNodes = useCallback(async (paths: string[]) => {
+    if (!chatId || paths.length === 0) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      let hadError = false;
+      const currentTree = state.fileTree;
+
+      for (const path of paths) {
+        const node = findNodeByPath(currentTree, path);
+        const isDirectory = node?.type === 'directory';
+
+        const response = await fetch(apiUrl('/api/coder-workspace/delete'), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, path, is_directory: isDirectory })
+        });
+
+        if (!response.ok) {
+          hadError = true;
+          logger.warn(`[CODER] Failed to delete ${path}: HTTP ${response.status}`);
+          continue;
+        }
+
+        const result = await response.json();
+        if (!result.success) {
+          hadError = true;
+          logger.warn(`[CODER] Failed to delete ${path}: ${result.error}`);
+        }
+      }
+
+      setState(prev => ({ ...prev, multiSelectedFiles: new Set() }));
+      await loadFileTree();
+
+      if (hadError) {
+        setState(prev => ({ ...prev, error: 'Some items could not be deleted' }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to delete multiple nodes:', err);
+      setState(prev => ({ ...prev, error: 'Failed to delete files', isLoading: false }));
+    }
+  }, [chatId, loadFileTree, state.fileTree]);
+
+  const saveSnapshot = useCallback(async (filePath: string, content: string) => {
+    if (!chatId || !state.workspacePath) return;
+
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file/snapshot'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          path: filePath,
+          content
+        })
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        logger.warn('[CODER] Failed to save snapshot:', data.error);
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to save snapshot:', err);
+    }
+  }, [chatId, state.workspacePath]);
+
+  const updateFileContent = useCallback((content: string) => {
+    setState(prev => {
+      if (!prev.currentDocument) return prev;
+
+      if (content === prev.currentDocument.content) {
+        return prev;
+      }
+
+      const updatedDoc = { ...prev.currentDocument, content };
+      const isUnsaved = content !== prev.currentDocument.originalContent;
+
+      const newUnsavedFiles = new Set(prev.unsavedFiles);
+      if (isUnsaved) {
+        newUnsavedFiles.add(prev.currentDocument.filePath);
+      } else {
+        newUnsavedFiles.delete(prev.currentDocument.filePath);
+      }
+
+      // Update tab documents cache
+      const newTabDocuments = { ...prev.tabDocuments };
+      if (prev.currentDocument.filePath in newTabDocuments) {
+        newTabDocuments[prev.currentDocument.filePath] = updatedDoc;
+      }
+
+      return {
+        ...prev,
+        currentDocument: updatedDoc,
+        tabDocuments: newTabDocuments,
+        unsavedFiles: newUnsavedFiles,
+      };
+    });
+  }, []);
+
+  const saveFile = useCallback(async () => {
+    const currentDoc = stateRef.current.currentDocument;
+    if (!chatId || !currentDoc) return;
+
+    const { filePath, content } = currentDoc;
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, path: filePath, content })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setState(prev => {
+          const newUnsavedFiles = new Set(prev.unsavedFiles);
+          newUnsavedFiles.delete(filePath);
+
+          const updatedDoc = prev.currentDocument ? {
+            ...prev.currentDocument,
+            originalContent: content,
+          } : undefined;
+
+          // Update tab documents cache
+          const newTabDocuments = { ...prev.tabDocuments };
+          if (updatedDoc && filePath in newTabDocuments) {
+            newTabDocuments[filePath] = updatedDoc;
+          }
+
+          return {
+            ...prev,
+            currentDocument: updatedDoc,
+            tabDocuments: newTabDocuments,
+            unsavedFiles: newUnsavedFiles,
+            isLoading: false,
+          };
+        });
+        logger.info('[CODER] File saved:', filePath);
+      } else {
+        setState(prev => ({ ...prev, error: data.error || 'Failed to save file', isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to save file:', err);
+      setState(prev => ({ ...prev, error: 'Failed to save file', isLoading: false }));
+    }
+  }, [chatId]);
+
+  const createFile = useCallback(async (parentPath: string, name: string) => {
+    if (!chatId) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/create-file'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, parent_path: parentPath, name })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        await loadFileTree();
+      } else {
+        logger.error('[CODER] Failed to create file:', { parentPath, name, error: data.error });
+        setState(prev => ({ ...prev, error: data.error, isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to create file:', { parentPath, name, error: err });
+      setState(prev => ({ ...prev, error: 'Failed to create file', isLoading: false }));
+    }
+  }, [chatId, loadFileTree]);
+
+  const createFolder = useCallback(async (parentPath: string, name: string) => {
+    if (!chatId) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/create-folder'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, parent_path: parentPath, name })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        await loadFileTree();
+      } else {
+        setState(prev => ({ ...prev, error: data.error, isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to create folder:', err);
+      setState(prev => ({ ...prev, error: 'Failed to create folder', isLoading: false }));
+    }
+  }, [chatId, loadFileTree]);
+
+  const deleteNode = useCallback(async (path: string, isDirectory: boolean) => {
+    if (!chatId) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/delete'), {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, path, is_directory: isDirectory })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        // Close file if it's the selected one
+        if (state.selectedFile === path) {
+          setState(prev => ({ ...prev, selectedFile: undefined, currentDocument: undefined }));
+        }
+        await loadFileTree();
+      } else {
+        setState(prev => ({ ...prev, error: data.error, isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to delete:', err);
+      setState(prev => ({ ...prev, error: 'Failed to delete', isLoading: false }));
+    }
+  }, [chatId, loadFileTree, state.selectedFile]);
+
+  const renameNode = useCallback(async (oldPath: string, newName: string) => {
+    if (!chatId) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/rename'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, old_path: oldPath, new_name: newName })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        await loadFileTree();
+      } else {
+        setState(prev => ({ ...prev, error: data.error, isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to rename:', err);
+      setState(prev => ({ ...prev, error: 'Failed to rename', isLoading: false }));
+    }
+  }, [chatId, loadFileTree]);
+
+  const revertToSaved = useCallback(async (filePath: string) => {
+    if (!chatId) return;
+
+    setState(prev => ({ ...prev, isLoading: true, error: '' }));
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file/revert'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          path: filePath,
+          revert_to_saved: true
+        })
+      });
+
+      const data = await response.json();
+      if (data.success && data.content !== null) {
+        // Update the document with reverted content
+        setState(prev => {
+          const newUnsavedFiles = new Set(prev.unsavedFiles);
+          newUnsavedFiles.delete(filePath);
+
+          const revertedDoc: EditorDocument = {
+            filePath,
+            content: data.content,
+            originalContent: data.content,
+            language: prev.tabDocuments[filePath]?.language || 'plaintext',
+            isBinary: false,
+          };
+
+          const newTabDocuments = { ...prev.tabDocuments };
+          if (filePath in newTabDocuments) {
+            newTabDocuments[filePath] = revertedDoc;
+          }
+
+          const newCurrentDocument = prev.activeTabPath === filePath ? revertedDoc : prev.currentDocument;
+
+          return {
+            ...prev,
+            currentDocument: newCurrentDocument,
+            tabDocuments: newTabDocuments,
+            unsavedFiles: newUnsavedFiles,
+            isLoading: false,
+          };
+        });
+        logger.info('[CODER] Reverted to saved version:', filePath);
+      } else {
+        setState(prev => ({ ...prev, error: data.error || 'No saved version found', isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to revert to saved:', err);
+      setState(prev => ({ ...prev, error: 'Failed to revert to saved version', isLoading: false }));
+    }
+  }, [chatId]);
+
+  const resetFile = useCallback(async () => {
+    const currentDoc = stateRef.current.currentDocument;
+    if (!currentDoc) return;
+
+    await revertToSaved(currentDoc.filePath);
+  }, [revertToSaved]); 
+
+  const startCreatingFile = useCallback(() => {
+    setState(prev => {
+      const { selectedFile, fileTree } = prev;
+      let parentPath = '';
+      let depth = 0;
+
+      if (selectedFile && fileTree) {
+        const selectedNode = findNodeByPath(fileTree, selectedFile);
+
+        if (selectedNode) {
+          if (selectedNode.type === 'directory') {
+            // Create inside the selected folder
+            parentPath = selectedNode.path;
+            depth = (selectedNode.path.match(/\//g) || []).length + 1;
+
+            // Expand the folder if it's not expanded
+            if (!prev.expandedFolders.has(selectedNode.path)) {
+              const newExpanded = new Set(prev.expandedFolders);
+              newExpanded.add(selectedNode.path);
+              return {
+                ...prev,
+                expandedFolders: newExpanded,
+                creatingNode: {
+                  type: 'file',
+                  parentPath,
+                  depth,
+                },
+              };
+            }
+          } else {
+            // Create in the file's parent directory
+            const parts = selectedNode.path.split('/');
+            parts.pop(); // Remove filename
+            parentPath = parts.join('/');
+            depth = parts.length;
+          }
+        }
+      }
+
+      return {
+        ...prev,
+        creatingNode: {
+          type: 'file',
+          parentPath,
+          depth,
+        },
+      };
+    });
+  }, []);
+
+  const startCreatingFolder = useCallback(() => {
+    setState(prev => {
+      const { selectedFile, fileTree } = prev;
+      let parentPath = '';
+      let depth = 0;
+
+      if (selectedFile && fileTree) {
+        const selectedNode = findNodeByPath(fileTree, selectedFile);
+
+        if (selectedNode) {
+          if (selectedNode.type === 'directory') {
+            // Create inside the selected folder
+            parentPath = selectedNode.path;
+            depth = (selectedNode.path.match(/\//g) || []).length + 1;
+
+            // Expand the folder if it's not expanded
+            if (!prev.expandedFolders.has(selectedNode.path)) {
+              const newExpanded = new Set(prev.expandedFolders);
+              newExpanded.add(selectedNode.path);
+              return {
+                ...prev,
+                expandedFolders: newExpanded,
+                creatingNode: {
+                  type: 'folder',
+                  parentPath,
+                  depth,
+                },
+              };
+            }
+          } else {
+            // Create in the file's parent directory
+            const parts = selectedNode.path.split('/');
+            parts.pop(); // Remove filename
+            parentPath = parts.join('/');
+            depth = parts.length;
+          }
+        }
+      }
+
+      return {
+        ...prev,
+        creatingNode: {
+          type: 'folder',
+          parentPath,
+          depth,
+        },
+      };
+    });
+  }, []);
+
+  const cancelCreating = useCallback(() => {
+    setState(prev => ({
+      ...prev,
+      creatingNode: null,
+    }));
+  }, []);
+
+  const finishCreating = useCallback(async (name: string) => {
+    if (!state.creatingNode || !name.trim()) {
+      setState(prev => ({ ...prev, creatingNode: null }));
+      return;
+    }
+
+    const { type, parentPath } = state.creatingNode;
+
+    // Clear creating state immediately
+    setState(prev => ({ ...prev, creatingNode: null }));
+
+    // Create the file or folder
+    if (type === 'file') {
+      await createFile(parentPath, name.trim());
+    } else {
+      await createFolder(parentPath, name.trim());
+    }
+  }, [state.creatingNode, createFile, createFolder]);
+
+  // Split editor actions
+  const splitEditorHorizontal = useCallback(() => {
+    setState(prev => {
+      if (prev.splitMode !== 'none') return prev; // Already split
+
+      // Copy current editor state to primary pane, secondary starts empty
+      return {
+        ...prev,
+        splitMode: 'horizontal',
+        activePaneId: 'primary',
+        panes: {
+          primary: {
+            activeTabPath: prev.activeTabPath,
+            currentDocument: prev.currentDocument,
+          },
+          secondary: {
+            activeTabPath: undefined,
+            currentDocument: undefined,
+          },
+        },
+      };
+    });
+  }, []);
+
+  const splitEditorVertical = useCallback(() => {
+    setState(prev => {
+      if (prev.splitMode !== 'none') return prev; // Already split
+
+      // Copy current editor state to primary pane, secondary starts empty
+      return {
+        ...prev,
+        splitMode: 'vertical',
+        activePaneId: 'primary',
+        panes: {
+          primary: {
+            activeTabPath: prev.activeTabPath,
+            currentDocument: prev.currentDocument,
+          },
+          secondary: {
+            activeTabPath: undefined,
+            currentDocument: undefined,
+          },
+        },
+      };
+    });
+  }, []);
+
+  const closeSplit = useCallback(() => {
+    setState(prev => {
+      if (prev.splitMode === 'none') return prev; // Not split
+
+      // Restore state from active pane
+      const activePane = prev.panes[prev.activePaneId];
+
+      return {
+        ...prev,
+        splitMode: 'none',
+        activePaneId: 'primary',
+        activeTabPath: activePane.activeTabPath,
+        currentDocument: activePane.currentDocument,
+        panes: {
+          primary: {
+            activeTabPath: activePane.activeTabPath,
+            currentDocument: activePane.currentDocument,
+          },
+          secondary: {
+            activeTabPath: undefined,
+            currentDocument: undefined,
+          },
+        },
+      };
+    });
+  }, []);
+
+  const switchPane = useCallback((paneId: PaneId) => {
+    setState(prev => {
+      if (prev.splitMode === 'none') return prev; // Not split
+
+      const targetPane = prev.panes[paneId];
+
+      return {
+        ...prev,
+        activePaneId: paneId,
+        activeTabPath: targetPane.activeTabPath,
+        currentDocument: targetPane.currentDocument,
+      };
+    });
+  }, []);
+
+  const openTabInPane = useCallback(async (filePath: string, paneId: PaneId) => {
+    if (!chatId) return;
+
+    // If document is already loaded in tabDocuments, use it
+    setState(prev => {
+      if (prev.tabDocuments[filePath]) {
+        const doc = prev.tabDocuments[filePath];
+        return {
+          ...prev,
+          activePaneId: paneId,
+          activeTabPath: filePath,
+          currentDocument: doc,
+          selectedFile: filePath,
+          panes: {
+            ...prev.panes,
+            [paneId]: {
+              activeTabPath: filePath,
+              currentDocument: doc,
+            },
+          },
+        };
+      }
+      return { ...prev, isLoading: true, error: '' };
+    });
+
+    // If already loaded, we're done
+    if (state.tabDocuments[filePath]) {
+      return;
+    }
+
+    // Load the file
+    try {
+      const response = await fetch(apiUrl(`/api/coder-workspace/file?chat_id=${chatId}&path=${encodeURIComponent(filePath)}`));
+      const data = await response.json();
+
+      if (data.success) {
+        const doc: EditorDocument = {
+          filePath,
+          content: data.content,
+          originalContent: data.content,
+          language: data.language,
+          isBinary: false,
+        };
+
+        setState(prev => {
+          // Add to openTabs if not already there
+          const newOpenTabs = prev.openTabs.includes(filePath)
+            ? prev.openTabs
+            : [...prev.openTabs, filePath];
+
+          return {
+            ...prev,
+            openTabs: newOpenTabs,
+            activePaneId: paneId,
+            activeTabPath: filePath,
+            tabDocuments: {
+              ...prev.tabDocuments,
+              [filePath]: doc,
+            },
+            selectedFile: filePath,
+            currentDocument: doc,
+            isLoading: false,
+            panes: {
+              ...prev.panes,
+              [paneId]: {
+                activeTabPath: filePath,
+                currentDocument: doc,
+              },
+            },
+          };
+        });
+
+        // Preload related files
+        filePreloader.preloadRelatedFiles(
+          filePath,
+          data.content,
+          data.language,
+          state.workspacePath,
+          chatId,
+          apiUrl
+        ).catch(err => logger.warn('[CODER] Failed to preload related files:', err));
+      } else {
+        setState(prev => ({ ...prev, error: data.error || 'Failed to load file', isLoading: false }));
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to load file:', err);
+      setState(prev => ({ ...prev, error: 'Failed to load file', isLoading: false }));
+    }
+  }, [chatId, state.tabDocuments, state.workspacePath]);
+
+  // Diff management functions
+  const addPendingDiff = useCallback((toolCallId: string, diff: DiffData) => {
+    setState(prev => {
+      const newPendingDiffs = new Map(prev.pendingDiffs);
+      const existing = newPendingDiffs.get(toolCallId);
+      releaseDiffStrings(existing);
+      newPendingDiffs.set(toolCallId, retainDiffStrings(diff));
+      return { ...prev, pendingDiffs: newPendingDiffs };
+    });
+    logger.info('[CODER] Added pending diff:', toolCallId);
+  }, []);
+
+  const acceptDiff = useCallback((toolCallId: string) => {
+    setState(prev => {
+      const newPendingDiffs = new Map(prev.pendingDiffs);
+      const existing = newPendingDiffs.get(toolCallId);
+      if (existing) {
+        releaseDiffStrings(existing);
+        newPendingDiffs.delete(toolCallId);
+      }
+      const newAppliedChanges = new Set(prev.appliedChanges);
+      newAppliedChanges.add(toolCallId);
+      return {
+        ...prev,
+        pendingDiffs: newPendingDiffs,
+        appliedChanges: newAppliedChanges,
+      };
+    });
+    logger.info('[CODER] Accepted diff:', toolCallId);
+  }, []);
+
+  const rejectDiff = useCallback(async (toolCallId: string) => {
+    const diff = state.pendingDiffs.get(toolCallId);
+    if (!diff || !chatId) return;
+
+    // Revert the file content to before state
+    try {
+      const response = await fetch(apiUrl('/api/coder-workspace/file'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          path: diff.filePath,
+          content: diff.before,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        // Update the document if it's open
+        setState(prev => {
+          const newPendingDiffs = new Map(prev.pendingDiffs);
+          const existing = newPendingDiffs.get(toolCallId);
+          if (existing) {
+            releaseDiffStrings(existing);
+            newPendingDiffs.delete(toolCallId);
+          }
+
+          if (prev.tabDocuments[diff.filePath]) {
+            const updatedDoc = {
+              ...prev.tabDocuments[diff.filePath],
+              content: diff.before,
+              originalContent: diff.before,
+            };
+            return {
+              ...prev,
+              pendingDiffs: newPendingDiffs,
+              tabDocuments: {
+                ...prev.tabDocuments,
+                [diff.filePath]: updatedDoc,
+              },
+              currentDocument: prev.activeTabPath === diff.filePath ? updatedDoc : prev.currentDocument,
+            };
+          }
+
+          return { ...prev, pendingDiffs: newPendingDiffs };
+        });
+        logger.info('[CODER] Rejected diff:', toolCallId);
+      }
+    } catch (err) {
+      logger.error('[CODER] Failed to reject diff:', err);
+    }
+  }, [chatId, state.pendingDiffs]);
+
+  const acceptAllDiffs = useCallback(() => {
+    setState(prev => {
+      const newAppliedChanges = new Set(prev.appliedChanges);
+      prev.pendingDiffs.forEach((diff, toolCallId) => {
+        newAppliedChanges.add(toolCallId);
+        releaseDiffStrings(diff);
+      });
+      return {
+        ...prev,
+        pendingDiffs: new Map(),
+        appliedChanges: newAppliedChanges,
+      };
+    });
+    logger.info('[CODER] Accepted all diffs');
+  }, []);
+
+  const rejectAllDiffs = useCallback(async () => {
+    const diffsToReject = Array.from(state.pendingDiffs.entries());
+    for (const [toolCallId] of diffsToReject) {
+      await rejectDiff(toolCallId);
+    }
+    logger.info('[CODER] Rejected all diffs');
+  }, [state.pendingDiffs, rejectDiff]);
+
+  // Checkpoint management functions
+  const addCheckpoint = useCallback((data: Omit<Checkpoint, 'id' | 'timestamp'>) => {
+    const checkpoint: Checkpoint = {
+      ...data,
+      id: `checkpoint_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: new Date().toISOString(),
+    };
+    setState(prev => ({
+      ...prev,
+      checkpoints: [...prev.checkpoints, checkpoint],
+    }));
+    logger.info('[CODER] Added checkpoint:', checkpoint.id);
+  }, []);
+
+  const revertToCheckpoint = useCallback(async (checkpointId: string) => {
+    // This would revert files to the state at the checkpoint
+    // Implementation depends on how we store checkpoint data
+    logger.info('[CODER] Reverting to checkpoint:', checkpointId);
+    // TODO: Implement full checkpoint revert logic
+  }, []);
+
+  // Plan management functions
+  const updatePlan = useCallback((plan: Plan | null) => {
+    setState(prev => ({ ...prev, currentPlan: plan }));
+    logger.info('[CODER] Updated plan:', plan?.description);
+  }, []);
+
+  const updateStepStatus = useCallback((
+    stepId: string,
+    status: 'pending' | 'in_progress' | 'completed' | 'failed',
+    result?: string
+  ) => {
+    setState(prev => {
+      if (!prev.currentPlan) return prev;
+
+      const updatedSteps = prev.currentPlan.steps.map(step =>
+        step.id === stepId ? { ...step, status, result } : step
+      );
+
+      return {
+        ...prev,
+        currentPlan: {
+          ...prev.currentPlan,
+          steps: updatedSteps,
+        },
+      };
+    });
+    logger.info('[CODER] Updated step status:', stepId, status);
+  }, []);
+
+  // Activity panel management
+  const setActivityPanelTab = useCallback((tab: 'activity' | 'plan' | 'checkpoints' | 'context' | 'timeline') => {
+    setState(prev => ({ ...prev, activityPanelTab: tab }));
+  }, []);
+
+  // Listen for file changes streamed from the backend
+  useEffect(() => {
+    if (!chatId) return;
+
+    let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const IMMEDIATE_REFRESH_COOLDOWN_MS = 300;
+
+    const requestFileTreeRefresh = (forceImmediate = false) => {
+      if (forceImmediate) {
+        const now = Date.now();
+        if (now - lastImmediateRefreshRef.current < IMMEDIATE_REFRESH_COOLDOWN_MS) {
+          logger.debug('[CODER_CTX] Skipping immediate file tree refresh due to cooldown window');
+          return;
+        }
+        lastImmediateRefreshRef.current = now;
+        if (refreshDebounceTimer) {
+          clearTimeout(refreshDebounceTimer);
+          refreshDebounceTimer = null;
+        }
+        logger.info('[CODER_CTX] Immediate file tree refresh requested');
+        void loadFileTree();
+        return;
+      }
+
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+
+      logger.info('[CODER_CTX] Scheduling debounced file tree refresh');
+      refreshDebounceTimer = setTimeout(() => {
+        logger.info('[CODER_CTX] Debounced file tree refresh');
+        void loadFileTree();
+        refreshDebounceTimer = null;
+      }, 500);
+    };
+
+    const normalizePath = (input?: string | null): string | null => {
+      if (!input) {
+        return null;
+      }
+      const normalizedInput = input.replace(/\\/g, '/');
+      const workspaceRoot = stateRef.current.workspacePath?.replace(/\\/g, '/');
+      if (workspaceRoot) {
+        const normalizedRoot = workspaceRoot.endsWith('/') ? workspaceRoot : `${workspaceRoot}/`;
+        if (normalizedInput.toLowerCase().startsWith(normalizedRoot.toLowerCase())) {
+          const trimmed = normalizedInput.slice(normalizedRoot.length).replace(/^\/+/, '');
+          return trimmed || normalizedInput;
+        }
+      }
+      return normalizedInput.replace(/^\.\/+/, '').replace(/^\/+/, '');
+    };
+
+    const normalizeIncomingContent = (content?: string | null): string | null => {
+      if (typeof content !== 'string') {
+        return content ?? null;
+      }
+      // Monaco treats CR characters as visible glyphs, so ensure streamed content is LF only
+      return content.replace(/\r\n?/g, '\n');
+    };
+
+    const updateStateForFileChange = ({
+      filePath,
+      operation,
+      previousPath,
+      newContent,
+      source,
+    }: {
+      filePath?: string;
+      operation?: string;
+      previousPath?: string | null;
+      newContent?: string | null;
+      source: 'coderFileChange' | 'coderFileOperation';
+    }) => {
+      const normalizedFilePath = normalizePath(filePath);
+      if (!normalizedFilePath || !operation) {
+        logger.warn('[CODER_CTX] Ignoring file change due to missing path/operation', {
+          rawPath: filePath,
+          operation,
+          source,
+        });
+        return;
+      }
+      const normalizedPreviousPath = normalizePath(previousPath);
+
+      setState(prev => {
+        if (operation === 'move' && previousPath && previousPath !== filePath) {
+          const oldPath = normalizedPreviousPath || previousPath;
+          const newPath = normalizedFilePath;
+
+          const updatedTabs = prev.openTabs.map(tab => (tab === oldPath ? newPath : tab));
+          const updatedTabDocs = { ...prev.tabDocuments };
+
+          if (updatedTabDocs[oldPath]) {
+            updatedTabDocs[newPath] = {
+              ...updatedTabDocs[oldPath],
+              filePath: newPath,
+            };
+            delete updatedTabDocs[oldPath];
+          }
+
+          const newActiveTabPath = prev.activeTabPath === oldPath ? newPath : prev.activeTabPath;
+          const newCurrentDocument =
+            prev.activeTabPath === oldPath && updatedTabDocs[newPath]
+              ? updatedTabDocs[newPath]
+              : prev.currentDocument;
+
+          logger.info(`[CODER_CTX] File moved (${source}): ${oldPath} -> ${newPath}`);
+
+          return {
+            ...prev,
+            openTabs: updatedTabs,
+            tabDocuments: updatedTabDocs,
+            activeTabPath: newActiveTabPath,
+            currentDocument: newCurrentDocument,
+          };
+        }
+
+        const normalizedContent = normalizeIncomingContent(newContent);
+
+        if ((operation === 'write' || operation === 'edit') && typeof normalizedContent === 'string') {
+          const isFileOpen = prev.openTabs.includes(normalizedFilePath);
+
+          if (!isFileOpen) {
+            const existingDoc = prev.tabDocuments[normalizedFilePath];
+            const language =
+              existingDoc?.language || inferLanguageFromPath(normalizedFilePath);
+            const newDoc: EditorDocument = {
+              filePath: normalizedFilePath,
+              content: normalizedContent,
+              originalContent: normalizedContent,
+              language,
+              isBinary: false,
+            };
+
+            const nextOpenTabs = prev.openTabs.includes(normalizedFilePath)
+              ? prev.openTabs
+              : [...prev.openTabs, normalizedFilePath];
+
+            const paneIds: PaneId[] = ['primary', 'secondary'];
+            const updatedPanes = paneIds.reduce((acc, paneId) => {
+              const pane = prev.panes[paneId];
+              if (!pane) {
+                return acc;
+              }
+              if (paneId === prev.activePaneId || pane.activeTabPath === normalizedFilePath) {
+                acc[paneId] = {
+                  activeTabPath: normalizedFilePath,
+                  currentDocument: newDoc,
+                };
+              } else {
+                acc[paneId] = pane;
+              }
+              return acc;
+            }, {} as typeof prev.panes);
+
+            logger.info(`[CODER_CTX] Created live document for ${normalizedFilePath} via ${source}`);
+
+            return {
+              ...prev,
+              openTabs: nextOpenTabs,
+              activeTabPath: normalizedFilePath,
+              selectedFile: normalizedFilePath,
+              currentDocument: newDoc,
+              tabDocuments: {
+                ...prev.tabDocuments,
+                [normalizedFilePath]: newDoc,
+              },
+              panes: updatedPanes,
+              isLoading: false,
+              error: '',
+            };
+          }
+
+          const existingDoc = prev.tabDocuments[normalizedFilePath];
+          if (!existingDoc) {
+            return prev;
+          }
+
+          if (existingDoc.content === normalizedContent) {
+            logger.debug('[CODER_CTX] Ignoring duplicate live update (content unchanged)', { filePath });
+            return prev;
+          }
+
+          if (prev.unsavedFiles.has(normalizedFilePath)) {
+            logger.warn(`[CODER_CTX] Skipping live update for ${normalizedFilePath} due to unsaved changes`);
+            return prev;
+          }
+
+          const updatedDoc: EditorDocument = {
+            ...existingDoc,
+            content: normalizedContent,
+            originalContent: normalizedContent,
+          };
+
+          const updatedTabDocs = {
+            ...prev.tabDocuments,
+            [normalizedFilePath]: updatedDoc,
+          };
+
+          const newCurrentDocument =
+            prev.activeTabPath === normalizedFilePath ? updatedDoc : prev.currentDocument;
+
+          const newUnsavedFiles = new Set(prev.unsavedFiles);
+          newUnsavedFiles.delete(normalizedFilePath);
+
+          const paneIds: PaneId[] = ['primary', 'secondary'];
+          const updatedPanes = paneIds.reduce((acc, paneId) => {
+            const pane = prev.panes[paneId];
+            if (!pane) {
+              return acc;
+            }
+            if (pane.activeTabPath === normalizedFilePath) {
+              acc[paneId] = {
+                activeTabPath: normalizedFilePath,
+                currentDocument: updatedDoc,
+              };
+            } else {
+              acc[paneId] = pane;
+            }
+            return acc;
+          }, {} as typeof prev.panes);
+
+          logger.info(
+            `[CODER_CTX] Updated file content via ${source}: ${filePath} (${normalizedContent.length} chars)`
+          );
+
+          return {
+            ...prev,
+            tabDocuments: updatedTabDocs,
+            currentDocument: newCurrentDocument,
+            unsavedFiles: newUnsavedFiles,
+            panes: updatedPanes,
+          };
+        }
+
+        return prev;
+      });
+    };
+
+    const handleCoderFileChange = (event: CustomEvent<any>) => {
+      const detail = event.detail;
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      logger.info(
+        `[CODER_CTX] Legacy file change detected: ${detail.operation} -> ${detail.filePath}`
+      );
+
+      requestFileTreeRefresh();
+
+      updateStateForFileChange({
+        filePath: detail.filePath,
+        operation: detail.operation,
+        previousPath: detail.previousPath,
+        newContent: detail.content ?? null,
+        source: 'coderFileChange',
+      });
+    };
+
+    const handleCoderFileOperation = (event: CustomEvent<any>) => {
+      const detail = event.detail;
+      if (detail.chatId !== chatId) {
+        return;
+      }
+
+      const normalizedOperation =
+        detail.operation === 'streaming_write'
+          ? 'write'
+          : detail.operation === 'streaming_edit'
+            ? 'edit'
+            : detail.operation;
+
+      logger.info(
+        `[CODER_CTX] Streaming file operation: ${detail.operation} -> ${detail.file_path}`,
+        {
+          normalizedPath: normalizedOperation === 'write' || normalizedOperation === 'edit'
+            ? normalizePath(detail.file_path)
+            : detail.file_path,
+          hasContent: typeof detail.content === 'string',
+          decorationCount: Array.isArray(detail.decorations) ? detail.decorations.length : 0,
+        }
+      );
+
+      requestFileTreeRefresh(true);
+
+      updateStateForFileChange({
+        filePath: detail.file_path,
+        operation: normalizedOperation,
+        newContent: typeof detail.content === 'string' ? detail.content : null,
+        source: 'coderFileOperation',
+      });
+    };
+
+    const handleCoderFileRevert = (event: CustomEvent<any>) => {
+      const { chatId: eventChatId, file_path, reverted_to, content } = event.detail;
+      if (eventChatId !== chatId) {
+        return;
+      }
+
+      const filePath = normalizePath(file_path);
+      if (!filePath) {
+        logger.warn('[CODER_CTX] File revert event missing file_path');
+        return;
+      }
+
+      logger.info(`[CODER_CTX] File reverted (${reverted_to}) -> ${filePath}`);
+
+      requestFileTreeRefresh(true);
+
+      if (reverted_to === 'deleted') {
+        closeTab(filePath);
+        return;
+      }
+
+      if (typeof content !== 'string') {
+        logger.warn(`[CODER_CTX] Revert event missing content for ${filePath}, skipping update`);
+        return;
+      }
+
+      setState(prev => {
+        if (!prev.openTabs.includes(filePath)) {
+          logger.warn('[CODER_CTX] Revert ignored because file not open', { filePath });
+          return prev;
+        }
+
+        const existingDoc = prev.tabDocuments[filePath];
+        if (!existingDoc) {
+          logger.warn('[CODER_CTX] Revert ignored because document missing', { filePath });
+          return prev;
+        }
+
+        if (prev.unsavedFiles.has(filePath)) {
+          logger.warn(`[CODER_CTX] Skipping revert update for ${filePath} due to unsaved changes`);
+          return prev;
+        }
+
+        const updatedDoc: EditorDocument = {
+          ...existingDoc,
+          content,
+          originalContent: content,
+        };
+
+        const updatedTabDocs = {
+          ...prev.tabDocuments,
+          [filePath]: updatedDoc,
+        };
+
+        const newCurrentDocument =
+          prev.activeTabPath === filePath ? updatedDoc : prev.currentDocument;
+
+        const newUnsavedFiles = new Set(prev.unsavedFiles);
+        newUnsavedFiles.delete(filePath);
+
+        return {
+          ...prev,
+          tabDocuments: updatedTabDocs,
+          currentDocument: newCurrentDocument,
+          unsavedFiles: newUnsavedFiles,
+        };
+      });
+    };
+
+    window.addEventListener('coderFileChange', handleCoderFileChange as EventListener);
+    window.addEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
+    window.addEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
+    logger.info('[CODER_CTX] Listening for coder file changes, operations, and reverts');
+
+    return () => {
+      if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+      }
+      window.removeEventListener('coderFileChange', handleCoderFileChange as EventListener);
+      window.removeEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
+      window.removeEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
+      logger.info('[CODER_CTX] Stopped listening for coder file changes, operations, and reverts');
+    };
+  }, [chatId, closeTab, loadFileTree]);
+
+  // Load workspace on mount
+  useEffect(() => {
+    if (chatId) {
+      (async () => {
+        try {
+          const response = await fetch(apiUrl(`/api/coder-workspace/get?chat_id=${chatId}`));
+          const data = await response.json();
+
+          if (data.success && data.workspace_path) {
+            setState(prev => ({
+              ...prev,
+              workspacePath: data.workspace_path,
+              workspaceName: data.workspace_name || data.workspace_path,
+              hasWorkspace: true,
+            }));
+            await loadFileTree();
+
+            // Signal that workspace is fully loaded and ready
+            if (onWorkspaceReady) {
+              logger.info('[CODER_CTX] Workspace loaded on mount, calling onWorkspaceReady callback');
+              onWorkspaceReady();
+            }
+          }
+        } catch (err) {
+          logger.error('[CODER] Failed to load workspace:', err);
+        }
+      })();
+    }
+  }, [chatId, loadFileTree, onWorkspaceReady]);
+
+  const value: CoderState & CoderActions = {
+    ...state,
+    setWorkspace,
+    loadFileTree,
+    loadDeeper,
+    toggleFolder,
+    selectFile,
+    selectNode,
+    toggleMultiSelect,
+    clearMultiSelect,
+    selectRange,
+    openTab,
+    closeTab,
+    switchToTab,
+    reorderTabs,
+    updateFileContent,
+    saveFile,
+    resetFile,
+    revertToSaved,
+    saveSnapshot,
+    createFile,
+    createFolder,
+    deleteNode,
+    deleteMultipleNodes,
+    renameNode,
+    setActiveTab: (tab) => setState(prev => ({ ...prev, activeTab: tab })),
+    setSearchQuery: (query) => setState(prev => ({ ...prev, searchQuery: query })),
+    toggleTerminal: () => setState(prev => ({ ...prev, showTerminal: !prev.showTerminal })),
+    setTerminalHeight: (height) => setState(prev => ({ ...prev, terminalHeight: height })),
+    setSidebarWidth: (width) => setState(prev => ({ ...prev, sidebarWidth: width })),
+    setError,
+    startCreatingFile,
+    startCreatingFolder,
+    cancelCreating,
+    finishCreating,
+    // Split editor actions
+    splitEditorHorizontal,
+    splitEditorVertical,
+    closeSplit,
+    switchPane,
+    openTabInPane,
+    // Diff management actions
+    addPendingDiff,
+    acceptDiff,
+    rejectDiff,
+    acceptAllDiffs,
+    rejectAllDiffs,
+    // Checkpoint actions
+    addCheckpoint,
+    revertToCheckpoint,
+    // Plan actions
+    updatePlan,
+    updateStepStatus,
+    // Activity panel actions
+    setActivityPanelTab,
+  };
+
+  return <CoderContext.Provider value={value}>{children}</CoderContext.Provider>;
+};
+const retainDiffStrings = (diff: DiffData): DiffData => ({
+  ...diff,
+  before: stringInterner.retain(diff.before) ?? diff.before,
+  after: stringInterner.retain(diff.after) ?? diff.after,
+});
+
+const releaseDiffStrings = (diff?: DiffData) => {
+  if (!diff) {
+    return;
+  }
+  stringInterner.release(diff.before);
+  stringInterner.release(diff.after);
+};
