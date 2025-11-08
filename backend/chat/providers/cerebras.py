@@ -21,27 +21,38 @@ class Cerebras:
     AVAILABLE_MODELS = {
         "qwen-3-235b-a22b-thinking-2507": {
             "name": "Qwen 3 235B Thinking",
-            "supports_reasoning": False
+            "supports_reasoning": False,
+            "reasoning_param": None
         },
         "qwen-3-235b-a22b-instruct-2507": {
             "name": "Qwen 3 235B Instruct",
-            "supports_reasoning": False
+            "supports_reasoning": False,
+            "reasoning_param": None
         },
         "qwen-3-32b": {
             "name": "Qwen 3 32B",
-            "supports_reasoning": False
+            "supports_reasoning": False,
+            "reasoning_param": None
         },
         "llama3.1-8b": {
             "name": "Llama 3.1 8B",
-            "supports_reasoning": False
+            "supports_reasoning": False,
+            "reasoning_param": None
         },
         "llama-3.3-70b": {
             "name": "Llama 3.3 70B",
-            "supports_reasoning": False
+            "supports_reasoning": False,
+            "reasoning_param": None
         },
         "gpt-oss-120b": {
             "name": "OpenAI GPT OSS 120B",
-            "supports_reasoning": True
+            "supports_reasoning": True,
+            "reasoning_param": "effort"  # Uses reasoning_effort parameter
+        },
+        "zai-glm-4.6": {
+            "name": "GLM 4.6",
+            "supports_reasoning": True,
+            "reasoning_param": "disable"  # Uses disable_reasoning parameter
         }
     }
 
@@ -278,8 +289,17 @@ class Cerebras:
                         request_params[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            if "reasoning_effort" not in request_params:
-                request_params["reasoning_effort"] = "medium"
+            reasoning_param = self.AVAILABLE_MODELS.get(model, {}).get("reasoning_param")
+            if reasoning_param == "effort":
+                # OpenAI-style reasoning with reasoning_effort parameter (gpt-oss-120b)
+                if "reasoning_effort" not in request_params:
+                    request_params["reasoning_effort"] = "medium"
+            elif reasoning_param == "disable":
+                # Z.ai-style reasoning with disable_reasoning parameter (zai-glm-4.6)
+                # Non-standard parameters must be passed via extra_body
+                if "extra_body" not in request_params:
+                    request_params["extra_body"] = {}
+                request_params["extra_body"]["disable_reasoning"] = False
 
         client = self._ensure_client()
         if client is None:
@@ -359,8 +379,17 @@ class Cerebras:
                         request_params[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            if "reasoning_effort" not in request_params:
-                request_params["reasoning_effort"] = "medium"
+            reasoning_param = self.AVAILABLE_MODELS.get(model, {}).get("reasoning_param")
+            if reasoning_param == "effort":
+                # OpenAI-style reasoning with reasoning_effort parameter (gpt-oss-120b)
+                if "reasoning_effort" not in request_params:
+                    request_params["reasoning_effort"] = "medium"
+            elif reasoning_param == "disable":
+                # Z.ai-style reasoning with disable_reasoning parameter (zai-glm-4.6)
+                # Non-standard parameters must be passed via extra_body
+                if "extra_body" not in request_params:
+                    request_params["extra_body"] = {}
+                request_params["extra_body"]["disable_reasoning"] = False
 
         client = self._ensure_client()
         if client is None:
@@ -467,8 +496,17 @@ class Cerebras:
                         request_params[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            if "reasoning_effort" not in request_params:
-                request_params["reasoning_effort"] = "medium"
+            reasoning_param = self.AVAILABLE_MODELS.get(model, {}).get("reasoning_param")
+            if reasoning_param == "effort":
+                # OpenAI-style reasoning with reasoning_effort parameter (gpt-oss-120b)
+                if "reasoning_effort" not in request_params:
+                    request_params["reasoning_effort"] = "medium"
+            elif reasoning_param == "disable":
+                # Z.ai-style reasoning with disable_reasoning parameter (zai-glm-4.6)
+                # Non-standard parameters must be passed via extra_body
+                if "extra_body" not in request_params:
+                    request_params["extra_body"] = {}
+                request_params["extra_body"]["disable_reasoning"] = False
 
         client = self._ensure_async_client()
         if client is None:
@@ -548,8 +586,17 @@ class Cerebras:
                         request_params[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            if "reasoning_effort" not in request_params:
-                request_params["reasoning_effort"] = "medium"
+            reasoning_param = self.AVAILABLE_MODELS.get(model, {}).get("reasoning_param")
+            if reasoning_param == "effort":
+                # OpenAI-style reasoning with reasoning_effort parameter (gpt-oss-120b)
+                if "reasoning_effort" not in request_params:
+                    request_params["reasoning_effort"] = "medium"
+            elif reasoning_param == "disable":
+                # Z.ai-style reasoning with disable_reasoning parameter (zai-glm-4.6)
+                # Non-standard parameters must be passed via extra_body
+                if "extra_body" not in request_params:
+                    request_params["extra_body"] = {}
+                request_params["extra_body"]["disable_reasoning"] = False
 
         client = self._ensure_async_client()
         if client is None:
