@@ -48,15 +48,18 @@ export const EditorPane = memo<EditorPaneProps>(({
 }) => {
   const { pendingDiffs, acceptDiff, rejectDiff, acceptAllDiffs, rejectAllDiffs } = useCoderContext();
 
-  const handleEditorChange = useCallback((value: string | undefined) => {
-    if (value !== undefined) {
-      onContentChange(value);
-    }
+  const handleEditorChangeRef = useRef(onContentChange);
+  useEffect(() => {
+    handleEditorChangeRef.current = onContentChange;
   }, [onContentChange]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [monacoEditor, setMonacoEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoApiRef = useRef<typeof Monaco | null>(null);
+  const isApplyingExternalRef = useRef(false);
+  const lastSyncedContentRef = useRef('');
+  const lastSyncedFileRef = useRef<string | undefined>(undefined);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const layoutFrameRef = useRef<number | null>(null);
   const streamingDecorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
@@ -119,6 +122,9 @@ export const EditorPane = memo<EditorPaneProps>(({
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
       editorRef.current = null;
+      monacoApiRef.current = null;
+      lastSyncedContentRef.current = '';
+      lastSyncedFileRef.current = undefined;
       setMonacoEditor(null);
     };
   }, []);
@@ -126,6 +132,100 @@ export const EditorPane = memo<EditorPaneProps>(({
   useEffect(() => {
     scheduleEditorLayout();
   }, [scheduleEditorLayout, document?.filePath]);
+
+  const applyIncrementalContent = useCallback((nextContent: string, resetView: boolean, replaceAll = false) => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) {
+      return;
+    }
+
+    const previousContent = lastSyncedContentRef.current;
+
+    if (replaceAll) {
+      if (previousContent === nextContent) {
+        return;
+      }
+      isApplyingExternalRef.current = true;
+      model.setValue(nextContent);
+      isApplyingExternalRef.current = false;
+      if (resetView) {
+        editor.setScrollTop(0);
+        editor.revealLine(1);
+      }
+      lastSyncedContentRef.current = nextContent;
+      return;
+    }
+
+    if (previousContent === nextContent) {
+      return;
+    }
+
+    const prevLength = previousContent.length;
+    const nextLength = nextContent.length;
+    let start = 0;
+    const minLen = Math.min(prevLength, nextLength);
+    while (start < minLen && previousContent.charCodeAt(start) === nextContent.charCodeAt(start)) {
+      start++;
+    }
+
+    let endPrev = prevLength - 1;
+    let endNext = nextLength - 1;
+    while (endPrev >= start && endNext >= start && previousContent.charCodeAt(endPrev) === nextContent.charCodeAt(endNext)) {
+      endPrev--;
+      endNext--;
+    }
+
+    const deleteFrom = start;
+    const deleteTo = endPrev + 1;
+    const insertText = nextContent.slice(start, endNext + 1);
+
+    const rangeStart = model.getPositionAt(deleteFrom);
+    const rangeEnd = model.getPositionAt(deleteTo);
+    const monacoApi = monacoApiRef.current ?? (typeof window !== 'undefined' ? (window as any).monaco : null);
+    const range = monacoApi
+      ? new monacoApi.Range(rangeStart.lineNumber, rangeStart.column, rangeEnd.lineNumber, rangeEnd.column)
+      : {
+          startLineNumber: rangeStart.lineNumber,
+          startColumn: rangeStart.column,
+          endLineNumber: rangeEnd.lineNumber,
+          endColumn: rangeEnd.column,
+        };
+
+    isApplyingExternalRef.current = true;
+    model.pushEditOperations([], [{ range, text: insertText }], () => null);
+    isApplyingExternalRef.current = false;
+    if (resetView) {
+      editor.revealLineInCenter(rangeStart.lineNumber);
+    }
+    lastSyncedContentRef.current = nextContent;
+  }, []);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) {
+      if (document) {
+        lastSyncedContentRef.current = document.content;
+        lastSyncedFileRef.current = document.filePath;
+      } else {
+        lastSyncedContentRef.current = '';
+        lastSyncedFileRef.current = undefined;
+      }
+      return;
+    }
+
+    if (!document) {
+      applyIncrementalContent('', true, true);
+      lastSyncedFileRef.current = undefined;
+      return;
+    }
+
+    const isNewFile = lastSyncedFileRef.current !== document.filePath;
+    applyIncrementalContent(document.content, isNewFile, isNewFile);
+    lastSyncedFileRef.current = document.filePath;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document?.content, document?.filePath, applyIncrementalContent]);
 
   useEffect(() => {
     if (!document?.filePath) {
@@ -141,9 +241,11 @@ export const EditorPane = memo<EditorPaneProps>(({
     setBackendDecorations(cached);
   }, [document?.filePath]);
 
-  const handleEditorMount = useCallback<EditorOnMount>((editorInstance, _monaco) => {
+  const handleEditorMount = useCallback<EditorOnMount>((editorInstance, monacoInstance) => {
     editorRef.current = editorInstance;
     setMonacoEditor(editorInstance);
+    monacoApiRef.current = monacoInstance as typeof Monaco;
+    lastSyncedContentRef.current = editorInstance.getValue();
     scheduleEditorLayout();
 
     logger.info('[BACKEND-DECORATIONS] Editor mounted, checking for pending diff');
@@ -153,6 +255,15 @@ export const EditorPane = memo<EditorPaneProps>(({
       logger.info('[BACKEND-DECORATIONS] Creating decorations collection on mount');
       streamingDecorationsRef.current = editorInstance.createDecorationsCollection();
     }
+
+    editorInstance.onDidChangeModelContent(() => {
+      if (isApplyingExternalRef.current) {
+        return;
+      }
+      const value = editorInstance.getValue();
+      lastSyncedContentRef.current = value;
+      handleEditorChangeRef.current(value);
+    });
 
     editorInstance.onKeyDown((e) => {
       const key = e.browserEvent.key;
@@ -387,8 +498,7 @@ export const EditorPane = memo<EditorPaneProps>(({
         <Editor
           height="100%"
           language={document.language}
-          value={document.content}
-          onChange={handleEditorChange}
+          defaultValue={document?.content ?? ''}
           beforeMount={onEditorWillMount}
           onMount={handleEditorMount}
           theme="vs-dark"

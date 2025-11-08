@@ -640,15 +640,22 @@ class LiveStore {
       } else if (action === 'param' && payload.name) {
         const params = toolSeg.params || [];
         const existingIndex = params.findIndex(p => p.name === payload.name);
+
+        // Truncate large param values to prevent memory bloat (only store preview)
+        const paramValue = payload.value || '';
+        const truncatedValue = paramValue.length > 200
+          ? `${paramValue.substring(0, 200)}... [${paramValue.length} chars]`
+          : paramValue;
+
         let updatedParams: Array<{ name: string; value: string }>;
 
         if (existingIndex >= 0) {
           // Update existing param (final complete value)
           updatedParams = [...params];
-          updatedParams[existingIndex] = { name: payload.name, value: payload.value || '' };
+          updatedParams[existingIndex] = { name: payload.name, value: truncatedValue };
         } else {
           // Add new param
-          updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
+          updatedParams = [...params, { name: payload.name, value: truncatedValue }];
         }
 
         const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
@@ -657,15 +664,22 @@ class LiveStore {
         // Incremental parameter update (streaming content)
         const params = toolSeg.params || [];
         const existingIndex = params.findIndex(p => p.name === payload.name);
+
+        // Truncate streaming param values too
+        const paramValue = payload.value || '';
+        const truncatedValue = paramValue.length > 200
+          ? `${paramValue.substring(0, 200)}... [${paramValue.length} chars]`
+          : paramValue;
+
         let updatedParams: Array<{ name: string; value: string }>;
 
         if (existingIndex >= 0) {
           // Update existing streaming param
           updatedParams = [...params];
-          updatedParams[existingIndex] = { name: payload.name, value: payload.value || '' };
+          updatedParams[existingIndex] = { name: payload.name, value: truncatedValue };
         } else {
           // First chunk of streaming param
-          updatedParams = [...params, { name: payload.name, value: payload.value || '' }];
+          updatedParams = [...params, { name: payload.name, value: truncatedValue }];
         }
 
         const updated = { ...toolSeg, params: updatedParams } as typeof toolSeg;
