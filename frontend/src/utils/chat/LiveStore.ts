@@ -4,20 +4,23 @@ import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
 import type { RouterDecision, DomainExecution } from '../../types/messages';
+import { ChunkedTextBuffer } from '../text/ChunkedTextBuffer';
 
 export type CoderStreamSegment =
   | {
       id: string;
       iteration: number;
       type: 'thoughts';
-      text: string;
+      buffer?: ChunkedTextBuffer;
+      text?: string;
       status: 'streaming' | 'complete';
     }
   | {
       id: string;
       iteration: number;
       type: 'agent_response';
-      text: string;
+      buffer?: ChunkedTextBuffer;
+      text?: string;
       status: 'streaming' | 'complete';
     }
   | {
@@ -231,6 +234,8 @@ class LiveStore {
   private readonly MESSAGE_ID_MAX_AGE = 15 * 60 * 1000; 
   private lastCleanupTime = Date.now();
   private pendingVersionStreamParents = new Map<string, string>();
+  private readonly MAX_CODER_STREAM_SEGMENTS = 600;
+  private readonly MIN_COMPLETED_ITERATIONS_TO_KEEP = 5;
 
   registerVersionStream(childChatId: string, parentChatId: string) {
     sendButtonStateManager.setSendButtonDisabled(parentChatId, true);
@@ -501,7 +506,7 @@ class LiveStore {
       : segment === 'tool_call' && action === 'field'
       ? `${segment}.${action} (${payload.field}=${payload.value})`
       : `${segment}.${action}`;
-    logger.info(`[SSE-RECV] iter=${iteration}, event=${eventInfo}`);
+    logger.debug(`[SSE-RECV] iter=${iteration}, event=${eventInfo}`);
 
     const toolIndex = payload.toolIndex ?? payload.tool_index ?? 0;
     const next: ChatLive = {
@@ -530,13 +535,21 @@ class LiveStore {
       ];
     };
 
+    const finalizeTextSegment = <T extends Extract<CoderStreamSegment, { type: 'thoughts' | 'agent_response' }>>(seg: T): T => {
+      if (seg.buffer) {
+        const text = seg.buffer.finalize();
+        return { ...seg, buffer: undefined, text };
+      }
+      return seg;
+    };
+
     if (segment === 'thoughts') {
       const id = `iter-${iteration}-thoughts`;
       const { segment: seg, index } = ensureSegment(id, () => ({
         id,
         iteration,
         type: 'thoughts',
-        text: '',
+        buffer: new ChunkedTextBuffer(),
         status: 'streaming',
       }));
       const thoughtSeg = seg as Extract<CoderStreamSegment, { type: 'thoughts' }>;
@@ -547,11 +560,16 @@ class LiveStore {
           updateSegment(index, updated);
         }
       } else if (action === 'append' && payload.text) {
-        const updated = { ...thoughtSeg, text: thoughtSeg.text + payload.text } as typeof thoughtSeg;
-        updateSegment(index, updated);
+        if (thoughtSeg.buffer) {
+          thoughtSeg.buffer.append(payload.text);
+          const updated = { ...thoughtSeg };
+          updateSegment(index, updated);
+        } else {
+          logger.warn(`[CODER-STREAM] Received append for finalized thoughts segment ${id} on chat ${chatId}`);
+        }
       } else if (action === 'complete') {
         if (thoughtSeg.status !== 'complete') {
-          const updated = { ...thoughtSeg, status: 'complete' } as typeof thoughtSeg;
+          const updated = { ...finalizeTextSegment(thoughtSeg), status: 'complete' } as typeof thoughtSeg;
           updateSegment(index, updated);
         }
       }
@@ -561,7 +579,7 @@ class LiveStore {
         id,
         iteration,
         type: 'agent_response',
-        text: '',
+        buffer: new ChunkedTextBuffer(),
         status: 'streaming',
       }));
       const responseSeg = seg as Extract<CoderStreamSegment, { type: 'agent_response' }>;
@@ -572,11 +590,16 @@ class LiveStore {
           updateSegment(index, updated);
         }
       } else if (action === 'append' && payload.text) {
-        const updated = { ...responseSeg, text: responseSeg.text + payload.text } as typeof responseSeg;
-        updateSegment(index, updated);
+        if (responseSeg.buffer) {
+          responseSeg.buffer.append(payload.text);
+          const updated = { ...responseSeg };
+          updateSegment(index, updated);
+        } else {
+          logger.warn(`[CODER-STREAM] Received append for finalized agent_response segment ${id} on chat ${chatId}`);
+        }
       } else if (action === 'complete') {
         if (responseSeg.status !== 'complete') {
-          const updated = { ...responseSeg, status: 'complete' } as typeof responseSeg;
+          const updated = { ...finalizeTextSegment(responseSeg), status: 'complete' } as typeof responseSeg;
           updateSegment(index, updated);
         }
       }
@@ -655,8 +678,59 @@ class LiveStore {
       }
     }
 
-    next.version = changed ? cur.version + 1 : cur.version;
+    if (changed) {
+      next.coderStream = this.pruneCoderStream(next.coderStream);
+      next.version = cur.version + 1;
+    }
     return next;
+  }
+
+  private pruneCoderStream(segments: CoderStreamSegment[]): CoderStreamSegment[] {
+    if (segments.length <= this.MAX_CODER_STREAM_SEGMENTS) {
+      return segments;
+    }
+
+    const iterationInfo = new Map<number, { hasStreaming: boolean; segmentCount: number }>();
+    for (const seg of segments) {
+      const info = iterationInfo.get(seg.iteration) ?? { hasStreaming: false, segmentCount: 0 };
+      info.hasStreaming = info.hasStreaming || seg.status === 'streaming';
+      info.segmentCount += 1;
+      iterationInfo.set(seg.iteration, info);
+    }
+
+    const removableIterations = Array.from(iterationInfo.entries())
+      .filter(([, info]) => !info.hasStreaming)
+      .map(([iteration]) => iteration)
+      .sort((a, b) => a - b);
+
+    if (removableIterations.length <= this.MIN_COMPLETED_ITERATIONS_TO_KEEP) {
+      return segments;
+    }
+
+    let remainingRemovable = removableIterations.length;
+    let currentLength = segments.length;
+    const dropIterations = new Set<number>();
+
+    for (const iteration of removableIterations) {
+      if (currentLength <= this.MAX_CODER_STREAM_SEGMENTS) {
+        break;
+      }
+      if (remainingRemovable <= this.MIN_COMPLETED_ITERATIONS_TO_KEEP) {
+        break;
+      }
+      dropIterations.add(iteration);
+      const info = iterationInfo.get(iteration);
+      if (info) {
+        currentLength -= info.segmentCount;
+      }
+      remainingRemovable -= 1;
+    }
+
+    if (dropIterations.size === 0) {
+      return segments;
+    }
+
+    return segments.filter(seg => !dropIterations.has(seg.iteration));
   }
 
   private handleModelRetryEvent(chatId: string, ev: ModelRetryEvent, cur: ChatLive): ChatLive {

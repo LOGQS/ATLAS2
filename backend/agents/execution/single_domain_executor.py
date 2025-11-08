@@ -2817,17 +2817,7 @@ The planner generated this comprehensive specification to guide your implementat
             "context_snapshots": state.context_snapshots,
             "plan": state.plan,
             "tool_history": [
-                {
-                    "call_id": record.call_id,
-                    "tool": record.tool_name,
-                    "params": record.param_entries,
-                    "accepted": record.accepted,
-                    "executed_at": record.executed_at,
-                    "result_summary": record.result_summary,
-                    "raw_result": record.raw_result,
-                    "ops": record.ops,
-                    "error": record.error,
-                }
+                self._build_tool_history_entry(record)
                 for record in deduped_history
             ],
             "metadata": {
@@ -2853,6 +2843,53 @@ The planner generated this comprehensive specification to guide your implementat
             "created_at": proposal.created_at,
             "tool_description": proposal.tool_description,
         }
+
+    def _build_tool_history_entry(self, record: ToolExecutionRecord) -> Dict[str, Any]:
+        preview_result = self._make_tool_result_preview(record.raw_result)
+        return {
+            "call_id": record.call_id,
+            "tool": record.tool_name,
+            "params": record.param_entries,
+            "accepted": record.accepted,
+            "executed_at": record.executed_at,
+            "result_summary": record.result_summary,
+            "raw_result": preview_result,
+            "ops": record.ops,
+            "error": record.error,
+        }
+
+    def _make_tool_result_preview(self, raw_result: Any) -> Any:
+        if not isinstance(raw_result, dict):
+            return raw_result
+
+        preview: Dict[str, Any] = {}
+
+        output = raw_result.get("output")
+        if isinstance(output, dict):
+            preview_output = {
+                key: output.get(key)
+                for key in (
+                    "status",
+                    "file_path",
+                    "action",
+                    "edit_mode",
+                    "lines_affected",
+                    "metadata",
+                )
+                if key in output
+            }
+            if preview_output:
+                preview["output"] = preview_output
+
+        metadata = raw_result.get("metadata")
+        if metadata:
+            preview["metadata"] = metadata
+
+        error = raw_result.get("error")
+        if error:
+            preview["error"] = error
+
+        return preview
 
     def _ensure_serializable(self, value: Any) -> Any:
         if value is None:

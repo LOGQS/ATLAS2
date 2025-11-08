@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { apiUrl } from '../config/api';
 import logger from '../utils/core/logger';
 import { filePreloader } from '../utils/filePreloader';
+import { stringInterner } from '../utils/text/StringInterner';
 
 interface FileNode {
   name: string;
@@ -314,6 +315,25 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   React.useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    stateRef.current.pendingDiffs.forEach(diff => releaseDiffStrings(diff));
+    setState(prev => ({
+      ...prev,
+      chatId,
+      openTabs: [],
+      activeTabPath: undefined,
+      currentDocument: undefined,
+      tabDocuments: {},
+      unsavedFiles: new Set(),
+      pendingDiffs: new Map(),
+      appliedChanges: new Set(),
+      panes: {
+        primary: { activeTabPath: undefined, currentDocument: undefined },
+        secondary: { activeTabPath: undefined, currentDocument: undefined },
+      },
+    }));
+  }, [chatId]);
 
   const activeFileRequestRef = React.useRef<{ path: string; controller: AbortController } | null>(null);
   const fileTreeAbortControllerRef = React.useRef<AbortController | null>(null);
@@ -964,6 +984,10 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
     setState(prev => {
       if (!prev.currentDocument) return prev;
 
+      if (content === prev.currentDocument.content) {
+        return prev;
+      }
+
       const updatedDoc = { ...prev.currentDocument, content };
       const isUnsaved = content !== prev.currentDocument.originalContent;
 
@@ -1507,7 +1531,9 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   const addPendingDiff = useCallback((toolCallId: string, diff: DiffData) => {
     setState(prev => {
       const newPendingDiffs = new Map(prev.pendingDiffs);
-      newPendingDiffs.set(toolCallId, diff);
+      const existing = newPendingDiffs.get(toolCallId);
+      releaseDiffStrings(existing);
+      newPendingDiffs.set(toolCallId, retainDiffStrings(diff));
       return { ...prev, pendingDiffs: newPendingDiffs };
     });
     logger.info('[CODER] Added pending diff:', toolCallId);
@@ -1516,7 +1542,11 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   const acceptDiff = useCallback((toolCallId: string) => {
     setState(prev => {
       const newPendingDiffs = new Map(prev.pendingDiffs);
-      newPendingDiffs.delete(toolCallId);
+      const existing = newPendingDiffs.get(toolCallId);
+      if (existing) {
+        releaseDiffStrings(existing);
+        newPendingDiffs.delete(toolCallId);
+      }
       const newAppliedChanges = new Set(prev.appliedChanges);
       newAppliedChanges.add(toolCallId);
       return {
@@ -1549,7 +1579,11 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
         // Update the document if it's open
         setState(prev => {
           const newPendingDiffs = new Map(prev.pendingDiffs);
-          newPendingDiffs.delete(toolCallId);
+          const existing = newPendingDiffs.get(toolCallId);
+          if (existing) {
+            releaseDiffStrings(existing);
+            newPendingDiffs.delete(toolCallId);
+          }
 
           if (prev.tabDocuments[diff.filePath]) {
             const updatedDoc = {
@@ -1580,8 +1614,9 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   const acceptAllDiffs = useCallback(() => {
     setState(prev => {
       const newAppliedChanges = new Set(prev.appliedChanges);
-      prev.pendingDiffs.forEach((_, toolCallId) => {
+      prev.pendingDiffs.forEach((diff, toolCallId) => {
         newAppliedChanges.add(toolCallId);
+        releaseDiffStrings(diff);
       });
       return {
         ...prev,
@@ -1820,6 +1855,11 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
 
           const existingDoc = prev.tabDocuments[normalizedFilePath];
           if (!existingDoc) {
+            return prev;
+          }
+
+          if (existingDoc.content === newContent) {
+            logger.debug('[CODER_CTX] Ignoring duplicate live update (content unchanged)', { filePath });
             return prev;
           }
 
@@ -2107,4 +2147,17 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   };
 
   return <CoderContext.Provider value={value}>{children}</CoderContext.Provider>;
+};
+const retainDiffStrings = (diff: DiffData): DiffData => ({
+  ...diff,
+  before: stringInterner.retain(diff.before) ?? diff.before,
+  after: stringInterner.retain(diff.after) ?? diff.after,
+});
+
+const releaseDiffStrings = (diff?: DiffData) => {
+  if (!diff) {
+    return;
+  }
+  stringInterner.release(diff.before);
+  stringInterner.release(diff.after);
 };

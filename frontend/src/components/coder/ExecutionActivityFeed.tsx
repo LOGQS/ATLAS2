@@ -6,6 +6,14 @@ import type { CoderStreamSegment } from '../../utils/chat/LiveStore';
 import { apiUrl } from '../../config/api';
 import logger from '../../utils/core/logger';
 import '../../styles/coder/ExecutionActivityFeed.css';
+import { getBufferText } from '../../utils/text/ChunkedTextBuffer';
+
+const getStreamText = (segment?: Extract<CoderStreamSegment, { type: 'thoughts' | 'agent_response' }>) => {
+  if (!segment) {
+    return '';
+  }
+  return segment.text ?? getBufferText(segment.buffer);
+};
 
 interface ExecutionActivityFeedProps {
   domainExecution: DomainExecution | null;
@@ -535,7 +543,7 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                     {group.thoughts.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
                   </div>
                   <pre className="exec-activity-feed__stream-text">
-                    {group.thoughts.text || (group.thoughts.status === 'complete' ? 'No reasoning shared.' : 'Gathering thoughts...')}
+                    {getStreamText(group.thoughts) || (group.thoughts.status === 'complete' ? 'No reasoning shared.' : 'Gathering thoughts...')}
                   </pre>
                 </div>
               )}
@@ -551,7 +559,7 @@ export const ExecutionActivityFeed: React.FC<ExecutionActivityFeedProps> = ({
                     {group.response.status === 'streaming' && <span className="exec-activity-feed__stream-pill">Streaming</span>}
                   </div>
                   <pre className="exec-activity-feed__stream-text">
-                    {group.response.text || (group.response.status === 'complete' ? 'Agent response is empty.' : 'Composing response...')}
+                    {getStreamText(group.response) || (group.response.status === 'complete' ? 'Agent response is empty.' : 'Composing response...')}
                   </pre>
                 </div>
               )}
