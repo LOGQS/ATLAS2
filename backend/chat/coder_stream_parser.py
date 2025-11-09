@@ -33,6 +33,7 @@ class CoderStreamParser:
         self._emit = emitter
         self._auto_exec_callback = auto_exec_callback
         self._buffer: str = ""
+        self._buffer_base_offset: int = 0  # Track how much we've trimmed
 
         self._thoughts_started = False
         self._thoughts_complete = False
@@ -77,6 +78,7 @@ class CoderStreamParser:
         self._buffer += text
         self._process_message()
         self._process_tool_calls()
+        self._trim_buffer()
 
     def finalize(self) -> None:
         """
@@ -256,6 +258,8 @@ class CoderStreamParser:
         # Initialize streaming_params tracking if not present
         if "streaming_params" not in state:
             state["streaming_params"] = {}  # type: Dict[str, int]
+        if "last_sent_param_content" not in state:
+            state["last_sent_param_content"] = {}  # type: Dict[str, str]
 
         search_pos = 0
         while True:
@@ -268,21 +272,41 @@ class CoderStreamParser:
             # Check if there's a closing tag
             param_close_pos = content.find('</PARAM>', param_start)
             if param_close_pos == -1:
-                # INCOMPLETE - still streaming! Emit incremental updates
+                # INCOMPLETE - still streaming! Emit incremental delta updates
                 streaming_content = content[param_start:]
-                last_emitted_size = state["streaming_params"].get(param_name, 0)
+                last_sent_content = state["last_sent_param_content"].get(param_name, "")
 
                 # Only emit if content has grown since last time
-                if len(streaming_content) > last_emitted_size:
-                    self._emit({
-                        "iteration": self.iteration,
-                        "segment": "tool_call",
-                        "action": "param_update",  # NEW ACTION for streaming params
-                        "name": param_name,
-                        "value": streaming_content,
-                        "tool_index": state["index"],
-                        "complete": False,
-                    })
+                if len(streaming_content) > len(last_sent_content):
+                    # Check if this is append-only (common case for file.write)
+                    if streaming_content.startswith(last_sent_content):
+                        # Append-only: send delta
+                        delta = streaming_content[len(last_sent_content):]
+                        offset = len(last_sent_content)
+
+                        self._emit({
+                            "iteration": self.iteration,
+                            "segment": "tool_call",
+                            "action": "param_delta",  # Delta update
+                            "name": param_name,
+                            "delta": delta,
+                            "offset": offset,
+                            "tool_index": state["index"],
+                            "complete": False,
+                        })
+                    else:
+                        # Not append-only (rare) - send full content with flag
+                        self._emit({
+                            "iteration": self.iteration,
+                            "segment": "tool_call",
+                            "action": "param_update",  # Full update
+                            "name": param_name,
+                            "value": streaming_content,
+                            "tool_index": state["index"],
+                            "complete": False,
+                        })
+
+                    state["last_sent_param_content"][param_name] = streaming_content
                     state["streaming_params"][param_name] = len(streaming_content)
                     state["collected_params"][param_name] = streaming_content
                     if param_name in {"content", "new_content", "create_dirs"}:
@@ -302,6 +326,8 @@ class CoderStreamParser:
             # Clear streaming tracking for this param
             if param_name in state.get("streaming_params", {}):
                 del state["streaming_params"][param_name]
+            if param_name in state.get("last_sent_param_content", {}):
+                del state["last_sent_param_content"][param_name]
 
             logger.debug(f"[PARSER-TOOL] ✓ Emitting complete param: {param_name}={len(param_value)}b")
             self._emit({
@@ -392,3 +418,45 @@ class CoderStreamParser:
         if end_idx == -1:
             return None
         return content[start_idx:end_idx].strip()
+
+    def _trim_buffer(self) -> None:
+        """
+        Trim processed buffer data to prevent O(n²) growth.
+        Only trim if buffer is large and we can safely remove processed data.
+        """
+        # Only trim if buffer is getting large
+        if len(self._buffer) < 10000:
+            return
+
+        # Find the earliest position we need to keep
+        min_keep_pos = 0
+
+        # Keep from message start if active
+        if self._message_started and not self._message_complete:
+            min_keep_pos = max(min_keep_pos, self._message_start_offset)
+
+        # Keep from earliest active tool call
+        for state in self._tool_states:
+            if not state.get("complete"):
+                min_keep_pos = max(min_keep_pos, state["content_start"])
+
+        # Keep from tool search position
+        min_keep_pos = max(min_keep_pos, self._tool_search_pos)
+
+        # Only trim if we can remove at least 5KB (worth the reallocation cost)
+        if min_keep_pos < 5000:
+            return
+
+        # Trim the buffer
+        self._buffer = self._buffer[min_keep_pos:]
+        self._buffer_base_offset += min_keep_pos
+
+        # Adjust all offsets
+        if self._message_started:
+            self._message_start_offset -= min_keep_pos
+        self._tool_search_pos -= min_keep_pos
+
+        for state in self._tool_states:
+            state["content_start"] -= min_keep_pos
+
+        logger.debug(f"[PARSER-BUFFER] Trimmed {min_keep_pos} bytes, new buffer size: {len(self._buffer)}")

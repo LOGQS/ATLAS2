@@ -5,6 +5,7 @@ import threading
 import atexit
 import concurrent.futures
 import json
+import time
 from typing import Dict, Any, Optional, List, Coroutine
 from pathlib import Path
 from utils.logger import get_logger
@@ -31,6 +32,10 @@ _async_stop_flags: Dict[str, bool] = {}  # True = stop (save), False/missing = c
 # follow-up tool decisions without falling back to worker-based execution.
 _async_domain_sessions_lock = threading.Lock()
 _async_domain_sessions: Dict[str, Dict[str, Any]] = {}
+
+# Track recently cleared domain sessions to handle stale tool decisions gracefully
+_recently_cleared_sessions_lock = threading.Lock()
+_recently_cleared_sessions: Dict[str, float] = {}  # {chat_id: clear_time}
 
 
 class _AsyncLoopManager:
@@ -115,6 +120,16 @@ def _clear_async_domain_session(chat_id: str) -> None:
     with _async_domain_sessions_lock:
         if _async_domain_sessions.pop(chat_id, None) is not None:
             logger.debug(f"[ASYNC-DOMAIN] Session cleared for {chat_id}")
+
+            # Track recently cleared session to handle stale tool decisions
+            with _recently_cleared_sessions_lock:
+                _recently_cleared_sessions[chat_id] = time.time()
+
+                # Clean up old entries (>30 seconds)
+                cutoff = time.time() - 30
+                to_remove = [cid for cid, t in _recently_cleared_sessions.items() if t < cutoff]
+                for cid in to_remove:
+                    del _recently_cleared_sessions[cid]
 
 
 def stop_async_chat(chat_id: str) -> bool:
@@ -739,6 +754,25 @@ def handle_async_domain_tool_decision(
         pre_execution_state = {}
     session = _get_async_domain_session(chat_id)
     if not session:
+        # Check if session was recently cleared (within last 10 seconds)
+        # This handles race conditions where frontend sends duplicate tool approvals
+        with _recently_cleared_sessions_lock:
+            clear_time = _recently_cleared_sessions.get(chat_id)
+            if clear_time and (time.time() - clear_time < 10):
+                logger.info(
+                    "[ASYNC-DOMAIN-STALE] Ignoring tool decision for recently cleared session %s - "
+                    "likely a duplicate request from frontend race condition",
+                    chat_id
+                )
+                return {
+                    "success": True,
+                    "chat_id": chat_id,
+                    "task_id": task_id,
+                    "status": "completed",
+                    "message": "Task already completed, ignoring duplicate approval",
+                    "stale_request": True,
+                }
+
         logger.debug(f"[ASYNC-DOMAIN] No async session found for chat {chat_id}, deferring to worker")
         return None
 

@@ -304,7 +304,10 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
     if pre_execution_state is None:
         pre_execution_state = {}
 
-    if is_async_chat_processing(chat_id) or has_async_domain_session(chat_id):
+    # Check if this is an async-mode chat (either actively processing or has a domain session)
+    is_async_mode = is_async_chat_processing(chat_id) or has_async_domain_session(chat_id)
+
+    if is_async_mode:
         async_response = handle_async_domain_tool_decision(
             chat_id=chat_id,
             task_id=task_id,
@@ -319,7 +322,17 @@ def send_domain_tool_decision(chat_id: str, task_id: str, call_id: str, decision
             logger.info(f"[DOMAIN-DECISION] Routed tool decision for {chat_id} through async engine")
             return async_response
         else:
-            logger.info(f"[DOMAIN-DECISION] Async engine unable to handle decision for {chat_id}, falling back to worker")
+            # async_response is None, but we were in async mode
+            # This means the session was recently cleared - don't fall back to worker
+            logger.info(f"[DOMAIN-DECISION] Async session cleared for {chat_id}, not falling back to worker")
+            return {
+                "success": True,
+                "chat_id": chat_id,
+                "task_id": task_id,
+                "status": "completed",
+                "message": "Task already completed, ignoring stale approval",
+                "stale_request": True,
+            }
 
     # Handle multiprocessing case
     payload = {

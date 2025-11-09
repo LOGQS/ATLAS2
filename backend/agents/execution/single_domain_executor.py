@@ -150,6 +150,19 @@ class SingleDomainExecutor:
         self._active_tasks: Dict[str, DomainTaskState] = {}
         self._auto_exec_results: Dict[str, Dict[str, Any]] = {}  # Store auto-execution results: {tool_call_id: result}
         self._auto_exec_initial_states: Dict[str, Dict[str, Any]] = {}
+        self._last_sent_file_content: Dict[str, str] = {}  # Track last sent content per file: {file_path: content}
+        self._recently_completed_tasks: Dict[str, float] = {}  # Track recently completed tasks: {task_id: completion_time}
+
+    def _mark_task_completed(self, task_id: str) -> None:
+        """Mark a task as recently completed and remove from active tasks."""
+        self._recently_completed_tasks[task_id] = time.time()
+        self._active_tasks.pop(task_id, None)
+
+        # Clean up old completed tasks (older than 30 seconds)
+        cutoff = time.time() - 30
+        self._recently_completed_tasks = {
+            tid: t for tid, t in self._recently_completed_tasks.items() if t > cutoff
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -246,7 +259,7 @@ class SingleDomainExecutor:
 
         result = self._run_agent_iteration(state, is_initial=True)
         if state.status in TERMINAL_STATES:
-            self._active_tasks.pop(task_id, None)
+            self._mark_task_completed(task_id)
             # Log session end for coder tasks
             if domain_id == "coder":
                 self._log_coder_session_end(state)
@@ -278,6 +291,22 @@ class SingleDomainExecutor:
 
         state = self._active_tasks.get(task_id)
         if not state:
+            # Check if this task recently completed (within last 10 seconds)
+            # This handles race conditions where frontend sends duplicate tool approvals
+            completion_time = self._recently_completed_tasks.get(task_id)
+            if completion_time and (time.time() - completion_time < 10):
+                self.logger.info(
+                    "[STALE-APPROVAL] Ignoring tool decision for recently completed task %s - "
+                    "likely a duplicate request from frontend race condition",
+                    task_id
+                )
+                return {
+                    "task_id": task_id,
+                    "status": "completed",
+                    "message": "Task already completed, ignoring duplicate approval",
+                    "stale_request": True,
+                }
+
             error_msg = f"Task {task_id} is no longer active"
             self.logger.error(error_msg)
             return {"error": error_msg, "task_id": task_id}
@@ -379,7 +408,7 @@ class SingleDomainExecutor:
 
         if decision_lower == "reject":
             self._handle_rejection(state, target_tools, is_batch)
-            self._active_tasks.pop(task_id, None)
+            self._mark_task_completed(task_id)
             # Log session end for coder tasks
             if state.context.domain_id == "coder":
                 self._log_coder_session_end(state)
@@ -401,14 +430,14 @@ class SingleDomainExecutor:
                     coder_logger.log_error(f"System error during tool execution: {exc}")
 
             self._mark_failure(state, f"System error during execution: {exc}")
-            self._active_tasks.pop(task_id, None)
+            self._mark_task_completed(task_id)
             # Log session end for coder tasks
             if state.context.domain_id == "coder":
                 self._log_coder_session_end(state)
             return self._serialize_state(state)
 
         if state.status in TERMINAL_STATES:
-            self._active_tasks.pop(task_id, None)
+            self._mark_task_completed(task_id)
             # Log session end for coder tasks
             if state.context.domain_id == "coder":
                 self._log_coder_session_end(state)
@@ -417,9 +446,12 @@ class SingleDomainExecutor:
     def abort_task(self, task_id: str, reason: str) -> Optional[Dict[str, Any]]:
         """Abort an active task (used when chat is cancelled)."""
 
-        state = self._active_tasks.pop(task_id, None)
+        state = self._active_tasks.get(task_id)
         if not state:
             return None
+
+        # Remove from active and track completion
+        self._mark_task_completed(task_id)
 
         state.status = "aborted"
         state.output = reason
@@ -454,7 +486,7 @@ class SingleDomainExecutor:
             self.logger.info(f"[CONTINUE] Resuming task {task_id} with next agent iteration")
             result = self._run_agent_iteration(state)
             if state.status in TERMINAL_STATES:
-                self._active_tasks.pop(task_id, None)
+                self._mark_task_completed(task_id)
                 # Log session end for coder tasks
                 if state.context.domain_id == "coder":
                     self._log_coder_session_end(state)
@@ -469,7 +501,7 @@ class SingleDomainExecutor:
                     coder_logger.log_error(f"Error during task continuation: {exc}")
 
             self._mark_failure(state, f"Error during continuation: {exc}")
-            self._active_tasks.pop(task_id, None)
+            self._mark_task_completed(task_id)
             # Log session end for coder tasks
             if state.context.domain_id == "coder":
                 self._log_coder_session_end(state)
@@ -2394,29 +2426,49 @@ The planner generated this comprehensive specification to guide your implementat
     ) -> None:
         """
         Emit a file operation event to the frontend with diff decorations.
+        Uses delta encoding when possible to reduce network traffic.
 
         Args:
             state: Current domain execution state
-            result: Auto-execution result containing decorations, metadata, etc.
+            result: Auto-execution result containing decorations, metadata, delta_info, etc.
         """
         if not state.event_callback:
             return
 
         try:
+            payload = {
+                "tool_call_id": result.get("tool_call_id"),
+                "operation": "streaming_write" if result.get("operation_type") == "new" else "streaming_edit",
+                "file_path": result.get("file_path"),
+                "file_existed": result.get("file_existed"),
+                "decorations": result.get("decorations", []),
+                "metadata": result.get("metadata", {}),
+            }
+
+            # Add content based on delta_info
+            delta_info = result.get("delta_info")
+            if delta_info:
+                if delta_info["type"] == "append":
+                    # Send delta alongside full content for backward compatibility
+                    payload["update_type"] = "delta"
+                    payload["delta"] = delta_info["delta"]
+                    payload["offset"] = delta_info["offset"]
+                    payload["content"] = result.get("after_content")
+                else:
+                    # Send full content
+                    payload["update_type"] = "full"
+                    payload["content"] = delta_info["content"]
+            else:
+                # No delta info (first update) - send full content
+                payload["update_type"] = "full"
+                payload["content"] = result.get("after_content")
+
             state.event_callback(
                 {
                     "event": "coder_file_operation",
                     "task_id": state.context.task_id,
                     "domain_id": state.context.domain_id,
-                    "payload": {
-                        "tool_call_id": result.get("tool_call_id"),
-                        "operation": "streaming_write" if result.get("operation_type") == "new" else "streaming_edit",
-                        "file_path": result.get("file_path"),
-                        "file_existed": result.get("file_existed"),
-                        "decorations": result.get("decorations", []),
-                        "content": result.get("after_content"),
-                        "metadata": result.get("metadata", {}),
-                    },
+                    "payload": payload,
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
             )
@@ -2751,6 +2803,37 @@ The planner generated this comprehensive specification to guide your implementat
             file_size = full_path.stat().st_size
             file_size_label = format_file_size(file_size)
 
+            # Compute delta for streaming optimization
+            workspace_prefix = state.context.workspace_path or ""
+            file_key = f"{workspace_prefix}:{file_path}"
+            last_sent_content = self._last_sent_file_content.get(file_key, "")
+            delta_info = None
+
+            if len(after_content) > len(last_sent_content):
+                # Check if append-only (common case)
+                if after_content.startswith(last_sent_content):
+                    delta = after_content[len(last_sent_content):]
+                    delta_info = {
+                        "type": "append",
+                        "delta": delta,
+                        "offset": len(last_sent_content),
+                    }
+                else:
+                    # Not append-only - send full content with flag
+                    delta_info = {
+                        "type": "full",
+                        "content": after_content,
+                    }
+            elif after_content != last_sent_content:
+                # Content changed but not growing (edit case) - send full
+                delta_info = {
+                    "type": "full",
+                    "content": after_content,
+                }
+
+            # Update tracking
+            self._last_sent_file_content[file_key] = after_content
+
             result = {
                 "before_content": base_before_content,
                 "after_content": after_content,
@@ -2759,6 +2842,7 @@ The planner generated this comprehensive specification to guide your implementat
                 "operation_type": operation_type,
                 "file_path": str(file_path),
                 "tool_call_id": tool_call_id,
+                "delta_info": delta_info,  # Add delta information
                 "metadata": {
                     "file_size": file_size_label,
                     "file_size_bytes": file_size,

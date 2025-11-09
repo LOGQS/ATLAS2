@@ -63,6 +63,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const layoutFrameRef = useRef<number | null>(null);
   const streamingDecorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
+  const decorationDebounceRef = useRef<number | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Track backend decorations for this file
@@ -310,10 +311,64 @@ export const EditorPane = memo<EditorPaneProps>(({
     const documentPath = normalizePath(document.filePath);
 
     const handleFileOperation = (event: CustomEvent) => {
-      const { file_path, decorations } = event.detail;
+      const { file_path, decorations, update_type, content, delta, offset } = event.detail;
       const eventPath = normalizePath(file_path);
 
+      // Handle content updates for active file
       if (eventPath && documentPath && eventPath === documentPath) {
+        const editor = editorRef.current;
+        const model = editor?.getModel();
+        const monacoApi = monacoApiRef.current ?? (typeof window !== 'undefined' ? (window as any).monaco : null);
+
+        if (editor && model && monacoApi && update_type) {
+          const applyFullContent = (text: string) => {
+            model.setValue(text);
+            lastSyncedContentRef.current = text;
+            logger.debug('[FULL-APPLY] Applied full content', {
+              contentLength: text.length,
+            });
+          };
+
+          isApplyingExternalRef.current = true;
+          try {
+            if (update_type === 'delta' && typeof delta === 'string' && typeof offset === 'number') {
+              const currentContent = model.getValue();
+
+              if (currentContent.length === offset) {
+                const endPosition = model.getFullModelRange().getEndPosition();
+                const insertRange = new monacoApi.Range(
+                  endPosition.lineNumber,
+                  endPosition.column,
+                  endPosition.lineNumber,
+                  endPosition.column
+                );
+
+                model.pushEditOperations([], [{ range: insertRange, text: delta }], () => null);
+                lastSyncedContentRef.current = currentContent + delta;
+
+                logger.debug('[DELTA-APPLY] Applied delta append', {
+                  offset,
+                  deltaLength: delta.length,
+                  newLength: lastSyncedContentRef.current.length,
+                });
+              } else {
+                logger.warn('[DELTA-APPLY] Offset mismatch, falling back to full content', {
+                  expectedOffset: currentContent.length,
+                  receivedOffset: offset,
+                });
+                if (typeof content === 'string') {
+                  applyFullContent(content);
+                }
+              }
+            } else if (update_type === 'full' && typeof content === 'string') {
+              applyFullContent(content);
+            }
+          } finally {
+            isApplyingExternalRef.current = false;
+          }
+        }
+
+        // Handle decorations
         logger.info('[BACKEND-DECORATIONS] Received decorations for file', file_path, {
           decorationCount: Array.isArray(decorations) ? decorations.length : 0,
         });
@@ -322,6 +377,7 @@ export const EditorPane = memo<EditorPaneProps>(({
         }
       }
 
+      // Cache decorations for inactive files
       if (eventPath && Array.isArray(decorations) && decorations.length > 0) {
         decorationCacheRef.current.set(eventPath, decorations);
         if (!documentPath || eventPath !== documentPath) {
@@ -353,7 +409,7 @@ export const EditorPane = memo<EditorPaneProps>(({
     };
   }, [chatId, document?.filePath]);
 
-  // Apply backend decorations to Monaco editor
+  // Apply backend decorations to Monaco editor (debounced)
   useEffect(() => {
     const editor = editorRef.current;
 
@@ -368,44 +424,58 @@ export const EditorPane = memo<EditorPaneProps>(({
       streamingDecorationsRef.current = editor.createDecorationsCollection();
     }
 
+    // Clear existing debounce timer
+    if (decorationDebounceRef.current !== null) {
+      window.clearTimeout(decorationDebounceRef.current);
+    }
+
     if (!backendDecorations || backendDecorations.length === 0) {
-      // Clear decorations if no backend decorations
+      // Clear decorations immediately if no backend decorations
       logger.info('[BACKEND-DECORATIONS] Clearing decorations (no backend decorations)');
       streamingDecorationsRef.current.clear();
       return;
     }
 
-    // Convert backend decoration format to Monaco decoration format
-    const decorationStatusClass = 'streaming-diff--idle';
+    // Debounce decoration updates to reduce Monaco API calls
+    decorationDebounceRef.current = window.setTimeout(() => {
+      decorationDebounceRef.current = null;
 
-    const monacoDecorations = backendDecorations.map((d: any) => ({
-      range: new (window as any).monaco.Range(
-        d.startLine,
-        d.startColumn,
-        d.endLine,
-        d.endColumn
-      ),
-      options: {
-        isWholeLine: d.endColumn === 1,
-        className: [d.className, decorationStatusClass].filter(Boolean).join(' '),
-      },
-    }));
+      // Convert backend decoration format to Monaco decoration format
+      const decorationStatusClass = 'streaming-diff--idle';
 
-    logger.info('[BACKEND-DECORATIONS] Applying decorations', {
-      count: monacoDecorations.length,
-      decorations: monacoDecorations.map((d: any) => ({
-        startLine: d.range.startLineNumber,
-        endLine: d.range.endLineNumber,
-        className: d.options.className,
-      })),
-    });
+      const monacoDecorations = backendDecorations.map((d: any) => ({
+        range: new (window as any).monaco.Range(
+          d.startLine,
+          d.startColumn,
+          d.endLine,
+          d.endColumn
+        ),
+        options: {
+          isWholeLine: d.endColumn === 1,
+          className: [d.className, decorationStatusClass].filter(Boolean).join(' '),
+        },
+      }));
 
-    streamingDecorationsRef.current.set(monacoDecorations);
+      logger.info('[BACKEND-DECORATIONS] Applying decorations', {
+        count: monacoDecorations.length,
+        decorations: monacoDecorations.map((d: any) => ({
+          startLine: d.range.startLineNumber,
+          endLine: d.range.endLineNumber,
+          className: d.options.className,
+        })),
+      });
+
+      if (streamingDecorationsRef.current) {
+        streamingDecorationsRef.current.set(monacoDecorations);
+      }
+    }, 100); // 100ms debounce
 
     return () => {
-      // Clean up on unmount or decoration change
-      logger.info('[BACKEND-DECORATIONS] Cleanup: clearing decorations');
-      streamingDecorationsRef.current?.clear();
+      // Clean up debounce timer
+      if (decorationDebounceRef.current !== null) {
+        window.clearTimeout(decorationDebounceRef.current);
+        decorationDebounceRef.current = null;
+      }
     };
   }, [backendDecorations]);
 

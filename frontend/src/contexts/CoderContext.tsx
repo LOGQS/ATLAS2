@@ -340,6 +340,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
   const fileTreeRequestRef = React.useRef<Promise<void> | null>(null);
   const pendingFileTreeRefreshRef = React.useRef(false);
   const lastImmediateRefreshRef = React.useRef(0);
+  const activeStreamingFilesRef = React.useRef(new Set<string>());
 
   const setError = useCallback((error: string) => {
     setState(prev => ({ ...prev, error }));
@@ -1755,12 +1756,14 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       operation,
       previousPath,
       newContent,
+      deltaInfo,
       source,
     }: {
       filePath?: string;
       operation?: string;
       previousPath?: string | null;
       newContent?: string | null;
+      deltaInfo?: { delta: string; offset: number } | null;
       source: 'coderFileChange' | 'coderFileOperation';
     }) => {
       const normalizedFilePath = normalizePath(filePath);
@@ -1807,7 +1810,40 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
           };
         }
 
-        const normalizedContent = normalizeIncomingContent(newContent);
+        // Reconstruct content from delta if provided
+        let reconstructedContent: string | null = null;
+
+        if (deltaInfo && typeof deltaInfo.delta === 'string' && typeof deltaInfo.offset === 'number') {
+          // Get current content from state and apply delta
+          const existingDoc = prev.tabDocuments[normalizedFilePath];
+          const currentContent = existingDoc?.content || '';
+
+          if (currentContent.length === deltaInfo.offset) {
+            reconstructedContent = currentContent + deltaInfo.delta;
+            logger.debug('[CODER_CTX] Reconstructed content from delta', {
+              filePath: normalizedFilePath,
+              offset: deltaInfo.offset,
+              deltaLength: deltaInfo.delta.length,
+              currentLength: currentContent.length,
+              newLength: reconstructedContent.length,
+            });
+          } else {
+            logger.warn('[CODER_CTX] Delta offset mismatch, falling back to full content', {
+              filePath: normalizedFilePath,
+              offset: deltaInfo.offset,
+              currentLength: currentContent.length,
+            });
+          }
+        }
+
+        const candidateContent =
+          reconstructedContent ?? (typeof newContent === 'string' ? newContent : null);
+
+        if (typeof candidateContent !== 'string') {
+          return prev;
+        }
+
+        const normalizedContent = normalizeIncomingContent(candidateContent);
 
         if ((operation === 'write' || operation === 'edit') && typeof normalizedContent === 'string') {
           const isFileOpen = prev.openTabs.includes(normalizedFilePath);
@@ -1935,6 +1971,14 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
         return;
       }
 
+      const normalizedPath = normalizePath(detail.filePath);
+      if (normalizedPath && activeStreamingFilesRef.current.has(normalizedPath)) {
+        logger.debug('[CODER_CTX] Skipping coderFileChange for active streaming file', {
+          filePath: normalizedPath,
+        });
+        return;
+      }
+
       logger.info(
         `[CODER_CTX] Legacy file change detected: ${detail.operation} -> ${detail.filePath}`
       );
@@ -1963,6 +2007,17 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             ? 'edit'
             : detail.operation;
 
+      const isStreaming = detail.operation === 'streaming_write' || detail.operation === 'streaming_edit';
+      const isNewFile = detail.file_existed === false;
+      const normalizedPathForTrack = normalizePath(detail.file_path);
+      if (normalizedPathForTrack) {
+        if (isStreaming) {
+          activeStreamingFilesRef.current.add(normalizedPathForTrack);
+        } else {
+          activeStreamingFilesRef.current.delete(normalizedPathForTrack);
+        }
+      }
+
       logger.info(
         `[CODER_CTX] Streaming file operation: ${detail.operation} -> ${detail.file_path}`,
         {
@@ -1970,16 +2025,36 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
             ? normalizePath(detail.file_path)
             : detail.file_path,
           hasContent: typeof detail.content === 'string',
+          hasDelta: detail.update_type === 'delta',
           decorationCount: Array.isArray(detail.decorations) ? detail.decorations.length : 0,
+          isStreaming,
+          isNewFile,
         }
       );
 
-      requestFileTreeRefresh(true);
+      // Refresh strategy:
+      // - START: Refresh immediately for new files (shows in sidebar)
+      // - MIDDLE: Skip refreshes during streaming (avoid spam)
+      // - END: Refresh on stream completion via clearFileDecorations event
+      if (isStreaming && isNewFile) {
+        logger.info('[CODER_CTX] New file created, refreshing file tree');
+        requestFileTreeRefresh(true);
+      } else if (!isStreaming) {
+        // Non-streaming operations (move, delete, etc.)
+        requestFileTreeRefresh(true);
+      }
+
+      // Extract delta info if present
+      const deltaInfo =
+        detail.update_type === 'delta' && typeof detail.delta === 'string' && typeof detail.offset === 'number'
+          ? { delta: detail.delta, offset: detail.offset }
+          : null;
 
       updateStateForFileChange({
         filePath: detail.file_path,
         operation: normalizedOperation,
         newContent: typeof detail.content === 'string' ? detail.content : null,
+        deltaInfo,
         source: 'coderFileOperation',
       });
     };
@@ -1995,6 +2070,7 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
         logger.warn('[CODER_CTX] File revert event missing file_path');
         return;
       }
+      activeStreamingFilesRef.current.delete(filePath);
 
       logger.info(`[CODER_CTX] File reverted (${reverted_to}) -> ${filePath}`);
 
@@ -2053,10 +2129,33 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       });
     };
 
+    const handleClearDecorations = (event: CustomEvent<any>) => {
+      const { chatId: eventChatId, file_path } = event.detail;
+      if (eventChatId !== chatId) {
+        return;
+      }
+
+      const normalizedPath = normalizePath(file_path);
+      if (normalizedPath) {
+        activeStreamingFilesRef.current.delete(normalizedPath);
+      }
+
+      logger.info('[CODER_CTX] Decorations cleared for file, refreshing tree', {
+        filePath: file_path,
+      });
+
+      // Refresh file tree when stream completes (decorations cleared)
+      // This updates git status and ensures final state is reflected
+      requestFileTreeRefresh(true);
+    };
+
     window.addEventListener('coderFileChange', handleCoderFileChange as EventListener);
     window.addEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
     window.addEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
-    logger.info('[CODER_CTX] Listening for coder file changes, operations, and reverts');
+    window.addEventListener('clearFileDecorations', handleClearDecorations as EventListener);
+    logger.info('[CODER_CTX] Listening for coder file changes, operations, reverts, and decoration clears');
+
+    const streamingFilesSet = activeStreamingFilesRef.current;
 
     return () => {
       if (refreshDebounceTimer) {
@@ -2065,7 +2164,9 @@ export const CoderProvider: React.FC<CoderProviderProps> = ({ chatId, children, 
       window.removeEventListener('coderFileChange', handleCoderFileChange as EventListener);
       window.removeEventListener('coderFileOperation', handleCoderFileOperation as EventListener);
       window.removeEventListener('coderFileRevert', handleCoderFileRevert as EventListener);
-      logger.info('[CODER_CTX] Stopped listening for coder file changes, operations, and reverts');
+      window.removeEventListener('clearFileDecorations', handleClearDecorations as EventListener);
+      streamingFilesSet.clear();
+      logger.info('[CODER_CTX] Stopped listening for coder file changes, operations, reverts, and decoration clears');
     };
   }, [chatId, closeTab, loadFileTree]);
 
