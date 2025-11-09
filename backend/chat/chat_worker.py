@@ -511,7 +511,8 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                 'content': json.dumps({
                     'chat_id': chat_id,
                     'domain_id': domain_id,
-                    'profile_status': profile_status
+                    'profile_status': profile_status,
+                    'user_request': message
                 })
             })
 

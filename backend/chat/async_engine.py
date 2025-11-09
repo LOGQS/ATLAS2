@@ -988,7 +988,8 @@ async def _execute_async_streaming(
                         json.dumps({
                             'chat_id': chat_id,
                             'domain_id': domain_id,
-                            'profile_status': profile_status
+                            'profile_status': profile_status,
+                            'user_request': message
                         })
                     )
 

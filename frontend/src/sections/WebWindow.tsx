@@ -97,7 +97,13 @@ const WebWindowContent: React.FC<{
     };
   }, [isReady]);
 
-  const displayText = userRequest || (mode === 'researcher' ? searchQuery : currentUrl) || 'No active request';
+  // Truncate user request if it's too long (max 200 characters for display)
+  const MAX_DISPLAY_LENGTH = 200;
+  let displayText = userRequest || (mode === 'researcher' ? searchQuery : currentUrl) || 'No active request';
+
+  if (displayText && displayText.length > MAX_DISPLAY_LENGTH) {
+    displayText = displayText.substring(0, MAX_DISPLAY_LENGTH) + '...';
+  }
 
   // Show loading overlay if not ready and past the threshold
   if (!isReady && showLoading) {
