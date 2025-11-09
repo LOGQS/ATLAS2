@@ -75,19 +75,14 @@ available_routes = [
 
     # Single domain routes
     {
-        "route_name": "web_researcher",
-        "route_description": "Research and information gathering",
-        "route_context": "Web search, academic databases, document extraction, summarization. Agent iterates autonomously."
+        "route_name": "web",
+        "route_description": "Web operations - research and browser automation",
+        "route_context": "Unified web capabilities: information gathering (web search, academic databases, document extraction, synthesis), browser automation (navigation, scraping, form filling, screenshots), or coordinated tasks combining both. Agent can dynamically switch between research and control modes."
     },
     {
         "route_name": "coder",
         "route_description": "Software development and code file operations",
         "route_context": "Working with code files on disk: creating new projects, websites, applications, scripts; modifying existing code; testing, debugging, refactoring. Handles both simple file creation and complex multi-file development."
-    },
-    {
-        "route_name": "web_controller",
-        "route_description": "Browser automation and web interaction",
-        "route_context": "Browser navigation, scraping, form filling, web automation. Visual capabilities needed."
     },
     {
         "route_name": "data_processor",
@@ -140,9 +135,8 @@ ROUTE_MODEL_MAP = {
     "direct": "gemini-2.5-flash-preview-09-2025",           # FastPath optimization, quick execution
 
     # Single domains
-    "web_researcher": "gemini-2.5-flash-preview-09-2025",   # Research with iteration
+    "web": "gemini-2.5-flash-preview-09-2025",              # Unified web operations (research + automation)
     "coder": "gemini-2.5-pro",              # Code generation needs strong model
-    "web_controller": "gemini-2.5-flash-preview-09-2025",   # Browser automation
     "data_processor": "gemini-2.5-flash-preview-09-2025",   # Data operations can use fast model
     "memory": "gemini-2.5-flash-preview-09-2025",           # Memory operations are straightforward
     "system_manager": "gemini-2.5-flash-preview-09-2025",   # System operations

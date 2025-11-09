@@ -113,7 +113,7 @@ class TestAvailableRoutes(unittest.TestCase):
     def test_standard_routes_exist(self):
         """Core routes should exist."""
         names = [r['route_name'] for r in available_routes]
-        expected_routes = {'direct', 'coder', 'web_researcher', 'multi_domain'}
+        expected_routes = {'direct', 'coder', 'web', 'multi_domain'}
         for route in expected_routes:
             with self.subTest(route=route):
                 self.assertIn(route, names)

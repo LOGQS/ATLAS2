@@ -76,7 +76,7 @@ CRITICAL RULES:
 <CHOICE>
 CRITICAL: Must be EXACTLY one of the route names from AVAILABLE ROUTES above.
 DO NOT make up descriptive names - use the exact route_name value.
-Examples: "coder", "direct", "web_researcher", "general_conversation"
+Examples: "coder", "direct", "web", "general_conversation"
 </CHOICE>
 </ROUTE>
 
