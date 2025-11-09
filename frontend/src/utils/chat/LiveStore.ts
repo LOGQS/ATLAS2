@@ -157,6 +157,11 @@ interface WebWindowPromptEvent extends BaseSSEEvent {
   content?: string;
 }
 
+interface WebProfileUpdatedEvent extends BaseSSEEvent {
+  type: 'web_profile_updated';
+  content?: string;
+}
+
 interface CoderFileChangeEvent extends BaseSSEEvent {
   type: 'coder_file_change';
   workspace_path?: string;
@@ -225,6 +230,7 @@ type SSEEvent =
   | CoderOperationEvent
   | CoderWorkspacePromptEvent
   | WebWindowPromptEvent
+  | WebProfileUpdatedEvent
   | CoderFileChangeEvent
   | CoderStreamEvent
   | CoderFileOperationEvent
@@ -890,6 +896,17 @@ class LiveStore {
             logger.info('[LiveStore] Dispatched webWindowPrompt event for chat:', ev.chat_id);
           } catch (err) {
             logger.error('[LiveStore] Failed to parse web_window_prompt payload', err);
+          }
+          return;
+        }
+
+        if (ev.type === 'web_profile_updated') {
+          try {
+            const detail = ev.content ? JSON.parse(ev.content) : {};
+            window.dispatchEvent(new CustomEvent('webProfileUpdated', { detail }));
+            logger.info('[LiveStore] Dispatched webProfileUpdated event:', detail);
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse web_profile_updated payload', err);
           }
           return;
         }

@@ -1,7 +1,17 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import logger from '../utils/core/logger';
+import { apiUrl } from '../config/api';
 
 type WebMode = 'researcher' | 'controller';
+type ProfileStatus = 'unknown' | 'missing' | 'ready' | 'setting_up';
+
+interface ProfileInfo {
+  name: string;
+  path: string;
+  file_count: number;
+  valid: boolean;
+  is_default: boolean;
+}
 
 interface WebState {
   chatId?: string;
@@ -20,6 +30,11 @@ interface WebState {
   // Activity timeline
   activities: Activity[];
   agentStatus: 'idle' | 'researching' | 'navigating' | 'analyzing';
+  // Browser profile state
+  profileStatus: ProfileStatus;
+  profiles: ProfileInfo[];
+  showProfileSetup: boolean;
+  showBrowserSettings: boolean;
 }
 
 interface SearchResult {
@@ -52,6 +67,15 @@ interface WebActions {
   setAgentStatus: (status: WebState['agentStatus']) => void;
   setError: (error: string) => void;
   clearError: () => void;
+  // Profile management
+  setProfileStatus: (status: ProfileStatus) => void;
+  setProfiles: (profiles: ProfileInfo[]) => void;
+  setShowProfileSetup: (show: boolean) => void;
+  setShowBrowserSettings: (show: boolean) => void;
+  checkProfileStatus: () => Promise<void>;
+  loadProfiles: () => Promise<void>;
+  launchProfileSetup: () => Promise<void>;
+  deleteProfile: (profileName: string) => Promise<boolean>;
 }
 
 const WebContext = createContext<(WebState & WebActions) | undefined>(undefined);
@@ -84,6 +108,10 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     pageTitle: '',
     activities: [],
     agentStatus: 'idle',
+    profileStatus: 'unknown',
+    profiles: [],
+    showProfileSetup: false,
+    showBrowserSettings: false,
   });
 
   const setMode = useCallback((mode: WebMode) => {
@@ -143,6 +171,103 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     setState(prev => ({ ...prev, error: '' }));
   }, []);
 
+  // Profile management actions
+  const setProfileStatus = useCallback((status: ProfileStatus) => {
+    setState(prev => ({ ...prev, profileStatus: status }));
+    logger.info('[WEB_CTX] Profile status changed:', status);
+  }, []);
+
+  const setProfiles = useCallback((profiles: ProfileInfo[]) => {
+    setState(prev => ({ ...prev, profiles }));
+  }, []);
+
+  const setShowProfileSetup = useCallback((show: boolean) => {
+    setState(prev => ({ ...prev, showProfileSetup: show }));
+  }, []);
+
+  const setShowBrowserSettings = useCallback((show: boolean) => {
+    setState(prev => ({ ...prev, showBrowserSettings: show }));
+  }, []);
+
+  const checkProfileStatus = useCallback(async () => {
+    try {
+      const response = await fetch(apiUrl('/api/web/profile/status'));
+      const data = await response.json();
+
+      if (data.exists) {
+        setProfileStatus('ready');
+      } else {
+        setProfileStatus('missing');
+      }
+
+      logger.info('[WEB_CTX] Profile status checked:', data);
+    } catch (error) {
+      logger.error('[WEB_CTX] Error checking profile status:', error);
+      setError('Failed to check browser profile status');
+    }
+  }, [setProfileStatus, setError]);
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const response = await fetch(apiUrl('/api/web/profiles'));
+      const data = await response.json();
+
+      setProfiles(data.profiles || []);
+      logger.info('[WEB_CTX] Loaded profiles:', data.profiles);
+    } catch (error) {
+      logger.error('[WEB_CTX] Error loading profiles:', error);
+      setError('Failed to load browser profiles');
+    }
+  }, [setProfiles, setError]);
+
+  const launchProfileSetup = useCallback(async () => {
+    try {
+      setProfileStatus('setting_up');
+
+      const response = await fetch(apiUrl('/api/web/profile/setup'), {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        logger.info('[WEB_CTX] Profile setup launched successfully');
+        // Profile status will be updated after user completes setup
+      } else {
+        setError(data.error || 'Failed to launch profile setup');
+        setProfileStatus('missing');
+      }
+    } catch (error) {
+      logger.error('[WEB_CTX] Error launching profile setup:', error);
+      setError('Failed to launch profile setup');
+      setProfileStatus('missing');
+    }
+  }, [setProfileStatus, setError]);
+
+  const deleteProfile = useCallback(async (profileName: string): Promise<boolean> => {
+    try {
+      const response = await fetch(apiUrl(`/api/web/profiles/${encodeURIComponent(profileName)}`), {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        logger.info('[WEB_CTX] Profile deleted:', profileName);
+        // Reload profiles list
+        await loadProfiles();
+        return true;
+      } else {
+        setError(data.error || 'Failed to delete profile');
+        return false;
+      }
+    } catch (error) {
+      logger.error('[WEB_CTX] Error deleting profile:', error);
+      setError('Failed to delete profile');
+      return false;
+    }
+  }, [loadProfiles, setError]);
+
   const value: WebState & WebActions = {
     ...state,
     setMode,
@@ -156,6 +281,14 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     setAgentStatus,
     setError,
     clearError,
+    setProfileStatus,
+    setProfiles,
+    setShowProfileSetup,
+    setShowBrowserSettings,
+    checkProfileStatus,
+    loadProfiles,
+    launchProfileSetup,
+    deleteProfile,
   };
 
   return <WebContext.Provider value={value}>{children}</WebContext.Provider>;

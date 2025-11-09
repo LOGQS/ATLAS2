@@ -729,12 +729,136 @@ def register_chat_routes(app: Flask):
         try:
             chat = Chat()
             models = chat.get_all_available_models()
-            
+
             return jsonify({
                 'models': models,
                 'default_model': Config.get_default_model()
             })
-            
+
         except Exception as e:
             logger.error(f"Error getting models: {str(e)}")
             return jsonify({'error': str(e)}), 500
+
+    # Web Browser Profile Management Routes
+    @app.route('/api/web/profile/status', methods=['GET'])
+    def get_web_profile_status():
+        """Get current browser profile status"""
+        try:
+            from agents.tools.web_ops import get_profile_status
+
+            status = get_profile_status()
+            return jsonify(status)
+
+        except Exception as e:
+            logger.error(f"Error getting profile status: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/web/profile/setup', methods=['POST'])
+    def launch_web_profile_setup():
+        """Launch browser profile setup wizard"""
+        try:
+            from agents.tools.web_ops import launch_profile_setup
+
+            result = launch_profile_setup()
+
+            if result.get('success'):
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 500
+
+        except Exception as e:
+            logger.error(f"Error launching profile setup: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+
+    @app.route('/api/web/profiles', methods=['GET'])
+    def list_web_profiles():
+        """List all available browser profiles"""
+        try:
+            from agents.tools.web_ops import get_profile_dir
+            from pathlib import Path
+
+            managed_browser_dir = get_profile_dir().parent
+            profiles = []
+
+            if managed_browser_dir.exists():
+                for profile_path in managed_browser_dir.iterdir():
+                    if profile_path.is_dir():
+                        # Count files to determine if valid
+                        try:
+                            file_count = sum(1 for _ in profile_path.rglob('*') if _.is_file())
+                            is_valid = file_count > 0
+                        except Exception:
+                            file_count = 0
+                            is_valid = False
+
+                        profiles.append({
+                            'name': profile_path.name,
+                            'path': str(profile_path),
+                            'file_count': file_count,
+                            'valid': is_valid,
+                            'is_default': profile_path.name == 'google_serp'
+                        })
+
+            return jsonify({
+                'profiles': profiles,
+                'count': len(profiles)
+            })
+
+        except Exception as e:
+            logger.error(f"Error listing profiles: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/web/profiles/<profile_name>', methods=['DELETE'])
+    def delete_web_profile(profile_name: str):
+        """Delete a browser profile"""
+        try:
+            from agents.tools.web_ops import get_profile_dir
+            import shutil
+
+            # Security: Prevent directory traversal
+            if '..' in profile_name or '/' in profile_name or '\\' in profile_name:
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid profile name'
+                }), 400
+
+            # Prevent deletion of default profile if it's the only one
+            if profile_name == 'google_serp':
+                return jsonify({
+                    'success': False,
+                    'error': 'Cannot delete default profile'
+                }), 400
+
+            managed_browser_dir = get_profile_dir().parent
+            profile_path = managed_browser_dir / profile_name
+
+            if not profile_path.exists():
+                return jsonify({
+                    'success': False,
+                    'error': f'Profile "{profile_name}" not found'
+                }), 404
+
+            # Ensure it's a subdirectory of managed_browser
+            if not str(profile_path).startswith(str(managed_browser_dir)):
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid profile path'
+                }), 400
+
+            shutil.rmtree(profile_path)
+            logger.info(f"Deleted browser profile: {profile_name}")
+
+            return jsonify({
+                'success': True,
+                'message': f'Profile "{profile_name}" deleted successfully'
+            })
+
+        except Exception as e:
+            logger.error(f"Error deleting profile {profile_name}: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500

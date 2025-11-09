@@ -484,8 +484,24 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
 
         workspace_path: Optional[str] = None
 
-        # Handle web domain - no workspace needed, just switch to web view
+        # Handle web domain - check browser profile status and switch to web view
         if domain_id == 'web':
+            worker_logger.info(f"[WEB_WINDOW] Checking browser profile status for chat {chat_id}")
+
+            # Check if managed browser profile exists
+            try:
+                from agents.tools.web_ops import get_profile_status
+                profile_status = get_profile_status()
+                worker_logger.info(f"[WEB_WINDOW] Profile status: {profile_status['status']}")
+            except Exception as e:
+                worker_logger.warning(f"[WEB_WINDOW] Error checking profile status: {e}")
+                profile_status = {
+                    'exists': False,
+                    'status': 'unknown',
+                    'path': '',
+                    'profile_name': 'google_serp'
+                }
+
             worker_logger.info(f"[WEB_WINDOW] Prompting frontend to switch to web view for chat {chat_id}")
 
             child_conn.send({
@@ -494,7 +510,8 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                 'content_type': 'web_window_prompt',
                 'content': json.dumps({
                     'chat_id': chat_id,
-                    'domain_id': domain_id
+                    'domain_id': domain_id,
+                    'profile_status': profile_status
                 })
             })
 

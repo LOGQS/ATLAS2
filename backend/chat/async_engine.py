@@ -962,8 +962,24 @@ async def _execute_async_streaming(
             else:
                 logger.info(f"[ASYNC-DOMAIN] Executing domain: {domain_id} (no workspace required)")
 
-                # Send web window prompt for web domain
+                # Send web window prompt for web domain with profile status
                 if domain_id == 'web':
+                    logger.info(f"[WEB_WINDOW][ASYNC] Checking browser profile status for chat {chat_id}")
+
+                    # Check if managed browser profile exists
+                    try:
+                        from agents.tools.web_ops import get_profile_status
+                        profile_status = get_profile_status()
+                        logger.info(f"[WEB_WINDOW][ASYNC] Profile status: {profile_status['status']}")
+                    except Exception as e:
+                        logger.warning(f"[WEB_WINDOW][ASYNC] Error checking profile status: {e}")
+                        profile_status = {
+                            'exists': False,
+                            'status': 'unknown',
+                            'path': '',
+                            'profile_name': 'google_serp'
+                        }
+
                     logger.info(f"[WEB_WINDOW][ASYNC] Prompting frontend to switch to web view for chat {chat_id}")
                     from route.chat_route import publish_content
                     publish_content(
@@ -971,7 +987,8 @@ async def _execute_async_streaming(
                         'web_window_prompt',
                         json.dumps({
                             'chat_id': chat_id,
-                            'domain_id': domain_id
+                            'domain_id': domain_id,
+                            'profile_status': profile_status
                         })
                     )
 

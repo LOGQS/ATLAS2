@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { WebProvider, useWebContext } from '../contexts/WebContext';
 import { WorkspaceLoadingOverlay } from '../components/coder/WorkspaceLoadingOverlay';
 import { ResearcherView } from '../components/web/ResearcherView';
 import { ControllerView } from '../components/web/ControllerView';
 import { WebActivityPanel } from '../components/web/WebActivityPanel';
+import { ProfileSetupView } from '../components/web/ProfileSetupView';
+import { BrowserSettingsOverlay } from '../components/web/BrowserSettingsOverlay';
 import { Icons } from '../components/ui/Icons';
 import '../styles/sections/WebWindow.css';
 import logger from '../utils/core/logger';
@@ -13,15 +16,65 @@ interface WebWindowProps {
   chatId?: string;
   fullscreen?: boolean;
   onBackToChat?: () => void;
+  profileStatus?: any;
+  userRequest?: string;
 }
 
-const WebWindowContent: React.FC<{ fullscreen?: boolean; onBackToChat?: () => void }> = ({
+const WebWindowContent: React.FC<{
+  fullscreen?: boolean;
+  onBackToChat?: () => void;
+  profileStatusFromSSE?: any;
+  userRequest?: string;
+}> = ({
   fullscreen = false,
-  onBackToChat
+  onBackToChat,
+  profileStatusFromSSE,
+  userRequest
 }) => {
-  const { mode, searchQuery, currentUrl, setSearchQuery, setCurrentUrl } = useWebContext();
+  const {
+    mode,
+    searchQuery,
+    currentUrl,
+    profileStatus,
+    showProfileSetup,
+    showBrowserSettings,
+    checkProfileStatus,
+    setProfileStatus,
+    setShowProfileSetup,
+    setShowBrowserSettings
+  } = useWebContext();
   const [isReady, setIsReady] = useState(false);
   const [showLoading, setShowLoading] = useState(false);
+
+  // Check profile status on mount
+  useEffect(() => {
+    const initProfile = async () => {
+      // If profile status was provided via SSE, use it
+      if (profileStatusFromSSE) {
+        logger.info('[WEB_WINDOW] Profile status from SSE:', profileStatusFromSSE);
+
+        if (profileStatusFromSSE.exists) {
+          setProfileStatus('ready');
+        } else {
+          setProfileStatus('missing');
+          setShowProfileSetup(true);
+        }
+      } else {
+        // Otherwise, check via API
+        logger.info('[WEB_WINDOW] Checking profile status via API');
+        await checkProfileStatus();
+      }
+    };
+
+    initProfile();
+  }, [profileStatusFromSSE, checkProfileStatus, setProfileStatus, setShowProfileSetup]);
+
+  // Show setup view if profile is missing
+  useEffect(() => {
+    if (profileStatus === 'missing' && !showProfileSetup) {
+      setShowProfileSetup(true);
+    }
+  }, [profileStatus, showProfileSetup, setShowProfileSetup]);
 
   useEffect(() => {
     // Show loading only if initialization takes longer than 200ms
@@ -44,18 +97,7 @@ const WebWindowContent: React.FC<{ fullscreen?: boolean; onBackToChat?: () => vo
     };
   }, [isReady]);
 
-  const omnibarValue = mode === 'researcher' ? searchQuery : currentUrl;
-  const omnibarPlaceholder = mode === 'researcher'
-    ? 'Enter search query or URL...'
-    : 'Enter URL, search query, or command...';
-
-  const handleOmnibarChange = (value: string) => {
-    if (mode === 'researcher') {
-      setSearchQuery(value);
-    } else {
-      setCurrentUrl(value);
-    }
-  };
+  const displayText = userRequest || (mode === 'researcher' ? searchQuery : currentUrl) || 'No active request';
 
   // Show loading overlay if not ready and past the threshold
   if (!isReady && showLoading) {
@@ -73,6 +115,16 @@ const WebWindowContent: React.FC<{ fullscreen?: boolean; onBackToChat?: () => vo
   // Hide completely if not ready and under threshold (prevents flash)
   if (!isReady) {
     return null;
+  }
+
+  // If profile setup is needed, show setup view
+  if (showProfileSetup) {
+    return (
+      <div className={`web-window ${fullscreen ? 'web-window--fullscreen' : ''}`}>
+        <ProfileSetupView />
+        {showBrowserSettings && <BrowserSettingsOverlay />}
+      </div>
+    );
   }
 
   return (
@@ -96,39 +148,60 @@ const WebWindowContent: React.FC<{ fullscreen?: boolean; onBackToChat?: () => vo
           </div>
         </div>
 
-        {/* Omnibar */}
+        {/* Display Bar - Shows user's original request */}
         <div className="web-window__omnibar-container">
           <div className="web-window__omnibar">
             <div className="web-window__omnibar-icon">
               <Icons.Sparkles className="w-5 h-5" />
             </div>
-            <input
-              type="text"
-              className="web-window__omnibar-input"
-              placeholder={omnibarPlaceholder}
-              value={omnibarValue}
-              onChange={(e) => handleOmnibarChange(e.target.value)}
-            />
+            <div className="web-window__omnibar-display">
+              {displayText}
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse"></div>
-            <p className="text-green-400 text-sm font-medium hidden md:block">Active</p>
-          </div>
-        </div>
+        <button
+          onClick={() => setShowBrowserSettings(true)}
+          className="web-window__settings-btn"
+          title="Browser Settings"
+        >
+          <Icons.Settings className="w-5 h-5" />
+        </button>
       </header>
 
       {/* Main Content Area */}
       <div className="web-window__content">
-        <div className="web-window__main">
-          {mode === 'researcher' ? <ResearcherView /> : <ControllerView />}
-        </div>
+        <PanelGroup direction="horizontal">
+          {/* Main Content Panel */}
+          <Panel
+            id="web-main-content"
+            order={1}
+            defaultSize={70}
+            minSize={40}
+          >
+            <div className="web-window__main">
+              {mode === 'researcher' ? <ResearcherView /> : <ControllerView />}
+            </div>
+          </Panel>
 
-        {/* Activity Panel */}
-        <WebActivityPanel />
+          {/* Resize Handle */}
+          <PanelResizeHandle className="web-window__resize-handle" />
+
+          {/* Activity Panel */}
+          <Panel
+            id="web-activity-panel"
+            order={2}
+            defaultSize={30}
+            minSize={20}
+            maxSize={50}
+          >
+            <WebActivityPanel />
+          </Panel>
+        </PanelGroup>
       </div>
+
+      {/* Browser Settings Overlay */}
+      {showBrowserSettings && <BrowserSettingsOverlay />}
     </div>
   );
 };
@@ -137,13 +210,20 @@ const WebWindow: React.FC<WebWindowProps> = ({
   isOpen = true,
   chatId,
   fullscreen = true,
-  onBackToChat
+  onBackToChat,
+  profileStatus,
+  userRequest
 }) => {
   if (!isOpen) return null;
 
   return (
     <WebProvider chatId={chatId}>
-      <WebWindowContent fullscreen={fullscreen} onBackToChat={onBackToChat} />
+      <WebWindowContent
+        fullscreen={fullscreen}
+        onBackToChat={onBackToChat}
+        profileStatusFromSSE={profileStatus}
+        userRequest={userRequest}
+      />
     </WebProvider>
   );
 };

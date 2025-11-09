@@ -268,6 +268,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const [coderChatId, setCoderChatId] = useState<string | null>(null);
   const [webChatId, setWebChatId] = useState<string | null>(null);
+  const [webProfileStatus, setWebProfileStatus] = useState<any>(null);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -1603,9 +1604,16 @@ function App() {
     const handleWebPrompt = (event: Event) => {
       const detail = (event as CustomEvent<any>).detail || {};
       const targetChatId: string | undefined = detail.chatId ?? undefined;
+      const profileStatus = detail.profile_status || detail.profileStatus;
 
       if (targetChatId && targetChatId !== 'none') {
         logger.info('[WEB_WINDOW] Received web window prompt for chat:', targetChatId);
+        logger.info('[WEB_WINDOW] Profile status:', profileStatus);
+
+        // Store profile status if provided
+        if (profileStatus) {
+          setWebProfileStatus(profileStatus);
+        }
 
         // Switch to the chat if needed
         if (targetChatId !== activeChatId) {
@@ -2298,6 +2306,7 @@ function App() {
               <WebWindow
                 chatId={webChatId || (activeChatId !== 'none' ? activeChatId : undefined)}
                 onBackToChat={handleBackToChat}
+                profileStatus={webProfileStatus}
               />
             </motion.div>
           )}

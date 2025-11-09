@@ -315,5 +315,15 @@ def register_builtin_tools() -> None:
     except Exception as e:
         _logger.error(f"Error registering system operation tools: {e}")
 
+    try:
+        from .web_ops.web_search_func import web_search_spec
+
+        tool_registry.register(web_search_spec)
+        _logger.info("Web search tools registered successfully")
+    except ImportError as e:
+        _logger.warning(f"Could not import web search tools: {e}")
+    except Exception as e:
+        _logger.error(f"Error registering web search tools: {e}")
+
 
 register_builtin_tools()

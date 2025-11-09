@@ -296,3 +296,7 @@ ATLAS2/
 ## License
 
 MIT - see [LICENSE](LICENSE)
+
+---
+
+<sub>This project uses [Crawl4AI](https://github.com/unclecode/crawl4ai) for web data extraction.</sub>

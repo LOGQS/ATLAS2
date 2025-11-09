@@ -44,6 +44,10 @@ class OpenRouter:
         "openrouter/polaris-alpha": {
             "name": "Polaris Alpha",
             "supports_reasoning": True
+        },
+        "openai/gpt-oss-20b:free": {
+            "name": "GPT OSS 20B",
+            "supports_reasoning": True
         }
     }
 

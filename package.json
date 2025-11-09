@@ -10,7 +10,7 @@
     "frontend": "cd frontend && npm start",
     "frontend:wait": "wait-on http://localhost:5000/health && npm run frontend",
     "dev": "npm start",
-    "install:all": "npm install && cd frontend && npm install && cd ../backend && pip install -r ../requirements.txt",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && pip install -r ../requirements.txt && crawl4ai-setup",
     "build": "cd frontend && npm run build",
     "test": "cd frontend && npm test"
   },
