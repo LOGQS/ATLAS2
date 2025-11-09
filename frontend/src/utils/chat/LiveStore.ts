@@ -152,6 +152,11 @@ interface CoderWorkspacePromptEvent extends BaseSSEEvent {
   content?: string;
 }
 
+interface WebWindowPromptEvent extends BaseSSEEvent {
+  type: 'web_window_prompt';
+  content?: string;
+}
+
 interface CoderFileChangeEvent extends BaseSSEEvent {
   type: 'coder_file_change';
   workspace_path?: string;
@@ -219,6 +224,7 @@ type SSEEvent =
   | ModelRetryEvent
   | CoderOperationEvent
   | CoderWorkspacePromptEvent
+  | WebWindowPromptEvent
   | CoderFileChangeEvent
   | CoderStreamEvent
   | CoderFileOperationEvent
@@ -872,6 +878,18 @@ class LiveStore {
             window.dispatchEvent(new CustomEvent('coderWorkspacePrompt', { detail }));
           } catch (err) {
             logger.error('[LiveStore] Failed to parse coder_workspace_prompt payload', err);
+          }
+          return;
+        }
+
+        if (ev.type === 'web_window_prompt') {
+          try {
+            const detail = ev.content ? JSON.parse(ev.content) : {};
+            detail.chatId = ev.chat_id || null;
+            window.dispatchEvent(new CustomEvent('webWindowPrompt', { detail }));
+            logger.info('[LiveStore] Dispatched webWindowPrompt event for chat:', ev.chat_id);
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse web_window_prompt payload', err);
           }
           return;
         }

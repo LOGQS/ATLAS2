@@ -4,14 +4,20 @@ import '../../styles/coder/WorkspaceLoadingOverlay.css';
 
 interface WorkspaceLoadingOverlayProps {
   isVisible: boolean;
+  theme?: 'coder' | 'web';
+  text?: string;
 }
 
-export const WorkspaceLoadingOverlay: React.FC<WorkspaceLoadingOverlayProps> = ({ isVisible }) => {
+export const WorkspaceLoadingOverlay: React.FC<WorkspaceLoadingOverlayProps> = ({
+  isVisible,
+  theme = 'coder',
+  text = 'Loading workspace...'
+}) => {
   return (
     <AnimatePresence>
       {isVisible && (
         <motion.div
-          className="workspace-loading-overlay"
+          className={`workspace-loading-overlay workspace-loading-overlay--${theme}`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -40,7 +46,7 @@ export const WorkspaceLoadingOverlay: React.FC<WorkspaceLoadingOverlayProps> = (
               </div>
 
               {/* Loading text */}
-              <div className="workspace-loading-text">Loading workspace...</div>
+              <div className="workspace-loading-text">{text}</div>
 
               {/* Indeterminate progress bar */}
               <div className="workspace-loading-bar-container">

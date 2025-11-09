@@ -483,6 +483,21 @@ def _execute_domain_task(chat_id: str, db, domain_id: str, message: str, chat_hi
                     })
 
         workspace_path: Optional[str] = None
+
+        # Handle web domain - no workspace needed, just switch to web view
+        if domain_id == 'web':
+            worker_logger.info(f"[WEB_WINDOW] Prompting frontend to switch to web view for chat {chat_id}")
+
+            child_conn.send({
+                'type': 'content',
+                'chat_id': chat_id,
+                'content_type': 'web_window_prompt',
+                'content': json.dumps({
+                    'chat_id': chat_id,
+                    'domain_id': domain_id
+                })
+            })
+
         if domain_id == 'coder':
             workspace_path = _get_coder_workspace_path(db, chat_id, worker_logger)
             if not workspace_path:

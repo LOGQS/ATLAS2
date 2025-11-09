@@ -21,6 +21,7 @@ import SettingsWindow from './sections/SettingsWindow';
 import WorkspaceWindow from './sections/WorkspaceWindow';
 import SourcesWindow from './sections/SourcesWindow';
 import CoderWindow from './sections/CoderWindow';
+import WebWindow from './sections/WebWindow';
 import { WorkspaceLoadingOverlay } from './components/coder/WorkspaceLoadingOverlay';
 import TriggerLog from './components/visualization/TriggerLog'; // TEMPORARY_DEBUG_TRIGGERLOG
 import logger from './utils/core/logger';
@@ -108,7 +109,7 @@ type SendMessageOptions = {
   source?: 'manual' | 'voice';
 };
 
-type ViewMode = 'chat' | 'coder';
+type ViewMode = 'chat' | 'coder' | 'web';
 
 const PENDING_FIRST_MESSAGES_STORAGE_KEY = 'atlas_pending_first_messages_v1';
 const PENDING_CHAT_META_STORAGE_KEY = 'atlas_pending_chat_meta_v1';
@@ -263,9 +264,10 @@ function App() {
   });
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
 
-  // View mode state for chat/coder switching
+  // View mode state for chat/coder/web switching
   const [viewMode, setViewMode] = useState<ViewMode>('chat');
   const [coderChatId, setCoderChatId] = useState<string | null>(null);
+  const [webChatId, setWebChatId] = useState<string | null>(null);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -1570,6 +1572,13 @@ function App() {
     logger.info('[VIEW_MODE] Switched back to chat view');
   }, []);
 
+  const handleSwitchToWeb = useCallback((chatId: string) => {
+    // Switch to web view mode
+    setWebChatId(chatId);
+    setViewMode('web');
+    logger.info('[VIEW_MODE] Switched to web view for chat:', chatId);
+  }, []);
+
   useEffect(() => {
     const handleCoderPrompt = (event: Event) => {
       const detail = (event as CustomEvent<any>).detail || {};
@@ -1589,6 +1598,28 @@ function App() {
     window.addEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
     return () => window.removeEventListener('coderWorkspacePrompt', handleCoderPrompt as EventListener);
   }, [activeChatId, handleChatSelect, setWorkspaceSelectionForChat]);
+
+  useEffect(() => {
+    const handleWebPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      const targetChatId: string | undefined = detail.chatId ?? undefined;
+
+      if (targetChatId && targetChatId !== 'none') {
+        logger.info('[WEB_WINDOW] Received web window prompt for chat:', targetChatId);
+
+        // Switch to the chat if needed
+        if (targetChatId !== activeChatId) {
+          void handleChatSelect(targetChatId, { trigger: 'system', reason: 'web-window-prompt' });
+        }
+
+        // Switch to web view mode immediately
+        handleSwitchToWeb(targetChatId);
+      }
+    };
+
+    window.addEventListener('webWindowPrompt', handleWebPrompt as EventListener);
+    return () => window.removeEventListener('webWindowPrompt', handleWebPrompt as EventListener);
+  }, [activeChatId, handleChatSelect, handleSwitchToWeb]);
 
   useEffect(() => {
     const handleCoderOperationEvent = (event: Event) => {
@@ -2251,6 +2282,22 @@ function App() {
                 chatId={coderChatId || (activeChatId !== 'none' ? activeChatId : undefined)}
                 onBackToChat={handleBackToChat}
                 onWorkspaceReady={handleWorkspaceReady}
+              />
+            </motion.div>
+          )}
+
+          {viewMode === 'web' && (
+            <motion.div
+              key="web-view"
+              className="web-view"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <WebWindow
+                chatId={webChatId || (activeChatId !== 'none' ? activeChatId : undefined)}
+                onBackToChat={handleBackToChat}
               />
             </motion.div>
           )}

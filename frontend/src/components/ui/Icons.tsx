@@ -50,6 +50,15 @@ import {
   VscDebugStepBack,
   VscDebugStepOver,
   VscPlay,
+  VscGlobe,
+  VscSparkle,
+  VscLink,
+  VscLinkExternal,
+  VscDatabase,
+  VscNote,
+  VscDebugPause,
+  VscSync,
+  VscError,
 } from 'react-icons/vsc';
 import {
   SiJavascript,
@@ -158,6 +167,20 @@ export const Icons = {
   Book: createIconComponent(VscBook),
   Shield: createIconComponent(VscShield),
   Lightbulb: createIconComponent(VscLightbulb),
+
+  // Web/Network
+  Globe: createIconComponent(VscGlobe),
+  Sparkles: createIconComponent(VscSparkle),
+  Link: createIconComponent(VscLink),
+  ExternalLink: createIconComponent(VscLinkExternal),
+  Database: createIconComponent(VscDatabase),
+  FileText: createIconComponent(VscNote),
+  Network: createIconComponent(VscPulse), // Using pulse as network
+
+  // Media Controls
+  Pause: createIconComponent(VscDebugPause),
+  RotateCw: createIconComponent(VscSync),
+  X: createIconComponent(VscError),
 };
 
 export const getFileIcon = (fileName: string): IconComponent => {

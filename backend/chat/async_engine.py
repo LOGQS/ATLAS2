@@ -962,6 +962,19 @@ async def _execute_async_streaming(
             else:
                 logger.info(f"[ASYNC-DOMAIN] Executing domain: {domain_id} (no workspace required)")
 
+                # Send web window prompt for web domain
+                if domain_id == 'web':
+                    logger.info(f"[WEB_WINDOW][ASYNC] Prompting frontend to switch to web view for chat {chat_id}")
+                    from route.chat_route import publish_content
+                    publish_content(
+                        chat_id,
+                        'web_window_prompt',
+                        json.dumps({
+                            'chat_id': chat_id,
+                            'domain_id': domain_id
+                        })
+                    )
+
             # Create assistant message placeholder
             assistant_message_id = db.save_message(
                 chat_id,
