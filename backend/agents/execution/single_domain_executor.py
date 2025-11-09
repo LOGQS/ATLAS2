@@ -2788,13 +2788,6 @@ The planner generated this comprehensive specification to guide your implementat
             base_before_content = initial_state.get("before_content")
             base_file_existed = initial_state.get("file_existed", file_existed)
 
-            decorations = compute_streaming_decorations(
-                tool_name=tool_name,
-                params=params,
-                before_content=base_before_content,
-                after_content=after_content,
-            )
-
             lines_added, lines_removed = compute_diff_stats(base_before_content, after_content)
 
             operation_type = "new" if not base_file_existed else "edit"
@@ -2833,6 +2826,50 @@ The planner generated this comprehensive specification to guide your implementat
 
             # Update tracking
             self._last_sent_file_content[file_key] = after_content
+
+            # Compute decorations - use incremental computation for append-only deltas
+            if delta_info and delta_info["type"] == "append":
+                # Incremental decoration computation (avoids O(n²) difflib for large files)
+                content_before = after_content[:delta_info["offset"]]
+
+                if not after_content:
+                    decorations = []
+                else:
+                    total_lines = len(after_content.splitlines())
+
+                    if content_before and content_before.endswith('\n'):
+                        # Starting on a new line
+                        lines_before = len(content_before.splitlines())
+                        start_line = lines_before + 1
+                    elif content_before:
+                        # Continuing current line
+                        lines_before = len(content_before.splitlines())
+                        start_line = lines_before
+                    else:
+                        # No content before, starting on line 1
+                        start_line = 1
+
+                    end_line = total_lines
+
+                    decorations = [
+                        {
+                            "startLine": line_num,
+                            "endLine": line_num,
+                            "startColumn": 1,
+                            "endColumn": 1,
+                            "type": "add",
+                            "className": "streaming-diff__line-add",
+                        }
+                        for line_num in range(start_line, end_line + 1)
+                    ]
+            else:
+                # Fall back to full diff computation for non-append cases
+                decorations = compute_streaming_decorations(
+                    tool_name=tool_name,
+                    params=params,
+                    before_content=base_before_content,
+                    after_content=after_content,
+                )
 
             result = {
                 "before_content": base_before_content,

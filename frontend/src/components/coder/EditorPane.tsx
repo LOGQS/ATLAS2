@@ -64,6 +64,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   const layoutFrameRef = useRef<number | null>(null);
   const streamingDecorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
   const decorationDebounceRef = useRef<number | null>(null);
+  const isStreamingActiveRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   // Track backend decorations for this file
@@ -231,6 +232,7 @@ export const EditorPane = memo<EditorPaneProps>(({
   useEffect(() => {
     if (!document?.filePath) {
       setBackendDecorations(null);
+      isStreamingActiveRef.current = false;
       return;
     }
 
@@ -478,6 +480,55 @@ export const EditorPane = memo<EditorPaneProps>(({
       }
     };
   }, [backendDecorations]);
+
+  // Disable expensive Monaco features during streaming to improve performance
+  // Only toggle on streaming state transitions to avoid flashing
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const hasDecorations = !!(backendDecorations && backendDecorations.length > 0);
+    const wasStreaming = isStreamingActiveRef.current;
+
+    if (hasDecorations && !wasStreaming) {
+      isStreamingActiveRef.current = true;
+      editor.updateOptions({
+        quickSuggestions: false,
+        suggestOnTriggerCharacters: false,
+        parameterHints: { enabled: false },
+        hover: { enabled: false },
+        codeLens: false,
+      });
+      logger.debug('[MONACO-OPT] Disabled expensive features - streaming started');
+    } else if (!hasDecorations && wasStreaming) {
+      isStreamingActiveRef.current = false;
+      editor.updateOptions({
+        quickSuggestions: true,
+        suggestOnTriggerCharacters: true,
+        parameterHints: { enabled: true },
+        hover: { enabled: true },
+        codeLens: true,
+      });
+      logger.debug('[MONACO-OPT] Re-enabled features - streaming ended');
+    }
+  }, [backendDecorations]);
+
+  useEffect(() => {
+    return () => {
+      const editor = editorRef.current;
+      if (editor && isStreamingActiveRef.current) {
+        editor.updateOptions({
+          quickSuggestions: true,
+          suggestOnTriggerCharacters: true,
+          parameterHints: { enabled: true },
+          hover: { enabled: true },
+          codeLens: true,
+        });
+        isStreamingActiveRef.current = false;
+        logger.debug('[MONACO-OPT] Re-enabled features on unmount');
+      }
+    };
+  }, []);
 
   // Scroll to bottom handler
   const handleScrollToBottom = useCallback(() => {
