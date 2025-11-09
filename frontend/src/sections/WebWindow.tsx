@@ -7,9 +7,23 @@ import { ControllerView } from '../components/web/ControllerView';
 import { WebActivityPanel } from '../components/web/WebActivityPanel';
 import { ProfileSetupView } from '../components/web/ProfileSetupView';
 import { BrowserSettingsOverlay } from '../components/web/BrowserSettingsOverlay';
+import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
 import '../styles/sections/WebWindow.css';
 import logger from '../utils/core/logger';
+
+type WebMode = 'researcher' | 'controller';
+
+const modeSliderOptions: SliderOptions<WebMode> = {
+  left: {
+    value: 'researcher',
+    text: 'Research',
+  },
+  right: {
+    value: 'controller',
+    text: 'Control',
+  },
+};
 
 interface WebWindowProps {
   isOpen?: boolean;
@@ -41,7 +55,8 @@ const WebWindowContent: React.FC<{
     checkProfileStatus,
     setProfileStatus,
     setShowProfileSetup,
-    setShowBrowserSettings
+    setShowBrowserSettings,
+    setMode
   } = useWebContext();
   const [isReady, setIsReady] = useState(false);
   const [showLoading, setShowLoading] = useState(false);
@@ -143,15 +158,11 @@ const WebWindowContent: React.FC<{
               <Icons.ChevronLeft className="w-5 h-5" />
             </button>
           )}
-          <div className="web-window__logo">
-            <div className="web-window__logo-icon">
-              <Icons.Globe className="w-6 h-6 text-cyan-400" />
-            </div>
-            <div className="hidden sm:block">
-              <h1 className="text-white text-base font-medium">ATLAS2</h1>
-              <p className="text-cyan-400/70 text-sm">Web Research</p>
-            </div>
-          </div>
+          <Slider
+            selected={mode}
+            options={modeSliderOptions}
+            setSelected={setMode}
+          />
         </div>
 
         {/* Display Bar - Shows user's original request */}
