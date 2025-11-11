@@ -1,6 +1,6 @@
 """Web operations tools for searching the web and managing browser profiles."""
 
-from .profile_manager import (
+from utils.web_browser_profile import (
     check_profile_exists,
     get_profile_status,
     launch_profile_setup,
