@@ -20,7 +20,7 @@ PROFILE_NAME = "google_serp"
 
 def get_profile_dir() -> Path:
     """Get the managed browser profile directory path."""
-    project_root = Path(__file__).resolve().parents[4]
+    project_root = Path(__file__).resolve().parents[1]  # backend/utils → backend → ATLAS2
     profile_dir = project_root / "data" / "managed_browser" / PROFILE_NAME
     return profile_dir
 
