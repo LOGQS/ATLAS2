@@ -12,7 +12,6 @@ import psutil
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, GeolocationConfig, UndetectedAdapter, ProxyConfig, RoundRobinProxyStrategy
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher, RateLimiter
-from crawl4ai import CrawlerMonitor, DisplayMode
 
 from utils.logger import get_logger
 from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
@@ -176,47 +175,12 @@ def _check_system_memory(threshold_percent: float = 85.0) -> tuple[bool, float]:
         return True, 0.0
 
 
-def _fetch_free_proxies_from_source() -> List[str]:
-    """
-    Fetch free proxy list from public GitHub source.
-
-    Returns:
-        List of proxy strings in format "ip:port"
-    """
-    import urllib.request
-
-    proxy_sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-        "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
-    ]
-
-    proxies = []
-    for source_url in proxy_sources:
-        try:
-            _logger.debug(f"Fetching proxies from {source_url}")
-            req = urllib.request.Request(source_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                content = response.read().decode('utf-8')
-                for line in content.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Basic validation: ip:port format
-                        if ':' in line and len(line.split(':')) == 2:
-                            proxies.append(line)
-
-            if len(proxies) >= 10:  # Found enough proxies, stop fetching
-                break
-
-        except Exception as e:
-            _logger.debug(f"Failed to fetch from {source_url}: {e}")
-            continue
-
-    return proxies[:20]  # Return max 20 proxies to avoid overhead
-
-
 def _load_proxies() -> Optional[Any]:
     """
-    Load proxies from proxies.txt file if available, or auto-fetch from GitHub sources.
+    Load proxies from proxies.txt file if user has created it.
+
+    DISABLED AUTO-FETCH: Free proxies are unreliable (70-90% dead, empirically tested).
+    Users must manually create data/web/proxies.txt to enable proxy rotation.
 
     File format (one proxy per line):
         ip:port:username:password
@@ -226,39 +190,16 @@ def _load_proxies() -> Optional[Any]:
         RoundRobinProxyStrategy if proxies loaded successfully, None otherwise
     """
     from pathlib import Path
-    import time
 
     # Look for proxies.txt in data/web folder
     project_root = Path(__file__).parent.parent.parent.parent
     data_web_dir = project_root / "data" / "web"
-    data_web_dir.mkdir(parents=True, exist_ok=True)  # Create if doesn't exist
+    data_web_dir.mkdir(parents=True, exist_ok=True)
     proxy_file = data_web_dir / "proxies.txt"
 
-    # Check if file exists and is recent (< 24 hours old)
-    file_is_recent = False
-    if proxy_file.exists():
-        file_age_hours = (time.time() - proxy_file.stat().st_mtime) / 3600
-        file_is_recent = file_age_hours < 24
-
-    # Auto-fetch proxies if file doesn't exist or is old
-    if not proxy_file.exists() or not file_is_recent:
-        _logger.info("Fetching free proxies from GitHub sources...")
-        fetched_proxies = _fetch_free_proxies_from_source()
-
-        if fetched_proxies:
-            _logger.info(f"Fetched {len(fetched_proxies)} proxies, saving to {proxy_file}")
-            with open(proxy_file, 'w') as f:
-                f.write("# Auto-fetched free proxies\n")
-                f.write("# Format: ip:port or ip:port:username:password\n")
-                f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                for proxy in fetched_proxies:
-                    f.write(f"{proxy}\n")
-        else:
-            _logger.warning("Failed to fetch proxies from any source. Proceeding without proxies.")
-            return None
-
-    # Load proxies from file
+    # Only load if user explicitly created the file (no auto-fetch)
     if not proxy_file.exists():
+        _logger.debug("No proxies.txt file found. Using direct connection (recommended).")
         return None
 
     proxies = []
@@ -472,8 +413,9 @@ async def _search_single_query(
     proxy_strategy: Optional[Any] = None,
 ) -> tuple[List[Dict[str, str]], dict]:
     """Search single query with pagination using arun_many() and dispatcher."""
-    max_pages = 3
-    urls = [_build_search_url(query, page) for page in range(max_pages)]
+    # Always crawl exactly 1 page - Google gives ~10 results, more than enough
+    pages_needed = 1
+    urls = [_build_search_url(query, 0)]  # Just page 0
 
     # Create base config using .clone() pattern
     base_config = CrawlerRunConfig(
@@ -484,7 +426,8 @@ async def _search_single_query(
         simulate_user=True,
         override_navigator=True,
         magic=True,
-        wait_for="css:#search",
+        # Removed wait_for - networkidle is sufficient and avoids CAPTCHA/rate limit failures
+        # wait_for="css:#search" was causing timeout on first page when Google rate limits
         remove_overlay_elements=True,
         page_timeout=15000,
         delay_before_return_html=1.5,
@@ -496,17 +439,17 @@ async def _search_single_query(
     dispatcher = MemoryAdaptiveDispatcher(
         memory_threshold_percent=85.0,
         check_interval=1.0,
-        max_session_permit=max_pages,
+        max_session_permit=1,
         rate_limiter=RateLimiter(
             base_delay=(1.5, 3.0),
             max_delay=30.0,
             max_retries=3,
             rate_limit_codes=[429, 503]
-        ),
-        monitor=CrawlerMonitor()  # Simplified - use default settings
+        )
+        # CrawlerMonitor removed - incompatible with Windows (requires termios)
     )
 
-    _logger.info(f"Crawling {max_pages} pages for query: '{query[:50]}...'")
+    _logger.info(f"Crawling 1 page for query: '{query[:50]}...'")
 
     # Use arun_many() with dispatcher for parallel page crawling
     results = await crawler.arun_many(
@@ -535,14 +478,22 @@ async def _search_single_query(
         # Track dispatch metadata
         if result.dispatch_result:
             metadata["total_memory_mb"] += result.dispatch_result.memory_usage
-            duration = (result.dispatch_result.end_time - result.dispatch_result.start_time).total_seconds()
+            # Check if timing is already a float or needs conversion
+            if hasattr(result.dispatch_result, 'duration'):
+                duration = result.dispatch_result.duration
+            elif hasattr(result.dispatch_result.end_time, 'total_seconds'):
+                duration = (result.dispatch_result.end_time - result.dispatch_result.start_time).total_seconds()
+            else:
+                # Already a float (seconds)
+                duration = result.dispatch_result.end_time - result.dispatch_result.start_time
             metadata["total_duration_sec"] += duration
 
         # Check for CAPTCHA
         if _detect_captcha(result.markdown):
             metadata["captcha_detected"] = True
             _logger.warning(f"CAPTCHA detected on page {idx+1} for query '{query[:30]}...'")
-            continue
+            # Raise exception to trigger UndetectedAdapter fallback
+            raise RuntimeError("CAPTCHA detected - switching to undetected browser")
 
         metadata["pages_crawled"] += 1
 
@@ -572,126 +523,78 @@ async def _execute_searches_with_persistent_browser(
     """Execute searches using persistent browser with parallel query execution."""
     results_by_query = {}
 
-    # Load optional proxy rotation strategy
+    # Load proxies if available
     proxy_strategy = _load_proxies()
     if proxy_strategy:
         _logger.info("Proxy rotation enabled")
     else:
-        _logger.debug("No proxies configured, using direct connection")
+        _logger.info("No proxies found, using direct connection")
 
-    # Create browser config with .clone() pattern
+    # Use UndetectedAdapter from the start for best anti-detection
     browser_config_dict = _create_browser_config(
-        headless=True,
+        headless=False,  # Non-headless required for UndetectedAdapter
         managed_ready=profile_ready,
         browser_profile=browser_profile,
-        use_undetected=False,
+        use_undetected=True,
     )
     browser_config = BrowserConfig(**browser_config_dict)
+    strategy = AsyncPlaywrightCrawlerStrategy(
+        browser_config=browser_config,
+        browser_adapter=UndetectedAdapter(),
+    )
 
-    # Try with regular stealth mode first
-    try:
-        async with AsyncWebCrawler(config=browser_config) as crawler:
-            _logger.info(f"Starting parallel search for {len(queries)} queries (max_concurrent={max_concurrent})")
+    # Single attempt with UndetectedAdapter - no fallback
+    async with AsyncWebCrawler(crawler_strategy=strategy, config=browser_config) as crawler:
+        _logger.info(f"Starting search with UndetectedAdapter for {len(queries)} queries (max_concurrent={max_concurrent})")
 
-            # Control query-level concurrency with semaphore (page-level handled by dispatcher)
-            semaphore = asyncio.Semaphore(max_concurrent)
+        # Control query-level concurrency with semaphore (page-level handled by dispatcher)
+        semaphore = asyncio.Semaphore(max_concurrent)
 
-            async def search_with_semaphore(query: str) -> tuple[str, Any]:
-                """Execute search with concurrency control."""
-                async with semaphore:
-                    try:
-                        _logger.info(f"Starting search for query: '{query}'")
+        async def search_with_semaphore(query: str) -> tuple[str, Any]:
+            """Execute search with concurrency control."""
+            async with semaphore:
+                try:
+                    _logger.info(f"Starting search for query: '{query}'")
 
-                        # Randomize locale/timezone/geo per query for anti-detection
-                        locale = random.choice(_US_LOCALES)
-                        timezone_id = random.choice(_US_TIMEZONES)
-                        geolocation = random.choice(_US_GEOLOCATIONS)
+                    # Randomize locale/timezone/geo per query for anti-detection
+                    locale = random.choice(_US_LOCALES)
+                    timezone_id = random.choice(_US_TIMEZONES)
+                    geolocation = random.choice(_US_GEOLOCATIONS)
 
-                        results, metadata = await _search_single_query(
-                            crawler,
-                            query,
-                            results_per_query,
-                            locale,
-                            timezone_id,
-                            geolocation,
-                            proxy_strategy,
-                        )
+                    results, metadata = await _search_single_query(
+                        crawler,
+                        query,
+                        results_per_query,
+                        locale,
+                        timezone_id,
+                        geolocation,
+                        proxy_strategy,
+                    )
 
-                        return query, {
-                            "status": "success",
-                            "results": results,
-                            "count": len(results),
-                            "metadata": metadata,
-                        }
-                    except Exception as e:
-                        _logger.error(f"Search failed for query '{query}': {str(e)}")
-                        return query, {
-                            "status": "error",
-                            "error": str(e),
-                            "results": [],
-                            "count": 0,
-                            "metadata": {},
-                        }
+                    return query, {
+                        "status": "success",
+                        "results": results,
+                        "count": len(results),
+                        "metadata": metadata,
+                    }
+                except Exception as e:
+                    _logger.error(f"Search failed for query '{query}': {str(e)}")
+                    return query, {
+                        "status": "error",
+                        "error": str(e),
+                        "results": [],
+                        "count": 0,
+                        "metadata": {},
+                    }
 
-            # Execute all queries in parallel (controlled by semaphore)
-            search_results = await asyncio.gather(*[search_with_semaphore(q) for q in queries])
+        # Execute all queries in parallel (controlled by semaphore)
+        search_results = await asyncio.gather(*[search_with_semaphore(q) for q in queries])
 
-            # Convert to dictionary
-            for query, result_data in search_results:
-                results_by_query[query] = result_data
+        # Convert to dictionary
+        for query, result_data in search_results:
+            results_by_query[query] = result_data
 
-        return results_by_query
-
-    except Exception as first_attempt_error:
-        _logger.warning(f"Regular crawl failed, trying UndetectedAdapter: {str(first_attempt_error)}")
-
-        try:
-            # Fallback to undetected browser (non-headless)
-            browser_config_dict["headless"] = False
-            browser_config_undetected = BrowserConfig(**browser_config_dict)
-            strategy = AsyncPlaywrightCrawlerStrategy(
-                browser_config=browser_config_undetected,
-                browser_adapter=UndetectedAdapter(),
-            )
-
-            async with AsyncWebCrawler(crawler_strategy=strategy, config=browser_config_undetected) as crawler:
-                semaphore = asyncio.Semaphore(max_concurrent)
-
-                async def search_with_semaphore_undetected(query: str) -> tuple[str, Any]:
-                    async with semaphore:
-                        try:
-                            locale = random.choice(_US_LOCALES)
-                            timezone_id = random.choice(_US_TIMEZONES)
-                            geolocation = random.choice(_US_GEOLOCATIONS)
-
-                            results, metadata = await _search_single_query(
-                                crawler, query, results_per_query, locale, timezone_id, geolocation, proxy_strategy
-                            )
-                            return query, {
-                                "status": "success",
-                                "results": results,
-                                "count": len(results),
-                                "metadata": metadata,
-                            }
-                        except Exception as e:
-                            return query, {
-                                "status": "error",
-                                "error": str(e),
-                                "results": [],
-                                "count": 0,
-                                "metadata": {},
-                            }
-
-                search_results = await asyncio.gather(*[search_with_semaphore_undetected(q) for q in queries])
-
-                for query, result_data in search_results:
-                    results_by_query[query] = result_data
-
-            return results_by_query
-
-        except Exception as undetected_error:
-            _logger.error(f"UndetectedAdapter fallback failed: {str(undetected_error)}")
-            raise undetected_error
+    return results_by_query
 
 
 def _format_search_results(results_by_query: Dict[str, Any]) -> str:
