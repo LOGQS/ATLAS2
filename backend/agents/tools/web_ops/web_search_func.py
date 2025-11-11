@@ -4,10 +4,15 @@ import asyncio
 import concurrent.futures
 import random
 import re
-import time
 import urllib.parse
 import uuid
 from typing import Any, Dict, List, Optional
+import psutil
+
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, GeolocationConfig, UndetectedAdapter, ProxyConfig, RoundRobinProxyStrategy
+from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher, RateLimiter
+from crawl4ai import CrawlerMonitor, DisplayMode
 
 from utils.logger import get_logger
 from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
@@ -147,6 +152,144 @@ def _detect_captcha(content: str) -> bool:
     return any(ind in content.lower() for ind in indicators)
 
 
+def _check_system_memory(threshold_percent: float = 85.0) -> tuple[bool, float]:
+    """
+    Check if system has enough available memory.
+
+    Returns:
+        (is_ok, memory_percent): True if memory is below threshold, current memory percentage
+    """
+
+    try:
+        memory = psutil.virtual_memory()
+        memory_percent = memory.percent
+        is_ok = memory_percent < threshold_percent
+
+        if not is_ok:
+            _logger.warning(f"System memory usage high: {memory_percent:.1f}% (threshold: {threshold_percent}%)")
+        else:
+            _logger.debug(f"System memory OK: {memory_percent:.1f}%")
+
+        return is_ok, memory_percent
+    except Exception as e:
+        _logger.warning(f"Failed to check system memory: {e}")
+        return True, 0.0
+
+
+def _fetch_free_proxies_from_source() -> List[str]:
+    """
+    Fetch free proxy list from public GitHub source.
+
+    Returns:
+        List of proxy strings in format "ip:port"
+    """
+    import urllib.request
+
+    proxy_sources = [
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+        "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text"
+    ]
+
+    proxies = []
+    for source_url in proxy_sources:
+        try:
+            _logger.debug(f"Fetching proxies from {source_url}")
+            req = urllib.request.Request(source_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content = response.read().decode('utf-8')
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Basic validation: ip:port format
+                        if ':' in line and len(line.split(':')) == 2:
+                            proxies.append(line)
+
+            if len(proxies) >= 10:  # Found enough proxies, stop fetching
+                break
+
+        except Exception as e:
+            _logger.debug(f"Failed to fetch from {source_url}: {e}")
+            continue
+
+    return proxies[:20]  # Return max 20 proxies to avoid overhead
+
+
+def _load_proxies() -> Optional[Any]:
+    """
+    Load proxies from proxies.txt file if available, or auto-fetch from GitHub sources.
+
+    File format (one proxy per line):
+        ip:port:username:password
+        or ip:port (without authentication)
+
+    Returns:
+        RoundRobinProxyStrategy if proxies loaded successfully, None otherwise
+    """
+    from pathlib import Path
+    import time
+
+    # Look for proxies.txt in data/web folder
+    project_root = Path(__file__).parent.parent.parent.parent
+    data_web_dir = project_root / "data" / "web"
+    data_web_dir.mkdir(parents=True, exist_ok=True)  # Create if doesn't exist
+    proxy_file = data_web_dir / "proxies.txt"
+
+    # Check if file exists and is recent (< 24 hours old)
+    file_is_recent = False
+    if proxy_file.exists():
+        file_age_hours = (time.time() - proxy_file.stat().st_mtime) / 3600
+        file_is_recent = file_age_hours < 24
+
+    # Auto-fetch proxies if file doesn't exist or is old
+    if not proxy_file.exists() or not file_is_recent:
+        _logger.info("Fetching free proxies from GitHub sources...")
+        fetched_proxies = _fetch_free_proxies_from_source()
+
+        if fetched_proxies:
+            _logger.info(f"Fetched {len(fetched_proxies)} proxies, saving to {proxy_file}")
+            with open(proxy_file, 'w') as f:
+                f.write("# Auto-fetched free proxies\n")
+                f.write("# Format: ip:port or ip:port:username:password\n")
+                f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                for proxy in fetched_proxies:
+                    f.write(f"{proxy}\n")
+        else:
+            _logger.warning("Failed to fetch proxies from any source. Proceeding without proxies.")
+            return None
+
+    # Load proxies from file
+    if not proxy_file.exists():
+        return None
+
+    proxies = []
+    with open(proxy_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            parts = line.split(':')
+            if len(parts) == 2:
+                # ip:port -> http://ip:port
+                proxies.append(ProxyConfig(server=f"http://{parts[0]}:{parts[1]}"))
+            elif len(parts) == 4:
+                # ip:port:username:password
+                proxies.append(ProxyConfig(
+                    server=f"http://{parts[0]}:{parts[1]}",
+                    username=parts[2],
+                    password=parts[3]
+                ))
+            else:
+                _logger.warning(f"Invalid proxy format: {line}")
+
+    if proxies:
+        _logger.info(f"Loaded {len(proxies)} proxies for rotation")
+        return RoundRobinProxyStrategy(proxies)
+
+    _logger.debug("No valid proxies found")
+    return None
+
+
 def _extract_results_from_google_markdown(markdown: str) -> List[Dict[str, str]]:
     """Extract search results from Google markdown."""
     results = []
@@ -243,36 +386,10 @@ def _extract_results_from_google_markdown(markdown: str) -> List[Dict[str, str]]
     return results
 
 
-async def _crawl_google_search_async(
-    query: str,
-    start_page: int = 0,
-    session_id: Optional[str] = None,
-    headless: bool = True,
-) -> str:
-    """Async Google search using crawl4ai with managed browser profile."""
-    try:
-        from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, GeolocationConfig
-    except ImportError:
-        raise ImportError(
-            "crawl4ai not installed. Install with: pip install crawl4ai && crawl4ai-setup"
-        )
-
-    from utils.web_browser_profile import get_profile_dir, check_profile_exists
-
-    params = {"q": query, "hl": "en", "gl": "us"}
-    if start_page:
-        params["start"] = start_page
-    query_string = urllib.parse.urlencode(params, safe=":+")
-    url = f"https://www.google.com/search?{query_string}"
-
-    managed_ready = check_profile_exists()
-    browser_profile = get_profile_dir() if managed_ready else None
-
+def _create_browser_config(headless: bool, managed_ready: bool, browser_profile: Optional[str], use_undetected: bool = False):
+    """Create optimized browser configuration with anti-detection."""
     viewport_width = random.randint(1366, 1920)
     viewport_height = random.randint(768, 1080)
-    locale = random.choice(_US_LOCALES)
-    timezone_id = random.choice(_US_TIMEZONES)
-    geolocation = random.choice(_US_GEOLOCATIONS)
 
     extra_args = [
         "--lang=en-US",
@@ -288,20 +405,22 @@ async def _crawl_google_search_async(
         "--disable-extensions",
     ]
 
-    browser_config = BrowserConfig(
-        browser_type="chromium",
-        headless=headless,
-        verbose=False,
-        enable_stealth=True,
-        user_agent_mode="random",
-        viewport_width=viewport_width,
-        viewport_height=viewport_height,
-        use_persistent_context=managed_ready,
-        user_data_dir=str(browser_profile) if browser_profile else None,
-        use_managed_browser=managed_ready,
-        java_script_enabled=True,
-        extra_args=extra_args,
-        headers={
+    return {
+        "browser_type": "chromium",
+        "headless": headless,
+        "verbose": False,
+        "enable_stealth": True,
+        "user_agent_mode": "random",
+        "viewport_width": viewport_width,
+        "viewport_height": viewport_height,
+        "use_persistent_context": managed_ready,
+        "user_data_dir": str(browser_profile) if browser_profile else None,
+        "use_managed_browser": managed_ready,
+        "java_script_enabled": True,
+        "text_mode": True,  # Performance: disable images for search results
+        "light_mode": True,  # Performance: reduce background features
+        "extra_args": extra_args,
+        "headers": {
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Referer": "https://www.google.com/",
@@ -311,29 +430,16 @@ async def _crawl_google_search_async(
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
         },
-    )
+    }
 
-    run_config = CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS,
-        session_id=session_id,
-        locale=locale,
-        timezone_id=timezone_id,
-        geolocation=GeolocationConfig(**geolocation),
-        simulate_user=True,
-        override_navigator=True,
-        magic=True,
-        wait_for="css:#search",
-        remove_overlay_elements=True,
-        page_timeout=20000,
-        delay_before_return_html=2.0,
-        wait_until="networkidle",
-    )
 
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        result = await crawler.arun(url=url, config=run_config)
-        if not result.success:
-            raise RuntimeError(f"Crawl failed: {result.error_message}")
-        return result.markdown
+def _build_search_url(query: str, page_num: int) -> str:
+    """Build Google search URL for given query and page number."""
+    params = {"q": query, "hl": "en", "gl": "us"}
+    if page_num > 0:
+        params["start"] = page_num * 10
+    query_string = urllib.parse.urlencode(params, safe=":+")
+    return f"https://www.google.com/search?{query_string}"
 
 
 def _run_async_in_thread(coro):
@@ -356,67 +462,236 @@ def _run_async_in_thread(coro):
         new_loop.close()
 
 
-def _search_google_with_retry(query: str, num_results: int, max_attempts: int = 3) -> List[Dict[str, str]]:
-    """Search Google with retry logic and CAPTCHA detection."""
+async def _search_single_query(
+    crawler,
+    query: str,
+    num_results: int,
+    locale: str,
+    timezone_id: str,
+    geolocation: dict,
+    proxy_strategy: Optional[Any] = None,
+) -> tuple[List[Dict[str, str]], dict]:
+    """Search single query with pagination using arun_many() and dispatcher."""
+    max_pages = 3
+    urls = [_build_search_url(query, page) for page in range(max_pages)]
+
+    # Create base config using .clone() pattern
+    base_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        locale=locale,
+        timezone_id=timezone_id,
+        geolocation=GeolocationConfig(**geolocation),
+        simulate_user=True,
+        override_navigator=True,
+        magic=True,
+        wait_for="css:#search",
+        remove_overlay_elements=True,
+        page_timeout=15000,
+        delay_before_return_html=1.5,
+        wait_until="networkidle",
+        proxy_rotation_strategy=proxy_strategy,  # Optional proxy rotation
+    )
+
+    # Create dispatcher with built-in rate limiting and memory management
+    dispatcher = MemoryAdaptiveDispatcher(
+        memory_threshold_percent=85.0,
+        check_interval=1.0,
+        max_session_permit=max_pages,
+        rate_limiter=RateLimiter(
+            base_delay=(1.5, 3.0),
+            max_delay=30.0,
+            max_retries=3,
+            rate_limit_codes=[429, 503]
+        ),
+        monitor=CrawlerMonitor()  # Simplified - use default settings
+    )
+
+    _logger.info(f"Crawling {max_pages} pages for query: '{query[:50]}...'")
+
+    # Use arun_many() with dispatcher for parallel page crawling
+    results = await crawler.arun_many(
+        urls=urls,
+        config=base_config,
+        dispatcher=dispatcher
+    )
+
+    # Process results and extract search data
     all_results: List[Dict[str, str]] = []
     seen_urls: set[str] = set()
-    page = 0
-    max_pages = 3
+    metadata = {
+        "pages_crawled": 0,
+        "pages_failed": 0,
+        "captcha_detected": False,
+        "total_memory_mb": 0.0,
+        "total_duration_sec": 0.0,
+    }
 
-    session_id = f"session-{uuid.uuid4().hex}"
+    for idx, result in enumerate(results):
+        if not result.success:
+            metadata["pages_failed"] += 1
+            _logger.warning(f"Page {idx+1} failed for query '{query[:30]}...': {result.error_message}")
+            continue
 
-    while len(all_results) < num_results and page < max_pages:
-        start_index = page * 10
+        # Track dispatch metadata
+        if result.dispatch_result:
+            metadata["total_memory_mb"] += result.dispatch_result.memory_usage
+            duration = (result.dispatch_result.end_time - result.dispatch_result.start_time).total_seconds()
+            metadata["total_duration_sec"] += duration
 
-        for attempt in range(max_attempts):
-            try:
-                headless = True if attempt < max_attempts - 1 else False
+        # Check for CAPTCHA
+        if _detect_captcha(result.markdown):
+            metadata["captcha_detected"] = True
+            _logger.warning(f"CAPTCHA detected on page {idx+1} for query '{query[:30]}...'")
+            continue
 
-                _logger.info(f"Searching Google: query='{query[:50]}...', page={page+1}, attempt={attempt+1}, headless={headless}")
+        metadata["pages_crawled"] += 1
 
-                markdown = _run_async_in_thread(
-                    _crawl_google_search_async(
-                        query,
-                        start_page=start_index,
-                        session_id=session_id,
-                        headless=headless,
-                    )
-                )
-
-                if _detect_captcha(markdown):
-                    _logger.warning(f"CAPTCHA detected, attempt {attempt+1}/{max_attempts}")
-                    if attempt < max_attempts - 1:
-                        time.sleep(5.0 * (attempt + 1))
-                        continue
-                    else:
-                        raise RuntimeError("CAPTCHA detected after all attempts")
-
-                page_results = _extract_results_from_google_markdown(markdown)
-                if not page_results:
-                    _logger.debug(f"No results found on page {page + 1} for query '{query}'")
+        # Extract results from this page
+        page_results = _extract_results_from_google_markdown(result.markdown)
+        for search_result in page_results:
+            if search_result["url"] not in seen_urls:
+                seen_urls.add(search_result["url"])
+                all_results.append(search_result)
+                if len(all_results) >= num_results:
                     break
 
-                for result in page_results:
-                    if result["url"] in seen_urls:
-                        continue
-                    seen_urls.add(result["url"])
-                    all_results.append(result)
-                    if len(all_results) >= num_results:
-                        break
+        # Early exit if we have enough results
+        if len(all_results) >= num_results:
+            break
 
-                break
+    return all_results[:num_results], metadata
 
-            except Exception as e:
-                _logger.warning(f"Search attempt {attempt+1} failed: {str(e)}")
-                if attempt == max_attempts - 1:
-                    raise RuntimeError(f"Failed to search after {max_attempts} attempts: {str(e)}")
-                time.sleep(3.0 * (attempt + 1))
 
-        page += 1
-        if len(all_results) < num_results and page < max_pages:
-            time.sleep(random.uniform(2.5, 4.0))
+async def _execute_searches_with_persistent_browser(
+    queries: List[str],
+    results_per_query: int,
+    profile_ready: bool,
+    browser_profile: Optional[str],
+    max_concurrent: int = 3,
+) -> Dict[str, Any]:
+    """Execute searches using persistent browser with parallel query execution."""
+    results_by_query = {}
 
-    return all_results[:num_results]
+    # Load optional proxy rotation strategy
+    proxy_strategy = _load_proxies()
+    if proxy_strategy:
+        _logger.info("Proxy rotation enabled")
+    else:
+        _logger.debug("No proxies configured, using direct connection")
+
+    # Create browser config with .clone() pattern
+    browser_config_dict = _create_browser_config(
+        headless=True,
+        managed_ready=profile_ready,
+        browser_profile=browser_profile,
+        use_undetected=False,
+    )
+    browser_config = BrowserConfig(**browser_config_dict)
+
+    # Try with regular stealth mode first
+    try:
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            _logger.info(f"Starting parallel search for {len(queries)} queries (max_concurrent={max_concurrent})")
+
+            # Control query-level concurrency with semaphore (page-level handled by dispatcher)
+            semaphore = asyncio.Semaphore(max_concurrent)
+
+            async def search_with_semaphore(query: str) -> tuple[str, Any]:
+                """Execute search with concurrency control."""
+                async with semaphore:
+                    try:
+                        _logger.info(f"Starting search for query: '{query}'")
+
+                        # Randomize locale/timezone/geo per query for anti-detection
+                        locale = random.choice(_US_LOCALES)
+                        timezone_id = random.choice(_US_TIMEZONES)
+                        geolocation = random.choice(_US_GEOLOCATIONS)
+
+                        results, metadata = await _search_single_query(
+                            crawler,
+                            query,
+                            results_per_query,
+                            locale,
+                            timezone_id,
+                            geolocation,
+                            proxy_strategy,
+                        )
+
+                        return query, {
+                            "status": "success",
+                            "results": results,
+                            "count": len(results),
+                            "metadata": metadata,
+                        }
+                    except Exception as e:
+                        _logger.error(f"Search failed for query '{query}': {str(e)}")
+                        return query, {
+                            "status": "error",
+                            "error": str(e),
+                            "results": [],
+                            "count": 0,
+                            "metadata": {},
+                        }
+
+            # Execute all queries in parallel (controlled by semaphore)
+            search_results = await asyncio.gather(*[search_with_semaphore(q) for q in queries])
+
+            # Convert to dictionary
+            for query, result_data in search_results:
+                results_by_query[query] = result_data
+
+        return results_by_query
+
+    except Exception as first_attempt_error:
+        _logger.warning(f"Regular crawl failed, trying UndetectedAdapter: {str(first_attempt_error)}")
+
+        try:
+            # Fallback to undetected browser (non-headless)
+            browser_config_dict["headless"] = False
+            browser_config_undetected = BrowserConfig(**browser_config_dict)
+            strategy = AsyncPlaywrightCrawlerStrategy(
+                browser_config=browser_config_undetected,
+                browser_adapter=UndetectedAdapter(),
+            )
+
+            async with AsyncWebCrawler(crawler_strategy=strategy, config=browser_config_undetected) as crawler:
+                semaphore = asyncio.Semaphore(max_concurrent)
+
+                async def search_with_semaphore_undetected(query: str) -> tuple[str, Any]:
+                    async with semaphore:
+                        try:
+                            locale = random.choice(_US_LOCALES)
+                            timezone_id = random.choice(_US_TIMEZONES)
+                            geolocation = random.choice(_US_GEOLOCATIONS)
+
+                            results, metadata = await _search_single_query(
+                                crawler, query, results_per_query, locale, timezone_id, geolocation, proxy_strategy
+                            )
+                            return query, {
+                                "status": "success",
+                                "results": results,
+                                "count": len(results),
+                                "metadata": metadata,
+                            }
+                        except Exception as e:
+                            return query, {
+                                "status": "error",
+                                "error": str(e),
+                                "results": [],
+                                "count": 0,
+                                "metadata": {},
+                            }
+
+                search_results = await asyncio.gather(*[search_with_semaphore_undetected(q) for q in queries])
+
+                for query, result_data in search_results:
+                    results_by_query[query] = result_data
+
+            return results_by_query
+
+        except Exception as undetected_error:
+            _logger.error(f"UndetectedAdapter fallback failed: {str(undetected_error)}")
+            raise undetected_error
 
 
 def _format_search_results(results_by_query: Dict[str, Any]) -> str:
@@ -450,14 +725,16 @@ def _format_search_results(results_by_query: Dict[str, Any]) -> str:
 
 def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     """
-    Perform Google web search using crawl4ai with anti-detection measures.
+    Perform Google web search using crawl4ai with enhanced anti-detection.
 
     This tool:
-    - Searches Google using managed browser profiles for anti-bot detection
+    - Uses persistent browser session for faster execution
+    - Executes multiple queries in parallel (up to 3 concurrent)
+    - Progressive anti-detection: Stealth → UndetectedAdapter fallback
+    - Performance optimizations: text_mode, light_mode, reduced timeouts
     - Supports single or multiple queries
     - Extracts structured results (title, URL, snippet, date, source)
     - Implements retry logic with CAPTCHA detection
-    - Returns formatted search results
     """
     query_param = params.get("query")
     results_per_query = params.get("results_per_query", 5)
@@ -483,9 +760,11 @@ def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
         raise ValueError("results_per_query cannot exceed 10 (maximum: 10)")
 
     # Check if browser profile is ready
-    from utils.web_browser_profile import check_profile_exists, get_profile_status
+    from utils.web_browser_profile import check_profile_exists, get_profile_status, get_profile_dir
 
     profile_ready = check_profile_exists()
+    browser_profile = get_profile_dir() if profile_ready else None
+
     if not profile_ready:
         profile_status = get_profile_status()
         _logger.warning(
@@ -494,38 +773,50 @@ def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "For better results, set up the managed profile first."
         )
 
-    results_by_query = {}
-    total_results = 0
+    # Check system memory before starting
+    memory_ok, memory_percent = _check_system_memory(threshold_percent=85.0)
+    if not memory_ok:
+        _logger.warning(
+            f"High system memory usage ({memory_percent:.1f}%). "
+            "Search may be slower or fail. Consider closing other applications."
+        )
 
-    for query in queries:
-        try:
-            _logger.info(f"Executing web search for query: '{query}' (requesting {results_per_query} results)")
-
-            results = _search_google_with_retry(query, results_per_query)
-
-            results_by_query[query] = {
-                "status": "success",
-                "results": results,
-                "count": len(results)
-            }
-            total_results += len(results)
-
-            _logger.info(f"Successfully retrieved {len(results)} results for query '{query}'")
-
-        except Exception as e:
-            error_msg = str(e)
-            _logger.error(f"Web search failed for query '{query}': {error_msg}")
-            results_by_query[query] = {
+    # Execute searches with persistent browser and parallel execution
+    try:
+        results_by_query = _run_async_in_thread(
+            _execute_searches_with_persistent_browser(
+                queries,
+                results_per_query,
+                profile_ready,
+                browser_profile,
+                max_concurrent=min(3, len(queries)),  # Max 3 concurrent queries
+            )
+        )
+    except Exception as e:
+        _logger.error(f"Web search execution failed: {str(e)}")
+        # Return error for all queries
+        results_by_query = {
+            query: {
                 "status": "error",
-                "error": error_msg,
+                "error": str(e),
                 "results": [],
-                "count": 0
+                "count": 0,
             }
+            for query in queries
+        }
 
     formatted_output = _format_search_results(results_by_query)
 
     success_count = sum(1 for data in results_by_query.values() if data["status"] == "success")
     error_count = len(results_by_query) - success_count
+    total_results = sum(data.get("count", 0) for data in results_by_query.values())
+
+    # Aggregate performance metadata from DispatchResult
+    total_pages_crawled = sum(data.get("metadata", {}).get("pages_crawled", 0) for data in results_by_query.values())
+    total_pages_failed = sum(data.get("metadata", {}).get("pages_failed", 0) for data in results_by_query.values())
+    total_memory_mb = sum(data.get("metadata", {}).get("total_memory_mb", 0.0) for data in results_by_query.values())
+    total_duration_sec = sum(data.get("metadata", {}).get("total_duration_sec", 0.0) for data in results_by_query.values())
+    captcha_count = sum(1 for data in results_by_query.values() if data.get("metadata", {}).get("captcha_detected", False))
 
     return ToolResult(
         output={
@@ -542,6 +833,11 @@ def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "total_queries": len(queries),
             "total_results": total_results,
             "profile_used": profile_ready,
+            "pages_crawled": total_pages_crawled,
+            "pages_failed": total_pages_failed,
+            "total_memory_mb": round(total_memory_mb, 2),
+            "total_duration_sec": round(total_duration_sec, 2),
+            "captcha_detected_count": captcha_count,
         }
     )
 
@@ -550,9 +846,8 @@ web_search_spec = ToolSpec(
     name="web.search",
     version="1.0",
     description=(
-        "Search Google and extract structured results using crawl4ai with anti-detection measures. "
-        "Supports single or multiple queries. Returns title, URL, snippet, date, and source for each result. "
-        "Uses managed browser profile when available for improved anti-bot detection."
+        "Search Google function"
+        "Returns structured results (title, URL, snippet, date, source) for each query. "
     ),
     effects=["net"],
     in_schema={
