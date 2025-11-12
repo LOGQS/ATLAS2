@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import logger from '../utils/core/logger';
 import { apiUrl } from '../config/api';
 
 type WebMode = 'researcher' | 'controller';
 type ProfileStatus = 'unknown' | 'missing' | 'ready' | 'setting_up';
+export type SessionStatus = 'idle' | 'initializing' | 'ready' | 'profile_missing' | 'error' | 'closed';
 
 interface ProfileInfo {
   name: string;
@@ -13,6 +14,21 @@ interface ProfileInfo {
   is_default: boolean;
 }
 
+interface BrowserViewportState {
+  width: number;
+  height: number;
+}
+
+type BrowserCommandPayload =
+  | { type: 'navigate'; url: string }
+  | { type: 'reload' }
+  | { type: 'back' }
+  | { type: 'forward' }
+  | { type: 'click'; x: number; y: number; button?: 'left' | 'right' | 'middle' }
+  | { type: 'scroll'; deltaX: number; deltaY: number }
+  | { type: 'key'; key?: string; text?: string }
+  | { type: 'type'; text: string };
+
 interface WebState {
   chatId?: string;
   mode: WebMode;
@@ -20,6 +36,15 @@ interface WebState {
   searchQuery: string;
   isLoading: boolean;
   error: string;
+  sessionId?: string;
+  sessionStatus: SessionStatus;
+  viewerUrl?: string;
+  viewerReady: boolean;
+  viewport: BrowserViewportState;
+  activeProfile?: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  isPageLoading: boolean;
   // Researcher mode state
   searchResults: SearchResult[];
   metaSummary: string;
@@ -72,6 +97,9 @@ interface WebActions {
   setProfiles: (profiles: ProfileInfo[]) => void;
   setShowProfileSetup: (show: boolean) => void;
   setShowBrowserSettings: (show: boolean) => void;
+  initializeSession: () => Promise<void>;
+  setViewerReady: (ready: boolean) => void;
+  sendBrowserCommand: (command: BrowserCommandPayload) => Promise<void>;
   checkProfileStatus: () => Promise<void>;
   loadProfiles: () => Promise<void>;
   launchProfileSetup: () => Promise<void>;
@@ -101,6 +129,15 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     searchQuery: '',
     isLoading: false,
     error: '',
+    sessionId: undefined,
+    sessionStatus: 'idle',
+    viewerUrl: undefined,
+    viewerReady: false,
+    viewport: { width: 1366, height: 820 },
+    activeProfile: undefined,
+    canGoBack: false,
+    canGoForward: false,
+    isPageLoading: false,
     searchResults: [],
     metaSummary: '',
     relatedTopics: [],
@@ -113,6 +150,39 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     showProfileSetup: false,
     showBrowserSettings: false,
   });
+
+  useEffect(() => {
+    const handleSessionStatus = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail || {};
+      logger.info('[WEB_CTX][SESSION_STATUS] Received session update', detail);
+      setState(prev => {
+        const sessionId = detail.session_id ?? prev.sessionId;
+        const status = (detail.status ?? prev.sessionStatus) as SessionStatus;
+        const nextViewerUrl =
+          sessionId && status === 'ready'
+            ? apiUrl(`/api/web/session/${sessionId}/stream?ts=${detail.updated_at ?? Date.now()}`)
+            : undefined;
+
+        return {
+          ...prev,
+          sessionId,
+          sessionStatus: status,
+          viewerUrl: nextViewerUrl ?? (status === 'ready' ? prev.viewerUrl : undefined),
+          viewerReady: status === 'ready' ? prev.viewerReady : false,
+          viewport: detail.viewer?.viewport ?? prev.viewport,
+          currentUrl: detail.current_url ?? prev.currentUrl,
+          pageTitle: detail.page_title ?? prev.pageTitle,
+          activeProfile: detail.profile_name ?? prev.activeProfile,
+          canGoBack: detail.can_go_back ?? prev.canGoBack,
+          canGoForward: detail.can_go_forward ?? prev.canGoForward,
+          isPageLoading: detail.is_loading ?? prev.isPageLoading,
+        };
+      });
+    };
+
+    window.addEventListener('webSessionStatus', handleSessionStatus as EventListener);
+    return () => window.removeEventListener('webSessionStatus', handleSessionStatus as EventListener);
+  }, []);
 
   const setMode = useCallback((mode: WebMode) => {
     setState(prev => ({ ...prev, mode }));
@@ -189,20 +259,114 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     setState(prev => ({ ...prev, showBrowserSettings: show }));
   }, []);
 
+  const initializeSession = useCallback(async () => {
+    logger.info('[WEB_CTX][SESSION] Initializing shared browser session', {
+      chatId,
+      profile: state.activeProfile,
+    });
+    setState(prev => {
+      if (prev.sessionStatus === 'initializing') {
+        return prev;
+      }
+      return {
+        ...prev,
+        sessionStatus: prev.sessionStatus === 'ready' ? prev.sessionStatus : 'initializing',
+        viewerReady: false,
+        viewerUrl: prev.viewerUrl,
+      };
+    });
+
+    try {
+      const response = await fetch(apiUrl('/api/web/session'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId,
+          profileName: state.activeProfile,
+        }),
+      });
+
+      const snapshot = await response.json();
+      logger.info('[WEB_CTX][SESSION] Session snapshot received', snapshot);
+      setState(prev => {
+        const sessionId = snapshot.session_id ?? prev.sessionId;
+        return {
+          ...prev,
+          sessionId,
+          sessionStatus: (snapshot.status ?? 'error') as SessionStatus,
+          viewerUrl:
+            sessionId && snapshot.status === 'ready'
+              ? apiUrl(`/api/web/session/${sessionId}/stream?ts=${Date.now()}`)
+              : prev.viewerUrl,
+          viewport: snapshot.viewer?.viewport ?? prev.viewport,
+          activeProfile: snapshot.profile_name ?? prev.activeProfile,
+          error: snapshot.status === 'error' ? snapshot.last_error || prev.error : prev.error,
+          viewerReady: snapshot.status === 'ready' ? prev.viewerReady : false,
+        };
+      });
+    } catch (error) {
+      logger.error('[WEB_CTX] Failed to initialize session', error);
+      setState(prev => ({
+        ...prev,
+        sessionStatus: 'error',
+        error: 'Failed to initialize browser session',
+        viewerUrl: undefined,
+        viewerReady: false,
+      }));
+    }
+  }, [chatId, state.activeProfile]);
+
+  const setViewerReady = useCallback((ready: boolean) => {
+    logger.info('[WEB_CTX][SESSION] Viewer readiness changed', { ready });
+    setState(prev => ({ ...prev, viewerReady: ready }));
+  }, []);
+
+  const sendBrowserCommand = useCallback(async (command: BrowserCommandPayload) => {
+    if (!state.sessionId) {
+      logger.warn('[WEB_CTX] No session available for browser command');
+      return;
+    }
+
+    try {
+      const response = await fetch(apiUrl(`/api/web/session/${state.sessionId}/command`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(command),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Command failed with status ${response.status}`);
+      }
+      logger.info('[WEB_CTX][SESSION] Browser command dispatched', command);
+    } catch (error) {
+      logger.error('[WEB_CTX] Failed to dispatch browser command', error);
+      setState(prev => ({
+        ...prev,
+        error: 'Failed to control embedded browser',
+      }));
+    }
+  }, [state.sessionId]);
+
   const checkProfileStatus = useCallback(async () => {
     try {
+      logger.info('[PROFILE_CHECK] Fetching profile status from API...');
       const response = await fetch(apiUrl('/api/web/profile/status'));
       const data = await response.json();
 
+      logger.info('[PROFILE_CHECK] API Response:', data);
+
       if (data.exists) {
+        logger.info('[PROFILE_CHECK] Profile EXISTS, setting status to READY');
         setProfileStatus('ready');
       } else {
+        logger.info('[PROFILE_CHECK] Profile MISSING, setting status to MISSING');
         setProfileStatus('missing');
       }
 
       logger.info('[WEB_CTX] Profile status checked:', data);
     } catch (error) {
-      logger.error('[WEB_CTX] Error checking profile status:', error);
+      logger.error('[PROFILE_CHECK] Error checking profile status:', error);
       setError('Failed to check browser profile status');
     }
   }, [setProfileStatus, setError]);
@@ -285,6 +449,9 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     setProfiles,
     setShowProfileSetup,
     setShowBrowserSettings,
+    initializeSession,
+    setViewerReady,
+    sendBrowserCommand,
     checkProfileStatus,
     loadProfiles,
     launchProfileSetup,

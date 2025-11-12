@@ -1,12 +1,106 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import { useWebContext } from '../../contexts/WebContext';
 import { Icons } from '../ui/Icons';
+import { apiUrl } from '../../config/api';
+import logger from '../../utils/core/logger';
 
 export const ResearcherView: React.FC = () => {
-  const { searchResults, metaSummary, relatedTopics, agentStatus } = useWebContext();
+  const { searchResults, metaSummary, relatedTopics, agentStatus, chatId, addSearchResult } = useWebContext();
+  const [searchInput, setSearchInput] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleSearch = async () => {
+    const query = searchInput.trim();
+    if (!query) return;
+
+    setIsSearching(true);
+    logger.info('[RESEARCHER_VIEW] Initiating search:', query);
+
+    try {
+      const response = await fetch(apiUrl('/api/web/search'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          chat_id: chatId || 'default',
+          results_per_query: 10,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.results) {
+        logger.info('[RESEARCHER_VIEW] Search completed:', data.count, 'results');
+
+        // Map backend results to frontend SearchResult format
+        data.results.forEach((result: any) => {
+          addSearchResult({
+            id: `result_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+            url: result.url,
+            title: result.title,
+            description: result.snippet || '',
+            favicon: result.favicon,
+          });
+        });
+
+        setSearchInput('');
+      } else {
+        logger.error('[RESEARCHER_VIEW] Search failed:', data.error);
+      }
+    } catch (error) {
+      logger.error('[RESEARCHER_VIEW] Search error:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleSearch();
+    }
+  };
 
   return (
     <main className="web-researcher-view">
+      {/* Search Input Bar */}
+      <div className="web-researcher-view__search-bar">
+        <div className="flex items-center gap-2">
+          <div className="flex-1 flex items-center gap-2 bg-gray-800 rounded-lg px-4 py-2.5 border border-gray-600">
+            <Icons.Search className="w-5 h-5 text-gray-400" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Enter search query and press Enter..."
+              className="flex-1 bg-transparent text-sm text-gray-200 outline-none placeholder:text-gray-500"
+              disabled={isSearching || agentStatus === 'researching'}
+            />
+          </div>
+          <button
+            onClick={handleSearch}
+            disabled={!searchInput.trim() || isSearching || agentStatus === 'researching'}
+            className="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors flex items-center gap-2"
+          >
+            {isSearching || agentStatus === 'researching' ? (
+              <>
+                <Icons.RotateCw className="w-4 h-4 animate-spin" />
+                <span>Searching...</span>
+              </>
+            ) : (
+              <>
+                <Icons.Search className="w-4 h-4" />
+                <span>Search</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
       <div className="web-researcher-view__results">
         <div className="web-researcher-view__results-header">
           <div className="flex items-center gap-3">

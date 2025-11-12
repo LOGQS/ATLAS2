@@ -14,8 +14,19 @@ export const ProfileSetupView: React.FC = () => {
 
   const [setupLaunched, setSetupLaunched] = useState(false);
 
+  // Log when component mounts
+  useEffect(() => {
+    logger.info('[PROFILE_SETUP] ✨✨✨ ProfileSetupView MOUNTED ✨✨✨');
+    logger.info('[PROFILE_SETUP] Current profileStatus:', profileStatus);
+    logger.info('[PROFILE_SETUP] setupLaunched:', setupLaunched);
+
+    return () => {
+      logger.info('[PROFILE_SETUP] ❌ ProfileSetupView UNMOUNTED');
+    };
+  }, []);
+
   const handleLaunchSetup = async () => {
-    logger.info('[PROFILE_SETUP] Launching browser profile setup');
+    logger.info('[PROFILE_SETUP] 🚀 User clicked "Setup Profile" button');
     setSetupLaunched(true);
     await launchProfileSetup();
   };

@@ -162,6 +162,11 @@ interface WebProfileUpdatedEvent extends BaseSSEEvent {
   content?: string;
 }
 
+interface WebSessionStatusEvent extends BaseSSEEvent {
+  type: 'web_session_status';
+  content?: string;
+}
+
 interface CoderFileChangeEvent extends BaseSSEEvent {
   type: 'coder_file_change';
   workspace_path?: string;
@@ -231,6 +236,7 @@ type SSEEvent =
   | CoderWorkspacePromptEvent
   | WebWindowPromptEvent
   | WebProfileUpdatedEvent
+  | WebSessionStatusEvent
   | CoderFileChangeEvent
   | CoderStreamEvent
   | CoderFileOperationEvent
@@ -907,6 +913,17 @@ class LiveStore {
             logger.info('[LiveStore] Dispatched webProfileUpdated event:', detail);
           } catch (err) {
             logger.error('[LiveStore] Failed to parse web_profile_updated payload', err);
+          }
+          return;
+        }
+
+        if (ev.type === 'web_session_status') {
+          try {
+            const detail = ev.content ? JSON.parse(ev.content) : {};
+            window.dispatchEvent(new CustomEvent('webSessionStatus', { detail }));
+            logger.info('[LiveStore] Dispatched webSessionStatus event:', detail);
+          } catch (err) {
+            logger.error('[LiveStore] Failed to parse web_session_status payload', err);
           }
           return;
         }

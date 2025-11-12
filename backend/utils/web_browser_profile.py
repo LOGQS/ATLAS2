@@ -8,7 +8,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from utils.logger import get_logger
 
@@ -18,31 +18,37 @@ _logger = get_logger(__name__)
 PROFILE_NAME = "google_serp"
 
 
-def get_profile_dir() -> Path:
+def _resolve_profile_name(profile_name: Optional[str] = None) -> str:
+    """Resolve requested profile name to a concrete directory name."""
+    if profile_name and profile_name.strip():
+        return profile_name.strip()
+    return PROFILE_NAME
+
+
+def get_profile_dir(profile_name: Optional[str] = None) -> Path:
     """Get the managed browser profile directory path."""
-    project_root = Path(__file__).resolve().parents[1]  # backend/utils → backend → ATLAS2
-    profile_dir = project_root / "data" / "managed_browser" / PROFILE_NAME
+    # backend/utils/web_browser_profile.py → backend/utils → backend → ATLAS2 (root)
+    project_root = Path(__file__).resolve().parents[2]
+    profile_dir = project_root / "data" / "managed_browser" / _resolve_profile_name(profile_name)
     return profile_dir
 
 
-def check_profile_exists() -> bool:
+def check_profile_exists(profile_name: Optional[str] = None) -> bool:
     """Check if the managed browser profile exists and is valid.
 
     Returns:
         True if profile exists and setup is complete, False otherwise
     """
-    profile_dir = get_profile_dir()
+    profile_dir = get_profile_dir(profile_name)
 
     if not profile_dir.exists():
         _logger.info(f"Profile directory does not exist: {profile_dir}")
         return False
 
-    # Check if directory has content (not just empty folder)
     if not any(profile_dir.iterdir()):
         _logger.info(f"Profile directory is empty: {profile_dir}")
         return False
 
-    # Check for setup completion marker
     marker_file = profile_dir / ".setup_complete"
     if not marker_file.exists():
         _logger.info(f"Profile exists but setup not complete (no marker file)")
@@ -52,19 +58,20 @@ def check_profile_exists() -> bool:
     return True
 
 
-def get_profile_status() -> Dict[str, Any]:
+def get_profile_status(profile_name: Optional[str] = None) -> Dict[str, Any]:
     """Get detailed profile status information.
 
     Returns:
         Dictionary with profile status details
     """
-    profile_dir = get_profile_dir()
-    exists = check_profile_exists()
+    resolved_name = _resolve_profile_name(profile_name)
+    profile_dir = get_profile_dir(resolved_name)
+    exists = check_profile_exists(resolved_name)
 
     status = {
         "exists": exists,
         "path": str(profile_dir),
-        "profile_name": PROFILE_NAME,
+        "profile_name": resolved_name,
     }
 
     if exists:
@@ -84,7 +91,7 @@ def get_profile_status() -> Dict[str, Any]:
     return status
 
 
-def launch_profile_setup() -> Dict[str, Any]:
+def launch_profile_setup(profile_name: Optional[str] = None) -> Dict[str, Any]:
     """Launch browser profile setup using Playwright.
 
     Opens a managed Chromium browser for the user to:
@@ -97,7 +104,7 @@ def launch_profile_setup() -> Dict[str, Any]:
     Returns:
         Dictionary with success status and setup instructions
     """
-    profile_dir = get_profile_dir()
+    profile_dir = get_profile_dir(profile_name)
 
     try:
         _logger.info(f"Preparing browser profile setup at: {profile_dir}")
@@ -109,7 +116,7 @@ def launch_profile_setup() -> Dict[str, Any]:
         import threading
         setup_thread = threading.Thread(
             target=_run_browser_setup,
-            args=(profile_dir,),
+            args=(profile_dir, profile_name),
             daemon=True
         )
         setup_thread.start()
@@ -129,11 +136,12 @@ def launch_profile_setup() -> Dict[str, Any]:
         }
 
 
-def _run_browser_setup(profile_dir: Path) -> None:
+def _run_browser_setup(profile_dir: Path, profile_name: Optional[str] = None) -> None:
     """Run the browser setup process in a separate thread.
 
     Args:
         profile_dir: Path to store the browser profile
+        profile_name: Name of the profile being set up
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -290,7 +298,7 @@ def _run_browser_setup(profile_dir: Path) -> None:
             _logger.error(f"Failed to create marker file: {e}")
 
         # Check if profile was created successfully
-        profile_status = get_profile_status()
+        profile_status = get_profile_status(profile_name)
 
         # Notify frontend via SSE
         try:
@@ -302,7 +310,8 @@ def _run_browser_setup(profile_dir: Path) -> None:
                 "web_profile_updated",
                 json.dumps({
                     "exists": profile_status["exists"],
-                    "status": profile_status["status"]
+                    "status": profile_status["status"],
+                    "profile_name": profile_status.get("profile_name", PROFILE_NAME)
                 })
             )
 
@@ -317,7 +326,7 @@ def _run_browser_setup(profile_dir: Path) -> None:
         _logger.error(f"Error during browser setup: {e}")
 
 
-def ensure_profile_ready() -> Dict[str, Any]:
+def ensure_profile_ready(profile_name: Optional[str] = None) -> Dict[str, Any]:
     """Ensure browser profile is ready for use.
 
     Checks if profile exists, and if not, provides guidance for setup.
@@ -325,7 +334,7 @@ def ensure_profile_ready() -> Dict[str, Any]:
     Returns:
         Dictionary with profile readiness status and next steps
     """
-    status = get_profile_status()
+    status = get_profile_status(profile_name)
 
     if status["exists"]:
         return {

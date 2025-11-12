@@ -641,6 +641,7 @@ def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     """
     query_param = params.get("query")
     results_per_query = params.get("results_per_query", 5)
+    profile_name = params.get("profile_name", None)  # Optional: use specific profile
 
     if not query_param:
         raise ValueError("query parameter is required")
@@ -665,11 +666,11 @@ def _tool_web_search(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
     # Check if browser profile is ready
     from utils.web_browser_profile import check_profile_exists, get_profile_status, get_profile_dir
 
-    profile_ready = check_profile_exists()
-    browser_profile = get_profile_dir() if profile_ready else None
+    profile_ready = check_profile_exists(profile_name)
+    browser_profile = get_profile_dir(profile_name) if profile_ready else None
 
     if not profile_ready:
-        profile_status = get_profile_status()
+        profile_status = get_profile_status(profile_name)
         _logger.warning(
             f"Managed browser profile not found at {profile_status['path']}. "
             "Search will use default browser profile with reduced anti-detection. "

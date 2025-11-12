@@ -4,8 +4,8 @@ import { WebProvider, useWebContext } from '../contexts/WebContext';
 import { WorkspaceLoadingOverlay } from '../components/coder/WorkspaceLoadingOverlay';
 import { ResearcherView } from '../components/web/ResearcherView';
 import { ControllerView } from '../components/web/ControllerView';
-import { WebActivityPanel } from '../components/web/WebActivityPanel';
 import { ProfileSetupView } from '../components/web/ProfileSetupView';
+import { WebActivityPanel } from '../components/web/WebActivityPanel';
 import { BrowserSettingsOverlay } from '../components/web/BrowserSettingsOverlay';
 import { Slider, type SliderOptions } from '../components/ui/Slider';
 import { Icons } from '../components/ui/Icons';
@@ -50,47 +50,63 @@ const WebWindowContent: React.FC<{
     searchQuery,
     currentUrl,
     profileStatus,
+    sessionStatus,
+    viewerReady,
     showProfileSetup,
     showBrowserSettings,
     checkProfileStatus,
     setProfileStatus,
     setShowProfileSetup,
     setShowBrowserSettings,
-    setMode
+    setMode,
+    initializeSession
   } = useWebContext();
   const [isReady, setIsReady] = useState(false);
   const [showLoading, setShowLoading] = useState(false);
 
-  // Check profile status on mount
+  // Check profile status IMMEDIATELY on mount via API (event-driven, instant)
   useEffect(() => {
-    const initProfile = async () => {
-      // If profile status was provided via SSE, use it
-      if (profileStatusFromSSE) {
-        logger.info('[WEB_WINDOW] Profile status from SSE:', profileStatusFromSSE);
+    logger.info('[PROFILE_CHECK] ============ CHECKING PROFILE STATUS ============');
 
-        if (profileStatusFromSSE.exists) {
-          setProfileStatus('ready');
-        } else {
-          setProfileStatus('missing');
-          setShowProfileSetup(true);
-        }
-      } else {
-        // Otherwise, check via API
-        logger.info('[WEB_WINDOW] Checking profile status via API');
-        await checkProfileStatus();
-      }
-    };
+    // ALWAYS check via API immediately - don't wait for SSE
+    // This is instant and event-driven
+    checkProfileStatus();
 
-    initProfile();
-  }, [profileStatusFromSSE, checkProfileStatus, setProfileStatus, setShowProfileSetup]);
+  }, [checkProfileStatus]);
+
+  // ALSO listen for SSE updates from backend (when profile is set up)
+  useEffect(() => {
+    if (!profileStatusFromSSE) return;
+
+    logger.info('[PROFILE_CHECK] SSE profile update received:', profileStatusFromSSE);
+
+    if (profileStatusFromSSE.exists) {
+      logger.info('[PROFILE_CHECK] Profile exists via SSE, setting status to ready');
+      setProfileStatus('ready');
+    } else {
+      logger.info('[PROFILE_CHECK] Profile MISSING via SSE');
+      setProfileStatus('missing');
+    }
+  }, [profileStatusFromSSE, setProfileStatus]);
 
   // Show setup view if profile is missing
   useEffect(() => {
+    logger.info('[PROFILE_CHECK] Setup view effect - profileStatus:', profileStatus, 'showProfileSetup:', showProfileSetup);
     if (profileStatus === 'missing' && !showProfileSetup) {
+      logger.info('[PROFILE_CHECK] Profile is missing, setting showProfileSetup to TRUE');
       setShowProfileSetup(true);
     }
   }, [profileStatus, showProfileSetup, setShowProfileSetup]);
 
+  useEffect(() => {
+    logger.info('[PROFILE_CHECK] Session auto-start effect - profileStatus:', profileStatus, 'sessionStatus:', sessionStatus);
+    if (profileStatus === 'ready' && sessionStatus === 'idle') {
+      logger.info('[WEB_WINDOW] Auto-starting shared browser session');
+      void initializeSession();
+    }
+  }, [profileStatus, sessionStatus, initializeSession]);
+
+  // Initialization ready state with loading delay
   useEffect(() => {
     // Show loading only if initialization takes longer than 200ms
     const loadingTimer = setTimeout(() => {
@@ -112,34 +128,19 @@ const WebWindowContent: React.FC<{
     };
   }, [isReady]);
 
-  // Truncate user request if it's too long (max 200 characters for display)
   const MAX_DISPLAY_LENGTH = 200;
   let displayText = userRequest || (mode === 'researcher' ? searchQuery : currentUrl) || 'No active request';
 
   if (displayText && displayText.length > MAX_DISPLAY_LENGTH) {
-    displayText = displayText.substring(0, MAX_DISPLAY_LENGTH) + '...';
+    displayText = `${displayText.substring(0, MAX_DISPLAY_LENGTH)}...`;
   }
 
-  // Show loading overlay if not ready and past the threshold
-  if (!isReady && showLoading) {
-    return (
-      <div className={`web-window ${fullscreen ? 'web-window--fullscreen' : ''}`}>
-        <WorkspaceLoadingOverlay
-          isVisible={true}
-          theme="web"
-          text="Initializing web agent..."
-        />
-      </div>
-    );
-  }
+  logger.info('[PROFILE_CHECK] Render decision - showProfileSetup:', showProfileSetup, 'isReady:', isReady, 'showLoading:', showLoading, 'profileStatus:', profileStatus);
 
-  // Hide completely if not ready and under threshold (prevents flash)
-  if (!isReady) {
-    return null;
-  }
-
-  // If profile setup is needed, show setup view
+  // CRITICAL: Check profile setup FIRST - this takes priority over initialization
+  // If profile setup is needed, show setup view immediately (don't wait for isReady)
   if (showProfileSetup) {
+    logger.info('[PROFILE_CHECK] 🎯 RENDERING ProfileSetupView');
     return (
       <div className={`web-window ${fullscreen ? 'web-window--fullscreen' : ''}`}>
         <ProfileSetupView />
@@ -147,6 +148,28 @@ const WebWindowContent: React.FC<{
       </div>
     );
   }
+
+  // Show loading overlay if not ready and past the threshold
+  if (!isReady && showLoading) {
+    logger.info('[PROFILE_CHECK] 🔄 RENDERING LoadingOverlay');
+    return (
+      <div className={`web-window ${fullscreen ? 'web-window--fullscreen' : ''}`}>
+        <WorkspaceLoadingOverlay
+          isVisible={true}
+          theme="web"
+          text="Initializing web workspace..."
+        />
+      </div>
+    );
+  }
+
+  // Hide completely if not ready and under threshold (prevents flash)
+  if (!isReady) {
+    logger.info('[PROFILE_CHECK] ⏳ RENDERING null (not ready yet)');
+    return null;
+  }
+
+  logger.info('[PROFILE_CHECK] ✅ RENDERING main workspace');
 
   return (
     <div className={`web-window ${fullscreen ? 'web-window--fullscreen' : ''}`}>
@@ -186,7 +209,7 @@ const WebWindowContent: React.FC<{
         </button>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Content Area with Resizable Panels */}
       <div className="web-window__content">
         <PanelGroup direction="horizontal">
           {/* Main Content Panel */}
@@ -219,6 +242,19 @@ const WebWindowContent: React.FC<{
 
       {/* Browser Settings Overlay */}
       {showBrowserSettings && <BrowserSettingsOverlay />}
+
+      {/* Session Loading Overlay */}
+      {sessionStatus !== 'ready' && (
+        <WorkspaceLoadingOverlay
+          isVisible={true}
+          theme="web"
+          text={
+            sessionStatus === 'initializing'
+              ? 'Launching secure browser session...'
+              : 'Connecting to browser session...'
+          }
+        />
+      )}
     </div>
   );
 };

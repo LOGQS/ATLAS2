@@ -37,9 +37,27 @@ const logger = {
   },
   info: (message: string, ...args: any[]) => {
     // Allowlist of patterns for info logs to be surfaced in the console.
-    // Keep concise to avoid spam; extend as needed for targeted modules.
-    const allowedPatterns = ['[]'];
-    const shouldShow = allowedPatterns.some(pattern => message.includes(pattern));
+    const allowedPatterns = [
+      '[WEB_CTX]',
+      '[WEB_SESSION]',
+      '[WEB_VIEWPORT]',
+      '[BROWSER_VIEWPORT]',
+      '[LIVE_STORE]',
+      '[WEB_WINDOW]',
+      '[PROFILE_SETUP]',
+      '[PROFILE_CHECK]',
+      '[CONTROLLER_VIEW]',
+      '[RESEARCHER_VIEW]',
+    ];
+    let infoOverride = false;
+    try {
+      infoOverride =
+        (typeof window !== 'undefined' && (window as any).__ATLAS_DEBUG_INFO__ === true) ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('ATLAS_DEBUG_INFO') === 'true');
+    } catch {
+      infoOverride = false;
+    }
+    const shouldShow = infoOverride || allowedPatterns.some(pattern => message.includes(pattern));
     if (shouldShow) {
       console.info(`[ATLAS]`, message, ...fmtArgs(...args));
     }

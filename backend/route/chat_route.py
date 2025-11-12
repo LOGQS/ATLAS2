@@ -11,6 +11,7 @@ from chat.chat import Chat, is_chat_processing, stop_chat_process, send_domain_t
 from utils.config import Config
 from utils.logger import get_logger
 from utils.db_utils import db
+from services.web import WebSessionError, web_session_manager
 from typing import Optional, Dict, Any, List
 
 logger = get_logger(__name__)
@@ -241,6 +242,20 @@ def publish_content(chat_id: str, chunk_type: str, content: str, **metadata):
         broadcast_payload.update({k: v for k, v in metadata.items() if v is not None})
 
     _broadcast(broadcast_payload)
+
+
+def _session_status_publisher(payload: Dict[str, Any]) -> None:
+    try:
+        publish_content(
+            "system_broadcast",
+            "web_session_status",
+            json.dumps(payload),
+        )
+    except Exception as exc:
+        logger.error(f"[WEB_SESSION] Failed to push status payload: {exc}")
+
+
+web_session_manager.set_status_publisher(_session_status_publisher)
 
 def wait_for_queue_drain(chat_id: str,
                          timeout: Optional[float] = QUEUE_DRAIN_TIMEOUT_SECONDS,
@@ -746,7 +761,8 @@ def register_chat_routes(app: Flask):
         try:
             from agents.tools.web_ops import get_profile_status
 
-            status = get_profile_status()
+            profile_name = request.args.get('profileName')
+            status = get_profile_status(profile_name)
             return jsonify(status)
 
         except Exception as e:
@@ -759,7 +775,9 @@ def register_chat_routes(app: Flask):
         try:
             from agents.tools.web_ops import launch_profile_setup
 
-            result = launch_profile_setup()
+            payload = request.get_json(silent=True) or {}
+            profile_name = payload.get('profileName')
+            result = launch_profile_setup(profile_name)
 
             if result.get('success'):
                 return jsonify(result), 200
@@ -862,3 +880,135 @@ def register_chat_routes(app: Flask):
                 'success': False,
                 'error': str(e)
             }), 500
+
+    @app.route('/api/web/search', methods=['POST'])
+    def execute_web_search():
+        """Execute web search using crawl4ai with unified profile."""
+        payload = request.get_json(silent=True) or {}
+        query = payload.get('query')
+        chat_id = payload.get('chat_id')
+        results_per_query = payload.get('results_per_query', 5)
+
+        if not query:
+            return jsonify({
+                'success': False,
+                'error': 'query parameter is required'
+            }), 400
+
+        try:
+            # Get active profile from session manager (or default to "google_serp")
+            session_status = web_session_manager.get_status()
+            profile_name = session_status.get('profile_name', 'google_serp')
+
+            logger.info(f"[WEB_SEARCH] Executing search with profile: {profile_name}, query: {query}")
+
+            # Import and execute the web search tool
+            from agents.tools.web_ops.web_search_func import _tool_web_search
+            from agents.tools.tool_registry import ToolExecutionContext
+
+            # Create tool context (ToolExecutionContext is a dataclass with required fields)
+            tool_ctx = ToolExecutionContext(
+                chat_id=chat_id or 'default',
+                plan_id='',
+                task_id='',
+                ctx_id='web_search',
+                workspace_path=None
+            )
+
+            # Execute search with unified profile
+            result = _tool_web_search(
+                params={
+                    'query': query,
+                    'results_per_query': results_per_query,
+                    'profile_name': profile_name
+                },
+                ctx=tool_ctx
+            )
+
+            # Extract results from ToolResult
+            output = result.output if hasattr(result, 'output') else {}
+            results_by_query = output.get('results_by_query', {})
+
+            # Flatten results from all queries into a single list
+            all_results = []
+            for query_text, query_data in results_by_query.items():
+                if query_data.get('status') == 'success':
+                    all_results.extend(query_data.get('results', []))
+
+            return jsonify({
+                'success': True,
+                'results': all_results,
+                'count': len(all_results),
+                'total_results': output.get('total_results', 0),
+                'queries_processed': output.get('queries_processed', 1),
+                'metadata': result.metadata if hasattr(result, 'metadata') else {}
+            }), 200
+
+        except Exception as e:
+            logger.error(f"[WEB_SEARCH] Search failed: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+
+    @app.route('/api/web/session', methods=['POST'])
+    def ensure_web_session():
+        """Ensure the shared browser session is running."""
+        payload = request.get_json(silent=True) or {}
+        profile_name = payload.get('profileName')
+        chat_id = payload.get('chatId')
+
+        try:
+            snapshot = web_session_manager.ensure_session(profile_name=profile_name, chat_id=chat_id)
+            status_code = 200 if snapshot.get('status') == 'ready' else 202
+            return jsonify(snapshot), status_code
+        except WebSessionError as exc:
+            logger.error(f"[WEB_SESSION] Failed to ensure session: {exc}")
+            return jsonify({'error': str(exc), 'code': exc.code}), 500
+
+    @app.route('/api/web/session/status', methods=['GET'])
+    def get_web_session_status():
+        """Return current browser session snapshot."""
+        return jsonify(web_session_manager.get_status())
+
+    @app.route('/api/web/session/<session_id>/stream', methods=['GET'])
+    def stream_web_session(session_id: str):
+        """Provide MJPEG stream of the shared browser viewport."""
+        logger.info(f"[WEB_SESSION][STREAM] Client requested stream for session {session_id}")
+
+        target_frame_interval = 1.0 / 40.0  # 40 FPS target for responsiveness
+
+        def frame_generator():
+            while True:
+                frame_start = time.perf_counter()
+                try:
+                    frame = web_session_manager.capture_frame(session_id)
+                except WebSessionError as exc:
+                    logger.warning(f"[WEB_SESSION][STREAM] Ending stream: {exc}")
+                    break
+
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+
+                # Minimal sleep - let screenshot pace itself
+                elapsed = time.perf_counter() - frame_start
+                sleep_duration = target_frame_interval - elapsed
+                if sleep_duration > 0:
+                    time.sleep(max(0.001, sleep_duration))  # Minimum 1ms, max calculated
+
+        headers = {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Connection': 'keep-alive'
+        }
+        return Response(frame_generator(), mimetype='multipart/x-mixed-replace; boundary=frame', headers=headers)
+
+    @app.route('/api/web/session/<session_id>/command', methods=['POST'])
+    def post_web_session_command(session_id: str):
+        """Dispatch browser command (navigate, click, scroll, keyboard)."""
+        payload = request.get_json(force=True, silent=True) or {}
+        try:
+            result = web_session_manager.dispatch_command(session_id, payload)
+            return jsonify(result)
+        except WebSessionError as exc:
+            logger.warning(f"[WEB_SESSION] Command failed: {exc}")
+            return jsonify({'error': str(exc), 'code': exc.code}), 400
