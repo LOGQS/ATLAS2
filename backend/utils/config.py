@@ -43,83 +43,105 @@ available_routes = [
     {
         "route_name": "creative_writing",
         "route_description": "Literary and artistic text creation",
-        "route_context": "Stories, poems, essays, articles, marketing copy, scripts, creative narratives. Focused on written content and artistic expression. Native capabilities sufficient."
+        "route_context": "Stories, poems, essays, articles, marketing copy, scripts, creative narratives. Focused on written content and artistic expression. Native capabilities sufficient.",
+        "execution_type": "text_generation"
     },
     {
         "route_name": "math_reasoning",
         "route_description": "Mathematical reasoning and calculations",
-        "route_context": "Math problems, proofs, logic problems, calculations. Native reasoning sufficient."
+        "route_context": "Math problems, proofs, logic problems, calculations. Native reasoning sufficient.",
+        "execution_type": "text_generation"
     },
     {
         "route_name": "code_reasoning",
         "route_description": "Code analysis and review without execution",
-        "route_context": "Algorithm explanation, code review, complexity analysis. File already in context."
+        "route_context": "Algorithm explanation, code review, complexity analysis. File already in context.",
+        "execution_type": "text_generation"
     },
     {
         "route_name": "visual_reasoning",
         "route_description": "Visual analysis of uploaded media",
-        "route_context": "Image/video analysis, description, understanding. Media already in context."
+        "route_context": "Image/video analysis, description, understanding. Media already in context.",
+        "execution_type": "text_generation"
     },
     {
         "route_name": "general_conversation",
         "route_description": "General questions and conversations",
-        "route_context": "Q&A, advice, explanations, discussions. Native reasoning sufficient."
+        "route_context": "Q&A, advice, explanations, discussions. Native reasoning sufficient.",
+        "execution_type": "text_generation"
     },
 
     # Execution mode routes (tools needed)
     {
         "route_name": "direct",
         "route_description": "Single tool call with immediate execution",
-        "route_context": "One straightforward tool operation where all parameters are explicitly provided. Examples: reading a specific file, listing a directory, attaching a file. Result is returned directly to the model."
+        "route_context": "One straightforward tool operation where all parameters are explicitly provided. Examples: reading a specific file, listing a directory, attaching a file. Result is returned directly to the model.",
+        "execution_type": "direct"
     },
 
     # Single domain routes
     {
         "route_name": "web",
         "route_description": "Web operations - research and browser automation",
-        "route_context": "Unified web capabilities: information gathering (web search, academic databases, document extraction, synthesis), browser automation (navigation, scraping, form filling, screenshots), or coordinated tasks combining both. Agent can dynamically switch between research and control modes."
+        "route_context": "Unified web capabilities: information gathering (web search, academic databases, document extraction, synthesis), browser automation (navigation, scraping, form filling, screenshots), or coordinated tasks combining both. Agent can dynamically switch between research and control modes.",
+        "execution_type": "single_domain",
+        "domain": "web"
     },
     {
         "route_name": "coder",
         "route_description": "Software development and code file operations",
-        "route_context": "Working with code files on disk: creating new projects, websites, applications, scripts; modifying existing code; testing, debugging, refactoring. Handles both simple file creation and complex multi-file development."
+        "route_context": "Working with code files on disk: creating new projects, websites, applications, scripts; modifying existing code; testing, debugging, refactoring. Handles both simple file creation and complex multi-file development.",
+        "execution_type": "single_domain",
+        "domain": "coder"
     },
     {
         "route_name": "data_processor",
         "route_description": "Data transformation and API operations",
-        "route_context": "JSON/CSV/SQL operations, API calls, data validation, format conversion."
+        "route_context": "JSON/CSV/SQL operations, API calls, data validation, format conversion.",
+        "execution_type": "single_domain",
+        "domain": "data_processor"
     },
     {
         "route_name": "memory",
         "route_description": "Persistent memory management",
-        "route_context": "Store, retrieve, search, habit tracking. User preference management."
+        "route_context": "Store, retrieve, search, habit tracking. User preference management.",
+        "execution_type": "single_domain",
+        "domain": "memory"
     },
     {
         "route_name": "system_manager",
         "route_description": "Operating system control",
-        "route_context": "Windows registry, processes, network config, system operations. Requires elevated permissions."
+        "route_context": "Windows registry, processes, network config, system operations. Requires elevated permissions.",
+        "execution_type": "single_domain",
+        "domain": "system_manager"
     },
     {
         "route_name": "teacher",
         "route_description": "Educational assistance",
-        "route_context": "Explanation generation, quiz creation, assessment, curriculum building."
+        "route_context": "Explanation generation, quiz creation, assessment, curriculum building.",
+        "execution_type": "single_domain",
+        "domain": "teacher"
     },
     {
         "route_name": "gui_control",
         "route_description": "Application automation",
-        "route_context": "GUI interaction, window management, application automation. Visual understanding needed."
+        "route_context": "GUI interaction, window management, application automation. Visual understanding needed.",
+        "execution_type": "single_domain",
+        "domain": "gui_control"
     },
 
     # Multi-agent orchestration routes
     {
         "route_name": "multi_domain",
         "route_description": "Multi-domain orchestration with planning",
-        "route_context": "Multiple domains or context-isolated parallel work. Requires planning and coordination."
+        "route_context": "Multiple domains or context-isolated parallel work. Requires planning and coordination.",
+        "execution_type": "multi_domain"
     },
     {
         "route_name": "iterative",
         "route_description": "Iterative refinement with evaluation loops",
-        "route_context": "Generate-evaluate-refine cycles. Self-critique or multi-agent evaluation until quality threshold met."
+        "route_context": "Generate-evaluate-refine cycles. Self-critique or multi-agent evaluation until quality threshold met.",
+        "execution_type": "iterative"
     }
 ]
 
@@ -128,7 +150,7 @@ ROUTE_MODEL_MAP = {
     "creative_writing": "moonshotai/kimi-k2-instruct-0905",  # Creative tasks benefit from stronger model
     "math_reasoning": "gemini-2.5-pro",     # Math requires strong reasoning
     "code_reasoning": "gemini-2.5-pro",     # Code analysis needs strong model
-    "visual_reasoning": "gemini-2.5-flash-preview-09-2025", # Vision tasks, flash supports multimodal
+    "visual_reasoning": "gemini-2.5-pro",   # Vision tasks benefit from stronger model
     "general_conversation": "gemini-2.5-flash-preview-09-2025", # General queries can use fast model
 
     # Execution modes (tools needed)

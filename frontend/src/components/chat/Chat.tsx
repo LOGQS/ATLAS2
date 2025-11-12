@@ -657,8 +657,17 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
 
 
   useEffect(() => {
+    // Only enable scroll restore when message count increases (new message added)
+    // Don't scroll when existing messages are modified (e.g., files attached to past messages)
+    const previousMessageCount = scrollRestoreBaselineRef.current?.length || 0;
+    const currentMessageCount = messages.length;
+
+    if (currentMessageCount > previousMessageCount) {
+      // New message added - enable scroll restore
+      needsScrollRestoreRef.current = true;
+    }
+
     scrollRestoreBaselineRef.current = messages;
-    needsScrollRestoreRef.current = true;
   }, [chatId, messages]);
 
   useLayoutEffect(() => {

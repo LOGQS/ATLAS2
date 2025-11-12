@@ -75,13 +75,38 @@ class Router:
             selected_model = ROUTE_MODEL_MAP.get(route_choice, Config.get_default_model())
             selected_provider = infer_provider_from_model(selected_model)
 
+            # Look up route definition to get execution_type and domain
+            route_definition = next((r for r in available_routes if r['route_name'] == route_choice), None)
+
+            # Use execution_type and domain from route definition if available, otherwise fall back to router metadata
+            execution_type = None
+            domain_id = None
+            tools_needed = None
+
+            if route_definition:
+                execution_type = route_definition.get('execution_type')
+                domain_id = route_definition.get('domain')
+                # Infer tools_needed from execution_type
+                if execution_type == 'text_generation':
+                    tools_needed = False
+                elif execution_type in ['direct', 'single_domain', 'multi_domain', 'iterative']:
+                    tools_needed = True
+
+            # Fall back to router metadata if route definition doesn't provide these
+            if execution_type is None:
+                execution_type = router_metadata.get('execution_type')
+            if domain_id is None:
+                domain_id = router_metadata.get('domain_id')
+            if tools_needed is None:
+                tools_needed = router_metadata.get('tools_needed')
+
             logger.info(f"Router decision: {route_choice} -> {selected_model} ({selected_provider} provider)")
-            if router_metadata.get('tools_needed') is not None:
-                logger.info(f"Tools needed: {router_metadata['tools_needed']}")
-            if router_metadata.get('execution_type'):
-                logger.info(f"Execution type: {router_metadata['execution_type']}")
-            if router_metadata.get('domain_id'):
-                logger.info(f"Domain: {router_metadata['domain_id']}")
+            if tools_needed is not None:
+                logger.info(f"Tools needed: {tools_needed}")
+            if execution_type:
+                logger.info(f"Execution type: {execution_type}")
+            if domain_id:
+                logger.info(f"Domain: {domain_id}")
             if router_metadata.get('fastpath_params'):
                 logger.info(f"FastPath params: {router_metadata['fastpath_params']}")
 
@@ -90,9 +115,9 @@ class Router:
                 'provider': selected_provider,
                 'route': route_choice,
                 'available_routes': available_routes,
-                'tools_needed': router_metadata.get('tools_needed'),
-                'execution_type': router_metadata.get('execution_type'),
-                'domain_id': router_metadata.get('domain_id'),
+                'tools_needed': tools_needed,
+                'execution_type': execution_type,
+                'domain_id': domain_id,
                 'fastpath_params': router_metadata.get('fastpath_params')
             }
 

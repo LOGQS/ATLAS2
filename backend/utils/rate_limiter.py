@@ -356,6 +356,48 @@ class RateLimiterManager:
             logger.error(f"[RATE-LIMIT] Error getting all usage: {e}")
             return {}
 
+    def execute(
+        self,
+        func: Callable,
+        scope_key: str,
+        limit_config: RateLimitDict,
+        **kwargs
+    ) -> Any:
+        """
+        Execute a function with single-scope rate limiting.
+        This is a simpler interface for operations like file uploads and image generation.
+
+        Args:
+            func: The callable to execute
+            scope_key: The scope key for rate limiting (e.g., "gemini:upload", "pollinations:image")
+            limit_config: Rate limit configuration dict with keys like requests_per_minute, burst_size, etc.
+            **kwargs: Additional arguments to pass to the function
+
+        Returns:
+            The result of calling func(**kwargs)
+        """
+        with self._lock:
+            now = time.time()
+
+            # Calculate wait time based on the single scope
+            wait = self._calculate_wait(scope_key, limit_config, pending_tokens=0, now=now)
+
+            # Enforce wait if needed
+            if wait > 0:
+                logger.info(f"[RATE-LIMIT] {scope_key} waiting {wait:.2f}s")
+                time.sleep(wait)
+                now = time.time()  # Update timestamp after wait
+
+            # Record the request
+            self._record_usage(scope_key, requests=1, tokens=0, now=now)
+
+        # Execute the function outside the lock
+        try:
+            return func(**kwargs)
+        except Exception as e:
+            logger.error(f"[RATE-LIMIT] Function execution failed for {scope_key}: {e}")
+            raise
+
 
 _rate_limiter_manager: Optional[RateLimiterManager] = None
 _manager_lock = threading.Lock()

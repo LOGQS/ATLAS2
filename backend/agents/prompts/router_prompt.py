@@ -46,7 +46,7 @@ When routing to **direct**, if you can extract tool parameters:
 When tools ARE needed, identify which domain should handle the request:
 {available_domains}
 
-## RESPONSE FORMAT (all fields required):
+## RESPONSE FORMAT:
 
 <ROUTE>
 <TOOL_REASONING>
@@ -56,27 +56,20 @@ Why tools are/aren't needed for this request.
 <EXECUTION_REASONING>
 Why the selected route is the best match from available routes.
 </EXECUTION_REASONING>
-<EXECUTION_TYPE>
-The execution type from the selected route (text_generation, direct, single_domain, multi_domain, or iterative).
-</EXECUTION_TYPE>
-<DOMAIN>
-CRITICAL RULES:
-- If EXECUTION_TYPE is "direct": MUST be empty (direct execution uses FastPath, not domain agents)
-- If EXECUTION_TYPE is "single_domain", "multi_domain", or "iterative": MUST specify domain from list above
-- If EXECUTION_TYPE is "text_generation": MUST be empty (no tools needed)
-</DOMAIN>
 <FASTPATH_PARAMS>
-CRITICAL RULES:
-- ONLY fill this if EXECUTION_TYPE is "direct" AND parameters are unambiguous
-- MUST be empty if EXECUTION_TYPE is "single_domain", "multi_domain", or "iterative"
+ONLY fill this if your CHOICE is "direct" AND all required parameters are explicitly provided and unambiguous.
 - Format: <TOOL>tool_name</TOOL> followed by <PARAM name="param_name">param_value</PARAM> tags
 - Write values literally - NO escaping of < > & " characters
-- Leave empty if uncertain or not applicable
+- Leave empty if not applicable
 </FASTPATH_PARAMS>
 <CHOICE>
 CRITICAL: Must be EXACTLY one of the route names from AVAILABLE ROUTES above.
 DO NOT make up descriptive names - use the exact route_name value.
-Examples: "coder", "direct", "web", "general_conversation"
+Examples: "coder", "direct", "web", "general_conversation", "visual_reasoning"
+
+Each route has predefined execution behavior:
+- Capability routes (creative_writing, math_reasoning, code_reasoning, visual_reasoning, general_conversation): Use native model capabilities, no tools needed
+- Tool routes (direct, web, coder, etc.): Use external tools and domain agents as needed
 </CHOICE>
 </ROUTE>
 
@@ -89,8 +82,6 @@ Request: "Create a Python script that validates JSON files and outputs error rep
 <TOOL_REASONING>Request requires creating a new code file on disk. Native model cannot create or save files to the file system.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
 <EXECUTION_REASONING>Task involves creating new software that needs to be saved as an executable file. The coder route handles code file creation and development work.</EXECUTION_REASONING>
-<EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
-<DOMAIN>coder</DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
 <CHOICE>coder</CHOICE>
 </ROUTE>
@@ -102,21 +93,28 @@ Request: "Explain the concept of quantum entanglement in simple terms"
 <TOOL_REASONING>Request is for an explanation of a scientific concept. This can be fully addressed using the model's native knowledge and language generation capabilities without any external tools.</TOOL_REASONING>
 <TOOLS_NEEDED>NO</TOOLS_NEEDED>
 <EXECUTION_REASONING>Matches educational/explanatory content that the model can generate directly from its training data.</EXECUTION_REASONING>
-<EXECUTION_TYPE>text_generation</EXECUTION_TYPE>
-<DOMAIN></DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
 <CHOICE>general_conversation</CHOICE>
 </ROUTE>
 
-**Example 3: Direct route with FastPath**
+**Example 3: Visual analysis of uploaded media**
+Request: "Describe this image" (user has attached an image file)
+
+<ROUTE>
+<TOOL_REASONING>User has uploaded an image to the chat, which is already in context. The model has native multimodal capabilities and can analyze images directly without needing external tools or file system access.</TOOL_REASONING>
+<TOOLS_NEEDED>NO</TOOLS_NEEDED>
+<EXECUTION_REASONING>The request is for visual analysis of uploaded media that is already available in context. The visual_reasoning route is designed for this purpose, using the model's native vision capabilities.</EXECUTION_REASONING>
+<FASTPATH_PARAMS></FASTPATH_PARAMS>
+<CHOICE>visual_reasoning</CHOICE>
+</ROUTE>
+
+**Example 4: Direct route with FastPath**
 Request: "Read the file at /home/user/config.json"
 
 <ROUTE>
 <TOOL_REASONING>Request requires reading a specific file from the filesystem. The file path is explicitly provided and unambiguous.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
 <EXECUTION_REASONING>This is a single, straightforward tool operation with all parameters explicitly provided. The 'direct' route with FastPath is optimal - the tool will be executed immediately and the result returned to the model.</EXECUTION_REASONING>
-<EXECUTION_TYPE>direct</EXECUTION_TYPE>
-<DOMAIN></DOMAIN>
 <FASTPATH_PARAMS>
 <TOOL>file.read</TOOL>
 <PARAM name="file_path">/home/user/config.json</PARAM>
@@ -124,15 +122,13 @@ Request: "Read the file at /home/user/config.json"
 <CHOICE>direct</CHOICE>
 </ROUTE>
 
-**Example 4: Single domain execution (NO FastPath)**
+**Example 5: Single domain execution (NO FastPath)**
 Request: "Fix the bug in main.py where the authentication function fails on empty passwords"
 
 <ROUTE>
 <TOOL_REASONING>Request requires reading code, analyzing the bug, and making modifications. This involves file system operations and code understanding that cannot be done natively.</TOOL_REASONING>
 <TOOLS_NEEDED>YES</TOOLS_NEEDED>
 <EXECUTION_REASONING>This task requires multiple steps: reading the file, analyzing the code logic, identifying the bug, implementing a fix, and potentially testing. The coder domain is needed for iterative development. NOT a simple direct call - the agent needs to reason about code behavior and make appropriate fixes.</EXECUTION_REASONING>
-<EXECUTION_TYPE>single_domain</EXECUTION_TYPE>
-<DOMAIN>coder</DOMAIN>
 <FASTPATH_PARAMS></FASTPATH_PARAMS>
 <CHOICE>coder</CHOICE>
 </ROUTE>
