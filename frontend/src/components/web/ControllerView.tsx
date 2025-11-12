@@ -17,6 +17,8 @@ export const ControllerView: React.FC = () => {
     canGoBack,
     canGoForward,
     isPageLoading,
+    isBrowserVisible,
+    toggleBrowserVisibility,
   } = useWebContext();
 
   const [urlInput, setUrlInput] = useState('');
@@ -110,6 +112,17 @@ export const ControllerView: React.FC = () => {
     }
   };
 
+  const handleToggleVisibility = async () => {
+    if (!sessionId) return;
+
+    logger.info('[CONTROLLER_VIEW] Toggling browser visibility');
+    try {
+      await toggleBrowserVisibility();
+    } catch (error) {
+      logger.error('[CONTROLLER_VIEW] Failed to toggle visibility:', error);
+    }
+  };
+
   const isReady = sessionStatus === 'ready' && sessionId;
 
   return (
@@ -168,6 +181,29 @@ export const ControllerView: React.FC = () => {
             <Icons.ChevronRight className="w-4 h-4" />
           )}
         </button>
+
+        {/* Latency indicator and visibility toggle */}
+        <div className="flex items-center gap-2 ml-2">
+          <div
+            className="web-controller-view__latency-indicator"
+            title="Stream has ~25ms latency. Show browser for instant interaction."
+          >
+            <Icons.Info className="w-3.5 h-3.5" />
+          </div>
+
+          <button
+            className="web-controller-view__visibility-toggle"
+            onClick={handleToggleVisibility}
+            disabled={!isReady}
+            title={isBrowserVisible ? "Hide browser window" : "Show browser window for zero-latency interaction"}
+          >
+            {isBrowserVisible ? (
+              <Icons.EyeOff className="w-4 h-4" />
+            ) : (
+              <Icons.Eye className="w-4 h-4" />
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Interactive Browser Viewport */}

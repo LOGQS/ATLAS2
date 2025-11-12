@@ -27,7 +27,9 @@ type BrowserCommandPayload =
   | { type: 'click'; x: number; y: number; button?: 'left' | 'right' | 'middle' }
   | { type: 'scroll'; deltaX: number; deltaY: number }
   | { type: 'key'; key?: string; text?: string }
-  | { type: 'type'; text: string };
+  | { type: 'type'; text: string }
+  | { type: 'show_browser' }
+  | { type: 'hide_browser' };
 
 interface WebState {
   chatId?: string;
@@ -45,6 +47,7 @@ interface WebState {
   canGoBack: boolean;
   canGoForward: boolean;
   isPageLoading: boolean;
+  isBrowserVisible: boolean;
   // Researcher mode state
   searchResults: SearchResult[];
   metaSummary: string;
@@ -100,6 +103,7 @@ interface WebActions {
   initializeSession: () => Promise<void>;
   setViewerReady: (ready: boolean) => void;
   sendBrowserCommand: (command: BrowserCommandPayload) => Promise<void>;
+  toggleBrowserVisibility: () => Promise<void>;
   checkProfileStatus: () => Promise<void>;
   loadProfiles: () => Promise<void>;
   launchProfileSetup: () => Promise<void>;
@@ -138,6 +142,7 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     canGoBack: false,
     canGoForward: false,
     isPageLoading: false,
+    isBrowserVisible: false,
     searchResults: [],
     metaSummary: '',
     relatedTopics: [],
@@ -176,6 +181,7 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
           canGoBack: detail.can_go_back ?? prev.canGoBack,
           canGoForward: detail.can_go_forward ?? prev.canGoForward,
           isPageLoading: detail.is_loading ?? prev.isPageLoading,
+          isBrowserVisible: detail.is_browser_visible ?? prev.isBrowserVisible,
         };
       });
     };
@@ -302,6 +308,7 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
           activeProfile: snapshot.profile_name ?? prev.activeProfile,
           error: snapshot.status === 'error' ? snapshot.last_error || prev.error : prev.error,
           viewerReady: snapshot.status === 'ready' ? prev.viewerReady : false,
+          isBrowserVisible: snapshot.is_browser_visible ?? prev.isBrowserVisible,
         };
       });
     } catch (error) {
@@ -432,6 +439,19 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     }
   }, [loadProfiles, setError]);
 
+  const toggleBrowserVisibility = useCallback(async () => {
+    const command = state.isBrowserVisible ? 'hide_browser' : 'show_browser';
+    logger.info(`[WEB_CTX] Toggling browser visibility: ${command}`);
+
+    try {
+      await sendBrowserCommand({ type: command as 'show_browser' | 'hide_browser' });
+      // State will be updated via SSE broadcast from backend
+    } catch (error) {
+      logger.error('[WEB_CTX] Failed to toggle browser visibility', error);
+      setError('Failed to toggle browser visibility');
+    }
+  }, [state.isBrowserVisible, sendBrowserCommand, setError]);
+
   const value: WebState & WebActions = {
     ...state,
     setMode,
@@ -452,6 +472,7 @@ export const WebProvider: React.FC<WebProviderProps> = ({ chatId, children }) =>
     initializeSession,
     setViewerReady,
     sendBrowserCommand,
+    toggleBrowserVisibility,
     checkProfileStatus,
     loadProfiles,
     launchProfileSetup,

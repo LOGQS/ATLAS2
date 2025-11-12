@@ -34,6 +34,7 @@ import {
   VscRocket,
   VscInfo,
   VscEye,
+  VscEyeClosed,
   VscComment,
   VscCode,
   VscPulse,
@@ -98,6 +99,7 @@ export const Icons = {
   Time: createIconComponent(VscWatch),
   Info: createIconComponent(VscInfo),
   Eye: createIconComponent(VscEye),
+  EyeOff: createIconComponent(VscEyeClosed),
 
   // Actions
   Save: createIconComponent(VscSave),

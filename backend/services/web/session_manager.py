@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from utils.logger import get_logger
 from utils.web_browser_profile import check_profile_exists, get_profile_dir
-from utils.window_manager import find_and_hide_browser
+from utils.window_manager import find_and_hide_browser, show_window
 
 try:
     from playwright.async_api import BrowserContext, Page, async_playwright
@@ -25,23 +25,44 @@ logger = get_logger(__name__)
 
 DEFAULT_VIEWPORT = {"width": 1366, "height": 820}
 DEFAULT_START_URL = "https://www.google.com/?hl=en&gl=us"
-DEFAULT_BROWSER_ARGS = [
-    # Anti-detection switches (from crawl4ai guidance)
-    "--disable-blink-features=AutomationControlled",
-    "--disable-features=IsolateOrigins,site-per-process,site-per-process",
-    "--disable-site-isolation-trials",
-    "--disable-web-security",
-    "--no-default-browser-check",
-    "--disable-infobars",
-    "--lang=en-US",
-    "--accept-lang=en-US,en;q=0.9",
 
-    # CRITICAL: Prevent throttling of hidden windows for smooth streaming
-    "--disable-background-timer-throttling",
-    "--disable-renderer-backgrounding",
-    "--disable-backgrounding-occluded-windows",
-    "--disable-ipc-flooding-protection",
-]
+def _get_browser_args() -> List[str]:
+    """Build browser args, including extension loading if available."""
+    args = [
+        # Anti-detection switches (from crawl4ai guidance)
+        "--disable-blink-features=AutomationControlled",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-site-isolation-trials",
+        "--disable-web-security",
+        "--no-default-browser-check",
+        "--disable-infobars",
+        "--lang=en-US",
+        "--accept-lang=en-US,en;q=0.9",
+
+        # CRITICAL: Prevent throttling of hidden windows for smooth streaming
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-ipc-flooding-protection",
+    ]
+
+    # Load ad blocker if available
+    # To enable: Download uBlock Origin Lite CRX from Chrome Web Store
+    # Extract it and place in: backend/browser_extensions/ublock-origin-lite/
+    extensions_dir = Path(__file__).parent.parent / "browser_extensions"
+    ublock_dir = extensions_dir / "ublock-origin-lite"
+
+    if ublock_dir.exists() and ublock_dir.is_dir():
+        args.append(f"--load-extension={ublock_dir}")
+        args.append(f"--disable-extensions-except={ublock_dir}")
+        logger.info(f"[WEB_SESSION] Loading uBlock Origin Lite from {ublock_dir}")
+    else:
+        args.append("--disable-extensions")
+        logger.info("[WEB_SESSION] No ad blocker found, extensions disabled")
+
+    return args
+
+DEFAULT_BROWSER_ARGS = _get_browser_args()
 
 
 class WebSessionError(Exception):
@@ -63,6 +84,7 @@ class SessionSnapshot:
     can_go_back: bool
     can_go_forward: bool
     is_loading: bool
+    is_browser_visible: bool
     last_error: Optional[str]
     updated_at: float
 
@@ -77,6 +99,7 @@ class SessionSnapshot:
             "can_go_back": self.can_go_back,
             "can_go_forward": self.can_go_forward,
             "is_loading": self.is_loading,
+            "is_browser_visible": self.is_browser_visible,
             "last_error": self.last_error,
             "updated_at": self.updated_at,
         }
@@ -102,7 +125,6 @@ class WebSessionManager:
         self._profile_name: str = "google_serp"
         self._status: str = "idle"
         self._last_error: Optional[str] = None
-        self._viewport = DEFAULT_VIEWPORT.copy()
         self._current_url: str = "about:blank"
         self._current_title: str = ""
         self._can_back: bool = False
@@ -112,6 +134,10 @@ class WebSessionManager:
         self._nav_position: int = -1  # Current position in history
         self._history_traversal: bool = False  # True when actively stepping through history
         self._last_status_update = time.time()
+        self._browser_hwnd: Optional[int] = None  # Browser window handle for show/hide
+        self._last_url: str = DEFAULT_START_URL  # Track last URL for restart
+        self._cached_viewport: Dict[str, int] = DEFAULT_VIEWPORT.copy()  # Cached viewport size
+        self._is_browser_visible: bool = False  # Track browser window visibility state
 
         self._state_lock = threading.Lock()
         self._command_lock: Optional[asyncio.Lock] = None
@@ -164,7 +190,7 @@ class WebSessionManager:
         await self._start_session(desired_profile, chat_id)
         return self._snapshot()
 
-    async def _start_session(self, profile_name: str, chat_id: Optional[str]) -> None:
+    async def _start_session(self, profile_name: str, chat_id: Optional[str], reuse_session_id: Optional[str] = None) -> None:
         if async_playwright is None:
             raise WebSessionError("playwright_missing", "Playwright is not installed. Install it to enable web browsing.")
 
@@ -175,13 +201,15 @@ class WebSessionManager:
             self._playwright = await async_playwright().start()
             logger.info("[WEB_SESSION] Playwright started, launching persistent context")
 
-            # Launch context normally
+            # Launch context with flexible viewport (will match window size)
+            # When visible: viewport adjusts to window size naturally
+            # When hidden: we resize window to fixed size, viewport follows
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=False,  # Anti-detection: keep visible mode, hide via Windows API
-                viewport=self._viewport,
+                no_viewport=True,  # Disable viewport emulation - content matches window size
                 args=DEFAULT_BROWSER_ARGS,
-                ignore_default_args=["--enable-automation"],
+                ignore_default_args=["--enable-automation"],  # Only hide automation flag
             )
 
             logger.info("[WEB_SESSION] Context launched, hiding browser window...")
@@ -197,13 +225,17 @@ class WebSessionManager:
 
             if window_handle:
                 logger.info(f"[WEB_SESSION] Browser window hidden (hwnd: {window_handle.hwnd})")
+                self._browser_hwnd = window_handle.hwnd
+                self._is_browser_visible = False
             else:
                 logger.warning("[WEB_SESSION] Could not hide browser window - may be visible")
+                self._is_browser_visible = True  # Assume visible if we couldn't hide it
 
             self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             logger.info("[WEB_SESSION] Chromium context ready, pages=%s", len(self._context.pages))
             self._profile_name = profile_name
-            self._session_id = uuid.uuid4().hex
+            # Reuse session_id if restarting (preserves stream connection), otherwise generate new
+            self._session_id = reuse_session_id or uuid.uuid4().hex
             self._last_error = None
 
             # Navigation and loading event listeners
@@ -226,9 +258,28 @@ class WebSessionManager:
         self._broadcast_status()
 
     async def _handle_page_closed(self) -> None:
-        logger.warning("[WEB_SESSION] Browser page closed unexpectedly; tearing down context")
+        """Handle browser window closed by user - restart session from same state."""
+        logger.info("[WEB_SESSION] Browser closed by user - restarting from last state")
+
+        # Save state before destroying (including session_id for stream continuity)
+        last_url = self._last_url
+        profile_name = self._profile_name
+        session_id = self._session_id  # Preserve session_id for stable stream connection
+
+        # Clean up old session
         await self._destroy_async()
-        self._set_status("closed")
+
+        # Restart session with same state and session_id
+        try:
+            await self._start_session(profile_name, None, reuse_session_id=session_id)
+            # Navigate back to last URL
+            if last_url and last_url != DEFAULT_START_URL:
+                await self._page.goto(last_url, wait_until="domcontentloaded", timeout=60000)
+                await self._update_page_metadata()
+            logger.info(f"[WEB_SESSION] Session restarted successfully at {last_url} (session_id preserved)")
+        except Exception as exc:
+            logger.error(f"[WEB_SESSION] Failed to restart session: {exc}")
+            self._set_status("error")
 
     async def _destroy_async(self) -> None:
         if self._context:
@@ -248,6 +299,7 @@ class WebSessionManager:
         self._session_id = None
         self._current_url = "about:blank"
         self._current_title = ""
+        self._browser_hwnd = None
 
     # ------------------------------------------------------------------ #
     # Snapshot & status broadcasting
@@ -258,16 +310,18 @@ class WebSessionManager:
     def _snapshot(self) -> SessionSnapshot:
         # Navigation state is updated only when needed (not on every snapshot)
         # to avoid performance overhead
+        # Use cached viewport (updated async by _update_viewport_cache)
         return SessionSnapshot(
             session_id=self._session_id,
             status=self._status,
             profile_name=self._profile_name,
-            viewer={"viewport": self._viewport},
+            viewer={"viewport": self._cached_viewport},
             current_url=self._current_url,
             page_title=self._current_title,
             can_go_back=getattr(self, '_can_back', False),
             can_go_forward=getattr(self, '_can_forward', False),
             is_loading=getattr(self, '_is_loading', False),
+            is_browser_visible=self._is_browser_visible,
             last_error=self._last_error,
             updated_at=self._last_status_update,
         )
@@ -317,13 +371,44 @@ class WebSessionManager:
             else:
                 self._current_url = new_url
 
+            # Track last URL for session restart
+            if new_url and new_url != "about:blank":
+                self._last_url = new_url
+
             # Update navigation state
             self._can_back = self._nav_position > 0
             self._can_forward = self._nav_position < len(self._nav_history) - 1
 
+            # Update viewport cache for accurate coordinate scaling
+            await self._update_viewport_cache()
+
             self._broadcast_status()
         except Exception:
             logger.exception("[WEB_SESSION] Failed to update page metadata")
+
+    # ------------------------------------------------------------------ #
+    # Viewport size tracking
+    # ------------------------------------------------------------------ #
+    async def _update_viewport_cache(self) -> None:
+        """Update cached viewport size from the browser.
+
+        With no_viewport=True, viewport matches window size dynamically.
+        This ensures frontend gets correct dimensions for coordinate scaling.
+        Called from async contexts to avoid deadlock.
+        """
+        if not self._page:
+            self._cached_viewport = DEFAULT_VIEWPORT.copy()
+            return
+
+        try:
+            viewport_size = await self._page.evaluate(
+                "() => ({ width: window.innerWidth, height: window.innerHeight })"
+            )
+            self._cached_viewport = viewport_size
+            logger.debug(f"[WEB_SESSION] Viewport cache updated: {viewport_size}")
+        except Exception as e:
+            logger.warning(f"[WEB_SESSION] Failed to update viewport cache: {e}")
+            self._cached_viewport = DEFAULT_VIEWPORT.copy()
 
     # ------------------------------------------------------------------ #
     # Frame capture
@@ -439,6 +524,25 @@ class WebSessionManager:
                     await self._page.keyboard.press(key)
                 else:
                     raise WebSessionError("invalid_command", "key command missing key or text")
+            elif cmd_type == "show_browser":
+                if not self._browser_hwnd:
+                    raise WebSessionError("invalid_command", "No browser window handle available")
+                loop = asyncio.get_event_loop()
+                success = await loop.run_in_executor(None, show_window, self._browser_hwnd, True)
+                if not success:
+                    raise WebSessionError("window_error", "Failed to show browser window")
+                self._is_browser_visible = True
+                logger.info("[WEB_SESSION] Browser window shown by user request")
+                # Update viewport cache and broadcast to frontend
+                await self._update_viewport_cache()
+                self._broadcast_status()
+            elif cmd_type == "hide_browser":
+                # Close the page - this triggers _handle_page_closed() which restarts in hidden state
+                logger.info("[WEB_SESSION] Hide browser requested - closing page to restart in hidden state")
+                if self._page:
+                    await self._page.close()  # Triggers page close event → auto-restart
+                else:
+                    raise WebSessionError("invalid_command", "No active page to close")
             else:
                 raise WebSessionError("unknown_command", f"Command '{cmd_type}' is not supported")
 

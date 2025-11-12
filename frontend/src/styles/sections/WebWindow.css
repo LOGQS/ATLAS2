@@ -1005,3 +1005,43 @@
   font-weight: 600;
   letter-spacing: 0.05em;
 }
+
+/* Browser Visibility Controls */
+.web-controller-view__latency-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  opacity: 0.5;
+  cursor: help;
+  transition: opacity 0.2s;
+  color: rgba(156, 163, 175, 1);
+}
+
+.web-controller-view__latency-indicator:hover {
+  opacity: 0.8;
+}
+
+.web-controller-view__visibility-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem;
+  border-radius: 0.375rem;
+  background-color: transparent;
+  border: 1px solid var(--web-border);
+  color: rgba(156, 163, 175, 1);
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.web-controller-view__visibility-toggle:hover:not(:disabled) {
+  background-color: var(--web-hover);
+  border-color: var(--web-primary);
+  color: var(--web-primary-light);
+}
+
+.web-controller-view__visibility-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

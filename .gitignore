@@ -16,6 +16,9 @@ logs/
 data/
 *.log
 
+# Browser extensions (user-installed)
+backend/browser_extensions/
+
 # IDE / OS specific
 .vscode/
 
