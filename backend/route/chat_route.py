@@ -754,6 +754,49 @@ def register_chat_routes(app: Flask):
             logger.error(f"Error getting models: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/api/chat/models/conflicts', methods=['GET'])
+    def get_model_conflicts():
+        """Get list of models that exist in multiple providers"""
+        try:
+            chat = Chat()
+            conflicts = chat.detect_model_conflicts()
+            return jsonify({
+                'conflicts': conflicts,
+                'has_conflicts': len(conflicts) > 0
+            })
+        except Exception as e:
+            logger.error(f"Error detecting model conflicts: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/chat/models/resolve', methods=['POST'])
+    def resolve_model():
+        """Resolve which provider should be used for a given model"""
+        try:
+            data = request.get_json()
+            model_id = data.get('model_id')
+            provider = data.get('provider')
+
+            if not model_id:
+                return jsonify({'error': 'model_id is required'}), 400
+
+            chat = Chat()
+            resolved_provider, resolved_model, error = chat.resolve_model_provider(model_id, provider)
+
+            if error:
+                return jsonify({
+                    'success': False,
+                    'error': error
+                }), 400
+
+            return jsonify({
+                'success': True,
+                'provider': resolved_provider,
+                'model_id': resolved_model
+            })
+        except Exception as e:
+            logger.error(f"Error resolving model: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
     # Web Browser Profile Management Routes
     @app.route('/api/web/profile/status', methods=['GET'])
     def get_web_profile_status():

@@ -900,6 +900,76 @@ class Chat:
                         "model_id": model_id
                     }
         return all_models
+
+    def detect_model_conflicts(self) -> Dict[str, List[str]]:
+        """
+        Detect models that exist in multiple providers (by model_id).
+        Returns a dict where keys are model_ids and values are lists of providers that have that model.
+        """
+        model_to_providers = {}
+        for provider_name, provider in self.providers.items():
+            if provider.is_available() and hasattr(provider, 'get_available_models'):
+                models = provider.get_available_models()
+                for model_id in models.keys():
+                    if model_id not in model_to_providers:
+                        model_to_providers[model_id] = []
+                    model_to_providers[model_id].append(provider_name)
+
+        conflicts = {model_id: providers for model_id, providers in model_to_providers.items()
+                    if len(providers) > 1}
+        return conflicts
+
+    def resolve_model_provider(self, model_id: str, provider: Optional[str] = None) -> Tuple[str, str, Optional[str]]:
+        """
+        Resolve which provider should be used for a given model_id.
+
+        Args:
+            model_id: The model identifier (can be just model_id or provider@model_id format)
+            provider: Optional explicit provider specification
+
+        Returns:
+            Tuple of (resolved_provider, resolved_model_id, error_message)
+            error_message is None if resolution was successful
+        """
+        if '@' in model_id and not provider:
+            parts = model_id.split('@', 1)
+            if len(parts) == 2:
+                potential_provider, potential_model = parts
+                if (potential_provider in self.providers and
+                    self.providers[potential_provider].is_available() and
+                    hasattr(self.providers[potential_provider], 'get_available_models')):
+                    available_models = self.providers[potential_provider].get_available_models()
+                    if potential_model in available_models:
+                        return potential_provider, potential_model, None
+
+        if provider:
+            if provider not in self.providers or not self.providers[provider].is_available():
+                return "", "", f"Provider '{provider}' is not available"
+
+            if hasattr(self.providers[provider], 'get_available_models'):
+                available_models = self.providers[provider].get_available_models()
+                if model_id in available_models:
+                    return provider, model_id, None
+                else:
+                    return "", "", f"Model '{model_id}' not found in provider '{provider}'"
+            return "", "", f"Provider '{provider}' does not support model listing"
+
+        matching_providers = []
+        for provider_name, provider_instance in self.providers.items():
+            if provider_instance.is_available() and hasattr(provider_instance, 'get_available_models'):
+                available_models = provider_instance.get_available_models()
+                if model_id in available_models:
+                    matching_providers.append(provider_name)
+
+        if len(matching_providers) == 0:
+            return "", "", f"Model '{model_id}' not found in any available provider"
+        elif len(matching_providers) == 1:
+            return matching_providers[0], model_id, None
+        else:
+            providers_str = ", ".join(matching_providers)
+            return "", "", (f"Model '{model_id}' exists in multiple providers: {providers_str}. "
+                          f"Please specify the provider explicitly using the format 'provider@model_id' "
+                          f"(e.g., '{matching_providers[0]}@{model_id}')")
     
     def _prepare_streaming_context(self, provider: str, model: str, **config_params):
         """Common setup logic for streaming methods"""

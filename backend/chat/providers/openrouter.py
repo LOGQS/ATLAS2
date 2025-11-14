@@ -37,16 +37,8 @@ class OpenRouter:
             "name": "Tongyi Deep Research",
             "supports_reasoning": True
         },
-        "minimax/minimax-m2:free": {
-            "name": "MiniMax M2",
-            "supports_reasoning": True
-        },
-        "openrouter/polaris-alpha": {
-            "name": "Polaris Alpha",
-            "supports_reasoning": True
-        },
-        "openai/gpt-oss-20b:free": {
-            "name": "GPT OSS 20B",
+        "openai/gpt-oss-120b": {
+            "name": "GPT OSS 120B",
             "supports_reasoning": True
         }
     }

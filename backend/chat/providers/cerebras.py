@@ -19,11 +19,6 @@ class Cerebras:
     """
 
     AVAILABLE_MODELS = {
-        "qwen-3-235b-a22b-thinking-2507": {
-            "name": "Qwen 3 235B Thinking",
-            "supports_reasoning": False,
-            "reasoning_param": None
-        },
         "qwen-3-235b-a22b-instruct-2507": {
             "name": "Qwen 3 235B Instruct",
             "supports_reasoning": False,

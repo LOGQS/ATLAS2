@@ -1686,7 +1686,7 @@ class SingleDomainExecutor:
                 self.logger.info(f"[CODER-PLANNING] Using planner model: {model}")
             else:
                 # Use writer model for code execution
-                model = getattr(agent, 'writer_model', None) or agent.model_preference or "minimax/minimax-m2:free"
+                model = getattr(agent, 'writer_model', None) or agent.model_preference or "zai-glm-4.6"
                 self.logger.info(f"[CODER-EXECUTION] Using writer model: {model}")
         else:
             # Non-coder domains use existing logic
@@ -2910,7 +2910,7 @@ The planner generated this comprehensive specification to guide your implementat
             if is_planning_phase:
                 current_model = getattr(agent, 'planner_model', None) or agent.model_preference or "gemini-2.5-pro"
             else:
-                current_model = getattr(agent, 'writer_model', None) or agent.model_preference or "cerebras/qwen-3-235b-a22b-thinking-2507"
+                current_model = getattr(agent, 'writer_model', None) or agent.model_preference or "zai-glm-4.6"
         else:
             current_model = state.agent.model_preference
 

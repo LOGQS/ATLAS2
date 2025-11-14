@@ -41,7 +41,7 @@ Always test changes and maintain backwards compatibility.""",
                 # Two-model spec-driven development
                 planner_model="gpt-oss-120b",  # Used for planning phase: generates high-level plan + detailed code spec
                 writer_model="zai-glm-4.6",  # Used for execution phase: writes actual code
-                writer_fallback_models=["minimax/minimax-m2:free", "gpt-oss-120b", "qwen-3-235b-a22b-thinking-2507", "moonshotai/kimi-k2-instruct-0905"],  # Fallback on rate limits
+                writer_fallback_models=["gpt-oss-120b", "zai-glm-4.6", "qwen-3-235b-a22b-instruct-2507"],  # Fallback on rate limits
             )
         ],
         tool_allowlist=[
