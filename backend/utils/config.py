@@ -26,14 +26,15 @@ def get_provider_map() -> Dict[str, Any]:
         if _provider_cache is not None:
             return _provider_cache
 
-        from chat.providers import Gemini, HuggingFace, OpenRouter, Groq, Cerebras
+        from chat.providers import Gemini, HuggingFace, OpenRouter, Groq, Cerebras, Zenmux
 
         _provider_cache = {
             "gemini": Gemini(),
             "huggingface": HuggingFace(),
             "openrouter": OpenRouter(),
             "groq": Groq(),
-            "cerebras": Cerebras()
+            "cerebras": Cerebras(),
+            "zenmux": Zenmux()
         }
 
         return _provider_cache
@@ -237,7 +238,7 @@ class Config:
     CHAT_EXECUTION_MODE = "async"
 
     # Providers that support async execution (used for validation and routing)
-    ASYNC_CAPABLE_PROVIDERS = {"cerebras", "groq", "gemini", "openrouter"}
+    ASYNC_CAPABLE_PROVIDERS = {"cerebras", "groq", "gemini", "openrouter", "zenmux"}
 
     # Maximum concurrent chats when using async execution
     # Async is much lighter than multiprocessing (10MB vs 250MB per chat)
@@ -257,6 +258,7 @@ class Config:
         "groq": "tiktoken",
         "openrouter": "tiktoken",
         "cerebras": "tiktoken",
+        "zenmux": "tiktoken",
         "huggingface": "fallback"
     }
 

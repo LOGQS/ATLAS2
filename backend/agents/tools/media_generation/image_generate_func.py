@@ -20,12 +20,13 @@ def _tool_image_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> T
     - Supports multiple models, customizable dimensions, and enhancement options
     """
     prompt = params.get("prompt")
-    width = params.get("width", 768) 
-    height = params.get("height", 768) 
+    width = params.get("width", 768)
+    height = params.get("height", 768)
     seed = params.get("seed")
     model = params.get("model", "flux")
+    provider = params.get("provider")
     safe = params.get("safe", False)
-    nologo = params.get("nologo", True) 
+    nologo = params.get("nologo", True)
     private = params.get("private", True) 
 
     if not prompt:
@@ -76,15 +77,9 @@ def _tool_image_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> T
 
         image_gen = ImageGeneration()
 
-        if not image_gen.is_available():
-            raise RuntimeError(
-                "Image generation provider is not available. "
-                "Please check the provider configuration."
-            )
-
-        available_models = image_gen.get_available_models()
-        if model not in available_models:
-            available_list = ", ".join(available_models.keys())
+        all_models = image_gen.get_all_available_models()
+        if model not in all_models:
+            available_list = ", ".join(all_models.keys())
             raise ValueError(
                 f"Invalid model '{model}'. Available models: {available_list}"
             )
@@ -101,7 +96,8 @@ def _tool_image_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> T
             height=height,
             seed=seed,
             model=model,
-            enhance=False,  
+            provider=provider,
+            enhance=False,
             safe=safe,
             nologo=nologo,
             private=private

@@ -5,8 +5,11 @@ import json
 import os
 import requests
 import uuid
+import base64
+import io
 from pathlib import Path
 from urllib.parse import quote
+from PIL import Image
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
 from utils.startup_cache import worker_get_or_initialize
@@ -167,7 +170,8 @@ class Pollinations:
     def generate_image(self, prompt: str, width: int = 1024, height: int = 1024,
                       seed: Optional[int] = None, model: str = "flux",
                       enhance: bool = False, safe: bool = False,
-                      nologo: bool = True, private: bool = True) -> Dict[str, Any]:
+                      nologo: bool = True, private: bool = True,
+                      input_image: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate image using Pollinations AI 
 
@@ -259,4 +263,207 @@ class Pollinations:
             return {"success": False, "error": f"Request failed: {str(e)}"}
         except Exception as e:
             logger.error(f"[POLLINATIONS-PROVIDER] Image generation failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+
+class Zenmux:
+    """
+    Zenmux AI provider for image generation using Google GenAI SDK
+    """
+
+    AVAILABLE_MODELS = {
+        "google/gemini-2.5-flash-image-free": "Gemini 2.5 Flash Image Free"
+    }
+
+    def __init__(self):
+        self.status = "enabled"
+        self.api_key = os.getenv("ZENMUX_API_KEY")
+        self.client = None
+
+        if self.api_key:
+            try:
+                from google import genai
+                from google.genai import types
+
+                self.client = genai.Client(
+                    api_key=self.api_key,
+                    vertexai=True,
+                    http_options=types.HttpOptions(
+                        api_version='v1',
+                        base_url='https://zenmux.ai/api/vertex-ai'
+                    )
+                )
+                logger.info("[ZENMUX-PROVIDER] API client initialized successfully")
+            except Exception as e:
+                logger.error(f"[ZENMUX-PROVIDER] Failed to initialize client: {e}")
+                self.status = "disabled"
+        else:
+            logger.info("[ZENMUX-PROVIDER] No API key found")
+            self.status = "disabled"
+
+        self.rate_limiter = get_rate_limiter()
+        self.rate_limit_config = {
+            "requests_per_minute": 10,
+            "burst_size": 1,
+        }
+
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        self.images_dir = base_dir / "data" / "generated_images"
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"[ZENMUX-PROVIDER] Zenmux image generation provider initialized. Images directory: {self.images_dir}")
+
+    def is_available(self) -> bool:
+        """Check if provider is available"""
+        return self.status == "enabled" and self.client is not None
+
+    def get_available_models(self) -> Dict[str, str]:
+        """Get available image generation models for this provider"""
+        return self.AVAILABLE_MODELS.copy()
+
+    def generate_image(self, prompt: str, width: int = 1024, height: int = 1024,
+                      seed: Optional[int] = None, model: str = "google/gemini-2.5-flash-image-free",
+                      enhance: bool = False, safe: bool = False,
+                      nologo: bool = True, private: bool = True,
+                      input_image: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Generate or edit image using Zenmux AI with Google GenAI SDK
+
+        Args:
+            prompt: Text description of the image or editing instructions
+            width: Image width in pixels (aspect ratio calculated)
+            height: Image height in pixels (aspect ratio calculated)
+            seed: Not supported
+            model: Model to use for generation
+            enhance: Not supported
+            safe: Not supported
+            nologo: Not supported
+            private: Not supported
+            input_image: Optional path to input image for editing
+
+        Returns:
+            Dict with generation results
+        """
+        if not self.is_available():
+            return {"success": False, "error": "Provider not available"}
+
+        def _generate():
+            try:
+                from google.genai import types
+
+                # Calculate aspect ratio from width/height
+                aspect_ratio = "1:1"  # default
+                if width == height:
+                    aspect_ratio = "1:1"
+                elif width * 3 == height * 4:
+                    aspect_ratio = "3:4"
+                elif width * 4 == height * 3:
+                    aspect_ratio = "4:3"
+                elif width * 9 == height * 16:
+                    aspect_ratio = "9:16"
+                elif width * 16 == height * 9:
+                    aspect_ratio = "16:9"
+
+                # Build contents array
+                contents = []
+
+                # Add input image if provided (for image editing)
+                if input_image:
+                    try:
+                        logger.info(f"[ZENMUX-PROVIDER] Loading input image from: {input_image}")
+                        input_img = Image.open(input_image)
+                        contents.append(input_img)
+                        logger.info(f"[ZENMUX-PROVIDER] Input image loaded successfully")
+                    except Exception as e:
+                        logger.error(f"[ZENMUX-PROVIDER] Failed to load input image: {e}")
+                        return {
+                            "success": False,
+                            "error": f"Failed to load input image: {str(e)}"
+                        }
+
+                # Add text prompt
+                contents.append(prompt)
+
+                mode = "Editing" if input_image else "Generating"
+                logger.info(f"[ZENMUX-PROVIDER] {mode} image with prompt: '{prompt[:50]}...' using model: {model}, aspect ratio: {aspect_ratio}")
+
+                # Generate content using Google GenAI SDK
+                response = self.client.models.generate_content(
+                    model=model,
+                    contents=contents
+                )
+
+                # Extract image from response - access through candidates structure
+                if not response.candidates or len(response.candidates) == 0:
+                    logger.error("[ZENMUX-PROVIDER] No candidates in response")
+                    return {
+                        "success": False,
+                        "error": "No candidates in response"
+                    }
+
+                candidate = response.candidates[0]
+                if not candidate.content or not candidate.content.parts:
+                    logger.error("[ZENMUX-PROVIDER] No parts in candidate content")
+                    return {
+                        "success": False,
+                        "error": "No parts in candidate content"
+                    }
+
+                for part in candidate.content.parts:
+                    if part.inline_data is not None:
+                        # Extract image data - Zenmux returns raw bytes, not base64
+                        image_data = part.inline_data.data
+
+                        # Data is already bytes from Zenmux
+                        if isinstance(image_data, bytes):
+                            image_bytes = image_data
+                        else:
+                            # Fallback: decode from base64 if needed
+                            image_bytes = base64.b64decode(image_data)
+
+                        # Open image with PIL
+                        image = Image.open(io.BytesIO(image_bytes))
+
+                        # Save image
+                        file_id = str(uuid.uuid4())
+                        filename = f"{file_id}.png"
+                        file_path = self.images_dir / filename
+                        image.save(str(file_path))
+
+                        logger.info(f"[ZENMUX-PROVIDER] Image saved successfully: {file_path}")
+
+                        return {
+                            "success": True,
+                            "file_path": str(file_path),
+                            "filename": filename,
+                            "prompt": prompt,
+                            "model": model,
+                            "width": width,
+                            "height": height,
+                            "seed": seed,
+                            "enhance": enhance,
+                            "safe": safe
+                        }
+
+                logger.error("[ZENMUX-PROVIDER] No image data in response")
+                return {
+                    "success": False,
+                    "error": "No image data in response"
+                }
+
+            except Exception as e:
+                logger.error(f"[ZENMUX-PROVIDER] Generation failed: {str(e)}")
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+
+        try:
+            return self.rate_limiter.execute(
+                _generate,
+                "zenmux:image",
+                limit_config=self.rate_limit_config,
+            )
+        except Exception as e:
+            logger.error(f"[ZENMUX-PROVIDER] Image generation failed: {str(e)}")
             return {"success": False, "error": str(e)}

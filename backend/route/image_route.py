@@ -23,6 +23,7 @@ def generate_image():
         height = data.get('height', 1024)
         seed = data.get('seed')
         model = data.get('model', 'flux')
+        provider = data.get('provider')
 
         logger.info(f"[IMAGE-ROUTE] Generating image with prompt: '{prompt[:50]}...'")
 
@@ -31,7 +32,8 @@ def generate_image():
             width=width,
             height=height,
             seed=seed,
-            model=model
+            model=model,
+            provider=provider
         )
 
         if result.get('success'):
@@ -50,10 +52,7 @@ def generate_image():
 def get_available_models():
     """Get available image generation models"""
     try:
-        if not image_gen.is_available():
-            return jsonify({"success": False, "error": "Image generation not available"}), 503
-
-        models = image_gen.get_available_models()
+        models = image_gen.get_all_available_models()
         return jsonify({"success": True, "models": models})
 
     except Exception as e:
@@ -64,11 +63,14 @@ def get_available_models():
 def get_status():
     """Check if image generation service is available"""
     try:
-        available = image_gen.is_available()
+        providers_status = {}
+        for provider_name in image_gen.providers.keys():
+            providers_status[provider_name] = image_gen.is_available(provider_name)
+
         return jsonify({
             "success": True,
-            "available": available,
-            "provider": "pollinations"
+            "providers": providers_status,
+            "default_provider": image_gen.default_provider
         })
 
     except Exception as e:
