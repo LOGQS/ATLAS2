@@ -17,10 +17,6 @@ class OpenRouter:
     """
 
     AVAILABLE_MODELS = {
-        "deepseek/deepseek-chat-v3.1:free": {
-            "name": "DeepSeek Chat v3.1",
-            "supports_reasoning": True
-        },
         "z-ai/glm-4.5-air:free": {
             "name": "GLM 4.5 Air",
             "supports_reasoning": False
