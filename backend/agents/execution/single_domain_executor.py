@@ -257,6 +257,8 @@ class SingleDomainExecutor:
             )
             coder_logger.log_session_start(domain_id=domain_id, agent_id=agent.agent_id)
 
+        self._emit_state_update(state)
+
         result = self._run_agent_iteration(state, is_initial=True)
         if state.status in TERMINAL_STATES:
             self._mark_task_completed(task_id)
@@ -2538,10 +2540,43 @@ The planner generated this comprehensive specification to guide your implementat
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
             )
-        except Exception as exc:  
+        except Exception as exc:
             self.logger.error(
                 "Failed to emit %s event for task %s: %s",
                 event,
+                state.context.task_id,
+                exc,
+            )
+
+    def _emit_state_update(self, state: DomainTaskState) -> None:
+        """Emit a domain execution state update event.
+
+        This sends the complete serialized state including metadata (like current_model)
+        to the frontend via the event callback mechanism.
+        """
+        if not state.event_callback:
+            return
+
+        try:
+            serialized_state = self._serialize_state(state)
+            state.event_callback(
+                {
+                    "event": "state",
+                    "task_id": state.context.task_id,
+                    "domain_id": state.context.domain_id,
+                    "payload": serialized_state,
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+            )
+            self.logger.debug(
+                "[STATE-UPDATE] Emitted domain execution state for task %s (status=%s, model=%s)",
+                state.context.task_id,
+                serialized_state.get("status"),
+                serialized_state.get("metadata", {}).get("current_model"),
+            )
+        except Exception as exc:
+            self.logger.error(
+                "Failed to emit state update event for task %s: %s",
                 state.context.task_id,
                 exc,
             )

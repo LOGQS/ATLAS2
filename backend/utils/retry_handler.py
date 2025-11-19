@@ -34,6 +34,7 @@ class RetryHandler:
     def __init__(self, max_retries: int = 5):
         self.max_retries = max_retries
         self.retry_delays = [1, 2, 4, 8, 16]  # seconds for overload errors (exponential backoff)
+        self.rate_limit_delays = [2, 5, 20, 40, 60]  # seconds for rate limits without API delay (progressive backoff)
 
     def is_retryable_error(self, error_message: str) -> tuple[bool, Optional[str], Optional[float], bool]:
         """
@@ -96,7 +97,13 @@ class RetryHandler:
         """
         if is_rate_limit:
             if api_provided_delay is None:
-                raise ValueError("Rate limit error without API-provided delay")
+                # Some providers (like Zenmux) don't provide retry-after headers
+                # Use progressive backoff: starts short, increases if rate limit persists
+                delay_idx = min(attempt - 1, len(self.rate_limit_delays) - 1)
+                delay = self.rate_limit_delays[delay_idx]
+                delay_str = f"{delay}s (progressive backoff, attempt {attempt})"
+                logger.warning(f"[RETRY] Rate limit detected without API-provided delay, using progressive backoff: {delay_str}")
+                return delay, delay_str
             # Add 1.5s tolerance buffer to avoid immediate re-trigger
             tolerance_buffer = 1.5
             delay = api_provided_delay + tolerance_buffer
