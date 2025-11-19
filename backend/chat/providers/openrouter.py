@@ -33,8 +33,8 @@ class OpenRouter:
             "name": "Tongyi Deep Research",
             "supports_reasoning": True
         },
-        "openai/gpt-oss-120b": {
-            "name": "GPT OSS 120B",
+        "openai/gpt-oss-20b:free": {
+            "name": "GPT OSS 20B",
             "supports_reasoning": True
         }
     }
