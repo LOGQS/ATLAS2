@@ -30,7 +30,7 @@ from agents.tools.tool_registry import ToolExecutionContext, ToolResult, tool_re
 from utils.logger import get_logger
 from utils.rate_limiter import get_rate_limiter
 from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
-from chat.coder_stream_parser import CoderStreamParser
+from chat.coder_stream_adapter import CoderStreamAdapter
 from utils.coder_session_logger import (
     create_coder_session_logger,
     get_coder_session_logger,
@@ -1732,7 +1732,7 @@ class SingleDomainExecutor:
 
             full_text = ""
             error_message = None
-            parser: Optional[CoderStreamParser] = None
+            parser: Optional[CoderStreamAdapter] = None
 
             try:
                 if include_reasoning and state.event_callback:
@@ -1745,7 +1745,7 @@ class SingleDomainExecutor:
                             # Emit file operation event to frontend
                             self._emit_file_operation_event(state, result)
 
-                    parser = CoderStreamParser(
+                    parser = CoderStreamAdapter(
                         iteration=state.metadata.get("iterations", 0),
                         emitter=lambda payload: self._emit_coder_stream_event(state, payload),
                         auto_exec_callback=auto_exec_callback,

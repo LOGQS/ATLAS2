@@ -17,3 +17,4 @@ tree-sitter
 tree_sitter_language_pack
 pytest
 crawl4ai
+aegeantic
