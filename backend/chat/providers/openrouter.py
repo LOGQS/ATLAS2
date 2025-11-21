@@ -36,6 +36,10 @@ class OpenRouter:
         "openai/gpt-oss-20b:free": {
             "name": "GPT OSS 20B",
             "supports_reasoning": True
+        },
+        "x-ai/grok-4.1-fast:free": {
+            "name": "Grok 4.1 Fast",
+            "supports_reasoning": False
         }
     }
 
