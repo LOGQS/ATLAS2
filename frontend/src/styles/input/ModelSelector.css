@@ -1,0 +1,304 @@
+/* ModelSelector - Icon-based model selection
+ * Design: Pronounced but simple sparkle icon with clear state indication
+ * Namespace: model-selector__ to avoid conflicts
+ */
+
+.model-selector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.model-selector.disabled {
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+/* Icon trigger button - circular background for presence */
+.model-selector__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.model-selector__trigger:hover {
+  transform: scale(1.08);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.model-selector__trigger:focus {
+  outline: none;
+}
+
+.model-selector__trigger:active {
+  transform: scale(0.95);
+}
+
+/* The sparkle icon - larger for visibility */
+.model-selector__icon {
+  width: 16px;
+  height: 16px;
+  transition: all 0.2s ease;
+}
+
+/* Auto mode - vibrant blue with breathing animation */
+.model-selector__trigger.auto {
+  color: rgba(100, 180, 255, 0.85);
+  background: rgba(100, 180, 255, 0.08);
+  border-color: rgba(100, 180, 255, 0.15);
+  animation: model-selector-breathe 3s ease-in-out infinite;
+}
+
+.model-selector__trigger.auto:hover {
+  color: rgba(100, 180, 255, 1);
+  background: rgba(100, 180, 255, 0.15);
+  border-color: rgba(100, 180, 255, 0.3);
+  animation: none;
+}
+
+@keyframes model-selector-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(100, 180, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 8px 2px rgba(100, 180, 255, 0.15);
+  }
+}
+
+/* Selected model - warm accent, static (pinned) */
+.model-selector__trigger.selected {
+  color: rgba(255, 200, 150, 0.9);
+  background: rgba(255, 180, 120, 0.1);
+  border-color: rgba(255, 180, 120, 0.2);
+}
+
+.model-selector__trigger.selected:hover {
+  color: rgba(255, 200, 150, 1);
+  background: rgba(255, 180, 120, 0.18);
+  border-color: rgba(255, 180, 120, 0.35);
+}
+
+/* Tooltip on hover */
+.model-selector__tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  padding: 5px 10px;
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: model-selector-tooltip-in 0.1s ease-out;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes model-selector-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Dropdown panel */
+.model-selector__dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  max-width: 300px;
+  max-height: 360px;
+  background: rgba(20, 20, 20, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: model-selector-dropdown-in 0.12s ease-out;
+  z-index: 100;
+}
+
+@keyframes model-selector-dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Search */
+.model-selector__search-container {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.model-selector__search {
+  width: 100%;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.model-selector__search::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.model-selector__search:focus {
+  border-color: rgba(100, 180, 255, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Model list */
+.model-selector__list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.model-selector__list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.model-selector__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.model-selector__list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+}
+
+/* Provider group */
+.model-selector__provider-group {
+  margin-bottom: 6px;
+}
+
+.model-selector__provider-header {
+  padding: 6px 8px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Model items */
+.model-selector__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.model-selector__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.model-selector__item.active {
+  background: rgba(100, 180, 255, 0.08);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* Auto option */
+.model-selector__item--auto {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 5px 5px 0 0;
+}
+
+.model-selector__item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.model-selector__item--auto .model-selector__item-name {
+  font-weight: 600;
+  color: rgba(100, 180, 255, 0.9);
+}
+
+.model-selector__item--auto.active {
+  background: rgba(100, 180, 255, 0.1);
+}
+
+.model-selector__item-desc {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.model-selector__item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Checkmark for active item */
+.model-selector__check {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: rgba(100, 180, 255, 0.9);
+}
+
+/* Reasoning badge */
+.model-selector__item-badge {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  background: rgba(100, 180, 255, 0.1);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 500;
+  color: rgba(100, 180, 255, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* Empty state */
+.model-selector__empty {
+  padding: 16px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 12px;
+}

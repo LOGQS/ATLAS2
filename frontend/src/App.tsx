@@ -14,6 +14,7 @@ import ContextWindow from './components/chat/ContextWindow';
 import SendButton from './components/input/SendButton';
 import VoiceChatMuteButton from './components/input/VoiceChatMuteButton';
 import MessageInputArea from './components/input/MessageInputArea';
+import ModelSelector from './components/input/ModelSelector';
 import KnowledgeSection from './sections/KnowledgeSection';
 import GalleryWindow from './sections/GalleryWindow';
 import SearchWindow from './sections/SearchWindow';
@@ -52,6 +53,14 @@ interface ChatItem {
 interface LoadChatsResult {
   ids: string[];
   backendState: BackendStateSnapshot;
+}
+
+interface ModelInfo {
+  id: string;
+  model_id: string;
+  provider: string;
+  name: string;
+  supports_reasoning?: boolean;
 }
 
 const ALLOWED_BACKEND_STATUSES = new Set<BackendStateSnapshot['status']>([
@@ -270,6 +279,12 @@ function App() {
   const [webChatId, setWebChatId] = useState<string | null>(null);
   const [webProfileStatus, setWebProfileStatus] = useState<any>(null);
   const [webUserRequest, setWebUserRequest] = useState<string | undefined>(undefined);
+
+  // Model selection state
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [modelsByProvider, setModelsByProvider] = useState<Record<string, ModelInfo[]>>({});
+  const [selectedModel, setSelectedModel] = useState<string | null>(null); // null = Auto (router enabled)
+  const [modelsLoaded, setModelsLoaded] = useState(false);
 
   const [globalViewerOpen, setGlobalViewerOpen] = useState(false);
   const [globalViewerFile, setGlobalViewerFile] = useState<any>(null);
@@ -597,6 +612,40 @@ function App() {
   const handleVoiceChatClick = useCallback((source: 'center' | 'bottom') => {
     handleVoiceChatToggle(source, 'click');
   }, [handleVoiceChatToggle]);
+
+  // Model selection handler - optimistic update
+  const handleModelSelect = useCallback(async (model: ModelInfo | null) => {
+    // Save previous state for rollback
+    const previousModel = selectedModel;
+
+    // Optimistic update - UI updates immediately
+    const newModelId = model ? model.model_id : null;
+    setSelectedModel(newModelId);
+
+    try {
+      const response = await fetch(apiUrl('/api/router/toggle'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: model === null,
+          model_override: model?.model_id ?? null,
+          provider_override: model?.provider ?? null
+        })
+      });
+
+      if (response.ok) {
+        logger.info(`[MODEL_SELECTOR] ${model ? `Selected: ${model.name}` : 'Switched to Auto'}`);
+      } else {
+        // Rollback on failure
+        setSelectedModel(previousModel);
+        logger.warn('[MODEL_SELECTOR] API failed, rolled back selection');
+      }
+    } catch (error) {
+      // Rollback on error
+      setSelectedModel(previousModel);
+      logger.error('[MODEL_SELECTOR] Failed, rolled back:', error);
+    }
+  }, [selectedModel]);
 
   useEffect(() => {
     if (message.trim() && isVoiceChatMode) {
@@ -974,6 +1023,26 @@ function App() {
       const config = await fetchBackendConfig();
       setMaxConcurrentStreams(config.maxConcurrentChats);
       logger.info(`[App.useEffect] Backend config loaded: maxConcurrentChats=${config.maxConcurrentChats}, executionMode=${config.executionMode}`);
+
+      // Fetch available models for model selector
+      try {
+        const modelsResponse = await fetch(apiUrl('/api/models/all'));
+        if (modelsResponse.ok) {
+          const modelsData = await modelsResponse.json();
+          if (modelsData.success && modelsData.models) {
+            setAvailableModels(modelsData.models);
+            setModelsByProvider(modelsData.by_provider || {});
+            // Restore model override if one was set
+            if (modelsData.model_override) {
+              setSelectedModel(modelsData.model_override);
+            }
+            setModelsLoaded(true);
+            logger.info(`[App.useEffect] Loaded ${modelsData.models.length} models from ${Object.keys(modelsData.by_provider || {}).length} providers`);
+          }
+        }
+      } catch (modelError) {
+        logger.warn('[App.useEffect] Failed to load models:', modelError);
+      }
 
       const loadedChats = await loadChatsFromDatabase();
 
@@ -2110,6 +2179,14 @@ function App() {
                 isVoiceChatMode={isVoiceChatMode}
                 isActiveChatStreaming={isActiveChatStreaming}
                 dragHandlers={dragHandlers}
+                inlineRight={modelsLoaded ? (
+                  <ModelSelector
+                    models={availableModels}
+                    modelsByProvider={modelsByProvider}
+                    selectedModel={selectedModel}
+                    onModelSelect={handleModelSelect}
+                  />
+                ) : undefined}
               />
               <div className="input-actions">
                 {isVoiceChatMode && (
@@ -2240,6 +2317,14 @@ function App() {
                   isVoiceChatMode={isVoiceChatMode}
                   isActiveChatStreaming={isActiveChatStreaming}
                   dragHandlers={dragHandlers}
+                  inlineRight={modelsLoaded ? (
+                    <ModelSelector
+                      models={availableModels}
+                      modelsByProvider={modelsByProvider}
+                      selectedModel={selectedModel}
+                      onModelSelect={handleModelSelect}
+                    />
+                  ) : undefined}
                 />
                 <div className="input-actions">
                   {isVoiceChatMode && (

@@ -1,4 +1,4 @@
-import React, { RefObject } from 'react';
+import React, { RefObject, ReactNode } from 'react';
 
 interface MessageInputAreaProps {
   inputRef?: RefObject<HTMLTextAreaElement | null>;
@@ -14,6 +14,8 @@ interface MessageInputAreaProps {
     onDragLeave: (e: React.DragEvent) => void;
     onDrop: (e: React.DragEvent) => void;
   };
+  /** Optional element to render inside the input wrapper (right side) */
+  inlineRight?: ReactNode;
 }
 
 const MessageInputArea: React.FC<MessageInputAreaProps> = ({
@@ -25,13 +27,14 @@ const MessageInputArea: React.FC<MessageInputAreaProps> = ({
   isDragOver = false,
   isVoiceChatMode = false,
   isActiveChatStreaming = false,
-  dragHandlers
+  dragHandlers,
+  inlineRight
 }) => {
   return (
     <div
       className={`input-wrapper ${isDragOver ? 'drag-over' : ''} ${
         isVoiceChatMode && !message.trim() ? 'voice-chat-mode' : ''
-      }`}
+      } ${inlineRight ? 'has-inline-right' : ''}`}
       {...dragHandlers}
     >
       <button
@@ -46,10 +49,15 @@ const MessageInputArea: React.FC<MessageInputAreaProps> = ({
         value={message}
         onChange={(e) => onMessageChange(e.target.value)}
         onKeyDown={onKeyDown}
-        className="message-input with-file-button"
+        className={`message-input with-file-button ${inlineRight ? 'with-inline-right' : ''}`}
         placeholder=""
         rows={1}
       />
+      {inlineRight && (
+        <div className="input-inline-right">
+          {inlineRight}
+        </div>
+      )}
     </div>
   );
 };

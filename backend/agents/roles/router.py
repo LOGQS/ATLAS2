@@ -15,6 +15,8 @@ class Router:
     def __init__(self):
         self.router_model = Config.get_router_model()
         self.router_enabled = Config.get_default_router_state()
+        self.model_override: Optional[str] = None  # When set, bypasses routing
+        self.provider_override: Optional[str] = None  # Provider for model override
         logger.info(f"Router initialized - enabled: {self.router_enabled}, model: {self.router_model}")
 
     def route_request(self, message: str, chat_history: Optional[List[Dict]] = None, providers=None, chat_id: Optional[str] = None, attached_files: Optional[List[Dict]] = None) -> Dict[str, str]:
@@ -30,6 +32,18 @@ class Router:
         Returns:
             Dict containing the model to use and the selected route
         """
+        # Check for model override first (user selected a specific model)
+        if self.model_override:
+            override_provider = self.provider_override or infer_provider_from_model(self.model_override)
+            logger.info(f"Using model override: {self.model_override} ({override_provider})")
+            return {
+                'model': self.model_override,
+                'provider': override_provider,
+                'route': None,
+                'available_routes': available_routes,
+                'is_override': True
+            }
+
         if not self.router_enabled:
             logger.debug("Router disabled, using default model")
             default_model = Config.get_default_model()

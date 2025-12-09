@@ -359,6 +359,19 @@ body.chat-active .main-content {
   padding-left: 56px;
 }
 
+/* Inline right element (model selector) inside input wrapper */
+.input-inline-right {
+  position: absolute;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+}
+
+.message-input.with-inline-right {
+  padding-right: 50px;
+}
+
 /* Drag and Drop Styles */
 .input-wrapper.drag-over {
   transform: scale(1.02);
