@@ -1,84 +1,107 @@
 # status: complete
 
-from typing import Any, Dict, Generator, List, Optional
-from dotenv import load_dotenv
-import os
 import json
-import requests
-from utils.logger import get_logger
+from typing import Any, Dict, Generator, List, Optional
 
-load_dotenv()
+import requests
+
+from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-class OpenRouter:
+
+class CLIProxy:
     """
-    OpenRouter API
+    CLIProxy provider - uses cli-proxy-api to access models via OAuth subscriptions.
+
+    Supported OAuth providers:
+    - Gemini CLI (Google account - FREE)
+    - Claude Code (Claude Pro/Max subscription)
+    - Codex (ChatGPT Plus/Pro subscription)
+    - Qwen Code (FREE)
+    - iFlow (FREE - DeepSeek, Kimi, GLM)
+    - Antigravity (FREE)
+
+    This provider implements the same interface as other providers (OpenRouter, Gemini, etc.)
+    and routes requests through the local cli-proxy-api.exe which handles OAuth token management.
     """
 
-    AVAILABLE_MODELS = {
-        "z-ai/glm-4.5-air:free": {
-            "name": "GLM 4.5 Air",
-            "supports_reasoning": False
-        },
-        "qwen/qwen3-coder:free": {
-            "name": "Qwen3 Coder",
-            "supports_reasoning": True
-        },
-        "moonshotai/kimi-k2:free": {
-            "name": "Kimi K2",
-            "supports_reasoning": False
-        },
-        "alibaba/tongyi-deepresearch-30b-a3b:free": {
-            "name": "Tongyi Deep Research",
-            "supports_reasoning": True
-        },
-        "openai/gpt-oss-20b:free": {
-            "name": "GPT OSS 20B",
-            "supports_reasoning": True
-        },
-        "amazon/nova-2-lite-v1:free": {
-            "name": "Amazon Nova 2 Lite",
-            "supports_reasoning": False
-        }
-    }
+    # Models are populated dynamically from authenticated providers
+    AVAILABLE_MODELS: Dict[str, Dict[str, Any]] = {}
 
-    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    BASE_URL = "http://127.0.0.1:8317/v1/chat/completions"
 
     def __init__(self):
-        self.api_key = os.getenv("OPENROUTER_API_KEY")
-        self.status = "enabled" if self.api_key else "disabled"
         self.async_client = None
+        self._manager = None
+        self._models_loaded = False
 
-        if self.api_key:
-            logger.info("OpenRouter client initialized successfully")
+        # Lazy initialization - don't start proxy in __init__
+        self.status = "disabled"
 
-            # Conditionally initialize async client based on execution mode
-            from utils.config import Config
-            if Config.should_init_async_clients():
-                try:
-                    self._ensure_async_client()
-                    logger.debug("OpenRouter async client initialized eagerly at startup")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize OpenRouter async client at startup: {e}")
+        try:
+            from services.cliproxy.manager import get_cliproxy_manager
+            self._manager = get_cliproxy_manager()
+
+            # Check if user has existing auth (determines if provider should be enabled)
+            if self._manager.has_existing_auth():
+                self.status = "enabled"
+                logger.info("CLIProxy provider enabled (existing auth found)")
             else:
-                logger.debug("OpenRouter async client initialization skipped (execution mode: %s)", Config.get_chat_execution_mode())
-        else:
-            logger.warning("OpenRouter API key not found, provider disabled")
+                logger.info("CLIProxy provider disabled (no auth files found)")
+
+        except Exception as e:
+            logger.warning(f"CLIProxy initialization failed: {e}")
+            self.status = "disabled"
+
+    def _ensure_manager(self):
+        """Ensure manager is available and proxy is running."""
+        if self._manager is None:
+            from services.cliproxy.manager import get_cliproxy_manager
+            self._manager = get_cliproxy_manager()
+        return self._manager.ensure_running()
+
+    def _load_models(self):
+        """Load available models based on authenticated providers."""
+        if self._models_loaded:
+            return
+
+        if not self._ensure_manager():
+            return
+
+        try:
+            models = self._manager.get_available_models()
+            self.AVAILABLE_MODELS = models
+            self._models_loaded = True
+            logger.info(f"CLIProxy loaded {len(models)} available models")
+        except Exception as e:
+            logger.error(f"Failed to load CLIProxy models: {e}")
 
     def is_available(self) -> bool:
-        return self.status == "enabled" and self.api_key is not None
+        """Check if provider is available (has authenticated accounts)."""
+        if self.status != "enabled":
+            return False
+
+        # Ensure models are loaded
+        if not self._models_loaded:
+            self._load_models()
+
+        return len(self.AVAILABLE_MODELS) > 0
 
     def get_available_models(self) -> Dict[str, Any]:
-        """Get available models for this provider"""
+        """Get available models from authenticated providers."""
+        if not self._models_loaded:
+            self._load_models()
         return self.AVAILABLE_MODELS.copy()
 
     def supports_reasoning(self, model: str) -> bool:
-        """Check if specific model supports reasoning"""
+        """Check if specific model supports reasoning/thinking tokens."""
+        if not self._models_loaded:
+            self._load_models()
         return self.AVAILABLE_MODELS.get(model, {}).get("supports_reasoning", False)
 
     def count_tokens(self, text: str, model: str) -> int:
-        """Count tokens using tiktoken for OpenAI-compatible models"""
+        """Count tokens using tiktoken for OpenAI-compatible models."""
         if not text:
             return 0
 
@@ -90,26 +113,17 @@ class OpenRouter:
             logger.warning("tiktoken not installed, using fallback char approximation")
             return max(1, len(text) // 4)
         except Exception as e:
-            logger.warning(f"OpenRouter tiktoken counting failed: {e}, using fallback")
+            logger.warning(f"CLIProxy tiktoken counting failed: {e}, using fallback")
             return max(1, len(text) // 4)
 
-    @staticmethod
-    def _usage_from_response(response: Any) -> Optional[int]:
-        try:
-            payload = response.json()
-        except Exception:
-            return None
-
-        usage = payload.get("usage")
-        if not isinstance(usage, dict):
-            return None
-        total = usage.get("total_tokens")
-        return int(total) if isinstance(total, int) else None
-
-
+    def _get_api_key(self) -> str:
+        """Get API key for proxy authentication."""
+        if self._manager:
+            return self._manager.get_api_key()
+        return "sk-proxy-demo"
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        """Convert database chat history to OpenRouter/OpenAI format"""
+        """Convert database chat history to OpenAI format."""
         formatted_history = []
 
         for message in chat_history:
@@ -123,15 +137,39 @@ class OpenRouter:
 
         return formatted_history
 
+    @staticmethod
+    def _usage_from_response(response: Any) -> Optional[Dict[str, int]]:
+        """Extract usage metadata from response."""
+        try:
+            if hasattr(response, 'json'):
+                payload = response.json()
+            else:
+                payload = response
+        except Exception:
+            return None
+
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return None
+
+        return {
+            'prompt_tokens': usage.get('prompt_tokens', 0),
+            'completion_tokens': usage.get('completion_tokens', 0),
+            'total_tokens': usage.get('total_tokens', 0)
+        }
+
     def generate_text(self, prompt: str, model: str = "",
                      include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                      file_attachments: List[str] = None,
                      **config_params) -> Dict[str, Any]:
-        """Generate text response with chat history context"""
+        """Generate text response with chat history context."""
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        if not self._ensure_manager():
+            return {"text": None, "thoughts": None, "error": "Failed to start CLIProxy"}
+
+        config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -141,22 +179,21 @@ class OpenRouter:
         messages.append({"role": "user", "content": prompt})
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._get_api_key()}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
         }
 
         data = {
             "model": model,
-            "messages": messages
+            "messages": messages,
         }
 
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
+        # Add config params
+        for key, value in config_params.items():
+            if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
+                data[key] = value
 
+        # Enable reasoning if supported
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
                 "effort": "medium",
@@ -165,10 +202,11 @@ class OpenRouter:
             }
 
         try:
-            response = requests.post(self.BASE_URL,
+            response = requests.post(
+                self.BASE_URL,
                 headers=headers,
                 json=data,
-                timeout=30
+                timeout=120
             )
 
             response.raise_for_status()
@@ -179,19 +217,7 @@ class OpenRouter:
                 content = message.get("content", "")
                 reasoning = message.get("reasoning", "")
 
-                # Extract usage metadata if available
-                usage_metadata = None
-                if "usage" in result:
-                    usage = result["usage"]
-                    usage_metadata = {
-                        'prompt_tokens': usage.get('prompt_tokens', 0),
-                        'completion_tokens': usage.get('completion_tokens', 0),
-                        'total_tokens': usage.get('total_tokens', 0)
-                    }
-                    # OpenRouter specific: cached tokens
-                    prompt_details = usage.get('prompt_tokens_details', {})
-                    if prompt_details and 'cached_tokens' in prompt_details:
-                        usage_metadata['cached_tokens'] = prompt_details.get('cached_tokens', 0)
+                usage_metadata = self._usage_from_response(result)
 
                 return {
                     "text": content,
@@ -200,7 +226,7 @@ class OpenRouter:
                     "usage": usage_metadata
                 }
             else:
-                logger.warning(f"Unexpected response format from OpenRouter: {result}")
+                logger.warning(f"Unexpected response format from CLIProxy: {result}")
                 return {
                     "text": None,
                     "thoughts": None,
@@ -208,14 +234,14 @@ class OpenRouter:
                 }
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"OpenRouter API request failed: {str(e)}")
+            logger.error(f"CLIProxy API request failed: {str(e)}")
             return {
                 "text": None,
                 "thoughts": None,
                 "error": str(e)
             }
         except Exception as e:
-            logger.error(f"Unexpected error in OpenRouter generate_text: {str(e)}")
+            logger.error(f"Unexpected error in CLIProxy generate_text: {str(e)}")
             return {
                 "text": None,
                 "thoughts": None,
@@ -226,12 +252,16 @@ class OpenRouter:
                            include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                            file_attachments: List[str] = None,
                            **config_params) -> Generator[Dict[str, Any], None, None]:
-        """Generate streaming text response with chat history context"""
+        """Generate streaming text response with chat history context."""
         if not self.is_available():
             yield {"type": "error", "content": "Provider not available"}
             return
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        if not self._ensure_manager():
+            yield {"type": "error", "content": "Failed to start CLIProxy"}
+            return
+
+        config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -241,10 +271,8 @@ class OpenRouter:
         messages.append({"role": "user", "content": prompt})
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._get_api_key()}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
         }
 
         data = {
@@ -253,10 +281,9 @@ class OpenRouter:
             "stream": True
         }
 
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
+        for key, value in config_params.items():
+            if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
+                data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
@@ -266,11 +293,12 @@ class OpenRouter:
             }
 
         try:
-            response = requests.post(self.BASE_URL,
+            response = requests.post(
+                self.BASE_URL,
                 headers=headers,
                 json=data,
                 stream=True,
-                timeout=30
+                timeout=120
             )
 
             response.raise_for_status()
@@ -290,7 +318,7 @@ class OpenRouter:
                         try:
                             chunk = json.loads(line_str)
 
-                            # OpenRouter sends usage in a chunk with empty choices at the end
+                            # Track usage from final chunk
                             if "usage" in chunk and chunk["usage"]:
                                 last_chunk_with_usage = chunk
 
@@ -310,11 +338,12 @@ class OpenRouter:
                                         yield {"type": "answer_start"}
                                         answer_started = True
                                     yield {"type": "answer", "content": content}
+
                         except json.JSONDecodeError:
                             logger.warning(f"Failed to parse chunk: {line_str}")
                             continue
 
-            # Extract usage from last chunk if available
+            # Emit usage if available
             if last_chunk_with_usage and "usage" in last_chunk_with_usage:
                 usage = last_chunk_with_usage["usage"]
                 usage_metadata = {
@@ -322,25 +351,21 @@ class OpenRouter:
                     'completion_tokens': usage.get('completion_tokens', 0),
                     'total_tokens': usage.get('total_tokens', 0)
                 }
-                # OpenRouter specific: cached tokens
-                prompt_details = usage.get('prompt_tokens_details', {})
-                if prompt_details and 'cached_tokens' in prompt_details:
-                    usage_metadata['cached_tokens'] = prompt_details.get('cached_tokens', 0)
                 yield {"type": "usage", "usage": usage_metadata}
 
             yield {"type": "complete"}
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"OpenRouter streaming API request failed: {str(e)}")
+            logger.error(f"CLIProxy streaming API request failed: {str(e)}")
             yield {"type": "error", "content": str(e)}
         except Exception as e:
-            logger.error(f"Unexpected error in OpenRouter generate_text_stream: {str(e)}")
+            logger.error(f"Unexpected error in CLIProxy generate_text_stream: {str(e)}")
             yield {"type": "error", "content": str(e)}
 
     # ==================== ASYNC METHODS ====================
 
     def _ensure_async_client(self):
-        """Initialize async httpx client for async operations"""
+        """Initialize async httpx client for async operations."""
         if not self.is_available():
             return None
 
@@ -349,26 +374,28 @@ class OpenRouter:
 
         try:
             import httpx
-            # Create a persistent async client (will be reused across requests)
-            self.async_client = httpx.AsyncClient(timeout=30.0)
-            logger.info("OpenRouter async client (httpx) initialized successfully")
+            self.async_client = httpx.AsyncClient(timeout=120.0)
+            logger.info("CLIProxy async client (httpx) initialized successfully")
             return self.async_client
         except ImportError:
             logger.error("httpx package not installed. Please run: pip install httpx")
             return None
         except Exception as exc:
-            logger.error(f"Failed to initialize OpenRouter async client: {exc}")
+            logger.error(f"Failed to initialize CLIProxy async client: {exc}")
             return None
 
     async def generate_text_async(self, prompt: str, model: str = "",
                                  include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                                  file_attachments: List[str] = None,
                                  **config_params) -> Dict[str, Any]:
-        """Async version of generate_text using httpx"""
+        """Async version of generate_text using httpx."""
         if not self.is_available():
             return {"text": None, "thoughts": None, "error": "Provider not available"}
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        if not self._ensure_manager():
+            return {"text": None, "thoughts": None, "error": "Failed to start CLIProxy"}
+
+        config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -378,10 +405,8 @@ class OpenRouter:
         messages.append({"role": "user", "content": prompt})
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._get_api_key()}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
         }
 
         data = {
@@ -389,10 +414,9 @@ class OpenRouter:
             "messages": messages
         }
 
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
+        for key, value in config_params.items():
+            if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
+                data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
@@ -415,17 +439,7 @@ class OpenRouter:
                 content = message.get("content", "")
                 reasoning = message.get("reasoning", "")
 
-                usage_metadata = None
-                if "usage" in result:
-                    usage = result["usage"]
-                    usage_metadata = {
-                        'prompt_tokens': usage.get('prompt_tokens', 0),
-                        'completion_tokens': usage.get('completion_tokens', 0),
-                        'total_tokens': usage.get('total_tokens', 0)
-                    }
-                    prompt_details = usage.get('prompt_tokens_details', {})
-                    if prompt_details and 'cached_tokens' in prompt_details:
-                        usage_metadata['cached_tokens'] = prompt_details.get('cached_tokens', 0)
+                usage_metadata = self._usage_from_response(result)
 
                 return {
                     "text": content,
@@ -434,7 +448,7 @@ class OpenRouter:
                     "usage": usage_metadata
                 }
             else:
-                logger.warning(f"Unexpected response format from OpenRouter: {result}")
+                logger.warning(f"Unexpected response format from CLIProxy: {result}")
                 return {
                     "text": None,
                     "thoughts": None,
@@ -442,7 +456,7 @@ class OpenRouter:
                 }
 
         except Exception as e:
-            logger.error(f"OpenRouter async API request failed: {str(e)}")
+            logger.error(f"CLIProxy async API request failed: {str(e)}")
             return {
                 "text": None,
                 "thoughts": None,
@@ -453,12 +467,16 @@ class OpenRouter:
                                        include_thoughts: bool = False, chat_history: List[Dict[str, Any]] = None,
                                        file_attachments: List[str] = None,
                                        **config_params):
-        """Async generator version of generate_text_stream using httpx"""
+        """Async generator version of generate_text_stream using httpx."""
         if not self.is_available():
             yield {"type": "error", "content": "Provider not available"}
             return
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        if not self._ensure_manager():
+            yield {"type": "error", "content": "Failed to start CLIProxy"}
+            return
+
+        config_params.pop("rate_limit_estimated_tokens", None)
 
         messages = []
         if chat_history:
@@ -468,10 +486,8 @@ class OpenRouter:
         messages.append({"role": "user", "content": prompt})
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._get_api_key()}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5000",
-            "X-Title": "ATLAS2"
         }
 
         data = {
@@ -480,10 +496,9 @@ class OpenRouter:
             "stream": True
         }
 
-        if config_params:
-            for key, value in config_params.items():
-                if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
-                    data[key] = value
+        for key, value in config_params.items():
+            if key in ["temperature", "max_tokens", "top_p", "frequency_penalty", "presence_penalty"]:
+                data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
             data["reasoning"] = {
@@ -534,6 +549,7 @@ class OpenRouter:
                                             yield {"type": "answer_start"}
                                             answer_started = True
                                         yield {"type": "answer", "content": content}
+
                             except json.JSONDecodeError:
                                 logger.warning(f"Failed to parse chunk: {line_str}")
                                 continue
@@ -545,13 +561,51 @@ class OpenRouter:
                     'completion_tokens': usage.get('completion_tokens', 0),
                     'total_tokens': usage.get('total_tokens', 0)
                 }
-                prompt_details = usage.get('prompt_tokens_details', {})
-                if prompt_details and 'cached_tokens' in prompt_details:
-                    usage_metadata['cached_tokens'] = prompt_details.get('cached_tokens', 0)
                 yield {"type": "usage", "usage": usage_metadata}
 
             yield {"type": "complete"}
 
         except Exception as e:
-            logger.error(f"OpenRouter async streaming API request failed: {str(e)}")
+            logger.error(f"CLIProxy async streaming API request failed: {str(e)}")
             yield {"type": "error", "content": str(e)}
+
+    # ==================== MANAGEMENT METHODS ====================
+
+    def get_auth_status(self) -> Dict[str, Any]:
+        """Get authentication status for all OAuth providers."""
+        if self._manager:
+            return self._manager.get_auth_status()
+        return {"error": "Manager not initialized", "providers": {}}
+
+    def start_login(self, provider_id: str) -> Dict[str, Any]:
+        """Start OAuth login flow for a provider."""
+        if self._manager:
+            return self._manager.start_oauth_login(provider_id)
+        return {"success": False, "error": "Manager not initialized"}
+
+    def poll_login_status(self, state: str) -> Dict[str, Any]:
+        """Poll OAuth login completion status."""
+        if self._manager:
+            return self._manager.poll_oauth_status(state)
+        return {"status": "error", "error": "Manager not initialized"}
+
+    def logout(self, filename: str) -> Dict[str, Any]:
+        """Remove an authenticated account."""
+        if self._manager:
+            result = self._manager.logout_account(filename)
+            if result.get("success"):
+                # Reload models after logout
+                self._models_loaded = False
+                self._load_models()
+            return result
+        return {"success": False, "error": "Manager not initialized"}
+
+    def refresh_models(self):
+        """Force refresh of available models."""
+        self._models_loaded = False
+        self._load_models()
+        # Update status based on available models
+        if len(self.AVAILABLE_MODELS) > 0:
+            self.status = "enabled"
+        else:
+            self.status = "disabled"

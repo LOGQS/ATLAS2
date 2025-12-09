@@ -27,6 +27,7 @@ def get_provider_map() -> Dict[str, Any]:
             return _provider_cache
 
         from chat.providers import Gemini, HuggingFace, OpenRouter, Groq, Cerebras, Zenmux
+        from services.cliproxy.provider import CLIProxy
 
         _provider_cache = {
             "gemini": Gemini(),
@@ -34,7 +35,8 @@ def get_provider_map() -> Dict[str, Any]:
             "openrouter": OpenRouter(),
             "groq": Groq(),
             "cerebras": Cerebras(),
-            "zenmux": Zenmux()
+            "zenmux": Zenmux(),
+            "cliproxy": CLIProxy(),
         }
 
         return _provider_cache
@@ -202,7 +204,7 @@ class Config:
     DEFAULT_MODEL = "gemini-2.5-flash-preview-09-2025"
 
     DEFAULT_ROUTER_ENABLED = True
-    DEFAULT_ROUTER_MODEL = "gemini-2.5-flash-lite"
+    DEFAULT_ROUTER_MODEL = "amazon/nova-2-lite-v1:free"
 
     DEFAULT_STREAMING = True
 

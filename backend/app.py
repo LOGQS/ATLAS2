@@ -30,6 +30,7 @@ from route.stt_route import register_stt_routes
 from route.image_route import image_bp
 from route.rate_limit_route import register_rate_limit_routes
 from route.token_route import register_token_routes
+from route.cliproxy_route import register_cliproxy_routes
 from utils.config import Config
 from utils.logger import get_logger
 from file_utils.file_handler import setup_filespace, sync_files_with_database
@@ -185,6 +186,17 @@ def handle_shutdown(signum=None, frame=None):
     except Exception as exc:
         logger.error(f"[FILE_WATCHER] Error stopping filesystem monitor: {exc}")
 
+    # Stop CLIProxy if running
+    try:
+        from services.cliproxy.manager import get_cliproxy_manager
+        cliproxy_manager = get_cliproxy_manager()
+        if cliproxy_manager.is_running():
+            logger.info("[CLIPROXY] Stopping proxy...")
+            cliproxy_manager.stop()
+            logger.info("[CLIPROXY] Proxy stopped")
+    except Exception as exc:
+        logger.error(f"[CLIPROXY] Error stopping proxy: {exc}")
+
     try:
         updated_count = db.set_all_chats_static()
         if updated_count > 0:
@@ -211,6 +223,21 @@ def create_app():
     load_rate_limit_overrides()
     _run_startup_housekeeping()
 
+    # Auto-start CLIProxy if user has existing auth files
+    try:
+        from services.cliproxy.manager import get_cliproxy_manager
+        cliproxy_manager = get_cliproxy_manager()
+        if cliproxy_manager.has_existing_auth():
+            logger.info("[CLIPROXY] Existing auth files found, starting proxy...")
+            if cliproxy_manager.start():
+                logger.info("[CLIPROXY] Proxy started successfully")
+            else:
+                logger.warning("[CLIPROXY] Failed to start proxy on startup")
+        else:
+            logger.info("[CLIPROXY] No existing auth files, proxy will start on first login")
+    except Exception as exc:
+        logger.warning(f"[CLIPROXY] Failed to initialize: {exc}")
+
     register_chat_routes(app)
     register_agent_routes(app)
     register_db_chat_management_routes(app)
@@ -225,6 +252,7 @@ def create_app():
     register_stt_routes(app)
     register_token_routes(app)
     register_rate_limit_routes(app)
+    register_cliproxy_routes(app)
     app.register_blueprint(image_bp)
 
     try:

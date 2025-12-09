@@ -19,6 +19,9 @@ data/
 # Browser extensions (user-installed)
 backend/browser_extensions/
 
+# Services specific
+services/cli_proxy
+
 # IDE / OS specific
 .vscode/
 

@@ -12,7 +12,37 @@ type RateLimitScope = 'global' | 'provider' | 'model';
 
 type RateLimitField = keyof RateLimitResponseLimits;
 
-type SettingsSection = 'appearance' | 'behavior' | 'rate-limits' | 'storage' | 'advanced';
+type SettingsSection = 'appearance' | 'behavior' | 'rate-limits' | 'cliproxy' | 'storage' | 'advanced';
+
+interface CLIProxyAccount {
+  identifier: string;
+  filename: string;
+  status: string;
+  disabled: boolean;
+}
+
+interface CLIProxyProviderStatus {
+  name: string;
+  description: string;
+  authenticated: boolean;
+  account_count: number;
+  accounts: CLIProxyAccount[];
+}
+
+interface CLIProxyStatus {
+  running: boolean;
+  healthy: boolean;
+  has_existing_auth: boolean;
+  providers: Record<string, CLIProxyProviderStatus>;
+  auth_error?: string;
+}
+
+interface CLIProxyLoginState {
+  provider: string;
+  url: string;
+  state: string;
+  polling: boolean;
+}
 
 interface RateLimitResponseLimits {
   requests_per_minute: number | null;
@@ -538,6 +568,12 @@ const SettingsWindow: React.FC = () => {
   const [savingKeys, setSavingKeys] = useState<Record<string, boolean>>({});
   const [statusMap, setStatusMap] = useState<Record<string, RateLimitStatus | undefined>>({});
 
+  // CLIProxy state
+  const [cliproxyStatus, setCliproxyStatus] = useState<CLIProxyStatus | null>(null);
+  const [cliproxyLoading, setCliproxyLoading] = useState(false);
+  const [cliproxyError, setCliproxyError] = useState<string | null>(null);
+  const [cliproxyLoginState, setCliproxyLoginState] = useState<CLIProxyLoginState | null>(null);
+
   const fetchRateLimits = useCallback(async () => {
     setRateLimitLoading(true);
     setRateLimitError(null);
@@ -586,11 +622,111 @@ const SettingsWindow: React.FC = () => {
     }
   }, []);
 
+  // CLIProxy functions
+  const fetchCliproxyStatus = useCallback(async () => {
+    setCliproxyLoading(true);
+    setCliproxyError(null);
+    try {
+      const response = await fetch(apiUrl('/api/cliproxy/status'));
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+      const data: CLIProxyStatus = await response.json();
+      setCliproxyStatus(data);
+    } catch (error) {
+      console.error('Failed to fetch CLIProxy status:', error);
+      setCliproxyError(
+        error instanceof Error ? error.message : 'Failed to load CLIProxy status.',
+      );
+    } finally {
+      setCliproxyLoading(false);
+    }
+  }, []);
+
+  const startCliproxyLogin = useCallback(async (providerId: string) => {
+    try {
+      const response = await fetch(apiUrl(`/api/cliproxy/login/${providerId}`), {
+        method: 'POST',
+      });
+      const data = await response.json();
+      if (data.success) {
+        setCliproxyLoginState({
+          provider: providerId,
+          url: data.url || '',  // URL may be empty if CLI opens browser directly
+          state: data.state,
+          polling: true,
+        });
+        // If URL is provided, open it (fallback for management API approach)
+        if (data.url) {
+          window.open(data.url, '_blank', 'noopener,noreferrer');
+        }
+        // Otherwise the CLI process opens the browser automatically
+      } else {
+        setCliproxyError(data.error || 'Failed to start login');
+      }
+    } catch (error) {
+      console.error('Failed to start CLIProxy login:', error);
+      setCliproxyError(error instanceof Error ? error.message : 'Failed to start login');
+    }
+  }, []);
+
+  const pollCliproxyLogin = useCallback(async () => {
+    if (!cliproxyLoginState?.state) return;
+
+    try {
+      const response = await fetch(apiUrl(`/api/cliproxy/login/poll?state=${cliproxyLoginState.state}`));
+      const data = await response.json();
+
+      if (data.status === 'ok') {
+        setCliproxyLoginState(null);
+        fetchCliproxyStatus();
+      } else if (data.status === 'error') {
+        setCliproxyLoginState(null);
+        setCliproxyError(data.error || 'Login failed');
+      }
+      // If status is 'wait', continue polling
+    } catch (error) {
+      console.error('Failed to poll CLIProxy login:', error);
+    }
+  }, [cliproxyLoginState?.state, fetchCliproxyStatus]);
+
+  const logoutCliproxyAccount = useCallback(async (filename: string) => {
+    try {
+      const response = await fetch(apiUrl(`/api/cliproxy/logout?filename=${encodeURIComponent(filename)}`), {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (data.success) {
+        fetchCliproxyStatus();
+      } else {
+        setCliproxyError(data.error || 'Failed to logout');
+      }
+    } catch (error) {
+      console.error('Failed to logout CLIProxy account:', error);
+      setCliproxyError(error instanceof Error ? error.message : 'Failed to logout');
+    }
+  }, [fetchCliproxyStatus]);
+
   useEffect(() => {
     // Fetch immediately on mount - backend reads from JSON file (source of truth)
     // Backend data is then saved to browser storage for future caching
     fetchRateLimits();
   }, [fetchRateLimits]);
+
+  // Fetch CLIProxy status when section is active
+  useEffect(() => {
+    if (activeSection === 'cliproxy') {
+      fetchCliproxyStatus();
+    }
+  }, [activeSection, fetchCliproxyStatus]);
+
+  // Poll for OAuth completion
+  useEffect(() => {
+    if (!cliproxyLoginState?.polling) return;
+
+    const interval = setInterval(pollCliproxyLogin, 2000);
+    return () => clearInterval(interval);
+  }, [cliproxyLoginState?.polling, pollCliproxyLogin]);
 
   // Event-driven timer: Find next expiration and schedule refresh
   useEffect(() => {
@@ -928,6 +1064,7 @@ const SettingsWindow: React.FC = () => {
     { id: 'appearance', label: 'Appearance' },
     { id: 'behavior', label: 'Behavior' },
     { id: 'rate-limits', label: 'Rate Limits' },
+    { id: 'cliproxy', label: 'CLIProxy' },
     { id: 'storage', label: 'Storage' },
     { id: 'advanced', label: 'Advanced' },
   ];
@@ -1082,6 +1219,98 @@ const SettingsWindow: React.FC = () => {
             </div>
           ) : null}
         </div>
+        )}
+
+        {activeSection === 'cliproxy' && (
+          <div className="settings-group cliproxy-group">
+            <h5>CLIProxy Accounts</h5>
+            <p className="cliproxy-intro">
+              Connect your subscription accounts to use premium models without API keys.
+              Uses your existing ChatGPT Plus, Claude Pro, or free Google/Qwen/iFlow accounts.
+            </p>
+
+            {cliproxyLoading && (
+              <div className="cliproxy-feedback">Loading CLIProxy status...</div>
+            )}
+
+            {cliproxyError && (
+              <div className="cliproxy-feedback cliproxy-feedback-error">{cliproxyError}</div>
+            )}
+
+            {cliproxyLoginState && (
+              <div className="cliproxy-login-banner">
+                <span>Waiting for OAuth login to complete...</span>
+                <button
+                  className="section-button secondary"
+                  type="button"
+                  onClick={() => setCliproxyLoginState(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
+            {!cliproxyLoading && cliproxyStatus && (
+              <div className="cliproxy-providers-grid">
+                {Object.entries(cliproxyStatus.providers).map(([providerId, provider]) => (
+                  <div
+                    key={providerId}
+                    className={`cliproxy-provider-card ${provider.authenticated ? 'authenticated' : ''}`}
+                  >
+                    <div className="cliproxy-provider-header">
+                      <span className="cliproxy-provider-name">{provider.name}</span>
+                      <span className={`cliproxy-provider-status ${provider.authenticated ? 'connected' : 'disconnected'}`}>
+                        {provider.authenticated ? `${provider.account_count} account${provider.account_count !== 1 ? 's' : ''}` : 'Not connected'}
+                      </span>
+                    </div>
+                    <p className="cliproxy-provider-description">{provider.description}</p>
+
+                    {provider.authenticated && provider.accounts.length > 0 && (
+                      <div className="cliproxy-accounts-list">
+                        {provider.accounts.map((account) => (
+                          <div key={account.filename} className="cliproxy-account-item">
+                            <span className="cliproxy-account-identifier">{account.identifier}</span>
+                            <button
+                              className="cliproxy-logout-btn"
+                              type="button"
+                              onClick={() => logoutCliproxyAccount(account.filename)}
+                              title="Remove this account"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <button
+                      className={`section-button ${provider.authenticated ? 'secondary' : 'primary'}`}
+                      type="button"
+                      onClick={() => startCliproxyLogin(providerId)}
+                      disabled={!!cliproxyLoginState}
+                    >
+                      {provider.authenticated ? 'Add Account' : 'Login'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {!cliproxyLoading && cliproxyStatus && (
+              <div className="cliproxy-status-bar">
+                <span className={`cliproxy-proxy-status ${cliproxyStatus.healthy ? 'healthy' : 'unhealthy'}`}>
+                  Proxy: {cliproxyStatus.healthy ? 'Running' : cliproxyStatus.running ? 'Unhealthy' : 'Stopped'}
+                </span>
+                <button
+                  className="section-button secondary"
+                  type="button"
+                  onClick={() => fetchCliproxyStatus()}
+                >
+                  Refresh
+                </button>
+              </div>
+            )}
+          </div>
         )}
 
         {activeSection === 'storage' && (

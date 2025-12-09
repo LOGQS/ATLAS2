@@ -449,3 +449,174 @@
     box-shadow: 0 0 16px rgba(255, 107, 125, 0.6);
   }
 }
+
+/* CLIProxy Section */
+.cliproxy-group {
+  margin-top: 32px;
+}
+
+.cliproxy-intro {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  margin: 0 0 20px 0;
+  line-height: 1.5;
+}
+
+.cliproxy-feedback {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.cliproxy-feedback-error {
+  color: #ff6b7d;
+  border-color: rgba(220, 53, 69, 0.4);
+  background: rgba(220, 53, 69, 0.12);
+}
+
+.cliproxy-login-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(74, 144, 226, 0.15);
+  border: 1px solid rgba(74, 144, 226, 0.4);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: #80b3ff;
+}
+
+.cliproxy-providers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.cliproxy-provider-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.cliproxy-provider-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cliproxy-provider-card.authenticated {
+  border-color: rgba(79, 209, 161, 0.3);
+  background: rgba(79, 209, 161, 0.05);
+}
+
+.cliproxy-provider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cliproxy-provider-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.cliproxy-provider-status {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 10px;
+}
+
+.cliproxy-provider-status.connected {
+  background: rgba(79, 209, 161, 0.2);
+  color: #4fd1a1;
+}
+
+.cliproxy-provider-status.disconnected {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.cliproxy-provider-description {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.cliproxy-accounts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.cliproxy-account-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+}
+
+.cliproxy-account-identifier {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.cliproxy-logout-btn {
+  background: rgba(220, 53, 69, 0.2);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  border-radius: 4px;
+  color: #ff6b7d;
+  font-size: 10px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cliproxy-logout-btn:hover {
+  background: rgba(220, 53, 69, 0.3);
+  border-color: rgba(220, 53, 69, 0.5);
+}
+
+.cliproxy-status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.cliproxy-proxy-status {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cliproxy-proxy-status.healthy {
+  color: #4fd1a1;
+}
+
+.cliproxy-proxy-status.unhealthy {
+  color: #ff6b7d;
+}
