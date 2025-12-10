@@ -7,6 +7,7 @@ import os
 import threading
 from pathlib import Path
 from utils.logger import get_logger
+from utils.provider_errors import ProviderStreamError
 from utils.startup_cache import worker_get_or_initialize, has_worker_channel
 
 load_dotenv()
@@ -554,8 +555,7 @@ class Cerebras:
                                        **config_params):
         """Async generator version of generate_text_stream"""
         if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
+            raise ProviderStreamError("Cerebras provider not available")
 
         estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
 
@@ -595,8 +595,7 @@ class Cerebras:
 
         client = self._ensure_async_client()
         if client is None:
-            yield {"type": "error", "content": "Async client not available"}
-            return
+            raise ProviderStreamError("Cerebras async client not available")
 
         try:
             response = await client.chat.completions.create(**request_params)
@@ -635,4 +634,4 @@ class Cerebras:
         except Exception as e:
             error_message = self._extract_error_message(e)
             logger.error(f"Cerebras async streaming API request failed: {error_message}")
-            raise RuntimeError(error_message) from e
+            raise ProviderStreamError(error_message) from e

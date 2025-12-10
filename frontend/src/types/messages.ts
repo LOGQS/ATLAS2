@@ -7,6 +7,14 @@ export interface AttachedFile {
   provider?: string;
 }
 
+export interface ModelRetryInfo {
+  attempt: number;
+  max_attempts: number;
+  delay_seconds: number;
+  reason: string;
+  model?: string;
+}
+
 export interface ActionNode {
   action_id: string;
   action_type: string;
@@ -103,8 +111,8 @@ export interface DomainExecution {
     attempt: number;
     max_attempts: number;
     delay_seconds: number;
-    model: string;
-    reason: string;
+    model?: string;
+    reason?: string;
   };
   assistant_message_id?: string | number | null;
 }

@@ -3,7 +3,7 @@ import { apiUrl } from '../../config/api';
 import logger from '../core/logger';
 import { performanceTracker } from '../core/performanceTracker';
 import { sendButtonStateManager } from './SendButtonStateManager';
-import type { RouterDecision, DomainExecution } from '../../types/messages';
+import type { RouterDecision, DomainExecution, ModelRetryInfo } from '../../types/messages';
 import { ChunkedTextBuffer } from '../text/ChunkedTextBuffer';
 
 export type CoderStreamSegment =
@@ -55,6 +55,7 @@ type ChatLive = {
   routerDecision: RouterDecision | null;
   domainExecution: DomainExecution | null;
   coderStream: CoderStreamSegment[];
+  modelRetry: ModelRetryInfo | null;
   error: {
     message: string;
     receivedAt: number;
@@ -140,6 +141,13 @@ interface ModelRetryEvent extends BaseSSEEvent {
   type: 'model_retry';
   content?: string;
   task_id?: string;
+  retry_data?: {
+    attempt: number;
+    max_attempts: number;
+    delay_seconds: number;
+    reason?: string;
+    model?: string;
+  };
 }
 
 interface CoderOperationEvent extends BaseSSEEvent {
@@ -406,6 +414,11 @@ class LiveStore {
     const addedContent = ev.content || '';
     next.contentBuf = cur.contentBuf + addedContent;
     next.error = null;
+    // Clear retry when we receive content (retry succeeded)
+    if (next.modelRetry && addedContent.length > 0) {
+      logger.info(`[MODEL-RETRY] Clearing retry info - received answer content`);
+      next.modelRetry = null;
+    }
     next.version++;
     if (cur.contentBuf.length === 0 && addedContent.length > 0) {
       const ts = new Date().toISOString();
@@ -422,6 +435,7 @@ class LiveStore {
     const oldState = next.state;
     next.state = 'static';
     next.error = null;
+    next.modelRetry = null; // Clear retry on successful completion
 
     next.version++;
     logger.debug(`[LIVESTORE_SSE] Stream complete for ${chatId}: ${oldState} -> static`);
@@ -447,6 +461,7 @@ class LiveStore {
     next.contentBuf = '';
     next.thoughtsBuf = '';
     next.routerDecision = null;
+    next.modelRetry = null; // Clear retry on final error
     next.error = {
       message,
       receivedAt: Date.now(),
@@ -768,26 +783,37 @@ class LiveStore {
   private handleModelRetryEvent(chatId: string, ev: ModelRetryEvent, cur: ChatLive): ChatLive {
     const next = { ...cur };
     logger.info(`[MODEL-RETRY] Retry event for ${chatId}`);
-    try {
-      const retryData = JSON.parse(ev.content || '{}');
-      logger.info(`[MODEL-RETRY] Attempt ${retryData.attempt}/${retryData.max_attempts}, waiting ${retryData.delay_seconds}s`);
-      logger.info(`[MODEL-RETRY] Current domainExecution exists: ${!!next.domainExecution}`);
 
-      // Add retry info to domain execution if it exists
-      if (next.domainExecution) {
-        next.domainExecution = {
-          ...next.domainExecution,
-          model_retry: retryData,
-        };
-        next.version++;
-        this.enableParentFromBridge(chatId, 'Model retry');
-        logger.info(`[MODEL-RETRY] Updated domainExecution with retry data, version: ${next.version}`);
-      } else {
-        logger.warn(`[MODEL-RETRY] No domainExecution found for ${chatId}, retry event ignored!`);
-      }
-    } catch (err) {
-      logger.error(`[MODEL-RETRY] Failed to parse retry event for ${chatId}:`, err);
+    // retry_data comes as a separate field from backend, not inside content
+    const retryData = ev.retry_data;
+    if (!retryData) {
+      logger.warn(`[MODEL-RETRY] No retry_data in event for ${chatId}`);
+      return next;
     }
+
+    logger.info(`[MODEL-RETRY] Attempt ${retryData.attempt}/${retryData.max_attempts}, waiting ${retryData.delay_seconds}s`);
+
+    // Store retry at top level (for Chat.tsx display)
+    next.modelRetry = {
+      attempt: retryData.attempt,
+      max_attempts: retryData.max_attempts,
+      delay_seconds: retryData.delay_seconds,
+      reason: retryData.reason || 'API error',
+      model: retryData.model,
+    };
+    next.version++;
+    this.enableParentFromBridge(chatId, 'Model retry');
+    logger.info(`[MODEL-RETRY] Stored retry data at top level, version: ${next.version}`);
+
+    // Also add to domain execution if it exists (for DomainBox display)
+    if (next.domainExecution) {
+      next.domainExecution = {
+        ...next.domainExecution,
+        model_retry: retryData,
+      };
+      logger.info(`[MODEL-RETRY] Also updated domainExecution with retry data`);
+    }
+
     return next;
   }
 
@@ -957,6 +983,7 @@ class LiveStore {
           routerDecision: null,
           domainExecution: null,
           coderStream: [],
+          modelRetry: null,
           error: null,
           version: 0
         } as ChatLive);
@@ -1068,6 +1095,7 @@ class LiveStore {
       routerDecision: null,
       domainExecution: null,
       coderStream: [],
+      modelRetry: null,
       error: null,
       version: 0
     } as ChatLive);

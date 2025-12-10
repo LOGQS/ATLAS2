@@ -6,6 +6,7 @@ import os
 import json
 import requests
 from utils.logger import get_logger
+from utils.provider_errors import ProviderStreamError
 
 load_dotenv()
 
@@ -432,12 +433,10 @@ class Zenmux:
                                        **config_params):
         """Async generator version of generate_text_stream using httpx"""
         if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
+            raise ProviderStreamError("Zenmux provider not available")
 
         if file_attachments:
-            yield {"type": "error", "content": "File attachments not supported by Zenmux provider"}
-            return
+            raise ProviderStreamError("File attachments not supported by Zenmux provider")
 
         estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
 
@@ -473,8 +472,7 @@ class Zenmux:
 
         client = self._ensure_async_client()
         if client is None:
-            yield {"type": "error", "content": "Async client not available"}
-            return
+            raise ProviderStreamError("Zenmux async client not available")
 
         try:
             async with client.stream("POST", self.BASE_URL, json=data, headers=headers) as response:
@@ -530,4 +528,4 @@ class Zenmux:
 
         except Exception as e:
             logger.error(f"Zenmux async streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
+            raise ProviderStreamError(str(e))

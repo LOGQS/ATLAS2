@@ -394,3 +394,57 @@
   background: rgba(255, 107, 107, 0.2);
   color: #ffffff;
 }
+
+/* Chat Model Retry Banner */
+.chat-model-retry-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  margin: 8px 0 16px 0;
+  max-width: 400px;
+  background: linear-gradient(
+    135deg,
+    rgba(251, 191, 36, 0.1) 0%,
+    rgba(245, 158, 11, 0.08) 100%
+  );
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(251, 191, 36, 0.1);
+}
+
+.chat-model-retry-banner .chat-retry-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: rgba(251, 191, 36, 0.9);
+  animation: chat-retry-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes chat-retry-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+
+.chat-model-retry-banner .chat-retry-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-model-retry-banner .chat-retry-message {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: rgba(251, 191, 36, 1);
+  letter-spacing: 0.01em;
+}
+
+.chat-model-retry-banner .chat-retry-countdown {
+  font-size: 0.75rem;
+  color: rgba(251, 191, 36, 0.7);
+  font-weight: 500;
+}

@@ -4,6 +4,7 @@ from typing import Any, Dict, Generator, List, Optional
 from dotenv import load_dotenv
 import os
 from utils.logger import get_logger
+from utils.provider_errors import ProviderStreamError
 
 load_dotenv()
 
@@ -369,8 +370,7 @@ class Groq:
                                        **config_params):
         """Async generator version of generate_text_stream"""
         if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
+            raise ProviderStreamError("Groq provider not available")
 
         estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
 
@@ -400,8 +400,7 @@ class Groq:
 
         client = self._ensure_async_client()
         if client is None:
-            yield {"type": "error", "content": "Async client not available"}
-            return
+            raise ProviderStreamError("Groq async client not available")
 
         try:
             response = await client.chat.completions.create(**request_params)
@@ -439,4 +438,4 @@ class Groq:
 
         except Exception as e:
             logger.error(f"Groq async streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
+            raise ProviderStreamError(str(e))

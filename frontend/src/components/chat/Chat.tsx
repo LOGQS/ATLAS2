@@ -29,7 +29,7 @@ import '../../styles/chat/ThinkBox.css';
 import '../../styles/chat/RouterBox.css';
 import '../../styles/agentic/DomainBox.css';
 import '../../styles/message/MessageRenderer.css';
-import type { AttachedFile, Message } from '../../types/messages';
+import type { AttachedFile, Message, ModelRetryInfo } from '../../types/messages';
 
 const DUPLICATE_WINDOW_MS = 1000;
 const SKELETON_READY_DELAY_MS = 120;
@@ -73,6 +73,7 @@ interface ChatLive {
     fastpathParams?: string | null;
   } | null;
   domainExecution: any | null;
+  modelRetry: ModelRetryInfo | null;
   error: { message: string; receivedAt: number; messageId?: string | null } | null;
   version: number;
 }
@@ -104,6 +105,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
     thoughtsBuf: '',
     routerDecision: null,
     domainExecution: null,
+    modelRetry: null,
     error: null,
     version: 0
   });
@@ -428,6 +430,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         thoughtsBuf: snap.thoughtsBuf,
         routerDecision: snap.routerDecision,
         domainExecution: snap.domainExecution,
+        modelRetry: snap.modelRetry ?? null,
         error: snap.error ?? null,
         version: snap.version
       });
@@ -534,7 +537,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
             return [];
           });
         }
-        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
+        setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, modelRetry: null, error: null, version: 0 });
         setDismissedErrorAt(null);
         setFirstMessageSent(false);
         setPersistingAfterStream(false);
@@ -1096,7 +1099,7 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       });
     }
 
-    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, error: null, version: 0 });
+    setLiveOverlay({ state: 'static', lastAssistantId: null, contentBuf: '', thoughtsBuf: '', routerDecision: null, domainExecution: null, modelRetry: null, error: null, version: 0 });
     setDismissedErrorAt(null);
     liveStore.reset(chatId);
 
@@ -1398,6 +1401,49 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
           );
         })()}
 
+        {/* Show retry banner inside the assistant message when retrying (no domainExecution - DomainBox shows its own) */}
+        {isLastAssistantMessage && liveOverlay.modelRetry && !liveOverlay.domainExecution && (
+          <div className="chat-model-retry-banner">
+            <div className="chat-retry-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+            </div>
+            <div className="chat-retry-content">
+              <span className="chat-retry-message">
+                {liveOverlay.modelRetry.reason}, retrying... (Attempt {liveOverlay.modelRetry.attempt}/{liveOverlay.modelRetry.max_attempts})
+              </span>
+              <span className="chat-retry-countdown">
+                Waiting {typeof liveOverlay.modelRetry.delay_seconds === 'number'
+                  ? liveOverlay.modelRetry.delay_seconds.toFixed(1)
+                  : liveOverlay.modelRetry.delay_seconds}s
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Show error notice inside the assistant message when error occurred */}
+        {isLastAssistantMessage && liveOverlay.error && liveOverlay.error.receivedAt !== dismissedErrorAt && (
+          <div className="stream-error-notice" role="alert">
+            <div className="stream-error-icon" aria-hidden="true">!</div>
+            <div className="stream-error-body">
+              <div className="stream-error-message">{liveOverlay.error.message}</div>
+              <div className="stream-error-hint">You can retry sending your message when you're ready.</div>
+              <div className="stream-error-actions">
+                <button
+                  type="button"
+                  className="stream-error-dismiss"
+                  onClick={() => setDismissedErrorAt(liveOverlay.error!.receivedAt)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="response-content">
           <MessageRenderer
             content={message.content}
@@ -1426,14 +1472,11 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
         </AnimatePresence>
       </MessageWrapper>
     );
-  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected, onWorkspaceLoadingStart]);
+  }, [liveOverlay.state, liveOverlay.contentBuf.length, liveOverlay.thoughtsBuf.length, liveOverlay.routerDecision, liveOverlay.domainExecution, liveOverlay.modelRetry, liveOverlay.error, dismissedErrorAt, ttsState, lastAssistantMessage?.id, isSendInProgress, isMessageBeingEdited, handleMessageCopy, handleTTSToggle, handleMessageRetry, handleEditSave, handleEditCancel, handleMessageDelete, messageOperations, chatId, isTTSSupported, scrollControl, handleMessageEdit, handleAddFilesToMessage, unlinkFileFromMessage, showWorkspacePicker, onWorkspaceSelected, onWorkspaceLoadingStart]);
 
   const messageIndexMap = useMemo(() => {
     return new Map(messages.map((msg, idx) => [msg.id, idx]));
   }, [messages]);
-
-  const showErrorNotice = Boolean(liveOverlay.error && liveOverlay.error.receivedAt !== dismissedErrorAt);
-  const activeError = liveOverlay.error;
 
   const messageListContent = useMemo(() => {
     if (shouldShowSkeleton) {
@@ -1453,28 +1496,9 @@ const Chat = React.memo(forwardRef<any, ChatProps>(({
       renderedComponents.push(renderMessage(message, originalIndex));
     });
 
-    if (showErrorNotice && activeError) {
-      renderedComponents.push(
-        <div key={`stream-error-${activeError.receivedAt}`} className="stream-error-notice" role="alert">
-          <div className="stream-error-icon" aria-hidden="true">!</div>
-          <div className="stream-error-body">
-            <div className="stream-error-message">{activeError.message}</div>
-            <div className="stream-error-hint">You can retry sending your message when you're ready.</div>
-            <div className="stream-error-actions">
-              <button
-                type="button"
-                className="stream-error-dismiss"
-                onClick={() => setDismissedErrorAt(activeError.receivedAt)}
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
+    // Error notice is now rendered inside the assistant message (in renderMessage)
     return renderedComponents;
-  }, [shouldShowSkeleton, skeletonReady, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage, showErrorNotice, activeError]);
+  }, [shouldShowSkeleton, skeletonReady, isLoading, isOperationLoading, rendered, chatId, messageIndexMap, renderMessage]);
 
   return (
     <>

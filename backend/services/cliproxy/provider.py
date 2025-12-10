@@ -6,6 +6,7 @@ from typing import Any, Dict, Generator, List, Optional
 import requests
 
 from utils.logger import get_logger
+from utils.provider_errors import ProviderStreamError
 
 logger = get_logger(__name__)
 
@@ -469,12 +470,10 @@ class CLIProxy:
                                        **config_params):
         """Async generator version of generate_text_stream using httpx."""
         if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
+            raise ProviderStreamError("CLIProxy provider not available")
 
         if not self._ensure_manager():
-            yield {"type": "error", "content": "Failed to start CLIProxy"}
-            return
+            raise ProviderStreamError("Failed to start CLIProxy")
 
         config_params.pop("rate_limit_estimated_tokens", None)
 
@@ -509,8 +508,7 @@ class CLIProxy:
 
         client = self._ensure_async_client()
         if client is None:
-            yield {"type": "error", "content": "Async client not available"}
-            return
+            raise ProviderStreamError("CLIProxy async client not available")
 
         try:
             async with client.stream("POST", self.BASE_URL, json=data, headers=headers) as response:
@@ -567,7 +565,7 @@ class CLIProxy:
 
         except Exception as e:
             logger.error(f"CLIProxy async streaming API request failed: {str(e)}")
-            yield {"type": "error", "content": str(e)}
+            raise ProviderStreamError(str(e))
 
     # ==================== MANAGEMENT METHODS ====================
 

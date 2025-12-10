@@ -6,6 +6,7 @@ import os
 from google import genai
 from google.genai import types
 from utils.logger import get_logger
+from utils.provider_errors import ProviderStreamError
 from pathlib import Path
 import time
 from file_utils.upload_worker import start_upload_process
@@ -718,13 +719,11 @@ class Gemini:
                                         **config_params):
         """Async generator version of generate_text_stream"""
         if not self.is_available():
-            yield {"type": "error", "content": "Provider not available"}
-            return
+            raise ProviderStreamError("Gemini provider not available")
 
         async_client = self._ensure_async_client()
         if async_client is None:
-            yield {"type": "error", "content": "Async client not available"}
-            return
+            raise ProviderStreamError("Gemini async client not available")
 
         estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
         config = types.GenerateContentConfig(**config_params)
@@ -756,12 +755,12 @@ class Gemini:
         except Exception as e:
             error_message = self._extract_error_message(e)
             logger.error(f"Failed to start Gemini async streaming request: {error_message}")
-            raise RuntimeError(error_message) from e
+            raise ProviderStreamError(error_message) from e
 
         if not stream:
             error_message = "Gemini did not return any streaming data. Please try again."
             logger.error(error_message)
-            raise RuntimeError(error_message)
+            raise ProviderStreamError(error_message)
 
         has_content = False
         saw_invalid_chunk = False
@@ -793,7 +792,7 @@ class Gemini:
         except Exception as e:
             error_message = self._extract_error_message(e)
             logger.error(f"Gemini async streaming request failed: {error_message}")
-            raise RuntimeError(error_message) from e
+            raise ProviderStreamError(error_message) from e
 
         if last_chunk and hasattr(last_chunk, 'usage_metadata') and last_chunk.usage_metadata:
             usage_metadata = {
@@ -808,5 +807,5 @@ class Gemini:
                 logger.error("Gemini async streaming returned only empty or invalid chunks")
             else:
                 logger.error("Gemini async streaming completed without delivering any content")
-            raise RuntimeError("Gemini returned an empty response. Please retry your request.")
+            raise ProviderStreamError("Gemini returned an empty response. Please retry your request.")
 
