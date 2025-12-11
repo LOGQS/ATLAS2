@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import validate_file_path, format_file_size, get_data_dir
 
 _logger = get_logger(__name__)
@@ -194,5 +194,7 @@ attach_file_spec = ToolSpec(
         }
     },
     fn=_tool_attach_file,
-    rate_key="file.attach"
+    rate_key="file.attach",
+    timeout_seconds=60.0,  # File uploads involve network
+    processing_mode=ProcessingMode.ASYNC,
 )

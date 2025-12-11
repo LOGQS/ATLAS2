@@ -4,11 +4,19 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from chat.chat import Chat
 from utils.config import Config
 from utils.logger import get_logger
+
+
+class ProcessingMode(Enum):
+    """How a tool should be executed (aligns with aegeantic ProcessingMode)."""
+    PROCESS = "process"  # Separate process (for CPU-intensive)
+    THREAD = "thread"    # Thread pool (for I/O-bound blocking calls)
+    ASYNC = "async"      # Async executor (for native async code)
 
 
 @dataclass
@@ -43,6 +51,9 @@ class ToolSpec:
     out_schema: Dict[str, Any]
     fn: Callable[[Dict[str, Any], ToolExecutionContext], ToolResult]
     rate_key: Optional[str] = None
+    # aegeantic-compatible fields for future AgentRunner migration
+    timeout_seconds: float = 30.0
+    processing_mode: ProcessingMode = ProcessingMode.THREAD
 
 
 class ToolRegistry:
@@ -230,6 +241,8 @@ def register_builtin_tools() -> None:
         out_schema={"type": "object"},
         fn=_tool_llm_generate,
         rate_key="llm.generate",
+        timeout_seconds=180.0,  # API calls can be slow
+        processing_mode=ProcessingMode.ASYNC,
     )
     tool_registry.register(llm_spec)
     _logger.info("llm generate tool registered successfully")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 
 _logger = get_logger(__name__)
 
@@ -220,5 +220,7 @@ image_generate_spec = ToolSpec(
         }
     },
     fn=_tool_image_generate,
-    rate_key="media.image_generate"
+    rate_key="media.image_generate",
+    timeout_seconds=120.0,  # Image generation API calls
+    processing_mode=ProcessingMode.ASYNC,
 )

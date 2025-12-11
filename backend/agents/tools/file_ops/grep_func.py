@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import validate_directory_path, is_likely_binary
 
 _logger = get_logger(__name__)
@@ -335,5 +335,7 @@ grep_files_spec = ToolSpec(
         }
     },
     fn=_tool_grep_files,
-    rate_key="file.grep"
+    rate_key="file.grep",
+    timeout_seconds=60.0,  # Content search can be slow on large codebases
+    processing_mode=ProcessingMode.THREAD,
 )

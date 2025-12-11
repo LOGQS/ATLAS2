@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
-from agents.tools.tool_registry import ToolSpec, ToolResult, ToolExecutionContext, tool_registry
+from agents.tools.tool_registry import ToolSpec, ToolResult, ToolExecutionContext, tool_registry, ProcessingMode
 from utils.logger import get_logger
 
 
@@ -256,6 +256,8 @@ write_plan_spec = ToolSpec(
     out_schema={"type": "object"},
     fn=_write_plan_impl,
     rate_key="plan.write",
+    timeout_seconds=10.0,  # In-memory plan creation
+    processing_mode=ProcessingMode.THREAD,
 )
 
 update_plan_spec = ToolSpec(
@@ -316,6 +318,8 @@ update_plan_spec = ToolSpec(
     out_schema={"type": "object"},
     fn=_update_plan_impl,
     rate_key="plan.update",
+    timeout_seconds=10.0,  # In-memory plan update
+    processing_mode=ProcessingMode.THREAD,
 )
 
 

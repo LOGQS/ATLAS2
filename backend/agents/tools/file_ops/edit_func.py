@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import (
     validate_file_path,
     is_likely_binary,
@@ -95,16 +96,28 @@ def _tool_edit_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
         )
 
     result["backup_path"] = str(backup_path) if backup_path else None
-    ops = [
-        {
-            "type": "file_edit",
-            "path": workspace_relative_path(resolved_path, ctx.workspace_path),
-            "absolute_path": str(resolved_path),
-            "before": content,
-            "after": updated_content,
-            "mode": edit_mode,
-        }
-    ]
+
+    # Save checkpoints directly (instead of returning ops for executor to process)
+    if ctx.workspace_path:
+        relative_path = workspace_relative_path(resolved_path, ctx.workspace_path)
+        # Only checkpoint if content actually changed
+        if content != updated_content:
+            # Save before state
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=relative_path,
+                content=content,
+                edit_type='checkpoint'
+            )
+            # Save after state
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=relative_path,
+                content=updated_content,
+                edit_type='checkpoint'
+            )
+            cleanup_old_checkpoints(ctx.workspace_path, relative_path)
+
     return ToolResult(
         output=result,
         metadata={
@@ -112,7 +125,6 @@ def _tool_edit_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             "edit_mode": edit_mode,
             "backup_created": backup_path is not None
         },
-        ops=ops,
     )
 
 
@@ -362,5 +374,7 @@ edit_file_spec = ToolSpec(
         }
     },
     fn=_tool_edit_file,
-    rate_key="file.edit"
+    rate_key="file.edit",
+    timeout_seconds=30.0,  # File edits with checkpoint saving
+    processing_mode=ProcessingMode.THREAD,
 )

@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import format_file_size, is_windows_reserved_name, validate_file_path, workspace_relative_path
 
 _logger = get_logger(__name__)
@@ -105,16 +106,26 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             f"Successfully wrote file '{file_path}' ({format_file_size(file_size)}, {line_count} lines)"
         )
 
-        ops = [
-            {
-                "type": "file_write",
-                "path": workspace_relative_path(path, ctx.workspace_path),
-                "absolute_path": str(path),
-                "before": before_content,
-                "after": content,
-                "overwrite": bool(overwrite and file_existed),
-            }
-        ]
+        # Save checkpoints directly (instead of returning ops for executor to process)
+        if ctx.workspace_path:
+            relative_path = workspace_relative_path(path, ctx.workspace_path)
+            # Only checkpoint if content actually changed
+            if before_content != content:
+                # Save before state (empty string for new files)
+                save_file_checkpoint(
+                    workspace_path=ctx.workspace_path,
+                    file_path=relative_path,
+                    content=before_content if before_content is not None else "",
+                    edit_type='checkpoint'
+                )
+                # Save after state
+                save_file_checkpoint(
+                    workspace_path=ctx.workspace_path,
+                    file_path=relative_path,
+                    content=content,
+                    edit_type='checkpoint'
+                )
+                cleanup_old_checkpoints(ctx.workspace_path, relative_path)
 
         return ToolResult(
             output={
@@ -128,7 +139,6 @@ def _tool_write_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
                 }
             },
             metadata={"file_path": str(path), "size_bytes": file_size},
-            ops=ops,
         )
 
     except PermissionError:
@@ -179,5 +189,7 @@ write_file_spec = ToolSpec(
         }
     },
     fn=_tool_write_file,
-    rate_key="file.write"
+    rate_key="file.write",
+    timeout_seconds=30.0,  # File writes with checkpoint saving
+    processing_mode=ProcessingMode.THREAD,
 )

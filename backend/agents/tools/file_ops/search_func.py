@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import validate_directory_path, format_file_size
 
 _logger = get_logger(__name__)
@@ -346,5 +346,7 @@ search_files_spec = ToolSpec(
         }
     },
     fn=_tool_search_files,
-    rate_key="file.search"
+    rate_key="file.search",
+    timeout_seconds=60.0,  # Glob searches can be slow on large directories
+    processing_mode=ProcessingMode.THREAD,
 )

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import validate_directory_path, format_file_size
 
 _logger = get_logger(__name__)
@@ -254,5 +254,7 @@ list_dir_spec = ToolSpec(
         }
     },
     fn=_tool_list_dir,
-    rate_key="file.list_dir"
+    rate_key="file.list_dir",
+    timeout_seconds=10.0,  # Directory listing is fast
+    processing_mode=ProcessingMode.THREAD,
 )

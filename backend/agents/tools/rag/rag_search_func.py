@@ -9,7 +9,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import chromadb
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .rag_utils import configure_embedding_model
 
 _logger = get_logger(__name__)
@@ -270,7 +270,9 @@ rag_search_spec = ToolSpec(
         }
     },
     fn=_tool_rag_search,
-    rate_key="rag.search"
+    rate_key="rag.search",
+    timeout_seconds=60.0,  # Search should be relatively fast
+    processing_mode=ProcessingMode.THREAD,
 )
 
 

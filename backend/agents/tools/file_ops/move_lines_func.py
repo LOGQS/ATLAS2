@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import (
     validate_file_path,
     is_likely_binary,
@@ -239,28 +240,42 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
         result_output["warnings"] = warnings
 
     source_content_after = ''.join(new_source_lines)
-    ops = [
-        {
-            "type": "file_edit",
-            "path": workspace_relative_path(dest_resolved, ctx.workspace_path),
-            "absolute_path": str(dest_resolved),
-            "before": dest_content_before,
-            "after": dest_content_after,
-            "mode": "move_lines_destination",
-        }
-    ]
 
-    if remove_from_source:
-        ops.append(
-            {
-                "type": "file_edit",
-                "path": workspace_relative_path(source_resolved, ctx.workspace_path),
-                "absolute_path": str(source_resolved),
-                "before": source_content_before,
-                "after": source_content_after,
-                "mode": "move_lines_source",
-            }
-        )
+    # Save checkpoints directly (instead of returning ops for executor to process)
+    if ctx.workspace_path:
+        # Checkpoint for destination file
+        dest_relative_path = workspace_relative_path(dest_resolved, ctx.workspace_path)
+        if dest_content_before != dest_content_after:
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=dest_relative_path,
+                content=dest_content_before,
+                edit_type='checkpoint'
+            )
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=dest_relative_path,
+                content=dest_content_after,
+                edit_type='checkpoint'
+            )
+            cleanup_old_checkpoints(ctx.workspace_path, dest_relative_path)
+
+        # Checkpoint for source file if it was modified
+        if remove_from_source and source_content_before != source_content_after:
+            source_relative_path = workspace_relative_path(source_resolved, ctx.workspace_path)
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=source_relative_path,
+                content=source_content_before,
+                edit_type='checkpoint'
+            )
+            save_file_checkpoint(
+                workspace_path=ctx.workspace_path,
+                file_path=source_relative_path,
+                content=source_content_after,
+                edit_type='checkpoint'
+            )
+            cleanup_old_checkpoints(ctx.workspace_path, source_relative_path)
 
     return ToolResult(
         output=result_output,
@@ -271,7 +286,6 @@ def _tool_move_lines(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolR
             "removed_from_source": remove_from_source,
             "has_warnings": bool(warnings)
         },
-        ops=ops,
     )
 
 
@@ -331,5 +345,7 @@ move_lines_spec = ToolSpec(
         }
     },
     fn=_tool_move_lines,
-    rate_key="file.move_lines"
+    rate_key="file.move_lines",
+    timeout_seconds=30.0,  # Line moves with checkpoint saving
+    processing_mode=ProcessingMode.THREAD,
 )

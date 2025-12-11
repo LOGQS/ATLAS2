@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from ..file_ops.file_utils import validate_directory_path
 
 _logger = get_logger(__name__)
@@ -438,5 +438,7 @@ exec_command_spec = ToolSpec(
         }
     },
     fn=_tool_exec_command,
-    rate_key="system.exec"
+    rate_key="system.exec",
+    timeout_seconds=600.0,  # Commands can run up to 10 minutes (internal max)
+    processing_mode=ProcessingMode.THREAD,
 )

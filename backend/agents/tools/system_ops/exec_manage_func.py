@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 import platform
-import signal
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .exec_func import _background_jobs, BackgroundJob
 
 _logger = get_logger(__name__)
@@ -501,7 +499,9 @@ exec_status_spec = ToolSpec(
         }
     },
     fn=_tool_exec_status,
-    rate_key="system.exec_status"
+    rate_key="system.exec_status",
+    timeout_seconds=10.0,  # Quick status check
+    processing_mode=ProcessingMode.THREAD,
 )
 
 exec_kill_spec = ToolSpec(
@@ -546,7 +546,9 @@ exec_kill_spec = ToolSpec(
         }
     },
     fn=_tool_exec_kill,
-    rate_key="system.exec_kill"
+    rate_key="system.exec_kill",
+    timeout_seconds=30.0,  # Allow time for graceful termination
+    processing_mode=ProcessingMode.THREAD,
 )
 
 exec_list_spec = ToolSpec(
@@ -603,7 +605,9 @@ exec_list_spec = ToolSpec(
         }
     },
     fn=_tool_exec_list,
-    rate_key="system.exec_list"
+    rate_key="system.exec_list",
+    timeout_seconds=10.0,  # Quick listing
+    processing_mode=ProcessingMode.THREAD,
 )
 
 exec_wait_spec = ToolSpec(
@@ -656,5 +660,7 @@ exec_wait_spec = ToolSpec(
         }
     },
     fn=_tool_exec_wait,
-    rate_key="system.exec_wait"
+    rate_key="system.exec_wait",
+    timeout_seconds=3600.0,  # Can wait up to an hour for long commands
+    processing_mode=ProcessingMode.THREAD,
 )

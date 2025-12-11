@@ -5,11 +5,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from utils.checkpoint_utils import save_file_checkpoint, cleanup_old_checkpoints
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import (
     validate_file_path,
     format_file_size,
-    create_backup
+    create_backup,
+    workspace_relative_path,
 )
 
 _logger = get_logger(__name__)
@@ -159,7 +161,8 @@ def _tool_notebook_edit(params: Dict[str, Any], ctx: ToolExecutionContext) -> To
 
     try:
         with open(resolved_path, 'r', encoding='utf-8') as f:
-            notebook = json.load(f)
+            original_content = f.read()
+        notebook = json.loads(original_content)
     except json.JSONDecodeError as e:
         raise ValueError(
             f"File '{file_path}' is not a valid JSON file: {str(e)}. "
@@ -201,8 +204,11 @@ def _tool_notebook_edit(params: Dict[str, Any], ctx: ToolExecutionContext) -> To
     notebook["cells"] = cells
 
     try:
+        # Serialize to string for writing and checkpoint comparison
+        new_content = json.dumps(notebook, indent=1, ensure_ascii=False)
+
         with open(resolved_path, 'w', encoding='utf-8') as f:
-            json.dump(notebook, f, indent=1, ensure_ascii=False)
+            f.write(new_content)
 
         file_size = resolved_path.stat().st_size
         new_cell_count = len(cells)
@@ -211,6 +217,27 @@ def _tool_notebook_edit(params: Dict[str, Any], ctx: ToolExecutionContext) -> To
             f"Successfully edited notebook '{resolved_path}' "
             f"({edit_mode} mode, new cell count: {new_cell_count})"
         )
+
+        # Save checkpoints directly
+        if ctx.workspace_path:
+            relative_path = workspace_relative_path(resolved_path, ctx.workspace_path)
+            # Only checkpoint if content actually changed
+            if original_content != new_content:
+                # Save before state
+                save_file_checkpoint(
+                    workspace_path=ctx.workspace_path,
+                    file_path=relative_path,
+                    content=original_content,
+                    edit_type='checkpoint'
+                )
+                # Save after state
+                save_file_checkpoint(
+                    workspace_path=ctx.workspace_path,
+                    file_path=relative_path,
+                    content=new_content,
+                    edit_type='checkpoint'
+                )
+                cleanup_old_checkpoints(ctx.workspace_path, relative_path)
 
         result.update({
             "status": "success",
@@ -430,5 +457,7 @@ notebook_edit_spec = ToolSpec(
         }
     },
     fn=_tool_notebook_edit,
-    rate_key="file.notebook_edit"
+    rate_key="file.notebook_edit",
+    timeout_seconds=30.0,  # Notebook edits with checkpoint saving
+    processing_mode=ProcessingMode.THREAD,
 )

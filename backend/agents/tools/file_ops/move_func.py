@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
-from .file_utils import validate_file_path, format_file_size, check_paths_same, workspace_relative_path
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
+from .file_utils import validate_file_path, format_file_size, check_paths_same
 
 _logger = get_logger(__name__)
 
@@ -92,17 +92,6 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
             f"({format_file_size(file_size)})"
         )
 
-        ops = [
-            {
-                "type": "file_move",
-                "source_path": workspace_relative_path(source_resolved, ctx.workspace_path),
-                "destination_path": workspace_relative_path(dest_resolved, ctx.workspace_path),
-                "absolute_source_path": str(source_resolved),
-                "absolute_destination_path": str(dest_resolved),
-                "overwrite": bool(overwrite and dest_existed_before),
-            }
-        ]
-
         return ToolResult(
             output={
                 "status": "success",
@@ -119,7 +108,6 @@ def _tool_move_file(params: Dict[str, Any], ctx: ToolExecutionContext) -> ToolRe
                 "destination": str(dest_resolved),
                 "size_bytes": file_size
             },
-            ops=ops,
         )
 
     except PermissionError:
@@ -173,5 +161,7 @@ move_file_spec = ToolSpec(
         }
     },
     fn=_tool_move_file,
-    rate_key="file.move"
+    rate_key="file.move",
+    timeout_seconds=30.0,  # File moves are fast
+    processing_mode=ProcessingMode.THREAD,
 )

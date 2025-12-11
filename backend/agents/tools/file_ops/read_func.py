@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .file_utils import (
     validate_file_path,
     is_likely_binary,
@@ -225,5 +225,7 @@ read_file_spec = ToolSpec(
         }
     },
     fn=_tool_read_file,
-    rate_key="file.read"
+    rate_key="file.read",
+    timeout_seconds=10.0,  # Fast file reads
+    processing_mode=ProcessingMode.THREAD,
 )

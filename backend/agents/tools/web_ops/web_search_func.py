@@ -5,7 +5,6 @@ import concurrent.futures
 import random
 import re
 import urllib.parse
-import uuid
 from typing import Any, Dict, List, Optional
 import psutil
 
@@ -14,7 +13,7 @@ from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher, RateLimiter
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 
 _logger = get_logger(__name__)
 
@@ -786,5 +785,7 @@ web_search_spec = ToolSpec(
         }
     },
     fn=_tool_web_search,
-    rate_key="web.search"
+    rate_key="web.search",
+    timeout_seconds=120.0,  # Web crawling can be slow
+    processing_mode=ProcessingMode.ASYNC,
 )

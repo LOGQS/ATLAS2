@@ -20,7 +20,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import chromadb
 
 from utils.logger import get_logger
-from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec
+from ...tools.tool_registry import ToolExecutionContext, ToolResult, ToolSpec, ProcessingMode
 from .rag_utils import configure_embedding_model
 
 _logger = get_logger(__name__)
@@ -572,5 +572,7 @@ rag_index_spec = ToolSpec(
         }
     },
     fn=_tool_rag_index,
-    rate_key="rag.index"
+    rate_key="rag.index",
+    timeout_seconds=3600.0,  # Indexing large codebases can take up to an hour
+    processing_mode=ProcessingMode.THREAD,
 )
