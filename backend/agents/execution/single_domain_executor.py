@@ -113,7 +113,6 @@ class ToolExecutionRecord:
     executed_at: str
     result_summary: str
     raw_result: Any
-    ops: Optional[List[Dict[str, Any]]] = None
     error: Optional[str] = None
 
 
@@ -512,22 +511,6 @@ class SingleDomainExecutor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    @staticmethod
-    def _calculate_line_diff(before_text: str, after_text: str) -> Tuple[int, int]:
-        """
-        Calculate the number of lines added and removed between two text blobs.
-        """
-        before_lines = before_text.splitlines()
-        after_lines = after_text.splitlines()
-        matcher = difflib.SequenceMatcher(None, before_lines, after_lines)
-        lines_added = 0
-        lines_removed = 0
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-            if tag in ('replace', 'insert'):
-                lines_added += j2 - j1
-            if tag in ('replace', 'delete'):
-                lines_removed += i2 - i1
-        return lines_added, lines_removed
 
     def _run_agent_iteration(
         self,
@@ -1331,12 +1314,9 @@ class SingleDomainExecutor:
                     state.context.task_id,
                 )
                 tool_result = self._execute_tool_call(state, proposal)
-            trimmed_ops = self._strip_large_fields_from_ops(tool_result.ops)
-            ops_payload = self._ensure_serializable(trimmed_ops)
             result_payload = {
                 "output": self._ensure_serializable(tool_result.output),
                 "metadata": self._ensure_serializable(tool_result.metadata),
-                "ops": ops_payload,
             }
 
             # Check if this tool call created a plan (for coder domain planning phase)
@@ -1353,8 +1333,8 @@ class SingleDomainExecutor:
                 if tool_result.metadata and "plan" in tool_result.metadata:
                     state.plan = tool_result.metadata["plan"]
 
-            # Create checkpoints for file operations
-            self._create_checkpoints_from_ops(state, tool_result.ops, proposal.tool_name)
+            # Note: Checkpoints are now saved directly by tools (write, edit, etc.)
+            # via save_file_checkpoint() instead of being processed here from ops
 
             summary = self._summarize_tool_output(result_payload["output"])
 
@@ -1372,7 +1352,6 @@ class SingleDomainExecutor:
                 executed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 result_summary=summary,
                 raw_result=result_payload,
-                ops=ops_payload,
                 error=error,
             )
 
@@ -1413,7 +1392,6 @@ class SingleDomainExecutor:
                     "tool": executed_record.tool_name,
                     "params": executed_record.param_entries,
                     "result": executed_record.raw_result,
-                    "ops": executed_record.ops,
                 },
             )
 
@@ -1502,173 +1480,6 @@ class SingleDomainExecutor:
                 output={"error": error_msg, "suggestion": "Review the error and try again with corrected parameters"},
                 metadata={"status": "error", "error_type": type(exc).__name__}
             )
-
-    def _create_checkpoints_from_ops(
-        self,
-        state: DomainTaskState,
-        ops: Optional[List[Dict[str, Any]]],
-        tool_name: str,
-    ) -> None:
-        """
-        Create file checkpoints for file operations.
-
-        Checkpoints are created for:
-        - file.write: Saves 'before' content if file was overwritten
-        - file.edit: Saves 'before' content before edits
-        - notebook.edit: Saves 'before' content before notebook edits
-        """
-        if not ops or not isinstance(ops, list):
-            return
-
-        if not state.context.workspace_path:
-            self.logger.warning("[CHECKPOINT] No workspace path available, skipping checkpoint creation")
-            return
-
-        # Only create checkpoints for specific file operation tools
-        checkpoint_tools = {'file.write', 'file.edit', 'notebook.edit'}
-        if tool_name not in checkpoint_tools:
-            return
-
-        workspace_path = state.context.workspace_path
-
-        for op in ops:
-            if not isinstance(op, dict):
-                continue
-
-            op_type = op.get('type', '')
-            file_path = op.get('path', '')
-
-            if not file_path:
-                continue
-
-            # Only checkpoint operations that modify files
-            if op_type not in ('file_write', 'file_edit', 'notebook_edit'):
-                continue
-
-            before_content = op.get('before')
-            after_content = op.get('after')
-
-            before_is_str = isinstance(before_content, str)
-            after_is_str = isinstance(after_content, str)
-
-            if before_is_str and after_is_str and before_content == after_content:
-                self.logger.debug(
-                    "[CHECKPOINT] Skipping checkpoint for %s (no content change detected)",
-                    file_path,
-                )
-                continue
-
-            before_checkpoint: Optional[Dict[str, object]] = None
-            after_checkpoint: Optional[Dict[str, object]] = None
-            saved_any = False
-
-            if before_is_str or after_is_str:
-                lines_added, lines_removed = self._calculate_line_diff(
-                    before_content if before_is_str else "",
-                    after_content if after_is_str else "",
-                )
-                op['lines_added'] = lines_added
-                op['lines_removed'] = lines_removed
-                op['linesAdded'] = lines_added
-                op['linesRemoved'] = lines_removed
-            else:
-                op['lines_added'] = 0
-                op['lines_removed'] = 0
-                op['linesAdded'] = 0
-                op['linesRemoved'] = 0
-
-            try:
-                if after_is_str:
-                    before_checkpoint = save_file_checkpoint(
-                        workspace_path=workspace_path,
-                        file_path=file_path,
-                        content=before_content if before_is_str else "",
-                        edit_type='checkpoint',
-                    )
-                    if before_checkpoint:
-                        if before_checkpoint.get('created'):
-                            saved_any = True
-                            if before_is_str:
-                                self.logger.debug(
-                                    "[CHECKPOINT] Captured pre-change snapshot for %s (id=%s)",
-                                    file_path,
-                                    before_checkpoint.get('id'),
-                                )
-                            else:
-                                self.logger.debug(
-                                    "[CHECKPOINT] Captured empty pre-change snapshot for new file %s (id=%s)",
-                                    file_path,
-                                    before_checkpoint.get('id'),
-                                )
-                        else:
-                            self.logger.debug(
-                                "[CHECKPOINT] Reused existing pre-change snapshot for %s (id=%s)",
-                                file_path,
-                                before_checkpoint.get('id'),
-                            )
-
-                if after_is_str:
-                    after_checkpoint = save_file_checkpoint(
-                        workspace_path=workspace_path,
-                        file_path=file_path,
-                        content=after_content,
-                        edit_type='checkpoint',
-                    )
-                    if after_checkpoint:
-                        if after_checkpoint.get('created'):
-                            saved_any = True
-                            self.logger.debug(
-                                "[CHECKPOINT] Captured post-change snapshot for %s (id=%s)",
-                                file_path,
-                                after_checkpoint.get('id'),
-                            )
-                        else:
-                            self.logger.debug(
-                                "[CHECKPOINT] Reused existing post-change snapshot for %s (id=%s)",
-                                file_path,
-                                after_checkpoint.get('id'),
-                            )
-
-                if saved_any:
-                    cleanup_old_checkpoints(workspace_path, file_path, keep_count=100)
-            except Exception as e:
-                self.logger.error(f"[CHECKPOINT] Error creating checkpoint for {file_path}: {e}")
-                continue
-
-            if before_checkpoint:
-                op['before_checkpoint_id'] = before_checkpoint.get('id')
-                op['before_checkpoint_created'] = bool(before_checkpoint.get('created'))
-            if after_checkpoint:
-                op['after_checkpoint_id'] = after_checkpoint.get('id')
-                op['after_checkpoint_created'] = bool(after_checkpoint.get('created'))
-
-            if before_checkpoint or after_checkpoint:
-                op['checkpoint_created'] = {
-                    "before": bool(before_checkpoint and before_checkpoint.get('created')),
-                    "after": bool(after_checkpoint and after_checkpoint.get('created')),
-                }
-                op['checkpoint_ids'] = {
-                    "before": before_checkpoint.get('id') if before_checkpoint else None,
-                    "after": after_checkpoint.get('id') if after_checkpoint else None,
-                }
-
-    @staticmethod
-    def _strip_large_fields_from_ops(ops: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        """
-        Remove large textual fields from ops payloads before persisting them.
-        These fields are only needed for checkpointing (handled separately), so
-        trimming them keeps the in-memory task history lean.
-        """
-        if not ops or not isinstance(ops, list):
-            return []
-
-        large_keys = {"before", "after", "diff", "patch", "content", "raw", "original_content"}
-        trimmed_ops: List[Dict[str, Any]] = []
-        for op in ops:
-            if not isinstance(op, dict):
-                continue
-            trimmed_ops.append({k: v for k, v in op.items() if k not in large_keys})
-        return trimmed_ops
 
     def _call_agent(self, state: DomainTaskState, prompt: str) -> str:
         from chat.chat import Chat  # Lazy import to avoid heavy module load at import time
@@ -3010,7 +2821,6 @@ The planner generated this comprehensive specification to guide your implementat
             "executed_at": record.executed_at,
             "result_summary": record.result_summary,
             "raw_result": preview_result,
-            "ops": record.ops,
             "error": record.error,
         }
 

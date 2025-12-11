@@ -43,22 +43,18 @@ class TestToolResult(unittest.TestCase):
         result = ToolResult(output="test output")
 
         self.assertEqual(result.output, "test output")
-        self.assertIsNone(result.ops)
         self.assertEqual(result.metadata, {})
 
     def test_creates_result_with_all_fields(self):
-        """Result can be created with all fields."""
-        ops = [{"type": "message.append", "content": "test"}]
+        """Result can be created with output and metadata."""
         metadata = {"duration_ms": 150}
 
         result = ToolResult(
             output="test output",
-            ops=ops,
             metadata=metadata
         )
 
         self.assertEqual(result.output, "test output")
-        self.assertEqual(result.ops, ops)
         self.assertEqual(result.metadata, metadata)
 
     def test_supports_any_output_type(self):

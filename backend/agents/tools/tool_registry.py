@@ -32,10 +32,13 @@ class ToolExecutionContext:
 
 @dataclass
 class ToolResult:
-    """Standardised return type for tools."""
+    """Standardised return type for tools.
+
+    Note: ops field was removed - tools now save checkpoints directly
+    via save_file_checkpoint() instead of returning ops.
+    """
 
     output: Any
-    ops: Optional[List[Dict[str, Any]]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
