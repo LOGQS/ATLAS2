@@ -37,10 +37,10 @@ Always test changes and maintain backwards compatibility.""",
                     max_time_seconds=300,
                     max_context_tokens=25000,
                 ),
-                model_preference="gpt-oss-120b",
+                model_preference="mistralai/devstral-2512:free",
                 # Two-model spec-driven development
-                planner_model="gpt-oss-120b",  # Used for planning phase: generates high-level plan + detailed code spec
-                writer_model="qwen-3-235b-a22b-instruct-2507",  # Used for execution phase: writes actual code
+                planner_model="mistralai/devstral-2512:free",  # Used for planning phase: generates high-level plan + detailed code spec
+                writer_model="mistralai/devstral-2512:free",  # Used for execution phase: writes actual code
                 writer_fallback_models=["gpt-oss-120b", "zai-glm-4.6", "qwen-3-235b-a22b-instruct-2507"],  # Fallback on rate limits
             )
         ],

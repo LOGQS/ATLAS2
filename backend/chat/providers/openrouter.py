@@ -34,12 +34,16 @@ class OpenRouter:
             "name": "Tongyi Deep Research",
             "supports_reasoning": True
         },
-        "openai/gpt-oss-20b:free": {
-            "name": "GPT OSS 20B",
+        "openai/gpt-oss-120b:free": {
+            "name": "GPT OSS 120B",
             "supports_reasoning": True
         },
         "amazon/nova-2-lite-v1:free": {
             "name": "Amazon Nova 2 Lite",
+            "supports_reasoning": False
+        },
+        "mistralai/devstral-2512:free": {
+            "name": "Devstral",
             "supports_reasoning": False
         }
     }
