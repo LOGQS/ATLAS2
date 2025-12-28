@@ -582,7 +582,7 @@ def register_chat_routes(app: Flask):
                 try:
                     from agents.roles.router import router as route_agent
                     chat_history = chat.get_chat_history()
-                    router_info = route_agent.route_request(message, chat_history)
+                    router_info = route_agent.route_request(message, chat_history, chat_id=chat_id)
                     router_error = router_info.get('error')
                     if router_error:
                         logger.warning(f"[ROUTE_HANDLER_ROUTER] Router returned with error for {chat.chat_id}: {router_error}, falling back to default")

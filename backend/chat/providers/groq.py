@@ -105,6 +105,63 @@ class Groq:
         total = getattr(usage, "total_tokens", None)
         return int(total) if total is not None else None
 
+    @staticmethod
+    def extract_usage_from_response(response: Any) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from Groq response in standardized format.
+
+        Returns dict with optional fields:
+            prompt_tokens, completion_tokens, total_tokens,
+            queue_time, prompt_time, completion_time, total_time
+        """
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                # Try dict access for serialized responses
+                if isinstance(response, dict):
+                    usage = response.get("usage")
+                if usage is None:
+                    return None
+
+            # Handle both object and dict formats
+            if isinstance(usage, dict):
+                prompt = usage.get("prompt_tokens", 0)
+                completion = usage.get("completion_tokens", 0)
+                total = usage.get("total_tokens", 0)
+                # Groq-specific timing fields
+                queue_time = usage.get("queue_time")
+                prompt_time = usage.get("prompt_time")
+                completion_time = usage.get("completion_time")
+                total_time = usage.get("total_time")
+            else:
+                prompt = getattr(usage, "prompt_tokens", 0) or 0
+                completion = getattr(usage, "completion_tokens", 0) or 0
+                total = getattr(usage, "total_tokens", 0) or 0
+                queue_time = getattr(usage, "queue_time", None)
+                prompt_time = getattr(usage, "prompt_time", None)
+                completion_time = getattr(usage, "completion_time", None)
+                total_time = getattr(usage, "total_time", None)
+
+            result = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total
+            }
+
+            # Add timing info if available
+            if queue_time is not None:
+                result["queue_time"] = queue_time
+            if prompt_time is not None:
+                result["prompt_time"] = prompt_time
+            if completion_time is not None:
+                result["completion_time"] = completion_time
+            if total_time is not None:
+                result["total_time"] = total_time
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to extract usage from Groq response: {e}")
+            return None
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Groq/OpenAI format"""

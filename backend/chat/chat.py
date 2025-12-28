@@ -1132,7 +1132,9 @@ class Chat:
 
         if not is_internal_call:
             estimated_tokens = token_estimate['estimated_tokens']['total']
-            actual_tokens_count = actual_tokens['total_tokens'] if actual_tokens else 0
+            actual_tokens_count = actual_tokens.get('total_tokens', 0) if actual_tokens else 0
+            prompt_tokens = actual_tokens.get('prompt_tokens', 0) if actual_tokens else 0
+            completion_tokens = actual_tokens.get('completion_tokens', 0) if actual_tokens else 0
 
             try:
                 from utils.rate_limiter import get_rate_limiter
@@ -1143,25 +1145,17 @@ class Chat:
             except Exception as e:
                 logger.warning(f"[RATE-LIMIT] Failed to finalize tokens: {e}")
 
-            if actual_tokens_count > 0:
-                db.save_token_usage(
-                    chat_id=self.chat_id,
-                    role='assistant',
-                    provider=provider,
-                    model=model,
-                    estimated_tokens=estimated_tokens,
-                    actual_tokens=actual_tokens_count
-                )
-            else:
-                db.save_token_usage(
-                    chat_id=self.chat_id,
-                    role='assistant',
-                    provider=provider,
-                    model=model,
-                    estimated_tokens=estimated_tokens,
-                    actual_tokens=0
-                )
-            logger.debug(f"[TokenUsage] Saved assistant token usage for chat {self.chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count}")
+            db.save_token_usage(
+                chat_id=self.chat_id,
+                role='assistant',
+                provider=provider,
+                model=model,
+                estimated_tokens=estimated_tokens,
+                actual_tokens=actual_tokens_count,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens
+            )
+            logger.debug(f"[TokenUsage] Saved assistant: prompt={prompt_tokens}, completion={completion_tokens}")
 
         if response.get("text") and not is_internal_call:
             db.save_message(

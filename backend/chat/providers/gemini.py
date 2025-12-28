@@ -10,6 +10,7 @@ from utils.provider_errors import ProviderStreamError
 from pathlib import Path
 import time
 from file_utils.upload_worker import start_upload_process
+from file_utils.extensions import IMAGE_EXTENSIONS, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from utils.cancellation_manager import cancellation_manager
 
 load_dotenv()
@@ -20,7 +21,14 @@ class Gemini:
     """
     Gemini API from Google
     """
-    
+
+    # Multimodal token estimation constants (from Gemini docs)
+    IMAGE_BASE_TOKENS = 258  # Tokens per 768x768 tile (or images ≤384px)
+    IMAGE_SMALL_THRESHOLD = 384  # Images ≤384px in both dims = 1 tile
+    IMAGE_TILE_SIZE = 768  # Larger images tiled into 768x768
+    VIDEO_TOKENS_PER_SEC = 263
+    AUDIO_TOKENS_PER_SEC = 32
+
     AVAILABLE_MODELS = {
         "gemini-2.5-flash-preview-09-2025": {
             "name": "Gemini 2.5 Flash",
@@ -107,6 +115,48 @@ class Gemini:
         if total_tokens is None:
             return None
         return int(total_tokens)
+
+    @staticmethod
+    def extract_usage_from_response(response: Any) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from Gemini response in standardized format.
+
+        Returns dict with optional fields:
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens
+        """
+        try:
+            usage_metadata = getattr(response, "usage_metadata", None)
+            if usage_metadata is None:
+                # Try dict access for serialized responses
+                if isinstance(response, dict):
+                    usage_metadata = response.get("usage_metadata")
+                if usage_metadata is None:
+                    return None
+
+            # Handle both object and dict formats
+            if isinstance(usage_metadata, dict):
+                prompt = usage_metadata.get("prompt_token_count", 0)
+                completion = usage_metadata.get("candidates_token_count", 0)
+                total = usage_metadata.get("total_token_count", 0)
+                cached = usage_metadata.get("cached_content_token_count", 0)
+            else:
+                prompt = getattr(usage_metadata, "prompt_token_count", 0) or 0
+                completion = getattr(usage_metadata, "candidates_token_count", 0) or 0
+                total = getattr(usage_metadata, "total_token_count", 0) or 0
+                cached = getattr(usage_metadata, "cached_content_token_count", 0) or 0
+
+            result = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total
+            }
+            if cached:
+                result["cached_tokens"] = cached
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to extract usage from Gemini response: {e}")
+            return None
 
     
     def _validate_historical_files(self, attached_files: List[Dict[str, Any]]) -> List[str]:
@@ -672,6 +722,96 @@ class Gemini:
                 'error': str(e),
                 'state': 'error'
             }
+
+    def calculate_image_tokens(self, width: int, height: int) -> int:
+        """
+        Calculate image tokens based on dimensions using tiling logic.
+
+        Per Gemini docs:
+        - Images ≤384px in both dimensions = 258 tokens (1 tile)
+        - Larger images = cropped into 768x768 tiles, each tile = 258 tokens
+        """
+        if width <= self.IMAGE_SMALL_THRESHOLD and height <= self.IMAGE_SMALL_THRESHOLD:
+            return self.IMAGE_BASE_TOKENS
+
+        import math
+        tiles_x = max(1, math.ceil(width / self.IMAGE_TILE_SIZE))
+        tiles_y = max(1, math.ceil(height / self.IMAGE_TILE_SIZE))
+        return tiles_x * tiles_y * self.IMAGE_BASE_TOKENS
+
+    def estimate_image_tokens_from_size(self, file_size: int) -> int:
+        """
+        Estimate image tokens from file size when dimensions unknown.
+
+        Based on typical image compression ratios:
+        - < 100KB: likely small image (≤384px) → 1 tile
+        - 100KB - 500KB: medium image (~1000-1500px) → ~4 tiles
+        - 500KB - 2MB: large image (~2000-3000px) → ~9 tiles
+        - > 2MB: very large image → ~16 tiles
+        """
+        if file_size < 100 * 1024:
+            return self.IMAGE_BASE_TOKENS  # 258 (1 tile)
+        elif file_size < 500 * 1024:
+            return self.IMAGE_BASE_TOKENS * 4  # 1032 (4 tiles)
+        elif file_size < 2 * 1024 * 1024:
+            return self.IMAGE_BASE_TOKENS * 9  # 2322 (9 tiles)
+        else:
+            return self.IMAGE_BASE_TOKENS * 16  # 4128 (16 tiles)
+
+    def estimate_file_tokens(self, api_file_name: str, file_info: dict = None) -> dict:
+        """
+        Estimate tokens for a file attachment.
+
+        Tries native API counting first, falls back to size-based heuristics.
+
+        Args:
+            api_file_name: The Gemini API file name (e.g., "files/abc123")
+            file_info: Optional dict with file_extension, file_size from database
+
+        Returns:
+            {"tokens": int, "method": str}
+        """
+        # Try native API counting first
+        if self.is_available():
+            try:
+                gemini_file = self.client.files.get(name=api_file_name)
+                if gemini_file:
+                    # Use count_tokens API with the file
+                    parts = [{"file_data": {"file_uri": gemini_file.uri}}]
+                    tokens = self.count_tokens(parts, "gemini-2.5-flash-preview-09-2025")
+                    if tokens > 0:
+                        return {"tokens": tokens, "method": "gemini_native"}
+            except Exception as e:
+                logger.debug(f"Native file token counting failed for {api_file_name}: {e}")
+
+        # Fallback to size-based estimation
+        if not file_info:
+            return {"tokens": self.IMAGE_BASE_TOKENS * 4, "method": "gemini_default_fallback"}
+
+        file_extension = file_info.get('file_extension', '').lower()
+        file_size = file_info.get('file_size', 0)
+
+        # Image: use size-based tiling estimation
+        if file_extension in IMAGE_EXTENSIONS:
+            tokens = self.estimate_image_tokens_from_size(file_size)
+            return {"tokens": tokens, "method": "gemini_image_size_estimate"}
+
+        # Video: estimate duration from size, then tokens
+        if file_extension in VIDEO_EXTENSIONS:
+            size_mb = file_size / (1024 * 1024)
+            estimated_seconds = size_mb * 10  # ~10 seconds per MB
+            tokens = min(int(estimated_seconds * self.VIDEO_TOKENS_PER_SEC), 50000)
+            return {"tokens": tokens, "method": "gemini_video_size_estimate"}
+
+        # Audio: estimate duration from size, then tokens
+        if file_extension in AUDIO_EXTENSIONS:
+            size_mb = file_size / (1024 * 1024)
+            estimated_seconds = size_mb * 30  # ~30 seconds per MB
+            tokens = int(estimated_seconds * self.AUDIO_TOKENS_PER_SEC)
+            return {"tokens": tokens, "method": "gemini_audio_size_estimate"}
+
+        # Default fallback for unknown file types
+        return {"tokens": self.IMAGE_BASE_TOKENS * 4, "method": "gemini_unknown_fallback"}
 
     def _extract_error_message(self, error: Exception, default: str = "Gemini request failed. Please try again.") -> str:
         """Extract a user-friendly error message from Gemini exceptions"""

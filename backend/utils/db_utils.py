@@ -481,13 +481,15 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS token_usage (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('router', 'planner', 'assistant', 'agent_tools')),
+                    role TEXT NOT NULL CHECK(role IN ('router', 'assistant', 'agent_tools')),
                     provider TEXT NOT NULL,
                     model TEXT NOT NULL,
                     estimated_tokens INTEGER DEFAULT 0,
                     actual_tokens INTEGER DEFAULT 0,
+                    prompt_tokens INTEGER DEFAULT 0,
+                    completion_tokens INTEGER DEFAULT 0,
+                    request_id TEXT,
                     message_id TEXT,
-                    plan_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
                 )
@@ -500,6 +502,9 @@ class DatabaseManager:
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_token_usage_request ON token_usage(request_id)
             """)
 
             cursor.execute("""
@@ -2243,21 +2248,25 @@ class DatabaseManager:
         model: str,
         estimated_tokens: int = 0,
         actual_tokens: int = 0,
-        message_id: Optional[str] = None,
-        plan_id: Optional[str] = None
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        request_id: Optional[str] = None,
+        message_id: Optional[str] = None
     ) -> bool:
         """
         Save token usage for a specific role in a chat.
 
         Args:
             chat_id: Chat identifier
-            role: One of 'router', 'planner', 'assistant', 'agent_tools'
+            role: One of 'router', 'assistant', 'agent_tools'
             provider: Provider name (e.g., 'gemini', 'groq')
             model: Model name
-            estimated_tokens: Estimated token count
-            actual_tokens: Actual token count from provider response
+            estimated_tokens: Estimated token count (pre-request)
+            actual_tokens: Total tokens from provider response
+            prompt_tokens: Input tokens from provider response
+            completion_tokens: Output tokens from provider response
+            request_id: UUID to correlate router/assistant in same interaction
             message_id: Optional message ID this usage is associated with
-            plan_id: Optional plan ID this usage is associated with
 
         Returns:
             bool: True if saved successfully
@@ -2265,18 +2274,20 @@ class DatabaseManager:
         if not self._validate_string(chat_id, "chat_id"):
             return False
 
-        if role not in {'router', 'planner', 'assistant', 'agent_tools'}:
+        if role not in {'router', 'assistant', 'agent_tools'}:
             logger.warning(f"Invalid token usage role: {role}")
             return False
 
         def transaction(conn, cursor):
             cursor.execute(
                 """INSERT INTO token_usage
-                   (chat_id, role, provider, model, estimated_tokens, actual_tokens, message_id, plan_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (chat_id, role, provider, model, estimated_tokens, actual_tokens, message_id, plan_id)
+                   (chat_id, role, provider, model, estimated_tokens, actual_tokens,
+                    prompt_tokens, completion_tokens, request_id, message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (chat_id, role, provider, model, estimated_tokens, actual_tokens,
+                 prompt_tokens, completion_tokens, request_id, message_id)
             )
-            logger.debug(f"[TokenUsage] Saved {role} token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens}")
+            logger.debug(f"[TokenUsage] Saved {role} usage: prompt={prompt_tokens}, completion={completion_tokens}, total={actual_tokens}")
             return True
 
         return bool(self._transaction_wrapper("saving token usage", transaction))
@@ -2289,27 +2300,25 @@ class DatabaseManager:
             chat_id: Chat identifier
 
         Returns:
-            Dict with structure:
-            {
-                'router': {'estimated': int, 'actual': int, 'calls': int},
-                'planner': {'estimated': int, 'actual': int, 'calls': int},
-                'assistant': {'estimated': int, 'actual': int, 'calls': int},
-                'agent_tools': {'estimated': int, 'actual': int, 'calls': int}
-            }
+            Dict with structure per role:
+            {'estimated': int, 'actual': int, 'prompt': int, 'completion': int, 'calls': int}
         """
+        empty_result = {
+            'router': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0},
+            'assistant': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0},
+            'agent_tools': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0}
+        }
+
         if not self._validate_string(chat_id, "chat_id"):
-            return {
-                'router': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
-            }
+            return empty_result
 
         def query(conn, cursor):
             cursor.execute(
                 """SELECT role,
                           SUM(estimated_tokens) as total_estimated,
                           SUM(actual_tokens) as total_actual,
+                          SUM(prompt_tokens) as total_prompt,
+                          SUM(completion_tokens) as total_completion,
                           COUNT(*) as call_count
                    FROM token_usage
                    WHERE chat_id = ?
@@ -2319,10 +2328,9 @@ class DatabaseManager:
             rows = cursor.fetchall()
 
             result = {
-                'router': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
-                'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
+                'router': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0},
+                'assistant': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0},
+                'agent_tools': {'estimated': 0, 'actual': 0, 'prompt': 0, 'completion': 0, 'calls': 0}
             }
 
             for row in rows:
@@ -2331,40 +2339,37 @@ class DatabaseManager:
                     result[role] = {
                         'estimated': row['total_estimated'] or 0,
                         'actual': row['total_actual'] or 0,
+                        'prompt': row['total_prompt'] or 0,
+                        'completion': row['total_completion'] or 0,
                         'calls': row['call_count'] or 0
                     }
 
             return result
 
-        return self._execute_with_connection("fetching token usage by chat", query, return_on_error={
-            'router': {'estimated': 0, 'actual': 0, 'calls': 0},
-            'planner': {'estimated': 0, 'actual': 0, 'calls': 0},
-            'assistant': {'estimated': 0, 'actual': 0, 'calls': 0},
-            'agent_tools': {'estimated': 0, 'actual': 0, 'calls': 0}
-        })
+        return self._execute_with_connection("fetching token usage by chat", query, return_on_error=empty_result)
 
     def get_most_recent_token_usage(self, chat_id: str, role: str) -> Optional[Dict[str, Any]]:
         """
         Get the most recent token usage entry for a specific role in a chat.
-        Used to determine the last-used provider/model for that role.
 
         Args:
             chat_id: Chat identifier
-            role: Role to query ('router', 'planner', 'assistant', 'agent_tools')
+            role: Role to query ('router', 'assistant', 'agent_tools')
 
         Returns:
-            Dict with provider, model, timestamp, etc. or None if no usage found
+            Dict with provider, model, token counts, request_id, etc. or None
         """
         if not self._validate_string(chat_id, "chat_id"):
             return None
 
-        if role not in {'router', 'planner', 'assistant', 'agent_tools'}:
+        if role not in {'router', 'assistant', 'agent_tools'}:
             logger.warning(f"Invalid token usage role: {role}")
             return None
 
         def query(conn, cursor):
             cursor.execute(
-                """SELECT provider, model, estimated_tokens, actual_tokens, timestamp
+                """SELECT provider, model, estimated_tokens, actual_tokens,
+                          prompt_tokens, completion_tokens, request_id, timestamp
                    FROM token_usage
                    WHERE chat_id = ? AND role = ?
                    ORDER BY timestamp DESC
@@ -2381,10 +2386,42 @@ class DatabaseManager:
                 'model': row['model'],
                 'estimated_tokens': row['estimated_tokens'],
                 'actual_tokens': row['actual_tokens'],
+                'prompt_tokens': row['prompt_tokens'],
+                'completion_tokens': row['completion_tokens'],
+                'request_id': row['request_id'],
                 'timestamp': row['timestamp']
             }
 
         return self._execute_with_connection("fetching most recent token usage", query, None)
+
+    def get_token_usage_by_request_id(self, request_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all token usage entries for a specific request.
+        Used to correlate router and assistant in same interaction.
+
+        Args:
+            request_id: UUID identifying the request
+
+        Returns:
+            List of token usage dicts ordered by role
+        """
+        if not request_id:
+            return []
+
+        def query(conn, cursor):
+            cursor.execute(
+                """SELECT role, provider, model, estimated_tokens, actual_tokens,
+                          prompt_tokens, completion_tokens, timestamp
+                   FROM token_usage
+                   WHERE request_id = ?
+                   ORDER BY role""",
+                (request_id,)
+            )
+            rows = cursor.fetchall()
+
+            return [dict(row) for row in rows]
+
+        return self._execute_with_connection("fetching token usage by request_id", query, [])
 
 
 db = DatabaseManager()

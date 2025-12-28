@@ -204,7 +204,7 @@ class Config:
     DEFAULT_MODEL = "gemini-2.5-flash-preview-09-2025"
 
     DEFAULT_ROUTER_ENABLED = True
-    DEFAULT_ROUTER_MODEL = "amazon/nova-2-lite-v1:free"
+    DEFAULT_ROUTER_MODEL = "xiaomi/mimo-v2-flash:free"
 
     DEFAULT_STREAMING = True
 

@@ -244,9 +244,11 @@ class Router:
                 else:
                     # Success - extract tokens and return
                     actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, router_provider)
-                    actual_tokens = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
+                    actual_tokens = actual_tokens_data.get('total_tokens', 0) if actual_tokens_data else 0
+                    prompt_tokens = actual_tokens_data.get('prompt_tokens', 0) if actual_tokens_data else 0
+                    completion_tokens = actual_tokens_data.get('completion_tokens', 0) if actual_tokens_data else 0
                     if actual_tokens_data:
-                        logger.info(f"Router actual tokens: {actual_tokens}")
+                        logger.info(f"Router actual tokens: prompt={prompt_tokens}, completion={completion_tokens}, total={actual_tokens}")
 
                     # Finalize rate limit with actual tokens
                     if actual_tokens > 0:
@@ -265,9 +267,11 @@ class Router:
                             provider=router_provider,
                             model=self.router_model,
                             estimated_tokens=estimated_tokens,
-                            actual_tokens=actual_tokens
+                            actual_tokens=actual_tokens,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens
                         )
-                        logger.info(f"[TokenUsage] Saved router token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens}")
+                        logger.info(f"[TokenUsage] Saved router: prompt={prompt_tokens}, completion={completion_tokens}")
 
                     return response.get("text", "")
 

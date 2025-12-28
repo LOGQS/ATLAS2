@@ -223,6 +223,71 @@ class Cerebras:
         total = getattr(usage, "total_tokens", None)
         return int(total) if total is not None else None
 
+    @staticmethod
+    def extract_usage_from_response(response: Any) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from Cerebras response in standardized format.
+
+        Returns dict with optional fields:
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens,
+            accepted_prediction_tokens, rejected_prediction_tokens
+        """
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                # Try dict access for serialized responses
+                if isinstance(response, dict):
+                    usage = response.get("usage")
+                if usage is None:
+                    return None
+
+            # Handle both object and dict formats
+            if isinstance(usage, dict):
+                prompt = usage.get("prompt_tokens", 0)
+                completion = usage.get("completion_tokens", 0)
+                total = usage.get("total_tokens", 0)
+                prompt_details = usage.get("prompt_tokens_details", {})
+                completion_details = usage.get("completion_tokens_details", {})
+            else:
+                prompt = getattr(usage, "prompt_tokens", 0) or 0
+                completion = getattr(usage, "completion_tokens", 0) or 0
+                total = getattr(usage, "total_tokens", 0) or 0
+                prompt_details = getattr(usage, "prompt_tokens_details", None)
+                completion_details = getattr(usage, "completion_tokens_details", None)
+
+            result = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total
+            }
+
+            # Extract cached tokens from prompt_tokens_details
+            if prompt_details:
+                if isinstance(prompt_details, dict):
+                    cached = prompt_details.get("cached_tokens", 0)
+                else:
+                    cached = getattr(prompt_details, "cached_tokens", 0) or 0
+                if cached:
+                    result["cached_tokens"] = cached
+
+            # Extract prediction tokens from completion_tokens_details
+            if completion_details:
+                if isinstance(completion_details, dict):
+                    accepted = completion_details.get("accepted_prediction_tokens", 0)
+                    rejected = completion_details.get("rejected_prediction_tokens", 0)
+                else:
+                    accepted = getattr(completion_details, "accepted_prediction_tokens", 0) or 0
+                    rejected = getattr(completion_details, "rejected_prediction_tokens", 0) or 0
+                if accepted:
+                    result["accepted_prediction_tokens"] = accepted
+                if rejected:
+                    result["rejected_prediction_tokens"] = rejected
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to extract usage from Cerebras response: {e}")
+            return None
+
     def _extract_error_message(self, error: Exception) -> str:
         """Extract a user-friendly error message from Cerebras exceptions"""
         error_str = str(error)

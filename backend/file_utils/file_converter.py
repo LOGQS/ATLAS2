@@ -10,12 +10,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 from utils.logger import get_logger
+from file_utils.extensions import IMAGE_CONVERTIBLE, AUDIO_CONVERTIBLE, VIDEO_CONVERTIBLE
 
 logger = get_logger(__name__)
-
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tiff', '.tif', '.ico'}
-AUDIO_EXTENSIONS = {'.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'}
-VIDEO_EXTENSIONS = {'.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.mpg', '.mpeg', '.3gp'}
 
 
 def _check_ffmpeg_available() -> bool:
@@ -257,19 +254,19 @@ def try_convert_file(source_path: str, original_filename: str) -> Tuple[Optional
     try:
         source_ext = Path(original_filename).suffix.lower()
 
-        if source_ext in IMAGE_EXTENSIONS:
+        if source_ext in IMAGE_CONVERTIBLE:
             converted_path = convert_image_to_png(source_path)
             if converted_path:
                 new_filename = Path(original_filename).stem + '.png'
                 return converted_path, '.png', new_filename
 
-        elif source_ext in AUDIO_EXTENSIONS:
+        elif source_ext in AUDIO_CONVERTIBLE:
             converted_path = convert_audio_to_mp3(source_path)
             if converted_path:
                 new_filename = Path(original_filename).stem + '.mp3'
                 return converted_path, '.mp3', new_filename
 
-        elif source_ext == '.mp4' or source_ext in VIDEO_EXTENSIONS:
+        elif source_ext == '.mp4' or source_ext in VIDEO_CONVERTIBLE:
             if _is_audio_only_video(source_path):
                 logger.info(f"[CONVERT] Converting audio-only video file to MP3: {original_filename}")
                 converted_path = convert_audio_to_mp3(source_path)

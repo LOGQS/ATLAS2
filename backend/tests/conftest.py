@@ -12,7 +12,7 @@ if str(backend_dir) not in sys.path:
 
 
 def pytest_configure(config):
-    """Register custom pytest markers."""
+    """Register custom pytest markers and warning filters."""
     config.addinivalue_line(
         "markers", "unit: mark test as a unit test"
     )
@@ -21,5 +21,19 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "slow: mark test as slow running"
+    )
+
+    # Suppress third-party deprecation warnings we can't fix
+    config.addinivalue_line(
+        "filterwarnings", "ignore:Support for class-based `config` is deprecated:DeprecationWarning"
+    )
+    config.addinivalue_line(
+        "filterwarnings", "ignore:read_text is deprecated:DeprecationWarning"
+    )
+    config.addinivalue_line(
+        "filterwarnings", "ignore:open_text is deprecated:DeprecationWarning"
+    )
+    config.addinivalue_line(
+        "filterwarnings", "ignore:Please use `import python_multipart` instead:PendingDeprecationWarning"
     )
 

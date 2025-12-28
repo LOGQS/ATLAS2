@@ -6,28 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from utils.logger import get_logger
+from file_utils.extensions import BINARY_EXTENSIONS, TEXTUAL_EXTENSIONS
 
 _logger = get_logger(__name__)
-
-BINARY_EXTENSIONS = {
-    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif',
-    '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v', '.mpg', '.mpeg',
-    '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus',
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.iso',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.exe', '.dll', '.so', '.dylib', '.bin', '.app',
-    '.db', '.sqlite', '.sqlite3', '.mdb',
-    '.pyc', '.pyo', '.class', '.jar', '.war', '.o', '.a'
-}
-
-TEXTUAL_EXTENSIONS = {
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.hpp',
-    '.go', '.rs', '.rb', '.php', '.swift', '.kt', '.scala', '.cs', '.vb',
-    '.html', '.css', '.xml', '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg',
-    '.md', '.rst', '.txt', '.log',
-    '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-    '.sql', '.graphql', '.proto', '.thrift', '.csv', '.tsv'
-}
 
 
 def _resolve_with_workspace(path: Path, workspace_root: Optional[str]) -> Path:

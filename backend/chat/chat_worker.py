@@ -1280,42 +1280,38 @@ def _process_message_in_worker(chat_id: str, db, providers, message: str, provid
 
         # Extract actual tokens from streaming usage if available
         actual_tokens_count = 0
+        prompt_tokens = 0
+        completion_tokens = 0
         if streaming_usage_metadata:
             # Handle different formats (Gemini vs OpenAI-compatible)
             if 'total_token_count' in streaming_usage_metadata:
                 # Gemini format
-                actual_tokens_count = streaming_usage_metadata['total_token_count']
+                actual_tokens_count = streaming_usage_metadata.get('total_token_count', 0)
+                prompt_tokens = streaming_usage_metadata.get('prompt_token_count', 0)
+                completion_tokens = streaming_usage_metadata.get('candidates_token_count', 0)
             elif 'total_tokens' in streaming_usage_metadata:
-                # OpenAI-compatible format (Groq, OpenRouter)
-                actual_tokens_count = streaming_usage_metadata['total_tokens']
-            worker_logger.info(f"[TokenUsage] Using actual tokens from stream: {actual_tokens_count}")
+                # OpenAI-compatible format (Groq, OpenRouter, etc.)
+                actual_tokens_count = streaming_usage_metadata.get('total_tokens', 0)
+                prompt_tokens = streaming_usage_metadata.get('prompt_tokens', 0)
+                completion_tokens = streaming_usage_metadata.get('completion_tokens', 0)
+            worker_logger.info(f"[TokenUsage] Stream tokens: prompt={prompt_tokens}, completion={completion_tokens}")
 
-            # Rate limiting is now handled in main process
-            # Main process will query token usage from DB after streaming completes
-
-        # Save token usage with both estimated and actual
+        # Save token usage
+        db.save_token_usage(
+            chat_id=chat_id,
+            role='assistant',
+            provider=provider,
+            model=model,
+            estimated_tokens=estimated_tokens,
+            actual_tokens=actual_tokens_count,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            message_id=assistant_message_id
+        )
         if actual_tokens_count > 0:
-            db.save_token_usage(
-                chat_id=chat_id,
-                role='assistant',
-                provider=provider,
-                model=model,
-                estimated_tokens=estimated_tokens,
-                actual_tokens=actual_tokens_count,
-                message_id=assistant_message_id
-            )
-            worker_logger.info(f"[TokenUsage] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count} tokens")
+            worker_logger.info(f"[TokenUsage] Saved assistant: prompt={prompt_tokens}, completion={completion_tokens}")
         else:
-            db.save_token_usage(
-                chat_id=chat_id,
-                role='assistant',
-                provider=provider,
-                model=model,
-                estimated_tokens=estimated_tokens,
-                actual_tokens=0,
-                message_id=assistant_message_id
-            )
-            worker_logger.info(f"[TokenUsage] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens} tokens (no actual available)")
+            worker_logger.info(f"[TokenUsage] Saved assistant estimated only: {estimated_tokens} tokens")
 
         worker_logger.info(f"[CHAT-WORKER] Processing completed successfully for {chat_id}")
         

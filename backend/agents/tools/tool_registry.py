@@ -119,36 +119,26 @@ def _tool_llm_generate(params: Dict[str, Any], ctx: ToolExecutionContext) -> Too
         raise RuntimeError(response["error"])
 
     actual_tokens_data = context_manager.extract_actual_tokens_from_response(response, provider)
-    actual_tokens_count = actual_tokens_data['total_tokens'] if actual_tokens_data else 0
-
-    estimated_tokens_with_overhead = total_estimated
+    actual_tokens_count = actual_tokens_data.get('total_tokens', 0) if actual_tokens_data else 0
+    prompt_tokens = actual_tokens_data.get('prompt_tokens', 0) if actual_tokens_data else 0
+    completion_tokens = actual_tokens_data.get('completion_tokens', 0) if actual_tokens_data else 0
 
     token_usage = actual_tokens_data if actual_tokens_data else {
-        'total_tokens': estimated_tokens_with_overhead
+        'total_tokens': total_estimated
     }
 
     from utils.db_utils import db
-    if actual_tokens_count > 0:
-        db.save_token_usage(
-            chat_id=ctx.chat_id,
-            role='agent_tools',
-            provider=provider,
-            model=model,
-            estimated_tokens=0,
-            actual_tokens=actual_tokens_count,
-            plan_id=ctx.plan_id
-        )
-    else:
-        db.save_token_usage(
-            chat_id=ctx.chat_id,
-            role='agent_tools',
-            provider=provider,
-            model=model,
-            estimated_tokens=estimated_tokens_with_overhead,
-            actual_tokens=0,
-            plan_id=ctx.plan_id
-        )
-    _logger.debug(f"[TokenUsage] Saved agent_tools token usage for chat {ctx.chat_id}, task {ctx.task_id}")
+    db.save_token_usage(
+        chat_id=ctx.chat_id,
+        role='agent_tools',
+        provider=provider,
+        model=model,
+        estimated_tokens=total_estimated if actual_tokens_count == 0 else 0,
+        actual_tokens=actual_tokens_count,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens
+    )
+    _logger.debug(f"[TokenUsage] Saved agent_tools: prompt={prompt_tokens}, completion={completion_tokens}")
 
     output_text = response.get("text", "")
     metadata = {

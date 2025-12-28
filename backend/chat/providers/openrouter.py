@@ -38,8 +38,8 @@ class OpenRouter:
             "name": "GPT OSS 120B",
             "supports_reasoning": True
         },
-        "amazon/nova-2-lite-v1:free": {
-            "name": "Amazon Nova 2 Lite",
+        "xiaomi/mimo-v2-flash:free": {
+            "name": "Xiaomi MiMo-V2-Flash",
             "supports_reasoning": False
         },
         "mistralai/devstral-2512:free": {
@@ -111,7 +111,129 @@ class OpenRouter:
         total = usage.get("total_tokens")
         return int(total) if isinstance(total, int) else None
 
+    @staticmethod
+    def extract_usage_from_response(response: Any) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from OpenRouter response in standardized format.
 
+        Handles both OpenAI-style (prompt_tokens/completion_tokens) and
+        OpenRouter-native style (input_tokens/output_tokens) field names.
+
+        Returns dict with optional fields:
+            prompt_tokens, completion_tokens, total_tokens,
+            cached_tokens, reasoning_tokens
+        """
+        try:
+            # Handle Response object (has .json() method)
+            if hasattr(response, 'json'):
+                try:
+                    payload = response.json()
+                    usage = payload.get("usage")
+                except Exception:
+                    return None
+            # Handle dict format
+            elif isinstance(response, dict):
+                usage = response.get("usage")
+            else:
+                usage = getattr(response, "usage", None)
+
+            if not usage:
+                return None
+
+            # Handle both object and dict formats
+            if isinstance(usage, dict):
+                # OpenRouter may use input_tokens/output_tokens OR prompt_tokens/completion_tokens
+                prompt = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+                completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+                total = usage.get("total_tokens", 0)
+                # Check both naming conventions for details
+                input_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+                output_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
+            else:
+                prompt = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", 0) or 0
+                completion = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", 0) or 0
+                total = getattr(usage, "total_tokens", 0) or 0
+                input_details = getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None)
+                output_details = getattr(usage, "completion_tokens_details", None) or getattr(usage, "output_tokens_details", None)
+
+            result = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total
+            }
+
+            # Extract cached_tokens from input/prompt details
+            if input_details:
+                if isinstance(input_details, dict):
+                    cached = input_details.get("cached_tokens", 0)
+                else:
+                    cached = getattr(input_details, "cached_tokens", 0) or 0
+                if cached:
+                    result["cached_tokens"] = cached
+
+            # Extract reasoning_tokens from output/completion details
+            if output_details:
+                if isinstance(output_details, dict):
+                    reasoning = output_details.get("reasoning_tokens", 0)
+                else:
+                    reasoning = getattr(output_details, "reasoning_tokens", 0) or 0
+                if reasoning:
+                    result["reasoning_tokens"] = reasoning
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to extract usage from OpenRouter response: {e}")
+            return None
+
+    def get_generation_metadata(self, generation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch detailed generation metadata from OpenRouter API.
+
+        Provides cost, provider info, native token counts, and timing data.
+        Requires an additional API call - use sparingly.
+
+        Args:
+            generation_id: The generation ID from a previous response
+
+        Returns:
+            Dict with total_cost, cache_discount, provider_name, latency,
+            native token counts, etc. Or None if request fails.
+        """
+        if not self.is_available() or not generation_id:
+            return None
+
+        try:
+            response = requests.get(
+                "https://openrouter.ai/api/v1/generation",
+                params={"id": generation_id},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"OpenRouter generation metadata request failed: {response.status_code}")
+                return None
+
+            data = response.json().get("data", {})
+            return {
+                "generation_id": data.get("id"),
+                "total_cost": data.get("total_cost"),
+                "cache_discount": data.get("cache_discount"),
+                "provider_name": data.get("provider_name"),
+                "latency": data.get("latency"),
+                "generation_time": data.get("generation_time"),
+                "tokens_prompt": data.get("tokens_prompt"),
+                "tokens_completion": data.get("tokens_completion"),
+                "native_tokens_prompt": data.get("native_tokens_prompt"),
+                "native_tokens_completion": data.get("native_tokens_completion"),
+                "native_tokens_cached": data.get("native_tokens_cached"),
+                "native_tokens_reasoning": data.get("native_tokens_reasoning"),
+                "finish_reason": data.get("finish_reason"),
+                "model": data.get("model")
+            }
+        except Exception as e:
+            logger.warning(f"Failed to fetch OpenRouter generation metadata: {e}")
+            return None
 
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to OpenRouter/OpenAI format"""

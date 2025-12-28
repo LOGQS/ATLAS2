@@ -1373,11 +1373,12 @@ async def _execute_async_streaming(
 
                 if actual_tokens_data and actual_tokens_data.get('total_tokens', 0) > 0:
                     actual_tokens_count = actual_tokens_data['total_tokens']
+                    prompt_tokens = actual_tokens_data.get('prompt_tokens', 0)
+                    completion_tokens = actual_tokens_data.get('completion_tokens', 0)
                     limiter = get_rate_limiter()
                     limiter.finalize_tokens(provider, model, actual_tokens_count)
-                    logger.info(f"[RATE-LIMIT][ASYNC] Finalized with {actual_tokens_count} actual tokens for {provider}:{model}")
+                    logger.info(f"[RATE-LIMIT][ASYNC] Finalized: prompt={prompt_tokens}, completion={completion_tokens}")
 
-                    # Save token usage with both estimated and actual
                     db.save_token_usage(
                         chat_id=chat_id,
                         role='assistant',
@@ -1385,9 +1386,11 @@ async def _execute_async_streaming(
                         model=model,
                         estimated_tokens=estimated_tokens,
                         actual_tokens=actual_tokens_count,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
                         message_id=assistant_message_id
                     )
-                    logger.info(f"[TokenUsage][ASYNC] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens}, actual={actual_tokens_count} tokens")
+                    logger.info(f"[TokenUsage][ASYNC] Saved assistant: prompt={prompt_tokens}, completion={completion_tokens}")
                 else:
                     logger.warning(f"[RATE-LIMIT][ASYNC] Could not extract token count from usage data: {captured_usage_data}")
             except Exception as finalize_error:
@@ -1405,7 +1408,7 @@ async def _execute_async_streaming(
                     actual_tokens=0,
                     message_id=assistant_message_id
                 )
-                logger.info(f"[TokenUsage][ASYNC] Saved assistant token usage for chat {chat_id}: estimated={estimated_tokens} tokens (no actual available)")
+                logger.info(f"[TokenUsage][ASYNC] Saved assistant estimated only: {estimated_tokens} tokens")
 
         # Set final state
         db.update_chat_state(chat_id, "static")

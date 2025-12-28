@@ -44,8 +44,7 @@ class TokenRoute:
                 "success": true,
                 "chat_id": str,
                 "roles": {
-                    "router": {...},
-                    "planner": {...},
+                    "router": {"estimated": int, "actual": int, "prompt": int, "completion": int, "calls": int},
                     "assistant": {...},
                     "agent_tools": {...}
                 },
@@ -66,7 +65,7 @@ class TokenRoute:
             token_breakdown = usage_data
 
             role_info = {}
-            for role in ['router', 'planner', 'assistant', 'agent_tools']:
+            for role in ['router', 'assistant', 'agent_tools']:
                 recent = db.get_most_recent_token_usage(chat_id, role)
                 if recent:
                     provider = recent.get('provider', 'unknown')
@@ -84,8 +83,10 @@ class TokenRoute:
                         "last_used": recent.get('timestamp', '')
                     }
 
+            # Total = actual tokens when available (prompt + completion from API)
+            # Falls back to estimated when no actual data
             total_tokens = sum(
-                role_data['estimated'] + role_data['actual']
+                role_data['actual'] if role_data['actual'] > 0 else role_data['estimated']
                 for role_data in usage_data.values()
             )
 
@@ -226,7 +227,7 @@ class TokenRoute:
                     "system_prompt": {...},
                     "requests": [
                         {
-                            "role": "router"|"planner"|"assistant",
+                            "role": "router"|"assistant",
                             "label": str,
                             "provider": str,
                             "model": str,

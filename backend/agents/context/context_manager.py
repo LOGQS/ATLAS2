@@ -1,6 +1,7 @@
 # status: complete
 
 from typing import Dict, Any, List, Optional
+from pathlib import Path
 from utils.logger import get_logger
 from utils.config import get_provider_map, Config
 from agents.models.token_types import (
@@ -9,26 +10,28 @@ from agents.models.token_types import (
     MessageTokensResult,
     InteractionAnalysis
 )
+from file_utils.extensions import (
+    IMAGE_EXTENSIONS, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS,
+    TEXT_EXTENSIONS, CODE_EXTENSIONS, DOCUMENT_EXTENSIONS,
+    CONFIG_EXTENSIONS, WEB_EXTENSIONS, SCRIPT_EXTENSIONS
+)
 
 
 class ContextManager:
-    """
-    Central hub for all context management including:
-    - Building context for different roles (router, planner, assistant, agent)
-    - Counting tokens per role and provider
-    - Tracking token usage across requests
-    """
+    """Central hub for token counting, context building, and usage tracking."""
 
     MESSAGE_OVERHEAD_TOKENS = 4
-    GEMINI_IMAGE_BASE_TOKENS = 258
-    GEMINI_VIDEO_TOKENS_PER_SEC = 263
-    GEMINI_AUDIO_TOKENS_PER_SEC = 32
-
-    IMAGE_SMALL_TOKENS = 200
-    IMAGE_MEDIUM_TOKENS = 350
-    IMAGE_LARGE_TOKENS = 500
-
     TOOL_OVERHEAD_TOKENS_PER_TOOL = 150
+    ROUTER_HISTORY_MAX_CHARS = 400_000
+
+    # Provider-agnostic token estimation constants
+    # Image: avg of OpenAI (~1542), Claude (750), Gemini (~2287) ≈ 1500 px/token
+    IMAGE_PIXELS_PER_TOKEN = 1500
+    IMAGE_MIN_TOKENS = 100
+    # Audio: avg of Gemini (32) and transcription (~4) ≈ 18 tokens/sec
+    AUDIO_TOKENS_PER_SECOND = 18
+    # Video: based on Gemini (263), slightly conservative ≈ 200 tokens/sec
+    VIDEO_TOKENS_PER_SECOND = 200 
 
     def __init__(self):
         self.logger = get_logger(__name__)
@@ -40,85 +43,92 @@ class ContextManager:
             self._provider_map = get_provider_map()
         return self._provider_map
 
-    def build_router_context(self, chat_history=None, current_message=None, current_message_files=None, include_tools=False):
-        """Build router context with chat history and current message.
+    def _truncate_chat_history(self, chat_history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+        """Truncate chat history to fit budget, removing oldest messages first."""
+        if not chat_history:
+            return []
 
-        Args:
-            chat_history: List of chat messages
-            current_message: The current user message
-            current_message_files: Optional list of files attached to current message
-            include_tools: Whether to include tool definitions for FastPath
+        total_chars = 0
+        keep_from_index = 0
 
-        Returns:
-            Formatted context string for router
-        """
+        for i in range(len(chat_history) - 1, -1, -1):
+            content = chat_history[i].get('content', '')
+            # 500 max content chars + ~100 for role, separators, file annotations
+            msg_chars = min(len(content), 500) + 100
+
+            if total_chars + msg_chars > max_chars:
+                keep_from_index = i + 1
+                break
+            total_chars += msg_chars
+
+        keep_from_index = min(keep_from_index, len(chat_history) - 1)
+        return chat_history[keep_from_index:]
+
+    def _format_attached_files(self, files: List[Dict[str, Any]]) -> Optional[str]:
+        """Format file list into '[Attached: file1, file2]' string."""
+        if not files:
+            return None
+        file_names = [f.get('name', 'unknown') for f in files]
+        return f"[Attached: {', '.join(file_names)}]"
+
+    def build_router_context(self, chat_history=None, current_message=None, current_message_files=None):
+        """Build router context with chat history, current message, and available tools."""
         context_parts = []
 
         if chat_history:
-            context_parts.append("Chat history:")
-            context_parts.append("=" * 50)
-            for msg in chat_history:
+            truncated = self._truncate_chat_history(chat_history, self.ROUTER_HISTORY_MAX_CHARS)
+            omitted = len(chat_history) - len(truncated)
+
+            context_parts.append("--- Chat History ---")
+
+            if omitted > 0:
+                context_parts.append(f"[{omitted} older messages omitted]")
+
+            for msg in truncated:
                 role = msg.get('role', 'unknown')
                 content = msg.get('content', '')
                 if len(content) > 500:
                     content = content[:500] + "..."
                 context_parts.append(f"{role.upper()}: {content}")
 
-                attached_files = msg.get('attachedFiles', [])
-                if attached_files:
-                    file_names = [f.get('name', 'unknown') for f in attached_files]
-                    files_str = ', '.join(file_names)
-                    context_parts.append(f"[SYSTEM MESSAGE: {files_str} {'FILE WAS' if len(file_names) == 1 else 'FILES WERE'} ATTACHED TO THIS MESSAGE BY THE USER]")
-            context_parts.append("=" * 50)
+                formatted = self._format_attached_files(msg.get('attachedFiles', []))
+                if formatted:
+                    context_parts.append(formatted)
 
         if current_message:
-            context_parts.append(f"CURRENT REQUEST: {current_message}")
+            context_parts.append(f"\n--- Current Request ---\n{current_message}")
 
-            if current_message_files:
-                file_names = [f.get('name', 'unknown') for f in current_message_files]
-                files_str = ', '.join(file_names)
-                context_parts.append(f"[SYSTEM MESSAGE: {files_str} {'FILE WAS' if len(file_names) == 1 else 'FILES WERE'} ATTACHED TO THIS MESSAGE BY THE USER]")
+            formatted = self._format_attached_files(current_message_files)
+            if formatted:
+                context_parts.append(formatted)
 
-        if include_tools:
-            from agents.tools.tool_registry import tool_registry
-            tools = tool_registry.get_all_tools()
+        from agents.tools.tool_registry import tool_registry
+        tools = tool_registry.get_all_tools()
 
-            if tools:
-                context_parts.append("\n" + "=" * 50)
-                context_parts.append("AVAILABLE TOOLS (for FastPath extraction):")
-                context_parts.append("=" * 50)
+        if tools:
+            context_parts.append("\n--- Available Tools ---")
 
-                for tool in tools:
-                    context_parts.append(f"\n{tool.name}:")
-                    context_parts.append(f"  Description: {tool.description}")
+            for tool in tools:
+                context_parts.append(f"\n{tool.name}:")
+                context_parts.append(f"  Description: {tool.description}")
 
-                    if tool.in_schema and 'properties' in tool.in_schema:
-                        required = tool.in_schema.get('required', [])
-                        props = tool.in_schema['properties']
+                if tool.in_schema and 'properties' in tool.in_schema:
+                    required = tool.in_schema.get('required', [])
+                    props = tool.in_schema['properties']
 
-                        params_list = []
-                        for param_name, param_spec in props.items():
-                            param_type = param_spec.get('type', 'any')
-                            is_required = ' (required)' if param_name in required else ''
-                            params_list.append(f"{param_name}: {param_type}{is_required}")
+                    params_list = []
+                    for param_name, param_spec in props.items():
+                        param_type = param_spec.get('type', 'any')
+                        is_required = ' (required)' if param_name in required else ''
+                        params_list.append(f"{param_name}: {param_type}{is_required}")
 
-                        if params_list:
-                            context_parts.append(f"  Parameters: {', '.join(params_list)}")
+                    if params_list:
+                        context_parts.append(f"  Parameters: {', '.join(params_list)}")
 
         return "\n".join(context_parts)
 
     def count_tokens(self, text: str, model: str, provider: str) -> int:
-        """
-        Count tokens for given text using provider-specific method.
-
-        Args:
-            text: Text to count tokens for
-            model: Model name
-            provider: Provider name
-
-        Returns:
-            Token count
-        """
+        """Count tokens for given text using provider-specific method."""
         if not text:
             return 0
 
@@ -139,108 +149,234 @@ class ContextManager:
         chars_per_token = Config.get_fallback_chars_per_token()
         return max(1, len(text) // chars_per_token)
 
+    def _get_method_info(self, provider: str, source: str = 'counting') -> tuple:
+        """
+        Get token source display name and is_estimated flag.
+
+        Hierarchy (most to least accurate):
+        1. 'api' - From API response
+        2. 'native' - Provider's counting API (e.g., Gemini countTokens)
+        3. 'tiktoken' - Algorithmic counting
+        4. 'fallback' - Character approximation (only true estimation)
+        """
+        if source == 'api':
+            return f'{provider}_api', False
+
+        method = Config.get_token_counting_method(provider)
+        method_display = {
+            'native': f'{provider}_native',
+            'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
+            'fallback': 'char_approximation'
+        }.get(method, 'char_approximation')
+
+        is_estimated = (method == 'fallback')
+        return method_display, is_estimated
+
+    def _get_image_dimensions(self, file_path: Path) -> tuple:
+        """Extract image dimensions using PIL."""
+        try:
+            from PIL import Image
+            with Image.open(file_path) as img:
+                return img.width, img.height
+        except Exception as e:
+            self.logger.debug(f"Failed to get image dimensions: {e}")
+            return None, None
+
+    def _get_media_duration(self, file_path: Path) -> Optional[float]:
+        """Extract media duration in seconds using ffprobe."""
+        try:
+            import subprocess
+            from file_utils.file_converter import _check_ffmpeg_available
+
+            if not _check_ffmpeg_available():
+                return None
+
+            cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                str(file_path)
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+            )
+
+            if result.returncode == 0:
+                duration_str = result.stdout.decode('utf-8', errors='ignore').strip()
+                if duration_str:
+                    return float(duration_str)
+            return None
+        except Exception as e:
+            self.logger.debug(f"Failed to get media duration: {e}")
+            return None
+
+    def _read_markdown_content(self, md_filename: str) -> Optional[str]:
+        """Read markdown content from md_ver directory."""
+        try:
+            from file_utils.markdown_processor import setup_filespace
+
+            files_dir = Path(setup_filespace())
+            md_path = files_dir / "md_ver" / md_filename
+
+            if md_path.exists():
+                with open(md_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            return None
+        except Exception as e:
+            self.logger.debug(f"Failed to read markdown content: {e}")
+            return None
+
+    def _estimate_file_tokens_generic(self, attachment: str, db) -> tuple:
+        """Provider-agnostic file token estimation based on file type and metadata."""
+        try:
+            file_info = db.get_file_record(attachment)
+            if not file_info:
+                return 250, "fallback_missing"
+
+            file_extension = file_info.get('file_extension', '').lower()
+            file_size = file_info.get('file_size', 0)
+
+            from file_utils.file_provider_manager import get_file_path
+            file_path = get_file_path(attachment)
+
+            if file_extension in IMAGE_EXTENSIONS:
+                if file_path and file_path.exists():
+                    width, height = self._get_image_dimensions(file_path)
+                    if width and height:
+                        tokens = (width * height) // self.IMAGE_PIXELS_PER_TOKEN
+                        return max(self.IMAGE_MIN_TOKENS, tokens), "image_dimensions"
+
+                return 1400, "image_fallback"  # ~1920x1080
+
+            if file_extension in AUDIO_EXTENSIONS:
+                if file_path and file_path.exists():
+                    duration = self._get_media_duration(file_path)
+                    if duration:
+                        tokens = int(duration * self.AUDIO_TOKENS_PER_SECOND)
+                        return max(100, tokens), "audio_duration"
+
+                return 540, "audio_fallback"  # ~30s
+
+            if file_extension in VIDEO_EXTENSIONS:
+                if file_path and file_path.exists():
+                    duration = self._get_media_duration(file_path)
+                    if duration:
+                        tokens = int(duration * self.VIDEO_TOKENS_PER_SECOND)
+                        return max(500, tokens), "video_duration"
+
+                return 2000, "video_fallback"  # ~10s
+
+            md_filename = file_info.get('md_filename')
+            if md_filename:
+                md_content = self._read_markdown_content(md_filename)
+                if md_content:
+                    tokens = len(md_content) // 4
+                    return max(50, tokens), "markdown_content"
+
+            text_like_extensions = TEXT_EXTENSIONS | CODE_EXTENSIONS | CONFIG_EXTENSIONS | WEB_EXTENSIONS | SCRIPT_EXTENSIONS
+            if file_extension in text_like_extensions:
+                return max(50, file_size // 4), "text_size_fallback"
+
+            if file_extension in DOCUMENT_EXTENSIONS:
+                return max(100, file_size // 10), "document_size_fallback"
+
+            return 250, "fallback_unknown"
+
+        except Exception as e:
+            self.logger.debug(f"Failed to estimate file tokens for {attachment}: {e}")
+            return 250, "fallback_error"
+
+    def _estimate_single_file_tokens(
+        self, attachment: str, provider: str, model: str, db, provider_instance
+    ) -> tuple[int, str, bool]:
+        """Estimate tokens for a single file with caching. Returns (tokens, method, was_cached)."""
+        cached = db.get_file_token_count(attachment, provider, model)
+        if cached:
+            return cached['token_count'], f"{cached['method']}_cached", True
+
+        if provider_instance and hasattr(provider_instance, 'estimate_file_tokens'):
+            file_info = db.get_file_record(attachment)
+            result = provider_instance.estimate_file_tokens(attachment, file_info)
+            tokens, method = result['tokens'], result['method']
+        else:
+            tokens, method = self._estimate_file_tokens_generic(attachment, db)
+
+        db.update_file_token_count(attachment, tokens, provider, model, method)
+        return tokens, method, False
+
     def count_messages_tokens(
         self, messages: List[Dict[str, Any]], model: str, provider: str
     ) -> MessageTokensResult:
-        """
-        Count tokens in a list of messages.
-
-        Args:
-            messages: List of message dicts
-            model: Model name
-            provider: Provider name
-
-        Returns:
-            {
-                'total': int,
-                'per_message': List[int],
-                'method': str
-            }
-        """
+        """Count tokens in messages using batched counting, distributed proportionally."""
         if not messages:
             return {'total': 0, 'per_message': [], 'method': 'none'}
+
+        prepared = []
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            prepared.append((role, content, len(role) + len(content)))
+
+        total_chars = sum(char_len for _, _, char_len in prepared)
+
+        if total_chars == 0:
+            return {
+                'total': len(messages) * self.MESSAGE_OVERHEAD_TOKENS,
+                'per_message': [self.MESSAGE_OVERHEAD_TOKENS] * len(messages),
+                'method': 'empty_messages'
+            }
+
+        batched_text = '\n'.join(f"{role}: {content}" for role, content, _ in prepared)
 
         providers = self._get_providers()
         provider_instance = providers.get(provider)
         counting_method = Config.get_token_counting_method(provider)
 
+        total_content_tokens = 0
+        method_name = 'char_approximation'
+
         if counting_method == "native" and provider_instance:
             try:
-                total = 0
-                per_message = []
-
-                for msg in messages:
-                    content = msg.get('content', '')
-                    if isinstance(content, str):
-                        tokens = provider_instance.count_tokens(content, model)
-                        per_message.append(tokens)
-                        total += tokens + self.MESSAGE_OVERHEAD_TOKENS
-                    else:
-                        per_message.append(0)
-
-                return {
-                    'total': total,
-                    'per_message': per_message,
-                    'method': f'{provider}_native'
-                }
+                total_content_tokens = provider_instance.count_tokens(batched_text, model)
+                method_name = f'{provider}_native'
             except Exception as e:
-                self.logger.warning(f"{provider} native counting failed: {e}, using fallback")
+                self.logger.warning(f"{provider} native counting failed: {e}, trying tiktoken")
+                counting_method = "tiktoken"
 
-        if counting_method == "tiktoken":
+        if counting_method == "tiktoken" and total_content_tokens == 0:
             try:
                 import tiktoken
-            except ImportError as e:
-                self.logger.warning(f"tiktoken not available for {provider} - falling back to character approximation. "
-                                    f"Install with 'pip install tiktoken' for accurate counts. Error: {e}")
-                counting_method = "fallback"  
+                encoding_name = Config.get_tiktoken_encoding()
+                enc = tiktoken.get_encoding(encoding_name)
+                total_content_tokens = len(enc.encode(batched_text))
+                method_name = f'tiktoken_{encoding_name}'
+            except ImportError:
+                self.logger.debug("tiktoken not available, using fallback")
             except Exception as e:
-                self.logger.error(f"Unexpected error importing tiktoken: {e}. Using fallback.")
-                counting_method = "fallback"
+                self.logger.warning(f"tiktoken counting failed: {e}, using fallback")
 
-            if counting_method == "tiktoken":  
-                try:
-                    encoding_name = Config.get_tiktoken_encoding()
-                    enc = tiktoken.get_encoding(encoding_name)
+        if total_content_tokens == 0:
+            total_content_tokens = self._fallback_count(batched_text)
+            method_name = 'char_approximation'
 
-                    total = 0
-                    per_message = []
-
-                    for msg in messages:
-                        content = msg.get('content', '')
-                        role = msg.get('role', 'user')
-
-                        if isinstance(content, str):
-                            content_tokens = len(enc.encode(content))
-                            role_tokens = len(enc.encode(role))
-                            msg_total = content_tokens + role_tokens + self.MESSAGE_OVERHEAD_TOKENS
-                            per_message.append(msg_total)
-                            total += msg_total
-                        else:
-                            per_message.append(0)
-
-                    return {
-                        'total': total,
-                        'per_message': per_message,
-                        'method': f'tiktoken_{encoding_name}'
-                    }
-                except Exception as e:
-                    self.logger.warning(f"tiktoken counting failed: {e}, using fallback")
-
-        total = 0
+        # Distribute tokens proportionally by character length + add per-message overhead
         per_message = []
-        for msg in messages:
-            content = msg.get('content', '')
-            if isinstance(content, str):
-                tokens = self._fallback_count(content) + self.MESSAGE_OVERHEAD_TOKENS
-                per_message.append(tokens)
-                total += tokens
-            else:
-                per_message.append(0)
+        for _, _, char_len in prepared:
+            proportion = char_len / total_chars
+            msg_tokens = int(total_content_tokens * proportion) + self.MESSAGE_OVERHEAD_TOKENS
+            per_message.append(msg_tokens)
+
+        total = total_content_tokens + (len(messages) * self.MESSAGE_OVERHEAD_TOKENS)
 
         return {
             'total': total,
             'per_message': per_message,
-            'method': 'char_approximation'
+            'method': method_name
         }
 
     def estimate_request_tokens(
@@ -253,34 +389,7 @@ class ContextManager:
         current_message: str = "",
         file_attachments: Optional[List[Any]] = None
     ) -> TokenEstimationResult:
-        """
-        Estimate tokens for a complete request broken down by component.
-
-        Args:
-            role: Role making the request (router, planner, assistant, agent)
-            provider: Provider name
-            model: Model name
-            system_prompt: System prompt if any
-            chat_history: Previous messages
-            current_message: Current user message
-            file_attachments: File attachments
-
-        Returns:
-            {
-                "role": str,
-                "estimated_tokens": {
-                    "system_prompt": int,
-                    "chat_history": int,
-                    "current_message": int,
-                    "file_attachments": int,
-                    "total": int
-                },
-                "method": str,
-                "model": str,
-                "provider": str,
-                "breakdown_details": {...}
-            }
-        """
+        """Estimate tokens for a complete request, broken down by component."""
         system_tokens = self.count_tokens(system_prompt or "", model, provider) if system_prompt else 0
 
         history_result = self.count_messages_tokens(chat_history or [], model, provider)
@@ -292,146 +401,20 @@ class ContextManager:
         file_breakdown = []
 
         if file_attachments:
-            counting_method = Config.get_token_counting_method(provider)
+            from utils.db_utils import db
+            providers = self._get_providers()
+            provider_instance = providers.get(provider)
 
-            if counting_method == "native" and provider == "gemini":
-                providers = self._get_providers()
-                gemini_provider = providers.get('gemini')
-
-                if gemini_provider and gemini_provider.is_available():
-                    try:
-                        parts = []
-                        if current_message:
-                            parts.append({"text": current_message})
-
-                        for api_file_name in file_attachments:
-                            try:
-                                file_info = gemini_provider.client.files.get(name=api_file_name)
-                                parts.append({"file_data": {"file_uri": file_info.uri}})
-                            except Exception as file_err:
-                                self.logger.warning(f"Failed to get URI for file {api_file_name}: {file_err}")
-                                file_tokens += self.GEMINI_IMAGE_BASE_TOKENS
-                                file_breakdown.append({
-                                    "file": str(api_file_name),
-                                    "estimated_tokens": self.GEMINI_IMAGE_BASE_TOKENS,
-                                    "method": "gemini_file_unavailable_fallback"
-                                })
-                                continue
-
-                        if parts:
-                            total_with_files = gemini_provider.count_tokens(parts, model)
-
-                            message_tokens_alone = self.count_tokens(current_message, model, provider) if current_message else 0
-                            file_tokens_from_api = max(0, total_with_files - message_tokens_alone)
-                            file_tokens += file_tokens_from_api
-
-                            files_in_parts = len(file_attachments) - len(file_breakdown)  
-                            if files_in_parts > 0 and file_tokens_from_api > 0:
-                                tokens_per_file = file_tokens_from_api // files_in_parts
-                                for api_file_name in file_attachments[:files_in_parts]:  
-                                    file_breakdown.append({
-                                        "file": str(api_file_name),
-                                        "estimated_tokens": tokens_per_file,
-                                        "method": "gemini_native_multimodal"
-                                    })
-
-                            self.logger.debug(f"Gemini native multimodal counting: {file_tokens} tokens for {len(file_attachments)} files")
-                    except Exception as e:
-                        self.logger.warning(f"Gemini multimodal counting failed: {e}, using conservative estimate")
-                        file_tokens = 0
-                        file_breakdown = []
-                        for attachment in file_attachments:
-                            estimated_tokens = self.GEMINI_IMAGE_BASE_TOKENS
-                            file_tokens += estimated_tokens
-                            file_breakdown.append({
-                                "file": str(attachment),
-                                "estimated_tokens": estimated_tokens,
-                                "method": "gemini_fallback_estimate"
-                            })
-                else:
-                    for attachment in file_attachments:
-                        estimated_tokens = self.GEMINI_IMAGE_BASE_TOKENS
-                        file_tokens += estimated_tokens
-                        file_breakdown.append({
-                            "file": str(attachment),
-                            "estimated_tokens": estimated_tokens,
-                            "method": "gemini_unavailable_fallback"
-                        })
-            else:
-                from utils.db_utils import db
-                file_tokens = 0
-                for attachment in file_attachments:
-                    cached = db.get_file_token_count(attachment, provider, model)
-                    if cached:
-                        estimated_tokens = cached['token_count']
-                        file_tokens += estimated_tokens
-                        file_breakdown.append({
-                            "file": str(attachment),
-                            "estimated_tokens": estimated_tokens,
-                            "method": f"{cached['method']}_cached"
-                        })
-                        continue
-
-                    estimated_tokens = 100
-                    estimation_method = "heuristic_estimation"
-
-                    try:
-                        file_info = db.get_file_record(attachment)
-                        if file_info:
-                            file_extension = file_info.get('file_extension', '').lower()
-                            file_size = file_info.get('file_size', 0)
-
-                            if file_extension in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
-                                if file_size < 100 * 1024:
-                                    estimated_tokens = self.IMAGE_SMALL_TOKENS
-                                elif file_size < 500 * 1024:
-                                    estimated_tokens = self.IMAGE_MEDIUM_TOKENS
-                                else:
-                                    estimated_tokens = self.IMAGE_LARGE_TOKENS
-
-                            elif file_extension in ['.txt', '.md', '.pdf', '.doc', '.docx']:
-                                if file_extension == '.pdf':
-                                    estimated_tokens = max(100, file_size // 8)
-                                elif file_extension in ['.doc', '.docx']:
-                                    estimated_tokens = max(100, file_size // 10)
-                                else:
-                                    estimated_tokens = max(50, file_size // 4)
-
-                                estimated_tokens = min(estimated_tokens, 10000)
-
-                            elif file_extension in ['.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs']:
-                                estimated_tokens = max(50, file_size // 3)
-                                estimated_tokens = min(estimated_tokens, 15000)
-
-                            elif file_extension in ['.mp4', '.avi', '.mov', '.webm', '.mkv']:
-                                size_mb = file_size / (1024 * 1024)
-                                estimated_seconds = size_mb * 10
-                                estimated_tokens = int(estimated_seconds * 250)
-                                estimated_tokens = min(estimated_tokens, 50000)
-
-                            elif file_extension in ['.mp3', '.wav', '.ogg', '.m4a']:
-                                size_mb = file_size / (1024 * 1024)
-                                estimated_seconds = size_mb * 30
-                                estimated_tokens = int(estimated_seconds * self.GEMINI_AUDIO_TOKENS_PER_SEC)
-                                estimated_tokens = min(estimated_tokens, 30000)
-
-                            db.update_file_token_count(
-                                attachment,
-                                estimated_tokens,
-                                provider,
-                                model,
-                                estimation_method
-                            )
-
-                    except Exception as e:
-                        self.logger.warning(f"Failed to get file info for {attachment}: {e}, using default estimate")
-
-                    file_tokens += estimated_tokens
-                    file_breakdown.append({
-                        "file": str(attachment),
-                        "estimated_tokens": estimated_tokens,
-                        "method": estimation_method
-                    })
+            for attachment in file_attachments:
+                tokens, method, _ = self._estimate_single_file_tokens(
+                    attachment, provider, model, db, provider_instance
+                )
+                file_tokens += tokens
+                file_breakdown.append({
+                    "file": str(attachment),
+                    "estimated_tokens": tokens,
+                    "method": method
+                })
 
         total = system_tokens + history_tokens + message_tokens + file_tokens
 
@@ -449,15 +432,10 @@ class ContextManager:
                     "tokens": msg_tokens
                 })
 
-        counting_method = Config.get_token_counting_method(provider)
         if history_result['method'] != 'none':
             method_to_report = history_result['method']
         else:
-            method_to_report = {
-                'native': f'{provider}_native',
-                'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-                'fallback': 'char_approximation'
-            }.get(counting_method, 'char_approximation')
+            method_to_report, _ = self._get_method_info(provider)
 
         return {
             "role": role,
@@ -485,153 +463,55 @@ class ContextManager:
         }
 
     def extract_actual_tokens_from_response(self, response: Dict[str, Any], provider: str) -> Optional[TokenUsageDict]:
-        """
-        Extract actual token usage from provider response.
-
-        Args:
-            response: Provider response dict
-            provider: Provider name
-
-        Returns:
-            {
-                'prompt_tokens': int,
-                'completion_tokens': int,
-                'total_tokens': int,
-                'cached_tokens': int (optional for OpenRouter)
-            } or None if not available
-        """
+        """Extract actual token usage from provider response via provider's extract_usage_from_response()."""
         if not response:
             return None
 
-        if 'usage' in response and response['usage']:
-            usage = response['usage']
-            if isinstance(usage, dict) and 'total_tokens' in usage:
-                return usage
+        providers = self._get_providers()
+        provider_instance = providers.get(provider)
 
-        counting_method = Config.get_token_counting_method(provider)
-
-        if counting_method == "native" and provider == "gemini":
-            metadata = response.get('usage_metadata')
-            if metadata:
-                if isinstance(metadata, dict):
-                    return {
-                        'prompt_tokens': metadata.get('prompt_token_count', 0),
-                        'completion_tokens': metadata.get('candidates_token_count', 0),
-                        'total_tokens': metadata.get('total_token_count', 0)
-                    }
-                else:
-                    return {
-                        'prompt_tokens': getattr(metadata, 'prompt_token_count', 0),
-                        'completion_tokens': getattr(metadata, 'candidates_token_count', 0),
-                        'total_tokens': getattr(metadata, 'total_token_count', 0)
-                    }
-
-        if counting_method == "tiktoken" and provider == "groq":
-            usage = response.get('usage')
-            if usage:
-                if isinstance(usage, dict):
-                    return {
-                        'prompt_tokens': usage.get('prompt_tokens', 0),
-                        'completion_tokens': usage.get('completion_tokens', 0),
-                        'total_tokens': usage.get('total_tokens', 0)
-                    }
-                else:
-                    return {
-                        'prompt_tokens': getattr(usage, 'prompt_tokens', 0),
-                        'completion_tokens': getattr(usage, 'completion_tokens', 0),
-                        'total_tokens': getattr(usage, 'total_tokens', 0)
-                    }
-
-        if counting_method == "tiktoken" and provider == "openrouter":
-            usage = response.get('usage')
-            if usage:
-                if isinstance(usage, dict):
-                    result = {
-                        'prompt_tokens': usage.get('prompt_tokens', 0),
-                        'completion_tokens': usage.get('completion_tokens', 0),
-                        'total_tokens': usage.get('total_tokens', 0)
-                    }
-                    # OpenRouter provides cached_tokens info
-                    prompt_details = usage.get('prompt_tokens_details', {})
-                    if prompt_details and 'cached_tokens' in prompt_details:
-                        result['cached_tokens'] = prompt_details.get('cached_tokens', 0)
-                    return result
-                else:
-                    # Object format
-                    result = {
-                        'prompt_tokens': getattr(usage, 'prompt_tokens', 0),
-                        'completion_tokens': getattr(usage, 'completion_tokens', 0),
-                        'total_tokens': getattr(usage, 'total_tokens', 0)
-                    }
-                    prompt_details = getattr(usage, 'prompt_tokens_details', None)
-                    if prompt_details:
-                        cached = getattr(prompt_details, 'cached_tokens', 0) if hasattr(prompt_details, 'cached_tokens') else prompt_details.get('cached_tokens', 0) if isinstance(prompt_details, dict) else 0
-                        if cached:
-                            result['cached_tokens'] = cached
-                    return result
-
-        # Generic tiktoken providers - fallback to standard format
-        if counting_method == "tiktoken":
-            usage = response.get('usage')
-            if usage:
-                if isinstance(usage, dict):
-                    return {
-                        'prompt_tokens': usage.get('prompt_tokens', 0),
-                        'completion_tokens': usage.get('completion_tokens', 0),
-                        'total_tokens': usage.get('total_tokens', 0)
-                    }
-                else:
-                    return {
-                        'prompt_tokens': getattr(usage, 'prompt_tokens', 0),
-                        'completion_tokens': getattr(usage, 'completion_tokens', 0),
-                        'total_tokens': getattr(usage, 'total_tokens', 0)
-                    }
+        if provider_instance and hasattr(provider_instance, 'extract_usage_from_response'):
+            return provider_instance.extract_usage_from_response(response)
 
         return None
 
     def _reconstruct_router_prompt(self, chat_history: List[Dict[str, Any]], user_message: str) -> tuple[str, List[tuple[str, str]]]:
-        """
-        Reconstruct the exact router prompt and break it into segments.
-
-        Returns:
-            (full_prompt, segments) where segments is [(label, text), ...]
-        """
+        """Reconstruct router prompt and break into labeled segments for forensic analysis."""
         from agents.prompts.router_prompt import router_system_prompt
         from utils.config import available_routes
+        from agents.domains.domain_registry import domain_registry
 
-        # Build routes section
         routes_lines = []
         for route in available_routes:
             routes_lines.append(
                 f"- {route['route_name']}: {route['route_description']} ({route['route_context']})"
             )
         routes_block = "\n".join(routes_lines)
-
-        # Build context section
+        domains_block = domain_registry.get_domain_descriptions_for_router()
         context = self.build_router_context(chat_history, user_message)
 
-        # Split template into segments
         try:
-            before_routes, remainder = router_system_prompt.split("{available_routes}", 1)
-            before_context, after_context = remainder.split("{available_information}", 1)
+            before_routes, after_routes = router_system_prompt.split("{available_routes}", 1)
+            before_context, after_context = after_routes.split("{available_information}", 1)
+            before_domains, after_domains = after_context.split("{available_domains}", 1)
         except ValueError:
-            # Fallback if template structure changes
-            full_prompt = router_system_prompt.replace("{available_routes}", routes_block).replace("{available_information}", context)
+            full_prompt = (router_system_prompt
+                .replace("{available_routes}", routes_block)
+                .replace("{available_information}", context)
+                .replace("{available_domains}", domains_block))
             return full_prompt, [("Router Prompt", full_prompt)]
 
-        # Build segments
         segments = [
             ("System Instructions", before_routes.strip()),
             ("Available Routes", routes_block.strip()),
             ("Context Preface", before_context.strip()),
             ("Conversation Context", context.strip()),
-            ("Response Format", after_context.strip()),
+            ("Domain Preface", before_domains.strip()),
+            ("Available Domains", domains_block.strip()),
+            ("Response Format", after_domains.strip()),
         ]
 
-        # Build full prompt
         full_prompt = "".join(text for _, text in segments)
-
-        # Filter out empty segments
         segments = [(label, text) for label, text in segments if text]
 
         return full_prompt, segments
@@ -642,88 +522,49 @@ class ContextManager:
         model: str,
         provider: str
     ) -> List[Dict[str, Any]]:
-        """
-        Analyze token usage for each prompt segment.
-
-        Returns:
-            List of segment analysis dicts with label, tokens, method, etc.
-        """
+        """Count tokens for each prompt segment."""
         segment_details = []
 
         for label, text in segments:
             tokens = self.count_tokens(text, model, provider)
-            method = Config.get_token_counting_method(provider)
-            method_display = {
-                'native': f'{provider}_native',
-                'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-                'fallback': 'char_approximation'
-            }.get(method, 'unknown')
+            method_display, is_estimated = self._get_method_info(provider)
 
             segment_details.append({
                 "label": label,
                 "tokens": tokens,
                 "method": method_display,
-                "is_estimated": method == 'fallback',
+                "is_estimated": is_estimated,
                 "char_count": len(text)
             })
 
         return segment_details
 
+    def _build_empty_analysis(self, chat_id: str, system_prompt: str) -> InteractionAnalysis:
+        """Build empty analysis response for early returns."""
+        import time
+        return {
+            "chat_id": chat_id,
+            "system_prompt": {
+                "content": system_prompt,
+                "tokens": 0,
+                "method": "none",
+                "is_estimated": True
+            },
+            "requests": [],
+            "generated_at": int(time.time() * 1000)
+        }
+
     def analyze_latest_interaction(self, chat_id: str) -> InteractionAnalysis:
-        """
-        Forensic analysis of the most recent interaction in a chat.
-
-        This reconstructs the exact prompts sent to router/planner/assistant
-        and provides detailed token breakdowns by segment.
-
-        Args:
-            chat_id: The chat ID to analyze
-
-        Returns:
-            {
-                "chat_id": str,
-                "system_prompt": {...},
-                "requests": [
-                    {
-                        "role": "router"|"planner"|"assistant",
-                        "label": str,
-                        "provider": str,
-                        "model": str,
-                        "input": {
-                            "total": {"tokens": int, "method": str, "is_estimated": bool},
-                            "segments": [...]
-                        },
-                        "output": {
-                            "total": {"tokens": int, "method": str, "is_estimated": bool},
-                            "segments": [...]
-                        } (optional),
-                        "notes": [str, ...]
-                    }
-                ],
-                "generated_at": int (timestamp)
-            }
-        """
+        """Forensic analysis of the most recent interaction, reconstructing prompts with token breakdowns."""
         from utils.db_utils import db
         import time
 
-        # Get chat history and system prompt
         history = db.get_chat_history(chat_id)
         system_prompt = db.get_chat_system_prompt(chat_id)
 
         if not history:
-            return {
-                "chat_id": chat_id,
-                "system_prompt": {
-                    "content": system_prompt,
-                    "tokens": 0,
-                    "method": "none",
-                    "is_estimated": True
-                },
-                "requests": [],
-                "generated_at": int(time.time() * 1000)
-            }
+            return self._build_empty_analysis(chat_id, system_prompt)
 
-        # Find the most recent assistant message
         assistant_msg = None
         assistant_idx = None
         for idx in range(len(history) - 1, -1, -1):
@@ -733,19 +574,8 @@ class ContextManager:
                 break
 
         if not assistant_msg:
-            return {
-                "chat_id": chat_id,
-                "system_prompt": {
-                    "content": system_prompt,
-                    "tokens": 0,
-                    "method": "none",
-                    "is_estimated": True
-                },
-                "requests": [],
-                "generated_at": int(time.time() * 1000)
-            }
+            return self._build_empty_analysis(chat_id, system_prompt)
 
-        # Find the corresponding user message
         user_msg = None
         user_idx = None
         for idx in range(assistant_idx - 1, -1, -1):
@@ -758,48 +588,59 @@ class ContextManager:
             user_idx = assistant_idx
             user_msg = {"role": "user", "content": "", "attachedFiles": []}
 
-        # History before this interaction
         prior_history = history[:user_idx]
 
-        # Query token_usage database to get actual router and assistant records
         router_usage = db.get_most_recent_token_usage(chat_id, 'router')
         assistant_usage = db.get_most_recent_token_usage(chat_id, 'assistant')
 
-        # Get router metadata from assistant message for route decision info
-        router_metadata = assistant_msg.get("routerDecision")
+        # Discard router record if request_id doesn't match (different interaction)
+        if router_usage and assistant_usage:
+            router_rid = router_usage.get('request_id')
+            assistant_rid = assistant_usage.get('request_id')
+            if router_rid and assistant_rid and router_rid != assistant_rid:
+                router_usage = None
 
+        router_metadata = assistant_msg.get("routerDecision")
         requests = []
 
-        # 1. Analyze Router (if database record exists)
         if router_usage:
             router_provider = router_usage['provider']
             router_model = router_usage['model']
 
             full_prompt, segments = self._reconstruct_router_prompt(
-                prior_history,
-                user_msg.get("content", "")
+                prior_history, user_msg.get("content", "")
             )
 
-            # Count total tokens
-            total_tokens = self.count_tokens(full_prompt, router_model, router_provider)
-            method = Config.get_token_counting_method(router_provider)
-            method_display = {
-                'native': f'{router_provider}_native',
-                'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-                'fallback': 'char_approximation'
-            }.get(method, 'unknown')
-
-            # Analyze segments
             segment_details = self._analyze_prompt_segments(segments, router_model, router_provider)
-
-            has_actual_tokens = router_usage.get('actual_tokens', 0) > 0
             route_choice = router_metadata.get("route") if router_metadata else None
 
-            if has_actual_tokens:
+            has_api_prompt = router_usage.get('prompt_tokens', 0) > 0
+            has_api_total = router_usage.get('actual_tokens', 0) > 0
+
+            notes = []
+            if route_choice:
+                notes.append(f"Selected Route: {route_choice}")
+
+            if has_api_prompt:
+                prompt_tokens = router_usage['prompt_tokens']
+                method_display = f"{router_provider}_api"
+                notes.append(f"Input tokens from API: {prompt_tokens}")
+
+                requests.append({
+                    "role": "router",
+                    "label": "Router Decision",
+                    "provider": router_provider,
+                    "model": router_model,
+                    "input": {
+                        "total": {"tokens": prompt_tokens, "method": method_display, "is_estimated": False},
+                        "segments": segment_details,
+                        "segments_note": "Segment breakdown uses counting (not from API)"
+                    },
+                    "notes": notes
+                })
+            elif has_api_total:
                 actual_tokens = router_usage['actual_tokens']
-                notes = []
-                if route_choice:
-                    notes.append(f"Selected Route: {route_choice}")
+                method_display, _ = self._get_method_info(router_provider, 'api')
                 notes.append(f"Total tokens from API: {actual_tokens}")
 
                 requests.append({
@@ -808,21 +649,16 @@ class ContextManager:
                     "provider": router_provider,
                     "model": router_model,
                     "input": {
-                        "total": {
-                            "tokens": actual_tokens,
-                            "method": method_display,
-                            "is_estimated": False
-                        },
-                        "segments": segment_details
+                        "total": {"tokens": actual_tokens, "method": method_display, "is_estimated": False},
+                        "segments": segment_details,
+                        "segments_note": "Segment breakdown uses counting (not from API)"
                     },
                     "notes": notes
                 })
             else:
-                notes = []
-                if route_choice:
-                    notes.append(f"Selected Route: {route_choice}")
-                notes.append(f"Tokenizer: {method_display}")
-                notes.append("Note: Using estimated tokens (no API usage data)")
+                total_tokens = self.count_tokens(full_prompt, router_model, router_provider)
+                method_display, is_estimated = self._get_method_info(router_provider)
+                notes.append(f"Counted via: {method_display}")
 
                 requests.append({
                     "role": "router",
@@ -830,73 +666,23 @@ class ContextManager:
                     "provider": router_provider,
                     "model": router_model,
                     "input": {
-                        "total": {
-                            "tokens": total_tokens,
-                            "method": method_display,
-                            "is_estimated": True
-                        },
+                        "total": {"tokens": total_tokens, "method": method_display, "is_estimated": is_estimated},
                         "segments": segment_details
                     },
                     "notes": notes
                 })
 
-        # 2. Analyze Planner (if taskflow route was selected)
-        if router_metadata and router_metadata.get("route") == "taskflow":
-            planner_provider = Config.get_default_provider()
-            planner_model = Config.get_default_model()
-
-            full_prompt, segments, tool_entries = self._reconstruct_planner_prompt(
-                user_msg.get("content", "")
-            )
-
-            # Count total tokens
-            total_tokens = self.count_tokens(full_prompt, planner_model, planner_provider)
-            method = Config.get_token_counting_method(planner_provider)
-            method_display = {
-                'native': f'{planner_provider}_native',
-                'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-                'fallback': 'char_approximation'
-            }.get(method, 'unknown')
-
-            # Analyze segments
-            segment_details = self._analyze_prompt_segments(segments, planner_model, planner_provider)
-
-            # Build notes
-            notes = [
-                "Activated for Taskflow route",
-                f"Tools Available: {len(tool_entries)}",
-                f"Tokenizer: {method_display}"
-            ]
-
-            requests.append({
-                "role": "planner",
-                "label": "Task Planner",
-                "provider": planner_provider,
-                "model": planner_model,
-                "input": {
-                    "total": {
-                        "tokens": total_tokens,
-                        "method": method_display,
-                        "is_estimated": method == 'fallback'
-                    },
-                    "segments": segment_details
-                },
-                "notes": notes
-            })
-
-        # 3. Analyze Assistant
-        # Use database record to get actual provider/model used
         if assistant_usage:
             provider = assistant_usage['provider']
             model = assistant_usage['model']
         else:
-            # Fallback to message metadata or config defaults
             provider = assistant_msg.get("provider") or Config.get_default_provider()
             model = assistant_msg.get("model") or Config.get_default_model()
 
         attachments = [f.get("api_file_name") for f in user_msg.get("attachedFiles", []) if f.get("api_file_name")]
 
-        # Estimate input tokens
+        counting_method, counting_is_estimated = self._get_method_info(provider)
+
         input_estimate = self.estimate_request_tokens(
             role="assistant",
             provider=provider,
@@ -907,78 +693,70 @@ class ContextManager:
             file_attachments=attachments
         )
 
-        # Build input segments
         input_segments = []
         if system_prompt:
             input_segments.append({
                 "label": "System Prompt",
                 "tokens": input_estimate["estimated_tokens"]["system_prompt"],
-                "method": input_estimate["method"],
-                "is_estimated": True
+                "method": counting_method,
+                "is_estimated": counting_is_estimated
             })
         if prior_history:
             input_segments.append({
                 "label": f"Chat History ({len(prior_history)} messages)",
                 "tokens": input_estimate["estimated_tokens"]["chat_history"],
-                "method": input_estimate["method"],
-                "is_estimated": True
+                "method": counting_method,
+                "is_estimated": counting_is_estimated
             })
         if user_msg.get("content"):
-            # User message uses native counting (not estimated) when we know the model
-            user_msg_tokens = input_estimate["estimated_tokens"]["current_message"]
-            user_msg_method = input_estimate["method"]
             input_segments.append({
                 "label": "User Message",
-                "tokens": user_msg_tokens,
-                "method": user_msg_method,
-                "is_estimated": False  # Native counting when model is known
+                "tokens": input_estimate["estimated_tokens"]["current_message"],
+                "method": counting_method,
+                "is_estimated": counting_is_estimated
             })
         if attachments:
             input_segments.append({
                 "label": f"File Attachments ({len(attachments)} files)",
                 "tokens": input_estimate["estimated_tokens"]["file_attachments"],
-                "method": input_estimate["method"],
+                "method": counting_method,
                 "is_estimated": True,
                 "details": input_estimate["breakdown_details"]["file_breakdown"]
             })
 
-        # Analyze output tokens
         assistant_content = assistant_msg.get("content", "")
         assistant_thoughts = assistant_msg.get("thoughts") or ""
-
         output_tokens_content = self.count_tokens(assistant_content, model, provider) if assistant_content else 0
         output_tokens_thoughts = self.count_tokens(assistant_thoughts, model, provider) if assistant_thoughts else 0
-        output_total = output_tokens_content + output_tokens_thoughts
-
-        method = Config.get_token_counting_method(provider)
-        method_display = {
-            'native': f'{provider}_native',
-            'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-            'fallback': 'char_approximation'
-        }.get(method, 'unknown')
+        counted_output_total = output_tokens_content + output_tokens_thoughts
 
         output_segments = []
         if assistant_content:
             output_segments.append({
                 "label": "Assistant Response",
                 "tokens": output_tokens_content,
-                "method": method_display,
-                "is_estimated": method == 'fallback'
+                "method": counting_method,
+                "is_estimated": counting_is_estimated
             })
         if assistant_thoughts:
             output_segments.append({
                 "label": "Internal Reasoning",
                 "tokens": output_tokens_thoughts,
-                "method": method_display,
-                "is_estimated": method == 'fallback'
+                "method": counting_method,
+                "is_estimated": counting_is_estimated
             })
 
-        has_actual_tokens = assistant_usage and assistant_usage.get('actual_tokens', 0) > 0
+        has_api_prompt = assistant_usage and assistant_usage.get('prompt_tokens', 0) > 0
+        has_api_completion = assistant_usage and assistant_usage.get('completion_tokens', 0) > 0
+        has_api_total = assistant_usage and assistant_usage.get('actual_tokens', 0) > 0
 
-        if has_actual_tokens:
-            actual_total = assistant_usage['actual_tokens']
-            input_total = input_estimate["estimated_tokens"]["total"]
-            output_total_calc = max(0, actual_total - input_total)
+        notes = []
+
+        if has_api_prompt and has_api_completion:
+            api_input = assistant_usage['prompt_tokens']
+            api_output = assistant_usage['completion_tokens']
+            api_method = f"{provider}_api"
+            notes.append(f"API: input={api_input}, output={api_output}")
 
             requests.append({
                 "role": "assistant",
@@ -986,71 +764,66 @@ class ContextManager:
                 "provider": provider,
                 "model": model,
                 "input": {
-                    "total": {
-                        "tokens": input_total,
-                        "method": input_estimate["method"],
-                        "is_estimated": False
-                    },
+                    "total": {"tokens": api_input, "method": api_method, "is_estimated": False},
+                    "segments": input_segments,
+                    "segments_note": "Segment breakdown uses counting (not from API)"
+                },
+                "output": {
+                    "total": {"tokens": api_output, "method": api_method, "is_estimated": False},
+                    "segments": output_segments
+                },
+                "notes": notes
+            })
+        elif has_api_total:
+            api_total = assistant_usage['actual_tokens']
+            counted_input = input_estimate["estimated_tokens"]["total"]
+            notes.append(f"API total: {api_total}")
+            notes.append(f"Input counted via {counting_method}, output counted via {counting_method}")
+
+            requests.append({
+                "role": "assistant",
+                "label": "Assistant Response",
+                "provider": provider,
+                "model": model,
+                "input": {
+                    "total": {"tokens": counted_input, "method": counting_method, "is_estimated": counting_is_estimated},
                     "segments": input_segments
                 },
                 "output": {
-                    "total": {
-                        "tokens": output_total_calc,
-                        "method": method_display,
-                        "is_estimated": False
-                    },
+                    "total": {"tokens": counted_output_total, "method": counting_method, "is_estimated": counting_is_estimated},
                     "segments": output_segments
                 },
-                "notes": [f"Total tokens from API: {actual_total}"]
+                "notes": notes
             })
         else:
+            counted_input = input_estimate["estimated_tokens"]["total"]
+            notes.append(f"Counted via: {counting_method}")
+
             requests.append({
                 "role": "assistant",
                 "label": "Assistant Response",
                 "provider": provider,
                 "model": model,
                 "input": {
-                    "total": {
-                        "tokens": input_estimate["estimated_tokens"]["total"],
-                        "method": input_estimate["method"],
-                        "is_estimated": True
-                    },
+                    "total": {"tokens": counted_input, "method": counting_method, "is_estimated": counting_is_estimated},
                     "segments": input_segments
                 },
                 "output": {
-                    "total": {
-                        "tokens": output_total,
-                        "method": method_display,
-                        "is_estimated": True
-                    },
+                    "total": {"tokens": counted_output_total, "method": counting_method, "is_estimated": counting_is_estimated},
                     "segments": output_segments
                 },
-                "notes": [
-                    f"Input Tokenizer: {input_estimate['method']}",
-                    f"Output Tokenizer: {method_display}",
-                    "Note: Using estimated tokens (no API usage data)"
-                ]
+                "notes": notes
             })
 
-        # System prompt analysis
-        system_prompt_tokens = 0
-        system_prompt_method = "none"
-        if system_prompt:
-            system_prompt_tokens = self.count_tokens(system_prompt, model, provider)
-            method = Config.get_token_counting_method(provider)
-            system_prompt_method = {
-                'native': f'{provider}_native',
-                'tiktoken': f'tiktoken_{Config.get_tiktoken_encoding()}',
-                'fallback': 'char_approximation'
-            }.get(method, 'unknown')
+        system_prompt_tokens = input_estimate["estimated_tokens"]["system_prompt"] if system_prompt else 0
 
         return {
             "chat_id": chat_id,
             "system_prompt": {
                 "content": system_prompt,
                 "tokens": system_prompt_tokens,
-                "method": system_prompt_method,
-                "is_estimated": method == 'fallback' if system_prompt else True
+                "method": counting_method if system_prompt else "none",
+                "is_estimated": counting_is_estimated if system_prompt else True
             },
             "requests": requests,
             "generated_at": int(time.time() * 1000)
@@ -1061,6 +834,6 @@ class ContextManager:
 context_manager = ContextManager()
 
 
-def get_router_context(chat_history=None, current_message=None, current_message_files=None, include_tools=True):
-    """Legacy function for backward compatibility."""
-    return context_manager.build_router_context(chat_history, current_message, current_message_files, include_tools)
+def get_router_context(chat_history=None, current_message=None, current_message_files=None):
+    """Module-level convenience wrapper for context_manager.build_router_context()."""
+    return context_manager.build_router_context(chat_history, current_message, current_message_files)

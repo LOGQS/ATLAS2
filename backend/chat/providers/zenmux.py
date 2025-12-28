@@ -18,12 +18,12 @@ class Zenmux:
     """
 
     AVAILABLE_MODELS = {
-        "google/gemini-3-pro-preview-free": {
-            "name": "Gemini 3 Pro Preview Free",
+        "z-ai/glm-4.6v-flash": {
+            "name": "GLM 4.6V Flash",
             "supports_reasoning": True
         },
-        "google/gemini-2.5-pro-free": {
-            "name": "Gemini 2.5 Pro Free",
+        "google/gemini-3-flash-preview-free": {
+            "name": "Gemini 3 Flash Preview Free",
             "supports_reasoning": True
         }
     }
@@ -91,6 +91,65 @@ class Zenmux:
         total = usage.get("total_tokens")
         return int(total) if isinstance(total, int) else None
 
+    @staticmethod
+    def extract_usage_from_response(response: Any) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from Zenmux response in standardized format.
+
+        Note: Zenmux normalizes token counts using GPT-4o tokenizer.
+
+        Returns dict with fields:
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens (if available)
+        """
+        try:
+            # Handle Response object (has .json() method)
+            if hasattr(response, 'json'):
+                try:
+                    payload = response.json()
+                    usage = payload.get("usage")
+                except Exception:
+                    return None
+            # Handle dict format
+            elif isinstance(response, dict):
+                usage = response.get("usage")
+            else:
+                usage = getattr(response, "usage", None)
+
+            if not usage:
+                return None
+
+            # Handle both object and dict formats
+            if isinstance(usage, dict):
+                prompt = usage.get("prompt_tokens", 0)
+                completion = usage.get("completion_tokens", 0)
+                total = usage.get("total_tokens", 0)
+                prompt_details = usage.get("prompt_tokens_details", {})
+            else:
+                prompt = getattr(usage, "prompt_tokens", 0) or 0
+                completion = getattr(usage, "completion_tokens", 0) or 0
+                total = getattr(usage, "total_tokens", 0) or 0
+                prompt_details = getattr(usage, "prompt_tokens_details", None)
+
+            result = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": total
+            }
+
+            # Extract cached_tokens if available
+            if prompt_details:
+                if isinstance(prompt_details, dict):
+                    cached = prompt_details.get("cached_tokens", 0)
+                else:
+                    cached = getattr(prompt_details, "cached_tokens", 0) or 0
+                if cached:
+                    result["cached_tokens"] = cached
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to extract usage from Zenmux response: {e}")
+            return None
+
     def _format_chat_history(self, chat_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         """Convert database chat history to Zenmux/OpenAI format"""
         formatted_history = []
@@ -99,10 +158,8 @@ class Zenmux:
             role = message.get("role")
             content = message.get("content", "")
 
-            if role == "user":
-                formatted_history.append({"role": "user", "content": content})
-            elif role == "assistant":
-                formatted_history.append({"role": "assistant", "content": content})
+            if role in ["user", "assistant", "system"]:
+                formatted_history.append({"role": role, "content": content})
 
         return formatted_history
 
@@ -117,7 +174,7 @@ class Zenmux:
         if file_attachments:
             return {"text": None, "thoughts": None, "error": "File attachments not supported by Zenmux provider"}
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        config_params.pop("rate_limit_estimated_tokens", None)  # Not used by this provider
 
         messages = []
         if chat_history:
@@ -142,11 +199,7 @@ class Zenmux:
                     data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
+            data["reasoning"] = {"effort": "medium"}
 
         try:
             response = requests.post(self.BASE_URL,
@@ -214,7 +267,7 @@ class Zenmux:
             yield {"type": "error", "content": "File attachments not supported by Zenmux provider"}
             return
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        config_params.pop("rate_limit_estimated_tokens", None)  # Not used by this provider
 
         messages = []
         if chat_history:
@@ -231,7 +284,8 @@ class Zenmux:
         data = {
             "model": model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
 
         if config_params:
@@ -240,11 +294,7 @@ class Zenmux:
                     data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
+            data["reasoning"] = {"effort": "medium"}
 
         try:
             response = requests.post(self.BASE_URL,
@@ -351,7 +401,7 @@ class Zenmux:
         if file_attachments:
             return {"text": None, "thoughts": None, "error": "File attachments not supported by Zenmux provider"}
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        config_params.pop("rate_limit_estimated_tokens", None)  # Not used by this provider
 
         messages = []
         if chat_history:
@@ -376,11 +426,7 @@ class Zenmux:
                     data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
+            data["reasoning"] = {"effort": "medium"}
 
         client = self._ensure_async_client()
         if client is None:
@@ -438,7 +484,7 @@ class Zenmux:
         if file_attachments:
             raise ProviderStreamError("File attachments not supported by Zenmux provider")
 
-        estimated_tokens = config_params.pop("rate_limit_estimated_tokens", None)
+        config_params.pop("rate_limit_estimated_tokens", None)  # Not used by this provider
 
         messages = []
         if chat_history:
@@ -455,7 +501,8 @@ class Zenmux:
         data = {
             "model": model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
 
         if config_params:
@@ -464,11 +511,7 @@ class Zenmux:
                     data[key] = value
 
         if include_thoughts and self.supports_reasoning(model):
-            data["reasoning"] = {
-                "effort": "medium",
-                "exclude": False,
-                "enabled": True
-            }
+            data["reasoning"] = {"effort": "medium"}
 
         client = self._ensure_async_client()
         if client is None:
