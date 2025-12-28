@@ -1,6 +1,6 @@
 # status: complete
 
-from typing import Dict, Any, List, Optional
+from typing import Any
 from pathlib import Path
 from utils.logger import get_logger
 from utils.config import get_provider_map, Config
@@ -43,7 +43,7 @@ class ContextManager:
             self._provider_map = get_provider_map()
         return self._provider_map
 
-    def _truncate_chat_history(self, chat_history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    def _truncate_chat_history(self, chat_history: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
         """Truncate chat history to fit budget, removing oldest messages first."""
         if not chat_history:
             return []
@@ -64,7 +64,7 @@ class ContextManager:
         keep_from_index = min(keep_from_index, len(chat_history) - 1)
         return chat_history[keep_from_index:]
 
-    def _format_attached_files(self, files: List[Dict[str, Any]]) -> Optional[str]:
+    def _format_attached_files(self, files: list[dict[str, Any]]) -> str | None:
         """Format file list into '[Attached: file1, file2]' string."""
         if not files:
             return None
@@ -182,7 +182,7 @@ class ContextManager:
             self.logger.debug(f"Failed to get image dimensions: {e}")
             return None, None
 
-    def _get_media_duration(self, file_path: Path) -> Optional[float]:
+    def _get_media_duration(self, file_path: Path) -> float | None:
         """Extract media duration in seconds using ffprobe."""
         try:
             import subprocess
@@ -215,7 +215,7 @@ class ContextManager:
             self.logger.debug(f"Failed to get media duration: {e}")
             return None
 
-    def _read_markdown_content(self, md_filename: str) -> Optional[str]:
+    def _read_markdown_content(self, md_filename: str) -> str | None:
         """Read markdown content from md_ver directory."""
         try:
             from file_utils.markdown_processor import setup_filespace
@@ -310,7 +310,7 @@ class ContextManager:
         return tokens, method, False
 
     def count_messages_tokens(
-        self, messages: List[Dict[str, Any]], model: str, provider: str
+        self, messages: list[dict[str, Any]], model: str, provider: str
     ) -> MessageTokensResult:
         """Count tokens in messages using batched counting, distributed proportionally."""
         if not messages:
@@ -384,10 +384,10 @@ class ContextManager:
         role: str,
         provider: str,
         model: str,
-        system_prompt: Optional[str] = None,
-        chat_history: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: str | None = None,
+        chat_history: list[dict[str, Any]] | None = None,
         current_message: str = "",
-        file_attachments: Optional[List[Any]] = None
+        file_attachments: list[Any] | None = None
     ) -> TokenEstimationResult:
         """Estimate tokens for a complete request, broken down by component."""
         system_tokens = self.count_tokens(system_prompt or "", model, provider) if system_prompt else 0
@@ -462,7 +462,7 @@ class ContextManager:
             }
         }
 
-    def extract_actual_tokens_from_response(self, response: Dict[str, Any], provider: str) -> Optional[TokenUsageDict]:
+    def extract_actual_tokens_from_response(self, response: dict[str, Any], provider: str) -> TokenUsageDict | None:
         """Extract actual token usage from provider response via provider's extract_usage_from_response()."""
         if not response:
             return None
@@ -475,7 +475,7 @@ class ContextManager:
 
         return None
 
-    def _reconstruct_router_prompt(self, chat_history: List[Dict[str, Any]], user_message: str) -> tuple[str, List[tuple[str, str]]]:
+    def _reconstruct_router_prompt(self, chat_history: list[dict[str, Any]], user_message: str) -> tuple[str, list[tuple[str, str]]]:
         """Reconstruct router prompt and break into labeled segments for forensic analysis."""
         from agents.prompts.router_prompt import router_system_prompt
         from utils.config import available_routes
@@ -518,10 +518,10 @@ class ContextManager:
 
     def _analyze_prompt_segments(
         self,
-        segments: List[tuple[str, str]],
+        segments: list[tuple[str, str]],
         model: str,
         provider: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Count tokens for each prompt segment."""
         segment_details = []
 

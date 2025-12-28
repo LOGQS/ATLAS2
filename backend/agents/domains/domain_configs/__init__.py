@@ -4,7 +4,6 @@ Domain configurations package - Auto-discovers and registers all domains.
 
 from pathlib import Path
 import importlib
-from typing import List
 
 from agents.domains.domain_registry import domain_registry, DomainSpec
 from utils.logger import get_logger
@@ -13,7 +12,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def discover_and_register_domains() -> List[str]:
+def discover_and_register_domains() -> list[str]:
     """Auto-discover all domain modules in this package and register them.
 
     Returns:
@@ -48,7 +47,6 @@ def discover_and_register_domains() -> List[str]:
     return registered_domains
 
 
-_registered = discover_and_register_domains()
-
+discover_and_register_domains()
 
 __all__ = ["discover_and_register_domains"]
