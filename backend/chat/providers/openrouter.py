@@ -1,14 +1,11 @@
 # status: complete
 
 from typing import Any, Dict, Generator, List, Optional
-from dotenv import load_dotenv
 import os
 import json
 import requests
 from utils.logger import get_logger
 from utils.provider_errors import ProviderStreamError
-
-load_dotenv()
 
 logger = get_logger(__name__)
 
@@ -44,6 +41,10 @@ class OpenRouter:
         },
         "mistralai/devstral-2512:free": {
             "name": "Devstral",
+            "supports_reasoning": False
+        },
+        "nvidia/nemotron-3-nano-30b-a3b:free": {
+            "name": "Nemotron 3 Nano",
             "supports_reasoning": False
         }
     }

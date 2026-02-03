@@ -10,6 +10,11 @@ logger = get_logger(__name__)
 image_bp = Blueprint('image', __name__)
 image_gen = ImageGeneration()
 
+
+def register_image_routes(app):
+    """Register image routes with the Flask app."""
+    app.register_blueprint(image_bp)
+
 @image_bp.route('/api/image/generate', methods=['POST'])
 def generate_image():
     """Generate an image from text prompt"""

@@ -1008,5 +1008,467 @@ class TestAnalyzeLatestInteraction(unittest.TestCase):
         self.assertTrue(result["requests"][0]["input"]["total"]["is_estimated"])
 
 
+class TestCountMessagesTokensErrorHandling(unittest.TestCase):
+    """Test error handling in count_messages_tokens method."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+        self.cm._provider_map = None
+
+    @patch('agents.context.context_manager.get_provider_map')
+    @patch('agents.context.context_manager.Config')
+    def test_falls_back_from_native_to_tiktoken_on_failure(self, mock_config, mock_get_map):
+        """Should fall back to tiktoken when native provider fails."""
+        mock_config.get_token_counting_method.return_value = "native"
+        mock_provider = MagicMock()
+        mock_provider.count_tokens.side_effect = Exception("Native API failure")
+        mock_get_map.return_value = {"provider": mock_provider}
+
+        messages = [{"role": "user", "content": "Test message"}]
+
+        with patch('tiktoken.get_encoding') as mock_tiktoken:
+            mock_enc = MagicMock()
+            mock_enc.encode.return_value = [1, 2, 3, 4, 5]
+            mock_tiktoken.return_value = mock_enc
+            mock_config.get_tiktoken_encoding.return_value = "cl100k_base"
+
+            result = self.cm.count_messages_tokens(messages, "model", "provider")
+
+            self.assertEqual(result["total"], 9)  # 5 tokens + 4 overhead
+            self.assertEqual(result["method"], "tiktoken_cl100k_base")
+
+    @patch('agents.context.context_manager.get_provider_map')
+    @patch('agents.context.context_manager.Config')
+    def test_falls_back_to_char_approximation_when_tiktoken_unavailable(self, mock_config, mock_get_map):
+        """Should use char approximation when tiktoken is not installed."""
+        mock_config.get_token_counting_method.return_value = "tiktoken"
+        mock_get_map.return_value = {}
+
+        messages = [{"role": "user", "content": "Test"}]
+
+        with patch('builtins.__import__', side_effect=ImportError("No module named 'tiktoken'")):
+            mock_config.get_fallback_chars_per_token.return_value = 4
+            result = self.cm.count_messages_tokens(messages, "model", "provider")
+
+            # "user: Test" = 10 chars / 4 = 2 tokens + 4 overhead = 6
+            self.assertEqual(result["total"], 6)
+            self.assertEqual(result["method"], "char_approximation")
+
+    @patch('agents.context.context_manager.get_provider_map')
+    @patch('agents.context.context_manager.Config')
+    def test_handles_tiktoken_encoding_error(self, mock_config, mock_get_map):
+        """Should fall back when tiktoken encoding fails."""
+        mock_config.get_token_counting_method.return_value = "tiktoken"
+        mock_get_map.return_value = {}
+
+        messages = [{"role": "user", "content": "Test"}]
+
+        with patch('tiktoken.get_encoding', side_effect=Exception("Invalid encoding")):
+            mock_config.get_fallback_chars_per_token.return_value = 4
+            result = self.cm.count_messages_tokens(messages, "model", "provider")
+
+            self.assertEqual(result["method"], "char_approximation")
+
+
+class TestReadMarkdownContent(unittest.TestCase):
+    """Test _read_markdown_content method."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    @patch('file_utils.markdown_processor.setup_filespace')
+    def test_returns_none_for_nonexistent_file(self, mock_setup):
+        mock_setup.return_value = "/fake/files"
+        result = self.cm._read_markdown_content("nonexistent.md")
+        self.assertIsNone(result)
+
+    @patch('file_utils.markdown_processor.setup_filespace')
+    @patch('builtins.open', create=True)
+    def test_reads_markdown_content_successfully(self, mock_open, mock_setup):
+        mock_setup.return_value = "/fake/files"
+        mock_file = MagicMock()
+        mock_file.__enter__.return_value.read.return_value = "# Title\nContent"
+        mock_open.return_value = mock_file
+
+        with patch('pathlib.Path.exists', return_value=True):
+            result = self.cm._read_markdown_content("test.md")
+            self.assertEqual(result, "# Title\nContent")
+
+    @patch('file_utils.markdown_processor.setup_filespace')
+    def test_handles_file_read_exception(self, mock_setup):
+        mock_setup.side_effect = Exception("Cannot setup filespace")
+        result = self.cm._read_markdown_content("test.md")
+        self.assertIsNone(result)
+
+
+class TestEstimateRequestTokensEdgeCases(unittest.TestCase):
+    """Test edge cases in estimate_request_tokens."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+        self.cm._provider_map = None
+
+    @patch.object(ContextManager, 'count_tokens')
+    @patch.object(ContextManager, 'count_messages_tokens')
+    def test_handles_none_system_prompt(self, mock_count_msgs, mock_count):
+        """System prompt None should be treated as empty string."""
+        mock_count.return_value = 0
+        mock_count_msgs.return_value = {"total": 0, "per_message": [], "method": "none"}
+
+        result = self.cm.estimate_request_tokens(
+            role="assistant",
+            provider="gemini",
+            model="flash",
+            system_prompt=None
+        )
+
+        self.assertEqual(result["estimated_tokens"]["system_prompt"], 0)
+        self.assertFalse(result["breakdown_details"]["system_prompt_present"])
+
+    @patch.object(ContextManager, 'count_tokens')
+    @patch.object(ContextManager, 'count_messages_tokens')
+    def test_handles_empty_string_system_prompt(self, mock_count_msgs, mock_count):
+        """Empty string system prompt should be counted but marked absent."""
+        mock_count.return_value = 0
+        mock_count_msgs.return_value = {"total": 0, "per_message": [], "method": "none"}
+
+        result = self.cm.estimate_request_tokens(
+            role="assistant",
+            provider="gemini",
+            model="flash",
+            system_prompt=""
+        )
+
+        self.assertEqual(result["estimated_tokens"]["system_prompt"], 0)
+
+    @patch('utils.db_utils.db')
+    @patch('agents.context.context_manager.get_provider_map')
+    @patch.object(ContextManager, 'count_tokens')
+    @patch.object(ContextManager, 'count_messages_tokens')
+    @patch.object(ContextManager, '_estimate_single_file_tokens')
+    def test_handles_file_estimation_exception(self, mock_est_file, mock_count_msgs, mock_count, mock_get_map, mock_db):
+        """Should handle exceptions during file token estimation."""
+        mock_count.return_value = 0
+        mock_count_msgs.return_value = {"total": 0, "per_message": [], "method": "none"}
+        mock_get_map.return_value = {"gemini": MagicMock()}
+        mock_est_file.side_effect = Exception("File estimation failed")
+
+        with self.assertRaises(Exception):
+            self.cm.estimate_request_tokens(
+                role="assistant",
+                provider="gemini",
+                model="flash",
+                file_attachments=["file1.jpg"]
+            )
+
+
+class TestBuildRouterContextEdgeCases(unittest.TestCase):
+    """Test edge cases in build_router_context."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    @patch('agents.tools.tool_registry.tool_registry')
+    def test_handles_tools_with_no_schema(self, mock_registry):
+        """Should handle tools that have None or empty in_schema."""
+        mock_tool = MagicMock()
+        mock_tool.name = "simple_tool"
+        mock_tool.description = "A simple tool"
+        mock_tool.in_schema = None
+        mock_registry.get_all_tools.return_value = [mock_tool]
+
+        result = self.cm.build_router_context(None, None, None)
+        self.assertIn("simple_tool", result)
+        self.assertIn("A simple tool", result)
+
+    @patch('agents.tools.tool_registry.tool_registry')
+    def test_handles_tools_with_empty_properties(self, mock_registry):
+        """Should handle tools with schema but no properties."""
+        mock_tool = MagicMock()
+        mock_tool.name = "no_params_tool"
+        mock_tool.description = "No parameters"
+        mock_tool.in_schema = {"properties": {}, "required": []}
+        mock_registry.get_all_tools.return_value = [mock_tool]
+
+        result = self.cm.build_router_context(None, None, None)
+        self.assertIn("no_params_tool", result)
+        self.assertNotIn("Parameters:", result)
+
+    @patch('agents.tools.tool_registry.tool_registry')
+    def test_handles_tools_with_complex_param_types(self, mock_registry):
+        """Should handle tools with array and object parameter types."""
+        mock_tool = MagicMock()
+        mock_tool.name = "complex_tool"
+        mock_tool.description = "Complex parameters"
+        mock_tool.in_schema = {
+            "properties": {
+                "items": {"type": "array"},
+                "config": {"type": "object"},
+                "name": {"type": "string"}
+            },
+            "required": ["name"]
+        }
+        mock_registry.get_all_tools.return_value = [mock_tool]
+
+        result = self.cm.build_router_context(None, None, None)
+        self.assertIn("items: array", result)
+        self.assertIn("config: object", result)
+        self.assertIn("name: string (required)", result)
+
+    @patch('agents.tools.tool_registry.tool_registry')
+    def test_handles_history_with_missing_attached_files(self, mock_registry):
+        """Should handle messages without attachedFiles key."""
+        mock_registry.get_all_tools.return_value = []
+        history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"}
+        ]
+        result = self.cm.build_router_context(history, None, None)
+        self.assertIn("USER: Hello", result)
+        self.assertNotIn("[Attached:", result)
+
+
+class TestProviderMapCaching(unittest.TestCase):
+    """Test provider map lazy loading and caching."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    @patch('agents.context.context_manager.get_provider_map')
+    def test_lazy_loads_provider_map_on_first_use(self, mock_get_map):
+        """Should only load provider map once and cache it."""
+        mock_providers = {"gemini": MagicMock()}
+        mock_get_map.return_value = mock_providers
+
+        # First call should load
+        providers1 = self.cm._get_providers()
+        self.assertEqual(providers1, mock_providers)
+        self.assertEqual(mock_get_map.call_count, 1)
+
+        # Second call should use cache
+        providers2 = self.cm._get_providers()
+        self.assertEqual(providers2, mock_providers)
+        self.assertEqual(mock_get_map.call_count, 1)
+
+    def test_provider_map_starts_as_none(self):
+        """Provider map should start as None for lazy loading."""
+        self.assertIsNone(self.cm._provider_map)
+
+
+class TestBuildEmptyAnalysis(unittest.TestCase):
+    """Test _build_empty_analysis helper method."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    def test_builds_correct_structure(self):
+        """Should build valid empty analysis with all required fields."""
+        result = self.cm._build_empty_analysis("chat123", "System prompt")
+
+        self.assertEqual(result["chat_id"], "chat123")
+        self.assertEqual(result["system_prompt"]["content"], "System prompt")
+        self.assertEqual(result["system_prompt"]["tokens"], 0)
+        self.assertEqual(result["system_prompt"]["method"], "none")
+        self.assertTrue(result["system_prompt"]["is_estimated"])
+        self.assertEqual(result["requests"], [])
+        self.assertIn("generated_at", result)
+        self.assertIsInstance(result["generated_at"], int)
+
+
+class TestAnalyzeLatestInteractionEdgeCases(unittest.TestCase):
+    """Test edge cases in analyze_latest_interaction."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+        self.cm._provider_map = None
+
+    @patch('utils.db_utils.db')
+    def test_handles_history_with_no_assistant_messages(self, mock_db):
+        """Should return empty analysis when no assistant messages found."""
+        history = [
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "Anyone there?"}
+        ]
+        mock_db.get_chat_history.return_value = history
+        mock_db.get_chat_system_prompt.return_value = ""
+
+        result = self.cm.analyze_latest_interaction("chat123")
+
+        self.assertEqual(len(result["requests"]), 0)
+
+    @patch('utils.db_utils.db')
+    def test_handles_assistant_message_without_prior_user(self, mock_db):
+        """Should handle assistant message when no prior user message exists."""
+        history = [
+            {"role": "assistant", "content": "I'll help you!", "provider": "gemini", "model": "flash"}
+        ]
+        mock_db.get_chat_history.return_value = history
+        mock_db.get_chat_system_prompt.return_value = ""
+        mock_db.get_most_recent_token_usage.return_value = None
+
+        with patch.object(self.cm, '_get_method_info', return_value=("tiktoken", False)):
+            with patch.object(self.cm, 'count_tokens', return_value=10):
+                with patch.object(self.cm, 'estimate_request_tokens') as mock_estimate:
+                    mock_estimate.return_value = {
+                        "estimated_tokens": {"system_prompt": 0, "chat_history": 0, "current_message": 0, "file_attachments": 0, "total": 0},
+                        "breakdown_details": {"file_breakdown": []}
+                    }
+                    result = self.cm.analyze_latest_interaction("chat123")
+
+        self.assertEqual(len(result["requests"]), 1)
+
+    @patch('utils.db_utils.db')
+    @patch.object(ContextManager, '_reconstruct_router_prompt')
+    @patch.object(ContextManager, '_analyze_prompt_segments')
+    @patch.object(ContextManager, 'estimate_request_tokens')
+    @patch.object(ContextManager, 'count_tokens')
+    @patch.object(ContextManager, '_get_method_info')
+    def test_discards_router_usage_with_mismatched_request_id(self, mock_get_info, mock_count, mock_estimate, mock_analyze_segs, mock_reconstruct, mock_db):
+        """Should discard router usage when request_id doesn't match assistant usage."""
+        history = [
+            {"role": "user", "content": "Test", "attachedFiles": []},
+            {"role": "assistant", "content": "Response"}
+        ]
+        mock_db.get_chat_history.return_value = history
+        mock_db.get_chat_system_prompt.return_value = ""
+        mock_db.get_most_recent_token_usage.side_effect = [
+            {"provider": "openrouter", "model": "mimo", "prompt_tokens": 50, "request_id": "req1"},
+            {"provider": "gemini", "model": "flash", "prompt_tokens": 100, "request_id": "req2"}
+        ]
+        mock_get_info.return_value = ("tiktoken", False)
+        mock_count.return_value = 10
+        mock_estimate.return_value = {
+            "estimated_tokens": {"system_prompt": 0, "chat_history": 0, "current_message": 10, "file_attachments": 0, "total": 10},
+            "breakdown_details": {"file_breakdown": []}
+        }
+
+        result = self.cm.analyze_latest_interaction("chat123")
+
+        # Should only have assistant request, not router
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["requests"][0]["role"], "assistant")
+
+
+class TestTruncateChatHistoryBoundary(unittest.TestCase):
+    """Test boundary conditions for _truncate_chat_history."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    def test_history_exactly_at_budget_unchanged(self):
+        """History exactly at budget limit should remain unchanged."""
+        # Each message: ~600 chars (500 content + 100 overhead)
+        # Budget of 1200 should fit exactly 2 messages
+        history = [
+            {"role": "user", "content": "a" * 500},
+            {"role": "assistant", "content": "b" * 500},
+        ]
+        result = self.cm._truncate_chat_history(history, 1200)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result, history)
+
+    def test_history_one_char_over_budget_truncates(self):
+        """History one char over budget should truncate oldest."""
+        history = [
+            {"role": "user", "content": "a" * 500},
+            {"role": "assistant", "content": "b" * 500},
+            {"role": "user", "content": "c" * 100},
+        ]
+        # Budget allows ~2 messages, third pushes over
+        result = self.cm._truncate_chat_history(history, 1200)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[-1]["content"], "c" * 100)
+
+
+class TestProviderMapRefresh(unittest.TestCase):
+    """Test provider map caching and refresh behavior."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+        self.cm._provider_map = None
+
+    @patch('agents.context.context_manager.get_provider_map')
+    def test_cached_provider_map_persists_across_calls(self, mock_get_map):
+        """Provider map should be cached and reused."""
+        mock_providers = {"gemini": MagicMock(), "openrouter": MagicMock()}
+        mock_get_map.return_value = mock_providers
+
+        # Multiple calls should use same cached map
+        self.cm._get_providers()
+        self.cm._get_providers()
+        self.cm._get_providers()
+
+        self.assertEqual(mock_get_map.call_count, 1)
+
+    @patch('agents.context.context_manager.get_provider_map')
+    def test_provider_map_can_be_manually_reset(self, mock_get_map):
+        """Setting _provider_map to None should force refresh on next access."""
+        mock_providers_v1 = {"gemini": MagicMock()}
+        mock_providers_v2 = {"gemini": MagicMock(), "openrouter": MagicMock()}
+        mock_get_map.side_effect = [mock_providers_v1, mock_providers_v2]
+
+        # First access
+        providers1 = self.cm._get_providers()
+        self.assertEqual(len(providers1), 1)
+
+        # Reset cache
+        self.cm._provider_map = None
+
+        # Second access should get fresh map
+        providers2 = self.cm._get_providers()
+        self.assertEqual(len(providers2), 2)
+        self.assertEqual(mock_get_map.call_count, 2)
+
+
+class TestCountTokensEdgeCases(unittest.TestCase):
+    """Additional edge case tests for count_tokens."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+        self.cm._provider_map = None
+
+    def test_whitespace_only_text_returns_nonzero(self):
+        """Whitespace-only text should still count tokens."""
+        result = self.cm.count_tokens("   \n\t  ", "model", "provider")
+        self.assertGreater(result, 0)
+
+
+class TestEstimateFileTokensGenericEdgeCases(unittest.TestCase):
+    """Additional edge cases for file token estimation."""
+
+    def setUp(self):
+        self.cm = ContextManager()
+
+    def test_zero_file_size_returns_minimum(self):
+        """Zero-byte file should return minimum token count."""
+        mock_db = MagicMock()
+        mock_db.get_file_record.return_value = {
+            "file_extension": ".txt",
+            "file_size": 0
+        }
+
+        tokens, method = self.cm._estimate_file_tokens_generic("empty.txt", mock_db)
+        self.assertGreater(tokens, 0)  # Should have minimum
+
+    @patch.object(ContextManager, '_get_media_duration')
+    @patch('file_utils.file_provider_manager.get_file_path')
+    def test_audio_with_zero_duration_uses_size_fallback(self, mock_get_path, mock_get_duration):
+        """Audio with 0 duration should fall back to size-based estimation."""
+        mock_db = MagicMock()
+        mock_db.get_file_record.return_value = {
+            "file_extension": ".mp3",
+            "file_size": 100000
+        }
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        mock_get_path.return_value = mock_path
+        mock_get_duration.return_value = 0.0
+
+        tokens, method = self.cm._estimate_file_tokens_generic("audio.mp3", mock_db)
+        # 0 duration triggers size-based fallback: 100000 / ~185 ≈ 540
+        self.assertGreater(tokens, 0)
+        self.assertEqual(method, "audio_fallback")
+
+
 if __name__ == "__main__":
     unittest.main()

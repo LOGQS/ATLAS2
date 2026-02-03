@@ -13,6 +13,11 @@ logger = get_logger(__name__)
 coder_git_bp = Blueprint('coder_git', __name__)
 
 
+def register_coder_git_routes(app):
+    """Register coder git routes with the Flask app."""
+    app.register_blueprint(coder_git_bp)
+
+
 def get_workspace_path(chat_id: str) -> Optional[Path]:
     """Get the workspace path for a specific chat from database."""
     try:

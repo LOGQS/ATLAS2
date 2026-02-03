@@ -1,16 +1,15 @@
-# status: complete
-
 from flask import Flask, jsonify
 from flask_cors import CORS
 import os
 import threading
-import time
 import sys
 import multiprocessing
 from pathlib import Path
 import signal
 import atexit
-import warnings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(backend_dir)
@@ -25,9 +24,9 @@ from route.file_route import register_file_routes
 from route.file_browser_route import register_file_browser_routes
 from route.coder_workspace_route import register_coder_workspace_routes
 from route.folder_picker_route import register_folder_picker_routes
-from route.coder_git_route import coder_git_bp
+from route.coder_git_route import register_coder_git_routes
 from route.stt_route import register_stt_routes
-from route.image_route import image_bp
+from route.image_route import register_image_routes
 from route.rate_limit_route import register_rate_limit_routes
 from route.token_route import register_token_routes
 from route.cliproxy_route import register_cliproxy_routes
@@ -40,89 +39,27 @@ from utils.db_utils import db
 from chat.worker_pool import initialize_pool, shutdown_pool, get_pool
 from utils.rate_limit_store import load_rate_limit_overrides
 
-# Ensure built-in tools are registered during startup rather than first request
-from agents.tools import tool_registry as _tool_registry  # noqa: F401
+from agents.tools import tool_registry as _tool_registry  # triggers tool registration
 
 logger = get_logger(__name__)
 
-_DEBUG_TRUE_VALUES = {"1", "true", "t", "yes", "on"}
-
-
-def _get_debug_mode() -> bool:
-    """Resolve whether the backend should run in debug mode."""
-    debug_env = os.getenv("FLASK_DEBUG")
-    if debug_env is None:
-        inferred = "0" if os.getenv("FLASK_ENV", "").lower() == "production" else "1"
-        os.environ["FLASK_DEBUG"] = inferred
-        debug_env = inferred
-    return debug_env.strip().lower() in _DEBUG_TRUE_VALUES
-
-
-DEBUG_ENABLED = _get_debug_mode()
+DEBUG_ENABLED = os.getenv("FLASK_DEBUG", "1") == "1"
 
 _shutdown_handled = False
 _startup_lock = threading.Lock()
 _startup_housekeeping_done = False
-_startup_sync_result = None
-_startup_reset_count = 0
-
-# Suppress noisy dependency warnings that surface on each worker spawn
-warnings.filterwarnings(
-    "ignore",
-    message="Couldn't find ffmpeg or avconv",
-    module="pydub.utils",
-    category=RuntimeWarning,
-)
-warnings.filterwarnings(
-    "ignore",
-    message="pkg_resources is deprecated as an API",
-    module="ctranslate2",
-    category=UserWarning,
-)
-
-def _build_reloader_exclude_patterns():
-    """Ensure Werkzeug reloader ignores system and venv library paths."""
-    prefixes = {
-        sys.base_prefix,
-        sys.base_exec_prefix,
-        getattr(sys, "real_prefix", None),
-        sys.prefix,
-    }
-    patterns = set()
-
-    for prefix in prefixes:
-        if not prefix:
-            continue
-        base = Path(prefix).resolve()
-        variants = {
-            base,
-            base / "Lib",
-            base / "lib",
-            base / "Lib" / "site-packages",
-            base / "lib" / "site-packages",
-        }
-
-        for variant in variants:
-            raw = str(variant)
-            posix = variant.as_posix()
-            for candidate in (raw, posix):
-                patterns.add(f"{candidate}*")
-
-    return sorted(patterns)
 
 
 def _run_startup_housekeeping():
     """Perform one-time filesystem/database coordination during startup."""
-    global _startup_housekeeping_done, _startup_sync_result, _startup_reset_count
+    global _startup_housekeeping_done
 
     if _startup_housekeeping_done:
-        logger.debug("Startup housekeeping already completed; skipping repeat run")
-        return _startup_sync_result, _startup_reset_count
+        return
 
     with _startup_lock:
         if _startup_housekeeping_done:
-            logger.debug("Startup housekeeping already completed; skipping repeat run")
-            return _startup_sync_result, _startup_reset_count
+            return
 
         startup_state.mark_initializing()
 
@@ -130,15 +67,12 @@ def _run_startup_housekeeping():
             setup_filespace()
 
             sync_result = sync_files_with_database()
-            _startup_sync_result = sync_result
-
             if sync_result.get('success'):
                 logger.info("File sync completed: %s", sync_result['summary'])
             else:
                 logger.error("File sync failed: %s", sync_result.get('error', 'unknown error'))
 
             reset_count = db.set_all_chats_static()
-            _startup_reset_count = reset_count
             if reset_count > 0:
                 logger.info("Startup: Reset %d chat(s) to static state", reset_count)
             else:
@@ -150,8 +84,6 @@ def _run_startup_housekeeping():
             raise
 
         _startup_housekeeping_done = True
-
-    return _startup_sync_result, _startup_reset_count
 
 
 def handle_shutdown(signum=None, frame=None):
@@ -177,16 +109,16 @@ def handle_shutdown(signum=None, frame=None):
             shutdown_pool()
             logger.info("[POOL-SHUTDOWN] Worker pool shut down successfully")
         else:
-            logger.info("[POOL-SHUTDOWN] No worker pool to shutdown")
+            logger.debug("[POOL-SHUTDOWN] No worker pool to shutdown")
     except Exception as e:
         logger.error(f"[POOL-SHUTDOWN] Error shutting down worker pool: {e}")
 
     try:
         stop_filesystem_monitor()
+        logger.debug("[FILE_WATCHER] Filesystem monitor stopped")
     except Exception as exc:
         logger.error(f"[FILE_WATCHER] Error stopping filesystem monitor: {exc}")
 
-    # Stop CLIProxy if running
     try:
         from services.cliproxy.manager import get_cliproxy_manager
         cliproxy_manager = get_cliproxy_manager()
@@ -202,11 +134,11 @@ def handle_shutdown(signum=None, frame=None):
         if updated_count > 0:
             logger.info(f"Successfully set {updated_count} chat(s) to static state")
         else:
-            logger.info("No active chats to update during shutdown")
-
-        logger.info("===== ATLAS2 SHUTDOWN COMPLETED =====")
+            logger.debug("No active chats to update during shutdown")
     except Exception as e:
-        logger.error(f"Error during shutdown handler: {e}")
+        logger.error(f"[DB] Error setting chats to static state: {e}")
+
+    logger.info("===== ATLAS2 SHUTDOWN COMPLETED =====")
 
     if signum is not None:
         sys.exit(0)
@@ -214,7 +146,6 @@ def handle_shutdown(signum=None, frame=None):
 def create_app():
     """Create and configure the Flask application"""
     app = Flask(__name__)
-    app.config["DEBUG"] = DEBUG_ENABLED
     app.debug = DEBUG_ENABLED
     
     cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
@@ -223,7 +154,6 @@ def create_app():
     load_rate_limit_overrides()
     _run_startup_housekeeping()
 
-    # Auto-start CLIProxy if user has existing auth files
     try:
         from services.cliproxy.manager import get_cliproxy_manager
         cliproxy_manager = get_cliproxy_manager()
@@ -234,7 +164,7 @@ def create_app():
             else:
                 logger.warning("[CLIPROXY] Failed to start proxy on startup")
         else:
-            logger.info("[CLIPROXY] No existing auth files, proxy will start on first login")
+            logger.debug("[CLIPROXY] No existing auth files, proxy will start on first login")
     except Exception as exc:
         logger.warning(f"[CLIPROXY] Failed to initialize: {exc}")
 
@@ -248,15 +178,16 @@ def create_app():
     register_file_browser_routes(app)
     register_coder_workspace_routes(app)
     register_folder_picker_routes(app)
-    app.register_blueprint(coder_git_bp)
+    register_coder_git_routes(app)
     register_stt_routes(app)
     register_token_routes(app)
     register_rate_limit_routes(app)
     register_cliproxy_routes(app)
-    app.register_blueprint(image_bp)
+    register_image_routes(app)
 
     try:
         start_filesystem_monitor(broadcast_global_event)
+        logger.debug("[FILE_WATCHER] Filesystem monitor started")
     except Exception as exc:
         logger.error(f"[FILE_WATCHER] Failed to start filesystem monitor: {exc}")
     
@@ -279,40 +210,6 @@ def create_app():
             'defaultStreaming': Config.get_default_streaming()
         })
 
-    @app.route('/api')
-    def api_info():
-        return jsonify({
-            'name': 'ATLAS2 API',
-            'version': '1.0.0',
-            'endpoints': {
-                'chat': {
-                    'send': '/api/chat/send',
-                    'stream': '/api/chat/stream',
-                    'history': '/api/chat/history/<chat_id>',
-                    'providers': '/api/chat/providers',
-                    'models': '/api/chat/models'
-                },
-                'db': {
-                    'chats': '/api/db/chats',
-                    'chat': '/api/db/chat/<chat_id>',
-                    'settings': '/api/db/settings'
-                },
-                'files': {
-                    'upload': '/api/files/upload',
-                    'list': '/api/files',
-                    'delete': '/api/files/<file_id>',
-                    'rename': '/api/files/<file_id>/rename',
-                    'download': '/api/files/<file_id>/download'
-                },
-                'image': {
-                    'generate': '/api/image/generate',
-                    'models': '/api/image/models',
-                    'status': '/api/image/status',
-                    'get': '/api/image/<filename>'
-                }
-            }
-        })
-    
     return app
 
 if __name__ == '__main__':
@@ -322,12 +219,10 @@ if __name__ == '__main__':
         if "context has already been set" not in str(e):
             raise
 
-    logs_dir = Path("..") / "logs"
+    logs_dir = Path(backend_dir).parent / "logs"
     logs_dir.mkdir(exist_ok=True)
-    log_file = logs_dir / "atlas.log"
     try:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            f.truncate(0)
+        (logs_dir / "atlas.log").write_text('')
     except (OSError, IOError):
         pass
 
@@ -336,15 +231,13 @@ if __name__ == '__main__':
     is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
     is_production = not DEBUG_ENABLED
 
-    # Check if worker pool should be initialized based on execution mode
     if Config.should_init_worker_pool():
+        logger.debug(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
         if is_reloader_child or is_production:
             logger.info("[POOL-INIT] Starting worker pool initialization in background...")
-            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
 
             def init_pool_background():
                 try:
-                    from utils.config import Config
                     pool_size = Config.get_worker_pool_size()
                     logger.info(f"[POOL-INIT] Initializing worker pool with target size {pool_size}")
                     pool = initialize_pool(pool_size=pool_size)
@@ -356,13 +249,10 @@ if __name__ == '__main__':
                     stats = pool.get_stats()
                     logger.info(f"[POOL-INIT] Pool created - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, target={stats['target_size']}")
 
-                    for i in range(6):
-                        time.sleep(5)
-                        stats = pool.get_stats()
-                        logger.info(f"[POOL-STATUS] After {(i+1)*5}s - ready={stats['ready_workers']}, spawning={stats['spawning_workers']}, total={stats['total_workers']}")
-                        if stats['ready_workers'] >= stats['target_size']:
-                            logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
-                            break
+                    def on_pool_ready(stats):
+                        logger.info(f"[POOL-INIT] Pool fully populated with {stats['ready_workers']} ready workers")
+
+                    pool.set_on_ready_callback(on_pool_ready)
                 except Exception as e:
                     logger.error(f"[POOL-INIT] Failed to initialize worker pool: {e}")
                     logger.info("[POOL-INIT] Application will continue without worker pool (fallback to direct spawning)")
@@ -371,7 +261,6 @@ if __name__ == '__main__':
             pool_thread.start()
         else:
             logger.info("[POOL-INIT] Skipping pool init in reloader parent process")
-            logger.info(f"[POOL-INIT] Debug mode: {app.debug}, WERKZEUG_RUN_MAIN: {os.environ.get('WERKZEUG_RUN_MAIN')}")
     else:
         logger.info("[POOL-INIT] Worker pool initialization skipped (execution mode: %s)", Config.get_chat_execution_mode())
 
@@ -389,15 +278,11 @@ if __name__ == '__main__':
     logger.info("Shutdown handlers registered successfully")
     logger.info("Starting ATLAS2 Backend on 0.0.0.0:5000")
 
-    reloader_exclude_patterns = _build_reloader_exclude_patterns()
-    logger.info("Configured reloader exclude patterns: %s", reloader_exclude_patterns)
-
     app.run(
         host='0.0.0.0',
         port=5000,
         debug=DEBUG_ENABLED,
         threaded=True,
-        reloader_type='stat',
-        exclude_patterns=reloader_exclude_patterns
+        reloader_type='stat'
     )
 

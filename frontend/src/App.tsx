@@ -808,13 +808,10 @@ function App() {
           if (shouldRestorePendingActiveChat && pendingActiveChatId) {
             return pendingActiveChatId;
           }
-          if (activeChatId !== 'none') {
-            return activeChatId;
-          }
           if (dbActiveChatId) {
             return dbActiveChatId;
           }
-          return 'none';
+          return activeChatId !== 'none' ? activeChatId : 'none';
         })();
 
         const mergedChats = Array.from(chatMap.values()).map(chat => ({

@@ -1,7 +1,6 @@
 # status: complete
 
 from typing import Any, Dict, Generator, List, Optional
-from dotenv import load_dotenv
 import os
 from google import genai
 from google.genai import types
@@ -12,8 +11,6 @@ import time
 from file_utils.upload_worker import start_upload_process
 from file_utils.extensions import IMAGE_EXTENSIONS, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from utils.cancellation_manager import cancellation_manager
-
-load_dotenv()
 
 logger = get_logger(__name__)
 

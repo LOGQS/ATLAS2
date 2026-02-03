@@ -1,5 +1,5 @@
-# status: complete
-
+import subprocess
+import time
 from typing import Any
 from pathlib import Path
 from utils.logger import get_logger
@@ -185,7 +185,6 @@ class ContextManager:
     def _get_media_duration(self, file_path: Path) -> float | None:
         """Extract media duration in seconds using ffprobe."""
         try:
-            import subprocess
             from file_utils.file_converter import _check_ffmpeg_available
 
             if not _check_ffmpeg_available():
@@ -541,7 +540,6 @@ class ContextManager:
 
     def _build_empty_analysis(self, chat_id: str, system_prompt: str) -> InteractionAnalysis:
         """Build empty analysis response for early returns."""
-        import time
         return {
             "chat_id": chat_id,
             "system_prompt": {
@@ -557,7 +555,6 @@ class ContextManager:
     def analyze_latest_interaction(self, chat_id: str) -> InteractionAnalysis:
         """Forensic analysis of the most recent interaction, reconstructing prompts with token breakdowns."""
         from utils.db_utils import db
-        import time
 
         history = db.get_chat_history(chat_id)
         system_prompt = db.get_chat_system_prompt(chat_id)

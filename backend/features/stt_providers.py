@@ -2,11 +2,8 @@
 
 from typing import Dict, Any, Optional
 import threading
-from dotenv import load_dotenv
 import os
 from utils.logger import get_logger
-
-load_dotenv()
 
 logger = get_logger(__name__)
 

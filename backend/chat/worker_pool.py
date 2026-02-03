@@ -81,6 +81,10 @@ class WorkerPool:
         self._shutdown = False
         self._worker_counter = 0
 
+        self._on_ready_callback = None
+        self._ready_fired = False
+        self._ready_lock = threading.Lock()
+
         self._populate_pool()
 
         logger.info(f"WorkerPool initialized with target size {self.pool_size} and max_parallel_spawn={self.max_parallel_spawn}")
@@ -89,6 +93,28 @@ class WorkerPool:
         """Generate unique worker ID"""
         self._worker_counter += 1
         return f"pool_worker_{self._worker_counter}"
+
+    def set_on_ready_callback(self, callback) -> None:
+        """Set callback to fire once when pool reaches target size."""
+        self._on_ready_callback = callback
+        # Check if already ready
+        self._check_and_fire_ready()
+
+    def _check_and_fire_ready(self) -> None:
+        """Fire on_ready callback if pool is at target size (once only)."""
+        if self._on_ready_callback is None:
+            return
+        with self._ready_lock:
+            if self._ready_fired:
+                return
+            if self._ready_workers.qsize() >= self.pool_size:
+                self._ready_fired = True
+                callback = self._on_ready_callback
+        if self._ready_fired and callback:
+            try:
+                callback(self.get_stats())
+            except Exception as e:
+                logger.error(f"Error in on_ready callback: {e}")
 
     def _spawn_worker_sync(self) -> Optional[PooledWorker]:
         """Spawn a single worker synchronously"""
@@ -185,6 +211,7 @@ class WorkerPool:
                     with self._failure_lock:
                         self._consecutive_failures = 0
                     self._increase_parallel_spawn()
+                    self._check_and_fire_ready()
                 else:
                     with self._total_lock:
                         self._total_workers -= 1

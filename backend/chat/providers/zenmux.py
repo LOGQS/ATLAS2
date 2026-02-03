@@ -1,14 +1,11 @@
 # status: complete
 
 from typing import Any, Dict, Generator, List, Optional
-from dotenv import load_dotenv
 import os
 import json
 import requests
 from utils.logger import get_logger
 from utils.provider_errors import ProviderStreamError
-
-load_dotenv()
 
 logger = get_logger(__name__)
 
@@ -18,12 +15,20 @@ class Zenmux:
     """
 
     AVAILABLE_MODELS = {
-        "z-ai/glm-4.6v-flash": {
-            "name": "GLM 4.6V Flash",
+        "z-ai/glm-4.7-flash-free": {
+            "name": "GLM 4.7 Flash Free",
             "supports_reasoning": True
         },
-        "google/gemini-3-flash-preview-free": {
-            "name": "Gemini 3 Flash Preview Free",
+        "xiaomi/mimo-v2-flash-free": {
+            "name": "Xiaomi Mimo V2 Flash Free",
+            "supports_reasoning": True
+        },
+        "z-ai/glm-4.6v-flash-free": {
+            "name": "GLM 4.6V Flash Free",
+            "supports_reasoning": True
+        },
+        "kuaishou/kat-coder-pro-v1-free": {
+            "name": "KAT Coder Pro V1 Free",
             "supports_reasoning": True
         }
     }

@@ -1,7 +1,6 @@
 # status: complete
 
 from typing import Any, Dict, Generator, List, Optional
-from dotenv import load_dotenv
 import json
 import os
 import threading
@@ -9,8 +8,6 @@ from pathlib import Path
 from utils.logger import get_logger
 from utils.provider_errors import ProviderStreamError
 from utils.startup_cache import worker_get_or_initialize, has_worker_channel
-
-load_dotenv()
 
 logger = get_logger(__name__)
 
@@ -45,14 +42,20 @@ class Cerebras:
             "supports_reasoning": True,
             "reasoning_param": "effort"  # Uses reasoning_effort parameter
         },
-        "zai-glm-4.6": {
-            "name": "GLM 4.6",
+        "zai-glm-4.7": {
+            "name": "GLM 4.7",
             "supports_reasoning": True,
             "reasoning_param": "disable"  # Uses disable_reasoning parameter
         }
     }
 
     BASE_URL = "https://api.cerebras.ai/v1/chat/completions"
+
+    # Default max_completion_tokens to prevent Cerebras rate limit over-estimation.
+    # Without this, Cerebras uses the model's full MSL (8K-32K tokens) for rate limit
+    # calculation, causing premature 429 errors even with simple requests.
+    # See: https://inference-docs.cerebras.ai/support/rate-limits
+    DEFAULT_MAX_COMPLETION_TOKENS = 30000
 
     def __init__(self):
         self.api_key = os.getenv("CEREBRAS_API_KEY")
@@ -338,7 +341,9 @@ class Cerebras:
 
         request_params = {
             "model": model,
-            "messages": messages
+            "messages": messages,
+            # Set default max_completion_tokens to prevent Cerebras rate limit over-estimation
+            "max_completion_tokens": self.DEFAULT_MAX_COMPLETION_TOKENS
         }
 
         if config_params:
@@ -428,7 +433,9 @@ class Cerebras:
         request_params = {
             "model": model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            # Set default max_completion_tokens to prevent Cerebras rate limit over-estimation
+            "max_completion_tokens": self.DEFAULT_MAX_COMPLETION_TOKENS
         }
 
         if config_params:
@@ -545,7 +552,9 @@ class Cerebras:
 
         request_params = {
             "model": model,
-            "messages": messages
+            "messages": messages,
+            # Set default max_completion_tokens to prevent Cerebras rate limit over-estimation
+            "max_completion_tokens": self.DEFAULT_MAX_COMPLETION_TOKENS
         }
 
         if config_params:
@@ -634,7 +643,9 @@ class Cerebras:
         request_params = {
             "model": model,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            # Set default max_completion_tokens to prevent Cerebras rate limit over-estimation
+            "max_completion_tokens": self.DEFAULT_MAX_COMPLETION_TOKENS
         }
 
         if config_params:

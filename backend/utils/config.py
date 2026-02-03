@@ -151,17 +151,17 @@ available_routes = [
 ROUTE_MODEL_MAP = {
     # Capability-based (no tools)
     "creative_writing": "moonshotai/kimi-k2-instruct-0905",  # Creative tasks benefit from stronger model
-    "math_reasoning": "gemini-2.5-pro",     # Math requires strong reasoning
-    "code_reasoning": "gemini-2.5-pro",     # Code analysis needs strong model
-    "visual_reasoning": "gemini-2.5-pro",   # Vision tasks benefit from stronger model
-    "general_conversation": "gemini-2.5-flash-preview-09-2025", # General queries can use fast model
+    "math_reasoning": "xiaomi/mimo-v2-flash:free",     # Math requires strong reasoning
+    "code_reasoning": "xiaomi/mimo-v2-flash:free",     # Code analysis needs strong model
+    "visual_reasoning": "xiaomi/mimo-v2-flash:free",   # Vision tasks benefit from stronger model
+    "general_conversation": "gpt-oss-120b", # General queries can use fast model
 
     # Execution modes (tools needed)
     "direct": "gemini-2.5-flash-preview-09-2025",           # FastPath optimization, quick execution
 
     # Single domains
     "web": "gemini-2.5-flash-preview-09-2025",              # Unified web operations (research + automation)
-    "coder": "gemini-2.5-pro",              # Code generation needs strong model
+    "coder": "xiaomi/mimo-v2-flash:free",              # Code generation needs strong model
     "data_processor": "gemini-2.5-flash-preview-09-2025",   # Data operations can use fast model
     "memory": "gemini-2.5-flash-preview-09-2025",           # Memory operations are straightforward
     "system_manager": "gemini-2.5-flash-preview-09-2025",   # System operations
@@ -201,10 +201,10 @@ class Config:
 
     DEFAULT_PROVIDER = "gemini"
 
-    DEFAULT_MODEL = "gemini-2.5-flash-preview-09-2025"
+    DEFAULT_MODEL = "xiaomi/mimo-v2-flash:free"
 
     DEFAULT_ROUTER_ENABLED = True
-    DEFAULT_ROUTER_MODEL = "xiaomi/mimo-v2-flash:free"
+    DEFAULT_ROUTER_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
     DEFAULT_STREAMING = True
 
