@@ -338,28 +338,31 @@ class ContextManager:
 
         total_content_tokens = 0
         method_name = 'char_approximation'
+        counting_succeeded = False
 
         if counting_method == "native" and provider_instance:
             try:
                 total_content_tokens = provider_instance.count_tokens(batched_text, model)
                 method_name = f'{provider}_native'
+                counting_succeeded = True
             except Exception as e:
                 self.logger.warning(f"{provider} native counting failed: {e}, trying tiktoken")
                 counting_method = "tiktoken"
 
-        if counting_method == "tiktoken" and total_content_tokens == 0:
+        if counting_method == "tiktoken" and not counting_succeeded:
             try:
                 import tiktoken
                 encoding_name = Config.get_tiktoken_encoding()
                 enc = tiktoken.get_encoding(encoding_name)
                 total_content_tokens = len(enc.encode(batched_text))
                 method_name = f'tiktoken_{encoding_name}'
+                counting_succeeded = True
             except ImportError:
                 self.logger.debug("tiktoken not available, using fallback")
             except Exception as e:
                 self.logger.warning(f"tiktoken counting failed: {e}, using fallback")
 
-        if total_content_tokens == 0:
+        if not counting_succeeded:
             total_content_tokens = self._fallback_count(batched_text)
             method_name = 'char_approximation'
 
@@ -619,55 +622,38 @@ class ContextManager:
                 notes.append(f"Selected Route: {route_choice}")
 
             if has_api_prompt:
-                prompt_tokens = router_usage['prompt_tokens']
-                method_display = f"{router_provider}_api"
-                notes.append(f"Input tokens from API: {prompt_tokens}")
-
-                requests.append({
-                    "role": "router",
-                    "label": "Router Decision",
-                    "provider": router_provider,
-                    "model": router_model,
-                    "input": {
-                        "total": {"tokens": prompt_tokens, "method": method_display, "is_estimated": False},
-                        "segments": segment_details,
-                        "segments_note": "Segment breakdown uses counting (not from API)"
-                    },
-                    "notes": notes
-                })
+                input_tokens = router_usage['prompt_tokens']
+                input_method = f"{router_provider}_api"
+                input_estimated = False
+                segments_note = "Segment breakdown uses counting (not from API)"
+                notes.append(f"Input tokens from API: {input_tokens}")
             elif has_api_total:
-                actual_tokens = router_usage['actual_tokens']
-                method_display, _ = self._get_method_info(router_provider, 'api')
-                notes.append(f"Total tokens from API: {actual_tokens}")
-
-                requests.append({
-                    "role": "router",
-                    "label": "Router Decision",
-                    "provider": router_provider,
-                    "model": router_model,
-                    "input": {
-                        "total": {"tokens": actual_tokens, "method": method_display, "is_estimated": False},
-                        "segments": segment_details,
-                        "segments_note": "Segment breakdown uses counting (not from API)"
-                    },
-                    "notes": notes
-                })
+                input_tokens = router_usage['actual_tokens']
+                input_method, _ = self._get_method_info(router_provider, 'api')
+                input_estimated = False
+                segments_note = "Segment breakdown uses counting (not from API)"
+                notes.append(f"Total tokens from API: {input_tokens}")
             else:
-                total_tokens = self.count_tokens(full_prompt, router_model, router_provider)
-                method_display, is_estimated = self._get_method_info(router_provider)
-                notes.append(f"Counted via: {method_display}")
+                input_tokens = self.count_tokens(full_prompt, router_model, router_provider)
+                input_method, input_estimated = self._get_method_info(router_provider)
+                segments_note = None
+                notes.append(f"Counted via: {input_method}")
 
-                requests.append({
-                    "role": "router",
-                    "label": "Router Decision",
-                    "provider": router_provider,
-                    "model": router_model,
-                    "input": {
-                        "total": {"tokens": total_tokens, "method": method_display, "is_estimated": is_estimated},
-                        "segments": segment_details
-                    },
-                    "notes": notes
-                })
+            input_entry = {
+                "total": {"tokens": input_tokens, "method": input_method, "is_estimated": input_estimated},
+                "segments": segment_details
+            }
+            if segments_note:
+                input_entry["segments_note"] = segments_note
+
+            requests.append({
+                "role": "router",
+                "label": "Router Decision",
+                "provider": router_provider,
+                "model": router_model,
+                "input": input_entry,
+                "notes": notes
+            })
 
         if assistant_usage:
             provider = assistant_usage['provider']
@@ -748,69 +734,50 @@ class ContextManager:
         has_api_total = assistant_usage and assistant_usage.get('actual_tokens', 0) > 0
 
         notes = []
+        counted_input = input_estimate["estimated_tokens"]["total"]
 
         if has_api_prompt and has_api_completion:
-            api_input = assistant_usage['prompt_tokens']
-            api_output = assistant_usage['completion_tokens']
-            api_method = f"{provider}_api"
-            notes.append(f"API: input={api_input}, output={api_output}")
-
-            requests.append({
-                "role": "assistant",
-                "label": "Assistant Response",
-                "provider": provider,
-                "model": model,
-                "input": {
-                    "total": {"tokens": api_input, "method": api_method, "is_estimated": False},
-                    "segments": input_segments,
-                    "segments_note": "Segment breakdown uses counting (not from API)"
-                },
-                "output": {
-                    "total": {"tokens": api_output, "method": api_method, "is_estimated": False},
-                    "segments": output_segments
-                },
-                "notes": notes
-            })
+            input_tokens = assistant_usage['prompt_tokens']
+            output_tokens = assistant_usage['completion_tokens']
+            token_method = f"{provider}_api"
+            is_estimated = False
+            input_segments_note = "Segment breakdown uses counting (not from API)"
+            notes.append(f"API: input={input_tokens}, output={output_tokens}")
         elif has_api_total:
-            api_total = assistant_usage['actual_tokens']
-            counted_input = input_estimate["estimated_tokens"]["total"]
-            notes.append(f"API total: {api_total}")
+            input_tokens = counted_input
+            output_tokens = counted_output_total
+            token_method = counting_method
+            is_estimated = counting_is_estimated
+            input_segments_note = None
+            notes.append(f"API total: {assistant_usage['actual_tokens']}")
             notes.append(f"Input counted via {counting_method}, output counted via {counting_method}")
-
-            requests.append({
-                "role": "assistant",
-                "label": "Assistant Response",
-                "provider": provider,
-                "model": model,
-                "input": {
-                    "total": {"tokens": counted_input, "method": counting_method, "is_estimated": counting_is_estimated},
-                    "segments": input_segments
-                },
-                "output": {
-                    "total": {"tokens": counted_output_total, "method": counting_method, "is_estimated": counting_is_estimated},
-                    "segments": output_segments
-                },
-                "notes": notes
-            })
         else:
-            counted_input = input_estimate["estimated_tokens"]["total"]
+            input_tokens = counted_input
+            output_tokens = counted_output_total
+            token_method = counting_method
+            is_estimated = counting_is_estimated
+            input_segments_note = None
             notes.append(f"Counted via: {counting_method}")
 
-            requests.append({
-                "role": "assistant",
-                "label": "Assistant Response",
-                "provider": provider,
-                "model": model,
-                "input": {
-                    "total": {"tokens": counted_input, "method": counting_method, "is_estimated": counting_is_estimated},
-                    "segments": input_segments
-                },
-                "output": {
-                    "total": {"tokens": counted_output_total, "method": counting_method, "is_estimated": counting_is_estimated},
-                    "segments": output_segments
-                },
-                "notes": notes
-            })
+        input_entry = {
+            "total": {"tokens": input_tokens, "method": token_method, "is_estimated": is_estimated},
+            "segments": input_segments
+        }
+        if input_segments_note:
+            input_entry["segments_note"] = input_segments_note
+
+        requests.append({
+            "role": "assistant",
+            "label": "Assistant Response",
+            "provider": provider,
+            "model": model,
+            "input": input_entry,
+            "output": {
+                "total": {"tokens": output_tokens, "method": token_method, "is_estimated": is_estimated},
+                "segments": output_segments
+            },
+            "notes": notes
+        })
 
         system_prompt_tokens = input_estimate["estimated_tokens"]["system_prompt"] if system_prompt else 0
 
