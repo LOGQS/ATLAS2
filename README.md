@@ -3,6 +3,7 @@
 A locally-hosted AI assistant with chat, code editing, and web capabilities.
 
 ## Project Status
+- Update (06.06.2026): Dropped, moved on to atlas3 from atlas2.
 
 🚧 **Work in Progress** - Active development, not close to finishing.
 
